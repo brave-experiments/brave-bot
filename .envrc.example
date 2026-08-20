@@ -27,8 +27,8 @@ export BRAVE_SERVICES_KEY_ID="replace-me"
 # selects it when a SKU credential is present.
 export BRAVE_AI_CHAT_ENDPOINT="https://ai-chat.bsg.brave.com"
 
-# Point this at a local server for development, e.g.
-# export BRAVE_AI_CHAT_ENDPOINT="http://localhost:8080"
+# Point this at a locally running backend for development, e.g.
+# export BRAVE_AI_CHAT_ENDPOINT="http://127.0.0.1:8000"
 
 # Model to request from POST /v1/chat/completions.
 # "automatic" lets the server triage per request and is the default.
