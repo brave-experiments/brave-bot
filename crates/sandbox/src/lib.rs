@@ -12,6 +12,8 @@
 //! caller believes it has a guarantee it does not have, and the audit trail records a
 //! sandbox that was never applied.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod policy;
 
 use policy::{Capabilities, ConfinementLevel, SandboxPolicy};
@@ -76,10 +78,18 @@ pub trait Sandbox {
 /// Returns [`SandboxError::Unavailable`] where no backend is implemented, so an
 /// unsupported platform is a refusal rather than an unconfined process.
 pub fn for_current_platform() -> Result<Box<dyn Sandbox>, SandboxError> {
-    Err(SandboxError::Unavailable {
-        platform: std::env::consts::OS,
-        detail: "no confinement backend is implemented for this platform yet".into(),
-    })
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(macos::SeatbeltSandbox::new()?))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(SandboxError::Unavailable {
+            platform: std::env::consts::OS,
+            detail: "no confinement backend is implemented for this platform yet".into(),
+        })
+    }
 }
 
 /// A backend that always refuses.
@@ -135,14 +145,19 @@ mod tests {
         assert!(!caps.network_denial_enforced);
     }
 
-    /// Until a backend exists, the platform lookup must refuse rather than hand back
-    /// something permissive.
+    /// Either a real backend is returned, or the lookup refuses. It must never hand
+    /// back something that reports no confinement.
     #[test]
-    fn the_platform_backend_refuses_when_unimplemented() {
-        assert!(matches!(
-            for_current_platform(),
-            Err(SandboxError::Unavailable { .. })
-        ));
+    fn the_platform_lookup_never_returns_an_unconfined_backend() {
+        match for_current_platform() {
+            Ok(sandbox) => assert_ne!(
+                sandbox.capabilities().level,
+                ConfinementLevel::None,
+                "a backend was returned that confines nothing"
+            ),
+            Err(SandboxError::Unavailable { .. }) => {}
+            Err(other) => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]
