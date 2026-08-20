@@ -80,18 +80,6 @@ impl<T> Labelled<T> {
         }
     }
 
-    /// Transform the value while carrying the label forward untouched.
-    ///
-    /// The closure sees the inner value, so this is a declassification in spirit;
-    /// it exists for size-shaping (truncation, encoding) inside the kernel and is
-    /// deliberately `pub(crate)`.
-    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Labelled<U> {
-        Labelled {
-            value: f(self.value),
-            label: self.label,
-        }
-    }
-
     /// Re-label a value, which may only degrade it. Returns `None` if the requested
     /// label is not reachable by degradation from the current one.
     pub fn relabel(self, to: Label) -> Option<Self> {
@@ -171,13 +159,6 @@ mod tests {
     fn relabel_refuses_incomparable_labels() {
         let v = Labelled::new(1u8, Label::untrusted_private());
         assert!(v.relabel(Label::trusted_public()).is_none());
-    }
-
-    #[test]
-    fn map_carries_the_label_forward() {
-        let v = Labelled::new("abcdef".to_string(), Label::untrusted_private());
-        let truncated = v.map(|s| s[..3].to_string());
-        assert_eq!(truncated.label(), Label::untrusted_private());
     }
 
     /// Debug output must never contain the value, or private content leaks into logs.
