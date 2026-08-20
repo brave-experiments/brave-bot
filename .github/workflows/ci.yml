@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish release artifacts (requires signing secrets)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, lint, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all --locked
+
+  # Builds against the declared minimum toolchain. The pinned cross-build container
+  # ships an older Rust than most developers have locally, so without this a feature
+  # that only compiles on a newer toolchain reaches the release build unnoticed.
+  minimum-toolchain:
+    name: Minimum supported Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read rust-version from the workspace
+        id: msrv
+        run: |
+          version="$(sed -nE 's/^rust-version[[:space:]]*=[[:space:]]*"([0-9.]+)".*/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::rust-version is not declared in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all --locked
+
+  cross-build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: darwin-arm64
+            target: aarch64-apple-darwin
+            ext: ""
+          - name: darwin-amd64
+            target: x86_64-apple-darwin
+            ext: ""
+          - name: linux-amd64
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+          - name: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+          - name: windows-amd64
+            target: x86_64-pc-windows-gnu
+            ext: ".exe"
+          - name: windows-arm64
+            target: aarch64-pc-windows-gnullvm
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same Dockerfile the Makefile uses, so a local build and a CI build produce
+      # the same artifact rather than diverging through a separate host toolchain.
+      - name: Build ${{ matrix.target }}
+        run: |
+          docker build -f Dockerfile.cross \
+            -t bua-${{ matrix.name }} \
+            --build-arg TARGET=${{ matrix.target }} .
+
+      - name: Extract binary
+        run: |
+          mkdir -p dist
+          docker create --name extract bua-${{ matrix.name }} /dev/null
+          docker cp extract:/bua "dist/bua-${{ matrix.name }}${{ matrix.ext }}"
+          docker rm extract
+
+      - name: Verify the artifact is the expected format
+        run: file "dist/bua-${{ matrix.name }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bua-${{ matrix.name }}
+          path: dist/bua-${{ matrix.name }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  # Publishing is intentionally NOT triggered by tags. It runs only when a human
+  # dispatches it, so pushing a tag cannot sign, notarise, or publish anything.
+  # Signing and npm publication are not implemented yet; this job exists to keep the
+  # gate explicit rather than leaving the door open.
+  publish:
+    name: Publish release artifacts
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    needs: cross-build
+    steps:
+      - name: Not yet implemented
+        run: |
+          echo "::error::Publishing is not implemented. Signing, notarisation, and npm"
+          echo "::error::publication must be added deliberately, with secrets reviewed."
+          exit 1
