@@ -3,5 +3,9 @@
 version = 4
 
 [[package]]
+name = "bua-config"
+version = "0.1.0"
+
+[[package]]
 name = "bua-core"
 version = "0.1.0"
