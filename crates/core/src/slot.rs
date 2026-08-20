@@ -137,14 +137,16 @@ impl SlotStore {
         let scope: Vec<SlotId> = ids.into_iter().collect();
         for id in &scope {
             // A slot with no label yet cannot be checked; the read itself will fail.
-            if let Some(slot_label) = self.label_of(id)
-                && !slot_label.flows_to(ceiling)
-            {
-                return Err(SlotError::CeilingExceeded {
-                    slot: id.clone(),
-                    slot_label,
-                    ceiling,
-                });
+            // Written without a let-chain so older toolchains can build this.
+            match self.label_of(id) {
+                Some(slot_label) if !slot_label.flows_to(ceiling) => {
+                    return Err(SlotError::CeilingExceeded {
+                        slot: id.clone(),
+                        slot_label,
+                        ceiling,
+                    });
+                }
+                _ => {}
             }
         }
         Ok(SlotReader {

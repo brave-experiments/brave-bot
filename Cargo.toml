@@ -5,6 +5,9 @@ members = ["crates/cli", "crates/config", "crates/core", "crates/signing"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# Matches the pinned cross-build container, so `cargo build` fails on a feature the
+# release build could not compile rather than deferring that to CI.
+rust-version = "1.85"
 license = "MPL-2.0"
 repository = "https://github.com/brave-experiments/brave-user-agent"
 

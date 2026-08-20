@@ -3,6 +3,7 @@ name = "bua-signing"
 description = "Brave services request signing (hs2019 HMAC-SHA256 over the body digest)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
