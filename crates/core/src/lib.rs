@@ -8,11 +8,13 @@
 pub mod capability;
 pub mod event;
 pub mod label;
+pub mod policy;
 pub mod slot;
 pub mod value;
 
 pub use capability::{Capability, CapabilitySet, CapabilityToken};
 pub use event::{Event, NullSink, Principle, RecordingSink, Role, Sink};
 pub use label::{Confidentiality, Integrity, Label, taint_all};
+pub use policy::{Denial, Policy, ReleasePlan, Routing};
 pub use slot::{SlotError, SlotId, SlotReader, SlotStore, SlotWriter};
 pub use value::{Declassification, Labelled};
