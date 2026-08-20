@@ -9,6 +9,7 @@ help:
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"
 	@echo "  make check          Format check, clippy, and tests"
+	@echo "  make check-linux    The same checks on Linux, current stable toolchain"
 	@echo "  make fmt            Apply formatting"
 	@echo
 	@echo "Reproducible cross-builds (requires Docker):"
@@ -40,6 +41,18 @@ check:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
 	cargo test --all
+
+# Runs the same checks on Linux with the current stable toolchain. Worth doing before
+# pushing platform-specific code: a macOS host never compiles the Linux backend, and
+# clippy gains lints between releases, so both can fail in CI while passing locally.
+.PHONY: check-linux
+check-linux:
+	docker run --rm --platform linux/amd64 -v "$(PWD):/src:ro" -w /work rust:slim sh -c '\
+		cp -r /src/. /work && \
+		rustup component add clippy rustfmt >/dev/null 2>&1 && \
+		cargo fmt --all -- --check && \
+		cargo clippy --all-targets --all-features -- -D warnings && \
+		cargo test --all'
 
 .PHONY: darwin-arm64
 darwin-arm64:
