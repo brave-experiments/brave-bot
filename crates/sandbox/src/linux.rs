@@ -115,13 +115,13 @@ impl Sandbox for LandlockSandbox {
         // ruleset is installed in the child between fork and exec.
         unsafe {
             command.pre_exec(move || {
-                use std::io::{Error, ErrorKind};
+                use std::io::Error;
 
                 let mut ruleset = landlock::Ruleset::default()
                     .set_compatibility(CompatLevel::BestEffort)
                     .handle_access(AccessFs::from_all(TARGET_ABI))
                     .and_then(|r| r.create())
-                    .map_err(|e| Error::new(ErrorKind::Other, format!("landlock: {e}")))?;
+                    .map_err(|e| Error::other(format!("landlock: {e}")))?;
 
                 if !readable.is_empty() {
                     ruleset = ruleset
@@ -129,9 +129,7 @@ impl Sandbox for LandlockSandbox {
                             &readable,
                             AccessFs::from_read(TARGET_ABI),
                         ))
-                        .map_err(|e| {
-                            Error::new(ErrorKind::Other, format!("landlock read rules: {e}"))
-                        })?;
+                        .map_err(|e| Error::other(format!("landlock read rules: {e}")))?;
                 }
 
                 if !writable.is_empty() {
@@ -140,20 +138,17 @@ impl Sandbox for LandlockSandbox {
                             &writable,
                             AccessFs::from_all(TARGET_ABI),
                         ))
-                        .map_err(|e| {
-                            Error::new(ErrorKind::Other, format!("landlock write rules: {e}"))
-                        })?;
+                        .map_err(|e| Error::other(format!("landlock write rules: {e}")))?;
                 }
 
                 let status = ruleset
                     .restrict_self()
-                    .map_err(|e| Error::new(ErrorKind::Other, format!("landlock: {e}")))?;
+                    .map_err(|e| Error::other(format!("landlock: {e}")))?;
 
                 // Fail closed: if the kernel did not actually enforce the ruleset, do
                 // not continue to exec.
                 if status.ruleset == RulesetStatus::NotEnforced {
-                    return Err(Error::new(
-                        ErrorKind::Other,
+                    return Err(Error::other(
                         "landlock reported the ruleset was not enforced",
                     ));
                 }
