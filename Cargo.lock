@@ -18,6 +18,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bua-cli"
+version = "0.1.0"
+dependencies = [
+ "bua-config",
+ "bua-core",
+]
+
+[[package]]
 name = "bua-config"
 version = "0.1.0"
 

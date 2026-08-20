@@ -1,0 +1,15 @@
+[package]
+name = "bua-cli"
+description = "Command-line entry point"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bua"
+path = "src/main.rs"
+
+[dependencies]
+bua-config = { path = "../config" }
+bua-core = { path = "../core" }
