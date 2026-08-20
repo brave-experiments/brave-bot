@@ -1,0 +1,28 @@
+# Template for direnv. Copy and fill in real values:
+#
+#   cp .envrc.example .envrc && direnv allow
+#
+# .envrc itself is gitignored — never commit real key material.
+
+# Brave services HMAC signing key for the aichat backend.
+# This is a signing key, not a bearer token: it is used to HMAC-SHA256 the
+# request body digest and is never transmitted.
+# Matched pair with BRAVE_SERVICES_KEY_ID below — the server derives its copy
+# of this key from a master seed plus that id, so the two must correspond.
+export SERVICES_KEY_AICHAT="replace-me"
+
+# keyId sent in the Authorization header.
+export BRAVE_SERVICES_KEY_ID="replace-me"
+
+# Optional: override the aichat endpoint for local/dev work.
+# Mirrors brave-core's --ai-chat-server-url switch, which is only honored on
+# non-official builds. Leave unset to use the default services host.
+# export AICHAT_SERVER_URL="http://localhost:8080"
+
+# Model to request from POST /v1/chat/completions.
+# "automatic" lets the server triage per request and is the default.
+# Note: a value the server does not recognize is silently reset to
+# "automatic", and some model entries are weighted ensembles that resolve
+# randomly — so the model you request is not necessarily the one you get.
+# Always trust the model reported in the response.
+export MODEL="automatic"
