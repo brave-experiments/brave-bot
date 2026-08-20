@@ -1,0 +1,12 @@
+[package]
+name = "bua-signing"
+description = "Brave services request signing (hs2019 HMAC-SHA256 over the body digest)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
