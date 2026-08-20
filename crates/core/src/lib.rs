@@ -6,5 +6,7 @@
 //! stays machine-readable.
 
 pub mod label;
+pub mod value;
 
 pub use label::{Confidentiality, Integrity, Label, taint_all};
+pub use value::{Declassification, Labelled};

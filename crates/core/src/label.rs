@@ -108,6 +108,18 @@ impl Label {
             && self.confidentiality.flows_to(other.confidentiality)
     }
 
+    /// Whether `self` may be *degraded* into `other`.
+    ///
+    /// Distinct from [`Label::flows_to`], which is the lattice ordering `⊑` used for
+    /// ceiling checks and in which `U ⊑ T`. Degradation is the direction taint
+    /// travels: integrity may go trusted → untrusted, confidentiality may go public
+    /// → private, never the reverse. Conflating the two would let a relabel launder
+    /// untrusted content into trusted.
+    pub fn degrades_to(self, other: Self) -> bool {
+        other.integrity == self.integrity.meet(other.integrity)
+            && other.confidentiality == self.confidentiality.join(other.confidentiality)
+    }
+
     pub fn is_trusted(self) -> bool {
         self.integrity == Integrity::Trusted
     }
@@ -223,6 +235,44 @@ mod tests {
                         assert!(a.flows_to(c), "{a} ⊑ {b} ⊑ {c} but not {a} ⊑ {c}");
                     }
                 }
+            }
+        }
+    }
+
+    /// Degradation is not the lattice ordering. `(U,pub) ⊑ (T,pub)` holds, but a
+    /// value may never be *upgraded* from untrusted to trusted.
+    #[test]
+    fn degradation_is_not_the_lattice_ordering() {
+        assert!(U_PUB.flows_to(T_PUB));
+        assert!(!U_PUB.degrades_to(T_PUB));
+        assert!(T_PUB.degrades_to(U_PUB));
+    }
+
+    #[test]
+    fn degradation_is_reflexive() {
+        for l in [T_PUB, T_PRIV, U_PUB, U_PRIV] {
+            assert!(l.degrades_to(l));
+        }
+    }
+
+    #[test]
+    fn top_of_taint_degrades_from_everything() {
+        for l in [T_PUB, T_PRIV, U_PUB, U_PRIV] {
+            assert!(l.degrades_to(U_PRIV), "{l} must degrade to (U,priv)");
+        }
+        assert!(!U_PRIV.degrades_to(T_PUB));
+    }
+
+    /// Degradation agrees with taint: combining inputs always yields a label each
+    /// input can degrade into.
+    #[test]
+    fn taint_result_is_a_degradation_of_its_inputs() {
+        let all = [T_PUB, T_PRIV, U_PUB, U_PRIV];
+        for a in all {
+            for b in all {
+                let out = taint_all([a, b]);
+                assert!(a.degrades_to(out), "{a} must degrade to taint {out}");
+                assert!(b.degrades_to(out), "{b} must degrade to taint {out}");
             }
         }
     }
