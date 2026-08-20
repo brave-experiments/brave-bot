@@ -14,10 +14,21 @@ export SERVICES_KEY_AICHAT="replace-me"
 # keyId sent in the Authorization header.
 export BRAVE_SERVICES_KEY_ID="replace-me"
 
-# Optional: override the aichat endpoint for local/dev work.
-# Mirrors brave-core's --ai-chat-server-url switch, which is only honored on
-# non-official builds. Leave unset to use the default services host.
-# export AICHAT_SERVER_URL="http://localhost:8080"
+# Base URL of the aichat backend. The client appends the API path
+# (v1/chat/completions), matching brave-core's GetEndpointUrl().
+#
+# Host is "<prefix>.<services-domain>" where the domains come from
+# brave-core's brave_domains buildflags:
+#   prod     ai-chat.bsg.brave.com
+#   staging  ai-chat.bsg.bravesoftware.com
+#   dev      ai-chat.bsg.brave.software
+#
+# The premium tier uses the ai-chat-premium.bsg prefix instead; brave-core
+# selects it when a SKU credential is present.
+export BRAVE_AI_CHAT_ENDPOINT="https://ai-chat.bsg.brave.com"
+
+# Point this at a local server for development, e.g.
+# export BRAVE_AI_CHAT_ENDPOINT="http://localhost:8080"
 
 # Model to request from POST /v1/chat/completions.
 # "automatic" lets the server triage per request and is the default.
