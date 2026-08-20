@@ -1,0 +1,10 @@
+[package]
+name = "bua-sandbox"
+description = "OS-level confinement for untrusted subprocesses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

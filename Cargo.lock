@@ -34,6 +34,10 @@ name = "bua-core"
 version = "0.1.0"
 
 [[package]]
+name = "bua-sandbox"
+version = "0.1.0"
+
+[[package]]
 name = "bua-signing"
 version = "0.1.0"
 dependencies = [
