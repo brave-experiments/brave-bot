@@ -6,7 +6,9 @@
 //! stays machine-readable.
 
 pub mod label;
+pub mod slot;
 pub mod value;
 
 pub use label::{Confidentiality, Integrity, Label, taint_all};
+pub use slot::{SlotError, SlotId, SlotReader, SlotStore, SlotWriter};
 pub use value::{Declassification, Labelled};
