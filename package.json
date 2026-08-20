@@ -1,0 +1,30 @@
+{
+  "name": "@brave/user-agent",
+  "version": "0.1.0",
+  "description": "A coding agent with structural resistance to indirect prompt injection",
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brave-experiments/brave-user-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/brave-experiments/brave-user-agent/issues"
+  },
+  "homepage": "https://github.com/brave-experiments/brave-user-agent#readme",
+  "bin": {
+    "bua": "npm/bin/bua.js"
+  },
+  "files": [
+    "npm/bin",
+    "npm/scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node npm/scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}
