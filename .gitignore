@@ -1,0 +1,29 @@
+# direnv — contains SERVICES_KEY_AICHAT. Never commit.
+.envrc
+.direnv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Build output
+/dist/
+
+# Node (npm distribution wrapper)
+node_modules/
+npm/bin/*-bin
+npm/bin/*-bin.exe
+
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+*.swo
+.idea/
