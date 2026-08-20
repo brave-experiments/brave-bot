@@ -12,6 +12,8 @@
 //! caller believes it has a guarantee it does not have, and the audit trail records a
 //! sandbox that was never applied.
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod policy;
@@ -83,7 +85,12 @@ pub fn for_current_platform() -> Result<Box<dyn Sandbox>, SandboxError> {
         Ok(Box::new(macos::SeatbeltSandbox::new()?))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(linux::LandlockSandbox::new()?))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(SandboxError::Unavailable {
             platform: std::env::consts::OS,
