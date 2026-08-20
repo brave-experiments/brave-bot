@@ -1,0 +1,29 @@
+# Reproducible cross-compilation for every supported target.
+#
+# Parameterised by TARGET, so one file builds macOS, Linux, and Windows binaries
+# identically on any host with Docker. The pinned base image is what makes the
+# output reproducible rather than dependent on whatever toolchain the host has.
+ARG TARGET=aarch64-apple-darwin
+
+FROM ghcr.io/rust-cross/cargo-zigbuild:0.20.0 AS builder
+ARG TARGET
+
+WORKDIR /src
+COPY . .
+
+# Rust's own strip can corrupt some targets in zigbuild flows, so symbols are kept
+# here and removed during packaging instead.
+RUN rustup target add "$TARGET" \
+    && cargo zigbuild --release --locked --target "$TARGET" \
+       --config profile.release.strip=false
+
+# Normalise the artifact name so extraction does not need to know about .exe.
+RUN mkdir -p /out \
+    && if [ -f "/src/target/${TARGET}/release/bua.exe" ]; then \
+         cp "/src/target/${TARGET}/release/bua.exe" /out/bua; \
+       else \
+         cp "/src/target/${TARGET}/release/bua" /out/bua; \
+       fi
+
+FROM scratch
+COPY --from=builder /out/bua /bua
