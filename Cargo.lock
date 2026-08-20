@@ -23,6 +23,7 @@ version = "0.1.0"
 dependencies = [
  "bua-config",
  "bua-core",
+ "bua-sandbox",
 ]
 
 [[package]]

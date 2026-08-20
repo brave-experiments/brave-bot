@@ -14,3 +14,4 @@ path = "src/main.rs"
 [dependencies]
 bua-config = { path = "../config" }
 bua-core = { path = "../core" }
+bua-sandbox = { path = "../sandbox" }
