@@ -110,17 +110,51 @@ is confined to the workspace. Every such choice is recorded as a promotion, so a
 separates the model's decisions from yours.
 
 A write is different: the wrong file destroys work rather than wasting a step. So the model
-never gets to decide one. You are shown the change, and your approval is what mints a
-single-use endorsement bound to that exact path — an approval cannot be replayed or
-redirected. Where nobody can be asked, such as a one-shot `bua "..."` run, writes are
-refused rather than applied unseen.
+never gets to decide one. Your approval is what mints a single-use endorsement bound to that
+exact path — an approval cannot be replayed or redirected. Where nobody can be asked, such as
+a one-shot `bua "..."` run, writes are refused rather than applied unseen.
 
-That approval has to be legible to be worth anything, which is why `edit_file` exists.
-Reviewing a whole file body on a terminal is not review, so an edit names the exact passage
-to replace and you approve a diff of it. If the passage is missing or occurs more than
+### Trusted directories
+
+At startup you are asked whether you trust the working directory. Trusting it means files
+there are read as **trusted**, which is what lets ordinary work proceed without a prompt for
+every edit. Decline and nothing is trusted, so every write is shown to you.
+
+Trust is per path, and the **most specific rule wins** — so a trusted project can contain an
+untrusted subtree, and that subtree can contain a trusted path again.
+
+Whether a write interrupts you depends on both the data and the destination:
+
+| data | destination | prompt? | effect on the trust map |
+|---|---|---|---|
+| trusted | trusted | no | unchanged |
+| untrusted | trusted | **yes** | that path becomes untrusted |
+| trusted | untrusted | **yes** | that path becomes trusted |
+| untrusted | untrusted | **yes** | unchanged |
+
+Only the first row is silent. The others either write data nobody vouched for or change what a
+path means, and both are yours to decide.
+
+The second row is what closes the obvious hole. If untrusted data — anything derived from the
+web, or from a file outside a trusted path — is written into a trusted directory, that file is
+recorded as untrusted. Reading it back returns untrusted data. Otherwise a round trip through
+the filesystem would launder injected text into trusted input, and the trust map would become
+a bypass for the gate it exists to support.
+
+Marking is always per file, never per directory: one untrusted file does not taint its
+siblings.
+
+When a write is shown, it has to be legible to be worth anything, which is why `edit_file`
+exists. Reviewing a whole file body on a terminal is not review, so an edit names the exact
+passage to replace and you approve a diff of it. If the passage is missing or occurs more than
 once, the edit is refused instead of guessed — a guess would change bytes you were never
 shown. Edits are also refused if the file changed after the model read it, since the diff
 you approved would no longer describe what happens.
+
+`edit_file` only works on trusted files. Finding the passage means comparing text, and that is
+a decision — on untrusted content it would let file contents decide whether an effect happens.
+So an untrusted file is refused rather than edited blind; trust the path, or replace the whole
+file with `write_file`, where nothing is located and the body is shown to you in full.
 
 Command execution is absent, and not by oversight. Unlike a write, a shell command has no
 separable routing field to endorse: the string is destination and payload at once, so there

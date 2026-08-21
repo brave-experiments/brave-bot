@@ -39,6 +39,30 @@ if text.matches(old).count() > 1 {
 }
 ```
 
+## Trusted content may be examined; untrusted content may not
+
+The rule bans deciding from **untrusted** content. Trusted content carries no such
+restriction — it came from a path the user vouched for, so comparing it decides nothing an
+attacker can steer. `Policy::read_trusted_content` is the gate: it returns the bytes if they
+are trusted and refuses otherwise, so a caller cannot quietly take the untrusted case.
+
+This is why `edit_file` requires a trusted file. Locating a passage is a comparison, so on an
+untrusted file it is refused rather than performed.
+
+Integrity is the only axis that matters for this. Workspace content is private as a matter of
+course, and examining it in-process releases nothing.
+
+## Where trusted data comes from
+
+Model output is a function of the model's context and nothing else. So when the context holds
+only trusted input, what the model produces is derived only from trusted input, and
+`Policy::label_model_output` labels it accordingly. `Policy::context_integrity` tracks this and
+only ever falls — one untrusted observation and everything afterwards is untrusted.
+
+This is **not** an upgrade path. It is the first label such text ever receives, assigned from
+provenance the kernel tracked. If you find yourself relabelling a value that already has a
+label, stop: see the section below.
+
 ## Labels only ever degrade
 
 Integrity may go trusted → untrusted. It may **never** go the other way. `Label::degrades_to`
@@ -74,6 +98,20 @@ endorsement.
 Primitives stay native rather than moving behind MCP when the kernel needs to label parts of
 a call separately — a path as routing, its contents as content. An opaque MCP call erases
 that distinction.
+
+## Trust map
+
+`TrustStore` records which paths the user vouched for, keyed by path prefix, longest match
+wins. Both polarities are expressible, so trusted-inside-untrusted works as well as the
+reverse. Empty means nothing is trusted: trust is granted, never assumed from silence.
+
+A write is silent only when trusted data goes to a trusted path. The other three combinations
+prompt, and two of them change what the path means — see the table in the README, which is the
+specification.
+
+`Policy::reconcile_after_write` keeps the invariant that a path's recorded trust equals the
+integrity of the data in it. Untrusted data landing in a trusted tree *must* mark that path
+untrusted, or reading it back would launder it. Always the exact path, never the parent.
 
 ## Absent by design
 
