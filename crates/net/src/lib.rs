@@ -83,6 +83,73 @@ pub struct Response {
     pub final_url: String,
 }
 
+/// A response whose body is read in pieces as it arrives.
+///
+/// Same gates as [`Response`], and the same cap: what changes is when the caller sees the bytes,
+/// not whether anything checked them. The label is fixed before the first byte is read, so a
+/// stream cannot acquire a better one partway through.
+pub struct Streamed<'r> {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub final_url: String,
+    label: Label,
+    reader: Box<dyn std::io::Read + 'r>,
+    read: usize,
+}
+
+impl Streamed<'_> {
+    /// The label every piece of this body carries.
+    pub fn label(&self) -> Label {
+        self.label
+    }
+
+    /// Read the next piece, or `None` at the end of the body.
+    ///
+    /// Each piece comes back labelled, exactly as a whole body would: a caller that wants to look
+    /// at one still has to go through the policy. The cap is enforced across the whole stream, so
+    /// an endless response is cut off rather than read forever.
+    pub fn next_chunk(&mut self) -> Result<Option<Labelled<Vec<u8>>>, EgressError> {
+        if self.read >= MAX_RESPONSE_BYTES {
+            return Ok(None);
+        }
+
+        let mut buffer = vec![0u8; STREAM_CHUNK_BYTES.min(MAX_RESPONSE_BYTES - self.read)];
+        match self.reader.read(&mut buffer) {
+            Ok(0) => Ok(None),
+            Ok(n) => {
+                self.read += n;
+                buffer.truncate(n);
+                Ok(Some(Labelled::new(buffer, self.label)))
+            }
+            Err(e) => Err(EgressError::Transport {
+                url: self.final_url.clone(),
+                detail: e.to_string(),
+            }),
+        }
+    }
+
+    /// Whether the cap stopped the read before the body ended.
+    pub fn truncated(&self) -> bool {
+        self.read >= MAX_RESPONSE_BYTES
+    }
+}
+
+impl fmt::Debug for Streamed<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // No body: it has not all arrived, and printing what has would expose labelled bytes.
+        f.debug_struct("Streamed")
+            .field("status", &self.status)
+            .field("final_url", &self.final_url)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How much is read from a streaming body at a time.
+///
+/// Small enough that a reply appears to arrive as it is written rather than in visible jumps.
+const STREAM_CHUNK_BYTES: usize = 1024;
+
 /// A request to send.
 #[derive(Debug)]
 pub struct Request {
@@ -158,6 +225,53 @@ impl Egress {
         request: Request,
         label: Label,
     ) -> Result<Response, EgressError> {
+        let (status, content_type, url, reader) = self.fetch_checked(policy, &request)?;
+        let (body, truncated) = read_capped(reader);
+
+        Ok(Response {
+            status,
+            content_type,
+            body: Labelled::new(body, label),
+            truncated,
+            final_url: url,
+        })
+    }
+
+    /// As [`Egress::fetch`], but handing back the body to read as it arrives.
+    ///
+    /// Every gate is the same and runs at the same point: the policy is checked before the initial
+    /// URL and before every redirect hop, before any body exists. What differs is only that the
+    /// caller reads the body in pieces, so a long reply can be shown while it is still being
+    /// written. The label is fixed here, from the caller's capability, so no piece of the stream
+    /// can arrive better labelled than the whole would have been.
+    pub fn fetch_streaming<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        request: Request,
+        label: Label,
+    ) -> Result<Streamed<'static>, EgressError> {
+        let (status, content_type, url, reader) = self.fetch_checked(policy, &request)?;
+
+        Ok(Streamed {
+            status,
+            content_type,
+            final_url: url,
+            label,
+            reader,
+            read: 0,
+        })
+    }
+
+    /// Send, following and revalidating redirects, and return the body reader unread.
+    ///
+    /// The single place the gate is applied, so a streamed request cannot take a different path
+    /// through the checks than a buffered one.
+    #[allow(clippy::type_complexity)]
+    fn fetch_checked<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        request: &Request,
+    ) -> Result<(u16, Option<String>, String, Box<dyn std::io::Read>), EgressError> {
         let mut url = request.url.clone();
         let mut hops = 0;
 
@@ -165,12 +279,14 @@ impl Egress {
             require_http_scheme(&url)?;
             policy.before_network(&url)?;
 
-            let response = self.send_once(&request, &url)?;
+            let response = self.send_once(request, &url)?;
             let status = response.0;
 
             if is_redirect(status) {
                 if hops >= MAX_REDIRECTS {
-                    return Err(EgressError::TooManyRedirects { url: request.url });
+                    return Err(EgressError::TooManyRedirects {
+                        url: request.url.clone(),
+                    });
                 }
                 let location = response
                     .1
@@ -186,15 +302,7 @@ impl Egress {
                 return Err(EgressError::Status { url, status });
             }
 
-            let (body, truncated) = read_capped(response.3);
-
-            return Ok(Response {
-                status,
-                content_type: response.2,
-                body: Labelled::new(body, label),
-                truncated,
-                final_url: url,
-            });
+            return Ok((status, response.2, url, response.3));
         }
     }
 

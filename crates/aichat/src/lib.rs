@@ -17,7 +17,9 @@ use bua_core::label::Label;
 use bua_core::policy::Policy;
 use bua_core::value::Labelled;
 use bua_net::{Egress, EgressError, Request};
-use protocol::{ChatRequest, ChatResponse};
+use protocol::{
+    ChatChunk, ChatRequest, ChatResponse, STREAM_DONE, SseDecoder, StreamAccumulator,
+};
 use std::fmt;
 
 #[derive(Debug)]
@@ -129,4 +131,93 @@ impl<'a> AichatClient<'a> {
             usage,
         })
     }
+
+    /// Send a chat completion request and read the reply as it arrives.
+    ///
+    /// Identical to [`AichatClient::complete`] in what it produces and in the gates it passes;
+    /// `progress` is called as chunks land so a caller can show that something is happening.
+    ///
+    /// What `progress` receives is deliberately narrow: how much the model has written, and
+    /// nothing of what it wrote. The reply is untrusted model output, so handing the text to a
+    /// callback would be handing untrusted content to the driver. A count is not content.
+    pub fn complete_streaming<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        request: &ChatRequest,
+        mut progress: impl FnMut(Progress),
+    ) -> Result<Completion, ChatError> {
+        let request = request.clone().streamed();
+        let body = serde_json::to_vec(&request).map_err(|e| ChatError::Encode(e.to_string()))?;
+
+        let headers =
+            bua_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
+
+        let http = Request::post(self.config.chat_completions_url(), body)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("digest", &headers.digest)
+            .header("authorization", &headers.authorization);
+
+        let mut stream = self
+            .egress
+            .fetch_streaming(policy, http, Label::untrusted_public())?;
+        let label = stream.label();
+
+        let mut decoder = SseDecoder::new();
+        let mut accumulated = StreamAccumulator::new();
+
+        while let Some(piece) = stream.next_chunk()? {
+            // The SSE envelope is transport structure, like the JSON envelope in `complete`: the
+            // bytes are taken out to find where events begin and end, and the reply that comes out
+            // is relabelled with exactly the label it arrived under.
+            let (bytes, _) = piece.into_parts_for_decoding();
+
+            for payload in decoder.push(&bytes) {
+                if payload == STREAM_DONE {
+                    continue;
+                }
+                // A chunk that will not parse is skipped rather than failing the turn: servers
+                // send keepalives and comments, and one unreadable frame should not discard a
+                // reply that is otherwise arriving fine.
+                let Ok(chunk) = serde_json::from_str::<ChatChunk>(&payload) else {
+                    continue;
+                };
+                accumulated.push(chunk);
+            }
+
+            progress(Progress {
+                output_tokens: accumulated.output_tokens(),
+                counted_by_server: accumulated.usage_is_reported(),
+            });
+        }
+
+        let (content, model, calls, usage) = accumulated.finish();
+
+        if content.is_empty() && calls.is_empty() {
+            return Err(ChatError::NoContent);
+        }
+
+        Ok(Completion {
+            content: Labelled::new(content, label),
+            model: model.unwrap_or_else(|| "unreported".to_string()),
+            calls,
+            usage,
+        })
+    }
+}
+
+/// How far a streamed reply has got.
+///
+/// Carries no reply text by design. The point is to report progress without the driver ever
+/// holding untrusted model output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    /// Output tokens so far: the server's own figure once it has given one, and until then a count
+    /// of the chunks that carried text.
+    pub output_tokens: u64,
+    /// Whether that figure is the server's rather than an estimate.
+    ///
+    /// Worth knowing at the point of display: an estimate presented as a billed figure would be
+    /// the kind of number that looks like data and is not.
+    pub counted_by_server: bool,
 }
