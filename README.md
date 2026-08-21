@@ -9,7 +9,8 @@ value carries an information-flow label the model never sees and cannot address,
 consequential action passes through a gate that refuses labels it does not accept. Injected
 text can influence *what* a message says; it has no structural path to *where* an action goes.
 
-> Status: early. The security kernel is being built before the agent that sits on top of it.
+> Status: early but working. It answers questions about a real workspace, choosing and
+> chaining its own tools, with every decision recorded.
 
 ## The idea
 
@@ -46,6 +47,45 @@ routing — so it cannot redirect anything.
 - **Extensible via MCP** (HTTP and stdio). No use case is hardcoded. A small set of
   primitives stays native because the kernel needs to label parts of those calls
   individually.
+
+## Using it
+
+```sh
+bua                                  # interactive session
+bua "what does src/main.rs do?"      # one-shot
+bua "explain this" --file notes.md   # with named context
+bua doctor                           # check configuration and confinement
+```
+
+Add `--trace` to a one-shot run, or press Ctrl-T in a session, to see the audit trail:
+which gate checked what, the label every value carried, and what was released.
+
+```
+ok      precommit: routing fields ["task"] fixed before any observation
+ok      promote: read_file.path proposed by the model, confined and non-destructive
+ok      file_read.path [routing] (T,pub)
+observe file_read produced (U,priv)
+ok      release: read_file.contents content released after the action gate
+```
+
+### Tools
+
+The model can read files, list them, and search their contents. Each splits into a
+**routing** part the gate requires to be trusted and a **content** part that may not be:
+
+| Tool | Routing | Result |
+|---|---|---|
+| `read_file` | path | contents, untrusted |
+| `list_files` | directory | filenames, untrusted |
+| `search` | pattern, directory | matches, untrusted |
+
+Filenames are untrusted too — a file can be named to read like an instruction.
+
+The set is deliberately read-only. A write or command destination chosen by the model
+would be routing derived from whatever it just read, which is the attack this prevents.
+The model may propose *which* file to read next, because that operation cannot change
+anything and is confined to the workspace; every such choice is recorded as a promotion so
+an audit separates the model's decisions from yours.
 
 ## Building
 
