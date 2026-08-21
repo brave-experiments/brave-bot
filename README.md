@@ -57,7 +57,8 @@ bua "explain this" --file notes.md   # with named context
 bua doctor                           # check configuration and confinement
 ```
 
-Add `--trace` to a one-shot run, or press Ctrl-T in a session, to see the audit trail:
+In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, Ctrl-T
+toggles the audit trail. Add `--trace` to a one-shot run for the same thing:
 which gate checked what, the label every value carried, and what was released.
 
 ```
