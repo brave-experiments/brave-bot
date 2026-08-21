@@ -329,3 +329,209 @@ fn nested_directories_are_created_for_a_write() {
         "deep"
     );
 }
+
+#[test]
+fn list_enumerates_files_recursively() {
+    let scratch = Scratch::new("list");
+    std::fs::create_dir_all(scratch.path.join("src")).unwrap();
+    std::fs::write(scratch.path.join("README.md"), "readme").unwrap();
+    std::fs::write(scratch.path.join("src/main.rs"), "fn main() {}").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .expect("list succeeds");
+
+    // Filenames come from the user's tree, so they are untrusted content too.
+    assert_eq!(listing.label(), Label::untrusted_private());
+    let files = listing.into_trusted().unwrap_err();
+    assert_eq!(files.label(), Label::untrusted_private());
+}
+
+/// Version control and build directories would swamp a listing.
+#[test]
+fn list_skips_noise_directories() {
+    let scratch = Scratch::new("list-skip");
+    std::fs::create_dir_all(scratch.path.join(".git")).unwrap();
+    std::fs::create_dir_all(scratch.path.join("target")).unwrap();
+    std::fs::write(scratch.path.join(".git/config"), "x").unwrap();
+    std::fs::write(scratch.path.join("target/build"), "x").unwrap();
+    std::fs::write(scratch.path.join("keep.txt"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .expect("list succeeds");
+    let rendered = format!("{listing:?}");
+    // Debug shows only the label, never contents, so assert via the count instead.
+    assert!(rendered.contains("(U,priv)"));
+    assert!(policy.finish());
+}
+
+#[test]
+fn grep_finds_matches_with_line_numbers() {
+    let scratch = Scratch::new("grep");
+    std::fs::write(
+        scratch.path.join("a.txt"),
+        "first line\nsecond has needle\nthird line",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+        )
+        .expect("grep succeeds");
+
+    // Matches are file contents, so untrusted-private like a read.
+    assert_eq!(found.label(), Label::untrusted_private());
+    assert!(policy.finish());
+}
+
+/// An untrusted pattern must not be usable: content cannot choose what is searched for.
+#[test]
+fn grep_refuses_an_untrusted_pattern() {
+    let scratch = Scratch::new("grep-untrusted");
+    std::fs::write(scratch.path.join("a.txt"), "secret data").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let injected = Labelled::new("secret".to_string(), Label::untrusted_public());
+    let error = workspace
+        .grep(&mut policy, &injected, &Labelled::trusted(".".to_string()))
+        .expect_err("an untrusted pattern must be refused");
+    assert!(error.to_string().contains("injection blocked"));
+}
+
+#[test]
+fn grep_refuses_a_directory_outside_the_workspace() {
+    let scratch = Scratch::new("grep-escape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("x".to_string()),
+            &Labelled::trusted("..".to_string()),
+        )
+        .expect_err("traversal must be refused");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }));
+}
+
+/// A binary or non-UTF8 file must not make a search fail.
+#[test]
+fn grep_skips_unreadable_files() {
+    let scratch = Scratch::new("grep-binary");
+    std::fs::write(scratch.path.join("binary.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+    std::fs::write(scratch.path.join("text.txt"), "has needle here").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+        )
+        .expect("grep succeeds despite the binary file");
+    assert_eq!(found.label(), Label::untrusted_private());
+}
+
+#[test]
+fn grep_refuses_an_empty_pattern() {
+    let scratch = Scratch::new("grep-empty");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted(String::new()),
+            &Labelled::trusted(".".to_string()),
+        )
+        .expect_err("an empty pattern is refused");
+    assert!(matches!(error, WorkspaceError::Invalid { .. }));
+}
+
+#[test]
+fn listing_requires_the_read_capability() {
+    let scratch = Scratch::new("list-capability");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::FileWrite]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .expect_err("read capability was not granted");
+    assert!(error.to_string().contains("file_read"));
+}

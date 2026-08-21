@@ -206,3 +206,178 @@ impl Workspace {
 pub fn read_label() -> Label {
     Label::untrusted_private()
 }
+
+/// Caps on directory walks, so a large tree cannot stall a turn or flood the model's
+/// context. Truncation is size hygiene, not filtering: nothing is inspected to decide
+/// what to drop.
+const MAX_ENTRIES: usize = 2_000;
+const MAX_MATCHES: usize = 200;
+const MAX_MATCH_LINE: usize = 500;
+
+/// One grep hit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Match {
+    /// Workspace-relative path.
+    pub path: String,
+    /// 1-based line number.
+    pub line: usize,
+    /// The matching line, truncated to [`MAX_MATCH_LINE`].
+    pub text: String,
+}
+
+impl Workspace {
+    /// List files under a workspace-relative directory.
+    ///
+    /// The directory is routing, so content cannot choose where to look. The resulting
+    /// *paths* are untrusted-private: a filename is content the user's tree supplied,
+    /// and a file could be named to look like an instruction.
+    pub fn list<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        directory: &Labelled<String>,
+    ) -> Result<Labelled<Vec<String>>, WorkspaceError> {
+        policy.before_capability(Capability::FileRead)?;
+        policy.before_action("file_list", "directory", Role::Routing, directory)?;
+
+        let relative = directory
+            .clone()
+            .into_trusted()
+            .map_err(|_| WorkspaceError::Invalid {
+                path: "<untrusted>".into(),
+                reason: "the directory was not trusted",
+            })?;
+
+        let root = self.resolve(&relative)?;
+        let label = policy.observe(Capability::FileRead)?;
+
+        let mut found = Vec::new();
+        self.walk(&root, &mut found)?;
+        found.sort();
+        found.truncate(MAX_ENTRIES);
+
+        Ok(Labelled::new(found, label))
+    }
+
+    /// Search file contents for a literal substring.
+    ///
+    /// The pattern and directory are routing; the matches are untrusted-private, exactly
+    /// like a file read. Matching is a plain substring test rather than a regex: a
+    /// pattern is cheap to get wrong, and a catastrophically backtracking regex supplied
+    /// through a turn would be a denial-of-service vector.
+    pub fn grep<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        pattern: &Labelled<String>,
+        directory: &Labelled<String>,
+    ) -> Result<Labelled<Vec<Match>>, WorkspaceError> {
+        policy.before_capability(Capability::FileRead)?;
+        policy.before_action("file_grep", "pattern", Role::Routing, pattern)?;
+        policy.before_action("file_grep", "directory", Role::Routing, directory)?;
+
+        let needle = pattern
+            .clone()
+            .into_trusted()
+            .map_err(|_| WorkspaceError::Invalid {
+                path: "<untrusted>".into(),
+                reason: "the pattern was not trusted",
+            })?;
+        let relative = directory
+            .clone()
+            .into_trusted()
+            .map_err(|_| WorkspaceError::Invalid {
+                path: "<untrusted>".into(),
+                reason: "the directory was not trusted",
+            })?;
+
+        if needle.is_empty() {
+            return Err(WorkspaceError::Invalid {
+                path: relative,
+                reason: "the search pattern was empty",
+            });
+        }
+
+        let root = self.resolve(&relative)?;
+        let label = policy.observe(Capability::FileRead)?;
+
+        let mut paths = Vec::new();
+        self.walk(&root, &mut paths)?;
+        paths.sort();
+
+        let mut matches = Vec::new();
+        for path in paths {
+            if matches.len() >= MAX_MATCHES {
+                break;
+            }
+            let absolute = self.root.join(&path);
+            // Unreadable or non-UTF8 files are skipped rather than failing the search:
+            // a binary in the tree should not make grep unusable.
+            let Ok(contents) = std::fs::read_to_string(&absolute) else {
+                continue;
+            };
+            for (index, line) in contents.lines().enumerate() {
+                if matches.len() >= MAX_MATCHES {
+                    break;
+                }
+                if line.contains(&needle) {
+                    let mut text = line.to_string();
+                    text.truncate(MAX_MATCH_LINE);
+                    matches.push(Match {
+                        path: path.clone(),
+                        line: index + 1,
+                        text,
+                    });
+                }
+            }
+        }
+
+        Ok(Labelled::new(matches, label))
+    }
+
+    /// Collect workspace-relative paths of regular files beneath `directory`.
+    ///
+    /// Symlinks are not followed: a link pointing outside the workspace would otherwise
+    /// pull external files into a listing, which is the same escape `resolve` rejects
+    /// for a named path.
+    fn walk(&self, directory: &Path, out: &mut Vec<String>) -> Result<(), WorkspaceError> {
+        let entries = std::fs::read_dir(directory).map_err(|e| WorkspaceError::Io {
+            path: self.relative_display(directory),
+            detail: e.to_string(),
+        })?;
+
+        for entry in entries.flatten() {
+            if out.len() >= MAX_ENTRIES {
+                return Ok(());
+            }
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                // Version control and build output would dominate a listing without
+                // adding anything a task needs.
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == ".git" || name == "target" || name == "node_modules" {
+                    continue;
+                }
+                self.walk(&path, out)?;
+                continue;
+            }
+            if kind.is_file() {
+                out.push(self.relative_display(&path));
+            }
+        }
+        Ok(())
+    }
+
+    fn relative_display(&self, path: &Path) -> String {
+        path.strip_prefix(&self.root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string()
+    }
+}
