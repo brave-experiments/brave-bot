@@ -984,3 +984,116 @@ fn the_whole_file_read_is_not_capped() {
 
     assert_eq!(contents, body, "the whole-file read was truncated");
 }
+
+/// A binary file must be named as binary. Leaking "stream did not contain valid UTF-8"
+/// leaves a reader unable to tell a binary file from a corrupt or misnamed one.
+#[test]
+fn a_binary_file_is_reported_as_binary() {
+    let scratch = Scratch::new("read-binary");
+    std::fs::write(scratch.path.join("bin.dat"), [0x61u8, 0x00, 0xff, 0xfe]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted("bin.dat".to_string());
+    let error = workspace
+        .read(&mut policy, &path)
+        .expect_err("a binary file must not read as text");
+
+    assert!(
+        matches!(error, WorkspaceError::Binary { .. }),
+        "expected a binary error, got {error:?}"
+    );
+    let message = error.to_string();
+    assert!(message.contains("binary"), "unhelpful message: {message}");
+    assert!(
+        !message.contains("UTF-8"),
+        "the internal decoding error leaked: {message}"
+    );
+}
+
+/// The paged read must agree with the whole-file read about what is binary.
+#[test]
+fn a_paged_read_of_a_binary_file_is_refused() {
+    let scratch = Scratch::new("page-binary");
+    std::fs::write(scratch.path.join("bin.dat"), [0x00u8, 0x01, 0x02, 0x03]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = workspace
+        .read_page(
+            &mut policy,
+            &Labelled::trusted("bin.dat".to_string()),
+            1,
+            10,
+        )
+        .expect_err("a binary file must not page as text");
+    assert!(matches!(error, WorkspaceError::Binary { .. }));
+}
+
+/// Detection must not reject ordinary source files, which is the failure mode that would
+/// make the whole workspace unreadable.
+#[test]
+fn text_files_are_not_mistaken_for_binary() {
+    let scratch = Scratch::new("read-text");
+    // Includes tabs, CRLF and non-ASCII text: all normal in source.
+    std::fs::write(
+        scratch.path.join("a.txt"),
+        "fn main() {\r\n\tprintln!(\"héllo — wörld\");\r\n}\n",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let contents = workspace
+        .read(&mut policy, &Labelled::trusted("a.txt".to_string()))
+        .expect("normal text must read");
+    let proof = policy.authorise_content_release("test", "contents");
+    assert!(contents.declassify(&proof).contains("héllo"));
+}
+
+/// An empty file is text, not binary — the ratio test must not divide by zero or guess.
+#[test]
+fn an_empty_file_is_not_binary() {
+    let scratch = Scratch::new("read-empty");
+    std::fs::write(scratch.path.join("empty.txt"), "").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let contents = workspace
+        .read(&mut policy, &Labelled::trusted("empty.txt".to_string()))
+        .expect("an empty file must read");
+    let proof = policy.authorise_content_release("test", "contents");
+    assert_eq!(contents.declassify(&proof), "");
+}

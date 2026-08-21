@@ -1176,3 +1176,82 @@ fn a_small_read_has_no_paging_notice() {
         "a complete read claimed to be a page: {second}"
     );
 }
+
+/// The model must be told the file is binary, not handed a decoding error it cannot act on.
+#[test]
+fn a_binary_read_tells_the_model_it_is_binary() {
+    let scratch = Scratch::new("read-binary-turn");
+    std::fs::write(scratch.path.join("bin.dat"), [0x00u8, 0xff, 0xfe, 0x01]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":"bin.dat"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read bin.dat");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    // Scoped to the tool result: the tool *descriptions* in the same request legitimately
+    // mention UTF-8, so a whole-body search would pass for the wrong reason.
+    let (_, result) = second
+        .split_once("Result of read_file")
+        .expect("the tool result was sent");
+    let result = result.split_once("\"}").expect("the result message ends").0;
+    assert!(
+        result.contains("binary"),
+        "the model was not told the file is binary: {result}"
+    );
+    assert!(
+        !result.contains("did not contain valid"),
+        "an internal decoding error reached the model: {result}"
+    );
+}
+
+/// A binary file in the tree must not break search: the file is skipped, not fatal.
+#[test]
+fn a_binary_file_does_not_break_search() {
+    let scratch = Scratch::new("search-binary");
+    std::fs::write(scratch.path.join("bin.dat"), [0x00u8, 0xff, 0xfe]).unwrap();
+    std::fs::write(scratch.path.join("a.txt"), "has needle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"needle","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("find needle");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("a.txt"),
+        "the text file was not searched: {second}"
+    );
+}

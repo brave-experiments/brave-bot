@@ -165,9 +165,19 @@ impl Workspace {
         let resolved = self.resolve(&relative)?;
         let label = policy.observe(Capability::FileRead)?;
 
-        let contents = std::fs::read_to_string(&resolved).map_err(|e| WorkspaceError::Io {
-            path: relative,
+        let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
+            path: relative.clone(),
             detail: e.to_string(),
+        })?;
+
+        // Named as binary rather than surfacing a decoding error. "stream did not contain
+        // valid UTF-8" is an implementation detail that leaves a reader unable to tell a
+        // binary file from a corrupt one.
+        if looks_binary(&raw) {
+            return Err(WorkspaceError::Binary { path: relative });
+        }
+        let contents = String::from_utf8(raw).map_err(|_| WorkspaceError::Binary {
+            path: relative.clone(),
         })?;
 
         Ok(Labelled::new(contents, label))
