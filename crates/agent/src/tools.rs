@@ -260,12 +260,10 @@ fn read_file<S: Sink>(
 
     match workspace.read_page(policy, &path, offset, limit) {
         Ok(page) => {
-            let label = page.label();
-            // Rendered inside the label: the numbers come from the page's own metadata, and the
-            // text stays wrapped so only `Policy::present` decides whether the model sees it.
-            let proof = policy.authorise_content_release("read_file", "contents");
-            let rendered = render_page(&page.declassify(&proof));
-            (Labelled::new(rendered, label), proposed_path)
+            // Reshaped inside the kernel, so the driver never holds the text. Only
+            // `Policy::present` decides whether the planner sees what comes out.
+            let rendered = policy.render_in_place("read_file", &page, |p| render_page(&p));
+            (rendered, proposed_path)
         }
         Err(e) => own_words(format!("error: {e}")),
     }
@@ -340,24 +338,23 @@ fn list_files<S: Sink>(
 
     match workspace.list(policy, &directory, pattern.as_ref()) {
         Ok(listing) => {
-            let label = listing.label();
-            let proof = policy.authorise_content_release("list_files", "paths");
-            let listing = listing.declassify(&proof);
-            let rendered = if listing.files.is_empty() {
-                "(no files)".to_string()
-            } else if listing.truncated {
-                // Said plainly, because a model given a silently capped listing will treat
-                // it as the whole tree and conclude a file does not exist.
-                format!(
-                    "{}\n\n(this listing stopped at {} files and is incomplete; \
-                     list a subdirectory to see more)",
-                    listing.files.join("\n"),
-                    listing.files.len()
-                )
-            } else {
-                listing.files.join("\n")
-            };
-            (Labelled::new(rendered, label), proposed_dir)
+            let rendered = policy.render_in_place("list_files", &listing, |listing| {
+                if listing.files.is_empty() {
+                    "(no files)".to_string()
+                } else if listing.truncated {
+                    // Said plainly, because a model given a silently capped listing will treat
+                    // it as the whole tree and conclude a file does not exist.
+                    format!(
+                        "{}\n\n(this listing stopped at {} files and is incomplete; \
+                         list a subdirectory to see more)",
+                        listing.files.join("\n"),
+                        listing.files.len()
+                    )
+                } else {
+                    listing.files.join("\n")
+                }
+            });
+            (rendered, proposed_dir)
         }
         Err(e) => own_words(format!("error: {e}")),
     }
@@ -566,13 +563,11 @@ fn search<S: Sink>(
 
     match workspace.grep(policy, &pattern, &directory, include.as_ref()) {
         Ok(found) => {
-            let label = found.label();
-            let proof = policy.authorise_content_release("search", "matches");
-            let found = found.declassify(&proof);
-            let rendered = if found.matches.is_empty() {
-                "(no matches)".to_string()
-            } else {
-                let rendered = found
+            let rendered = policy.render_in_place("search", &found, |found| {
+                if found.matches.is_empty() {
+                    return "(no matches)".to_string();
+                }
+                let lines = found
                     .matches
                     .iter()
                     .map(|m| format!("{}:{}: {}", m.path, m.line, m.text))
@@ -582,15 +577,15 @@ fn search<S: Sink>(
                     // Without this a model that gets exactly the cap concludes it has
                     // every occurrence, which is how a rename misses call sites.
                     format!(
-                        "{rendered}\n\n(this search stopped at {} matches and is \
+                        "{lines}\n\n(this search stopped at {} matches and is \
                          incomplete; narrow the pattern or search a subdirectory)",
                         found.matches.len()
                     )
                 } else {
-                    rendered
+                    lines
                 }
-            };
-            (Labelled::new(rendered, label), proposed_where)
+            });
+            (rendered, proposed_where)
         }
         Err(e) => own_words(format!("error: {e}")),
     }

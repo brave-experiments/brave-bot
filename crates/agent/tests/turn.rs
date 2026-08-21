@@ -1547,7 +1547,7 @@ fn editing_an_untrusted_file_is_refused() {
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
     assert!(
-        second.contains("Untrusted content must not influence a decision"),
+        second.contains("refusing to expose untrusted content"),
         "the model was not told why: {second}"
     );
 }
