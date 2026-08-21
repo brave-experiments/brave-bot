@@ -18,6 +18,7 @@ pub mod event;
 pub mod label;
 pub mod policy;
 pub mod slot;
+pub mod splice;
 pub mod trust;
 pub mod value;
 
@@ -26,5 +27,6 @@ pub use event::{Event, NullSink, Principle, RecordingSink, Role, Sink};
 pub use label::{Confidentiality, Integrity, Label, taint_all};
 pub use policy::{Denial, Policy, ReleasePlan, Routing};
 pub use slot::{SlotError, SlotId, SlotReader, SlotStore, SlotWriter};
+pub use splice::{Splice, SpliceRefusal};
 pub use trust::TrustStore;
 pub use value::{Declassification, Labelled};

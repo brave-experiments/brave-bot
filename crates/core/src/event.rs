@@ -24,6 +24,9 @@ pub enum Principle {
     /// A confinement boundary could not be established, so the operation was refused
     /// rather than run unconfined.
     ConfinementUnavailable,
+    /// An effect's target could not be located uniquely within the content it was to be
+    /// applied to, so it was refused rather than applied to a guess.
+    AmbiguousEffect,
 }
 
 /// The role a field plays in an action.
