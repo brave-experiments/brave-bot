@@ -18,6 +18,7 @@
     "npm/bin",
     "npm/scripts",
     "README.md",
+    "docs",
     "LICENSE"
   ],
   "scripts": {

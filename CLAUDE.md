@@ -125,7 +125,7 @@ A prompt asks one thing: may this path stop being trusted? So the only case that
 untrusted data into a trusted path, plus the first write to a path nobody has mentioned, which
 is why `integrity_of` returns an `Option`. Writing trusted data never asks, since trusted data
 contains nothing an attacker influenced and the destination only gains trust. See the table in
-the README, which is the specification.
+docs/trust.md, which is the specification.
 
 `Policy::reconcile_after_write` keeps the invariant that a path's recorded trust equals the
 integrity of the data in it. Untrusted data landing in a trusted tree *must* mark that path
