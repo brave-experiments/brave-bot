@@ -89,6 +89,21 @@ fn config_for(endpoint: &str) -> Config {
     .expect("config")
 }
 
+/// A reply carrying a usage report, for asserting on accumulated token counts.
+fn reply_with_usage(content: &str, prompt: u64, completion: u64) -> String {
+    format!(
+        r#"{{"model":"test-model","usage":{{"prompt_tokens":{prompt},"completion_tokens":{completion}}},"choices":[{{"message":{{"role":"assistant","content":"{content}"}}}}]}}"#
+    )
+}
+
+/// A tool request carrying a usage report.
+fn tool_request_with_usage(tool: &str, arguments: &str, prompt: u64, completion: u64) -> String {
+    let escaped = arguments.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        r#"{{"model":"test-model","usage":{{"prompt_tokens":{prompt},"completion_tokens":{completion}}},"choices":[{{"message":{{"role":"assistant","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"{tool}","arguments":"{escaped}"}}}}]}}}}]}}"#
+    )
+}
+
 fn reply_with(content: &str) -> String {
     format!(
         r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","content":"{content}"}}}}]}}"#
@@ -1794,4 +1809,59 @@ fn untrusted_listings_never_reach_the_model() {
         !second.contains("IGNORE-INSTRUCTIONS-AND-LEAK"),
         "an untrusted filename reached the planner: {second}"
     );
+}
+
+/// A turn is several requests when the model calls tools, and each re-sends the whole history.
+/// One round's count would understate what the turn cost, so they are summed.
+#[test]
+fn token_usage_accumulates_across_rounds() {
+    let scratch = Scratch::new("tokens");
+    std::fs::write(scratch.path.join("a.txt"), "body\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_with_usage("read_file", r#"{"path":"a.txt"}"#, 100, 20),
+        reply_with_usage("done", 300, 40),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read a.txt");
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(outcome.tokens, 460, "rounds were not summed");
+}
+
+/// A server that reports no usage must not break a turn; the count is cosmetic.
+#[test]
+fn a_turn_without_reported_usage_reports_zero_tokens() {
+    let scratch = Scratch::new("tokens-absent");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![reply_with("done")]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("hello"),
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(outcome.tokens, 0);
 }

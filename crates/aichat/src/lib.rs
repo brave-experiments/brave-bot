@@ -66,6 +66,8 @@ pub struct Completion {
     /// The arguments are model output and therefore untrusted; a caller must gate them
     /// before letting any of it direct an operation.
     pub calls: Vec<protocol::ToolCall>,
+    /// What this round cost, as the server counted it.
+    pub usage: protocol::Usage,
 }
 
 pub struct AichatClient<'a> {
@@ -118,10 +120,13 @@ impl<'a> AichatClient<'a> {
             None => return Err(ChatError::NoContent),
         };
 
+        let usage = parsed.usage();
+
         Ok(Completion {
             content: Labelled::new(content, label),
             model: parsed.model.unwrap_or_else(|| "unreported".to_string()),
             calls,
+            usage,
         })
     }
 }

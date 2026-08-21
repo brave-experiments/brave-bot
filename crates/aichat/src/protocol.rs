@@ -142,6 +142,28 @@ pub struct ChatResponse {
     pub model: Option<String>,
     #[serde(default)]
     pub choices: Vec<Choice>,
+    /// What the request cost. Absent on error shapes and from some servers.
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
+
+/// Tokens a request consumed, as the server counted them.
+///
+/// Reported rather than estimated: a local guess would drift from what the user is actually
+/// billed for, and the point of showing it is to be honest about cost.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+pub struct Usage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+}
+
+impl Usage {
+    /// Everything this request cost, in and out.
+    pub fn total(&self) -> u64 {
+        self.prompt_tokens + self.completion_tokens
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +196,11 @@ impl ChatResponse {
     /// The first choice's text, if the response carried any.
     pub fn first_content(&self) -> Option<String> {
         self.choices.first()?.message.as_ref()?.content.clone()
+    }
+
+    /// What this response reported costing. Zero when the server said nothing.
+    pub fn usage(&self) -> Usage {
+        self.usage.unwrap_or_default()
     }
 }
 
@@ -320,5 +347,33 @@ mod tests {
         let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
         assert!(parsed.model.is_none());
         assert_eq!(parsed.first_content().as_deref(), Some("x"));
+    }
+    #[test]
+    fn usage_is_parsed_when_the_server_reports_it() {
+        let raw = r#"{"model":"m","usage":{"prompt_tokens":120,"completion_tokens":34},
+            "choices":[{"message":{"content":"hi"}}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.usage().prompt_tokens, 120);
+        assert_eq!(parsed.usage().completion_tokens, 34);
+        assert_eq!(parsed.usage().total(), 154);
+    }
+
+    /// Not every server reports usage, and a missing count must read as zero rather than
+    /// failing the response: the indicator is cosmetic, the reply is not.
+    #[test]
+    fn a_response_without_usage_reports_zero() {
+        let raw = r#"{"model":"m","choices":[{"message":{"content":"hi"}}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.usage(), Usage::default());
+        assert_eq!(parsed.usage().total(), 0);
+    }
+
+    /// A partial usage object must not fail either.
+    #[test]
+    fn a_partial_usage_object_parses() {
+        let raw = r#"{"model":"m","usage":{"prompt_tokens":9},
+            "choices":[{"message":{"content":"hi"}}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.usage().total(), 9);
     }
 }

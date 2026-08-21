@@ -137,6 +137,11 @@ pub struct Outcome {
     pub clean: bool,
     /// The trust map after the turn, including any rule the turn recorded itself.
     pub trust: TrustStore,
+    /// Tokens the turn cost in total, summed over every round.
+    ///
+    /// A turn is several requests when the model calls tools, and each re-sends the whole
+    /// history, so one round's count understates what the turn actually cost.
+    pub tokens: u64,
     /// The reply, released for display while the policy was still open.
     display: String,
 }
@@ -259,9 +264,11 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
     let offered = tools::available();
 
     let mut steps = 0;
+    let mut tokens = 0u64;
     let completion = loop {
         let request = ChatRequest::new(&config.model, messages.clone()).with_tools(offered.clone());
         let completion = client.complete(&mut policy, &request)?;
+        tokens += completion.usage.total();
 
         if completion.calls.is_empty() {
             break completion;
@@ -331,6 +338,7 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
         model: completion.model,
         steps,
         trust,
+        tokens,
         clean: policy.finish(),
         display,
     })
