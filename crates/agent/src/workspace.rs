@@ -32,6 +32,8 @@ pub enum WorkspaceError {
     Io { path: String, detail: String },
     /// The file changed after it was read, so the approved change no longer applies.
     Stale { path: String },
+    /// The file is not text, so there is nothing useful to return.
+    Binary { path: String },
 }
 
 impl fmt::Display for WorkspaceError {
@@ -48,6 +50,9 @@ impl fmt::Display for WorkspaceError {
                 f,
                 "'{path}' changed after it was read; read it again before editing"
             ),
+            Self::Binary { path } => {
+                write!(f, "'{path}' is a binary file, so it cannot be read as text")
+            }
         }
     }
 }
@@ -130,11 +135,16 @@ impl Workspace {
         Ok(joined)
     }
 
-    /// Read a file. The path is checked as routing, so it must be `(T,pub)`.
+    /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.
     ///
     /// The contents come back labelled untrusted-private: a workspace file may contain
     /// anything, including text fetched from the network earlier, and it is the user's
     /// data.
+    ///
+    /// Deliberately uncapped, because the callers that need it need all of it: an edit
+    /// replaces text in the whole file and compares against it to detect a concurrent
+    /// change, so a truncated read here would write back a shortened file. The tool the
+    /// model calls uses [`Workspace::read_page`] instead.
     pub fn read<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
@@ -161,6 +171,75 @@ impl Workspace {
         })?;
 
         Ok(Labelled::new(contents, label))
+    }
+
+    /// Read a bounded window of a file's lines, for the model.
+    ///
+    /// A whole file is the wrong unit for a conversation. Every turn re-sends the entire
+    /// message history, so one large file read is paid for again on every subsequent
+    /// round — an uncapped read is a cost multiplier, not just a big message.
+    ///
+    /// `offset` is 1-based to match how the lines are reported back, so a model can ask
+    /// for the next page using the number it was just shown.
+    pub fn read_page<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Labelled<Page>, WorkspaceError> {
+        policy.before_capability(Capability::FileRead)?;
+        policy.before_action("file_read", "path", Role::Routing, path)?;
+
+        let relative = path
+            .clone()
+            .into_trusted()
+            .map_err(|_| WorkspaceError::Invalid {
+                path: "<untrusted>".into(),
+                reason: "the path was not trusted",
+            })?;
+
+        let resolved = self.resolve(&relative)?;
+        let label = policy.observe(Capability::FileRead)?;
+
+        let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
+            path: relative.clone(),
+            detail: e.to_string(),
+        })?;
+
+        if looks_binary(&raw) {
+            return Err(WorkspaceError::Binary { path: relative });
+        }
+
+        let contents = String::from_utf8(raw).map_err(|_| WorkspaceError::Binary {
+            path: relative.clone(),
+        })?;
+
+        let limit = limit.clamp(1, MAX_PAGE_LINES);
+        let start = offset.saturating_sub(1);
+        let total = contents.lines().count();
+
+        let mut lines = Vec::new();
+        let mut long_lines = 0usize;
+        for line in contents.lines().skip(start).take(limit) {
+            let mut text = line.to_string();
+            if text.len() > MAX_LINE {
+                truncate_on_char_boundary(&mut text, MAX_LINE);
+                text.push_str(" … (line truncated)");
+                long_lines += 1;
+            }
+            lines.push(text);
+        }
+
+        Ok(Labelled::new(
+            Page {
+                lines,
+                first_line: start + 1,
+                total_lines: total,
+                long_lines,
+            },
+            label,
+        ))
     }
 
     /// The current contents of a workspace file, for showing a reviewer what a write
@@ -314,6 +393,17 @@ const MAX_ENTRIES: usize = 2_000;
 const MAX_MATCHES: usize = 200;
 const MAX_MATCH_LINE: usize = 500;
 
+/// Caps on a single paged read.
+///
+/// A turn re-sends the whole message history each round, so the cost of one oversized read
+/// is paid repeatedly. These bound a page rather than the file: the rest stays reachable by
+/// asking for a later offset.
+const MAX_PAGE_LINES: usize = 500;
+const MAX_LINE: usize = 2_000;
+
+/// Bytes inspected when deciding whether a file is text.
+const SNIFF_BYTES: usize = 8_192;
+
 /// Shorten a string to at most `limit` bytes without splitting a character.
 ///
 /// `String::truncate` panics if the index is not a character boundary, so a matching line
@@ -328,6 +418,49 @@ fn truncate_on_char_boundary(text: &mut String, limit: usize) {
         end -= 1;
     }
     text.truncate(end);
+}
+
+/// Whether a byte run looks like binary rather than text.
+///
+/// A null byte is decisive — no text file contains one. Beyond that, a high proportion of
+/// control characters means the same thing without needing a file-type list to be kept up
+/// to date. Only the head is inspected, since the answer does not improve by reading more.
+fn looks_binary(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(SNIFF_BYTES)];
+    if head.is_empty() {
+        return false;
+    }
+    if head.contains(&0) {
+        return true;
+    }
+    // Tab, newline, carriage return and form feed are expected in text; other low bytes
+    // are not.
+    let control = head
+        .iter()
+        .filter(|b| **b < 32 && !matches!(**b, 9 | 10 | 12 | 13))
+        .count();
+    control * 100 / head.len() > 30
+}
+
+/// A bounded window of a file's lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    /// The lines in this window, each capped at [`MAX_LINE`].
+    pub lines: Vec<String>,
+    /// 1-based number of the first line returned.
+    pub first_line: usize,
+    /// Lines in the whole file, so a caller can tell there is more to ask for.
+    pub total_lines: usize,
+    /// How many returned lines were individually shortened.
+    pub long_lines: usize,
+}
+
+impl Page {
+    /// 1-based line number just past this window, when the file continues.
+    pub fn next_line(&self) -> Option<usize> {
+        let past = self.first_line + self.lines.len();
+        (past <= self.total_lines).then_some(past)
+    }
 }
 
 /// One grep hit.

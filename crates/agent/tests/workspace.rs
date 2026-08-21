@@ -793,3 +793,194 @@ fn a_long_match_line_is_truncated_without_panicking() {
     assert_eq!(found.matches.len(), 1);
     assert!(found.matches[0].text.len() <= 500);
 }
+
+/// A large file must not enter the conversation whole: the turn re-sends the whole history
+/// each round, so one uncapped read is paid for repeatedly.
+#[test]
+fn a_paged_read_is_capped_and_says_where_to_continue() {
+    let scratch = Scratch::new("read-page");
+    let body: String = (1..=1_200).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("big.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted("big.txt".to_string());
+    let page = workspace
+        .read_page(&mut policy, &path, 1, usize::MAX)
+        .expect("read succeeds");
+    let proof = policy.authorise_content_release("test", "contents");
+    let page = page.declassify(&proof);
+
+    assert_eq!(page.lines.len(), 500, "the page cap was not applied");
+    assert_eq!(page.first_line, 1);
+    assert_eq!(page.total_lines, 1_200);
+    assert_eq!(page.next_line(), Some(501), "no way to reach the rest");
+}
+
+/// The offset a page reports must be the one that actually returns the next lines, or
+/// paging cannot be followed.
+#[test]
+fn the_reported_next_offset_returns_the_following_lines() {
+    let scratch = Scratch::new("read-follow");
+    let body: String = (1..=1_200).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("big.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted("big.txt".to_string());
+    let first = workspace
+        .read_page(&mut policy, &path, 1, 500)
+        .expect("first page");
+    let proof = policy.authorise_content_release("test", "contents");
+    let first = first.declassify(&proof);
+    let next = first.next_line().expect("more to read");
+
+    let second = workspace
+        .read_page(&mut policy, &path, next, 500)
+        .expect("second page");
+    let proof = policy.authorise_content_release("test", "contents");
+    let second = second.declassify(&proof);
+
+    assert_eq!(second.first_line, 501);
+    assert_eq!(second.lines[0], "line 501");
+    // The pages must abut exactly: no line skipped, none repeated.
+    assert_eq!(first.lines.last().unwrap(), "line 500");
+}
+
+/// A file within the cap is returned whole, with no paging notice to distract from it.
+#[test]
+fn a_small_file_is_read_whole() {
+    let scratch = Scratch::new("read-small");
+    std::fs::write(scratch.path.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let page = workspace
+        .read_page(
+            &mut policy,
+            &Labelled::trusted("a.txt".to_string()),
+            1,
+            usize::MAX,
+        )
+        .expect("read succeeds");
+    let proof = policy.authorise_content_release("test", "contents");
+    let page = page.declassify(&proof);
+
+    assert_eq!(page.lines, vec!["one", "two", "three"]);
+    assert_eq!(page.total_lines, 3);
+    assert_eq!(page.next_line(), None, "a complete file claimed more pages");
+    assert_eq!(page.long_lines, 0);
+}
+
+/// One enormous line must not defeat the line cap.
+#[test]
+fn an_over_long_line_is_shortened_and_counted() {
+    let scratch = Scratch::new("read-wide");
+    let mut body = String::from("short\n");
+    body.push_str(&"x".repeat(5_000));
+    body.push('\n');
+    std::fs::write(scratch.path.join("a.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let page = workspace
+        .read_page(
+            &mut policy,
+            &Labelled::trusted("a.txt".to_string()),
+            1,
+            usize::MAX,
+        )
+        .expect("read succeeds");
+    let proof = policy.authorise_content_release("test", "contents");
+    let page = page.declassify(&proof);
+
+    assert_eq!(page.long_lines, 1);
+    assert_eq!(page.lines[0], "short", "a short line was altered");
+    assert!(page.lines[1].len() < 5_000, "the line cap was not applied");
+    assert!(page.lines[1].contains("truncated"), "no notice on the line");
+}
+
+/// Reading past the end is not an error, but it must not look like an empty file.
+#[test]
+fn an_offset_past_the_end_returns_nothing_and_says_the_length() {
+    let scratch = Scratch::new("read-past");
+    std::fs::write(scratch.path.join("a.txt"), "one\ntwo\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let page = workspace
+        .read_page(&mut policy, &Labelled::trusted("a.txt".to_string()), 99, 10)
+        .expect("read succeeds");
+    let proof = policy.authorise_content_release("test", "contents");
+    let page = page.declassify(&proof);
+
+    assert!(page.lines.is_empty());
+    assert_eq!(page.total_lines, 2, "the real length was not reported");
+}
+
+/// An edit needs the whole file, so the uncapped read must stay uncapped — a paged read
+/// here would write back a shortened file and destroy data.
+#[test]
+fn the_whole_file_read_is_not_capped() {
+    let scratch = Scratch::new("read-whole");
+    let body: String = (1..=1_200).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("big.txt"), &body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let contents = workspace
+        .read(&mut policy, &Labelled::trusted("big.txt".to_string()))
+        .expect("read succeeds");
+    let proof = policy.authorise_content_release("test", "contents");
+    let contents = contents.declassify(&proof);
+
+    assert_eq!(contents, body, "the whole-file read was truncated");
+}

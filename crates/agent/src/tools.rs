@@ -24,20 +24,32 @@ use bua_core::policy::Policy;
 use bua_core::value::Labelled;
 use serde_json::{Value, json};
 
-use crate::workspace::Workspace;
+use crate::workspace::{Page, Workspace};
 
 /// The tools the model may call.
 pub fn available() -> Vec<Tool> {
     vec![
         Tool::function(
             "read_file",
-            "Read a UTF-8 text file from the workspace. Returns its contents.",
+            "Read a UTF-8 text file from the workspace. Returns its lines. Long files come \
+             back one page at a time; the result says so and gives the offset to continue \
+             from.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "Workspace-relative path, e.g. src/main.rs"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "1-based line to start at. Defaults to the start of \
+                                        the file."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum lines to return. Capped so one read cannot \
+                                        fill the conversation."
                     }
                 },
                 "required": ["path"]
@@ -202,12 +214,66 @@ fn read_file<S: Sink>(
         Err(denial) => return format!("refused: {denial}"),
     };
 
-    match workspace.read(policy, &path) {
-        Ok(contents) => {
+    // A model that omits these gets the head of the file, which is the useful default.
+    let offset = arguments
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX)
+        .min(usize::MAX as u64) as usize;
+
+    match workspace.read_page(policy, &path, offset, limit) {
+        Ok(page) => {
             let proof = policy.authorise_content_release("read_file", "contents");
-            contents.declassify(&proof)
+            let page = page.declassify(&proof);
+            render_page(&page)
         }
         Err(e) => format!("error: {e}"),
+    }
+}
+
+/// Render a page, saying what was left out.
+///
+/// The counts matter more than they look: a model handed a silent window of a large file
+/// will answer as though it read the whole thing.
+fn render_page(page: &Page) -> String {
+    if page.lines.is_empty() {
+        return if page.total_lines == 0 {
+            "(the file is empty)".to_string()
+        } else {
+            format!(
+                "(no lines at that offset; the file has {} lines)",
+                page.total_lines
+            )
+        };
+    }
+
+    let body = page.lines.join("\n");
+    let mut notes = Vec::new();
+
+    if page.first_line > 1 || page.next_line().is_some() {
+        notes.push(format!(
+            "showing lines {}-{} of {}",
+            page.first_line,
+            page.first_line + page.lines.len() - 1,
+            page.total_lines
+        ));
+    }
+    if let Some(next) = page.next_line() {
+        notes.push(format!("continue with offset {next}"));
+    }
+    if page.long_lines > 0 {
+        notes.push(format!("{} long line(s) were shortened", page.long_lines));
+    }
+
+    if notes.is_empty() {
+        body
+    } else {
+        format!("{body}\n\n({})", notes.join("; "))
     }
 }
 

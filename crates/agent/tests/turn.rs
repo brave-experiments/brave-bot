@@ -1062,3 +1062,117 @@ fn a_complete_search_makes_no_truncation_claim() {
         "a complete search claimed to be truncated: {second}"
     );
 }
+
+/// A paged read must tell the model it is a page, or the model answers about a large file
+/// having seen only its head.
+#[test]
+fn a_paged_read_tells_the_model_there_is_more() {
+    let scratch = Scratch::new("read-paged");
+    let body: String = (1..=1_200).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("big.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":"big.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read big.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("showing lines 1-500 of 1200"),
+        "the model was not told this was a page: {second}"
+    );
+    assert!(
+        second.contains("continue with offset 501"),
+        "the model was not told how to continue: {second}"
+    );
+}
+
+/// A model may page through a file by asking for a later offset.
+#[test]
+fn the_model_can_ask_for_a_later_page() {
+    let scratch = Scratch::new("read-offset");
+    let body: String = (1..=1_200).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("big.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":"big.txt","offset":501,"limit":2}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read the middle of big.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("line 501") && second.contains("line 502"),
+        "the requested page was not returned: {second}"
+    );
+    assert!(
+        !second.contains("line 500"),
+        "the page started in the wrong place: {second}"
+    );
+}
+
+/// A small file must come back with no paging chatter at all.
+#[test]
+fn a_small_read_has_no_paging_notice() {
+    let scratch = Scratch::new("read-small-turn");
+    std::fs::write(scratch.path.join("a.txt"), "alpha\nbeta\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(second.contains("alpha"));
+    assert!(
+        !second.contains("showing lines"),
+        "a complete read claimed to be a page: {second}"
+    );
+}
