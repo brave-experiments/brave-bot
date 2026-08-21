@@ -355,36 +355,50 @@ fn write_file<S: Sink, C: Confirmer>(
         return "error: 'contents' is required and must be a string".to_string();
     };
 
-    // Reading the proposed values to show a person is not a decision the agent makes on
-    // the model's behalf, so it does not need a gate — but it must not be fed back into
-    // the flow except through the approval below.
+    // The path is routing, so naming a destination from it is not a content decision.
     let proposed_path = path.clone().into_parts_for_decoding().0;
-    let proposed_body = contents.clone().into_parts_for_decoding().0;
 
-    let existing = workspace.peek_for_review(&proposed_path);
-    let request = WriteRequest {
-        intent: if existing.is_some() {
-            Intent::Overwrite
-        } else {
-            Intent::Create
-        },
-        existing,
-        path: proposed_path.clone(),
-        contents: proposed_body,
-    };
+    // The body is the model's words. Its integrity is that of the context the model was
+    // working from, which the kernel tracked: nothing here upgrades anything.
+    let (raw_body, _) = contents.into_parts_for_decoding();
+    let body = policy.label_model_output("write_file", raw_body);
+    let body_label = body.label();
 
-    if confirmer.confirm_write(&request) == Decision::Reject {
-        return format!(
-            "refused: the user did not approve writing {proposed_path}. Do not retry \
-             the same write; ask what they would prefer."
-        );
+    if policy.write_needs_approval(&proposed_path, body_label) {
+        let existing = workspace.peek_for_review(&proposed_path);
+        let request = WriteRequest {
+            intent: if existing.is_some() {
+                Intent::Overwrite
+            } else {
+                Intent::Create
+            },
+            existing,
+            path: proposed_path.clone(),
+            // Released for display only. Showing a person what is about to happen is the
+            // point of asking, and a display release cannot feed an effect.
+            contents: {
+                let proof = policy.authorise_display_release("proposed write");
+                body.clone().declassify(&proof)
+            },
+        };
+
+        if confirmer.confirm_write(&request) == Decision::Reject {
+            return format!(
+                "refused: the user did not approve writing {proposed_path}. Do not retry \
+                 the same write; ask what they would prefer."
+            );
+        }
     }
 
     // The approval is what makes the path trusted, and it is bound to this exact value.
     policy.issue_grant("file_write", "path", proposed_path.clone());
 
-    match workspace.write_endorsed(policy, &path, &contents) {
-        Ok(_) => format!("wrote {proposed_path}"),
+    match workspace.write_endorsed(policy, &path, &body) {
+        Ok(_) => {
+            // The file now holds this data, so the map must say what the path means.
+            policy.reconcile_after_write(&proposed_path, body_label);
+            format!("wrote {proposed_path}")
+        }
         Err(e) => format!("error: {e}"),
     }
 }
@@ -427,12 +441,22 @@ fn edit_file<S: Sink, C: Confirmer>(
         Err(denial) => return format!("refused: {denial}"),
     };
 
-    let current = match workspace.read(policy, &path) {
-        Ok(contents) => {
-            let proof = policy.authorise_content_release("edit_file", "contents");
-            contents.declassify(&proof)
-        }
+    let source = match workspace.read(policy, &path) {
+        Ok(contents) => contents,
         Err(e) => return format!("error: {e}"),
+    };
+
+    // Locating the passage means comparing text, which is a decision. It is only permissible
+    // on trusted content: doing it on untrusted bytes would let file content decide whether an
+    // effect happens, which is the one thing this design forbids. An untrusted file is refused
+    // rather than edited blind — the user can vouch for the path if they want edits there.
+    //
+    // Confidentiality is not the question here. Workspace content is private, and staying
+    // inside the process to locate a passage releases nothing; only integrity decides whether
+    // this comparison is safe to make.
+    let current = match policy.read_trusted_content("edit_file", &source) {
+        Ok(text) => text,
+        Err(denial) => return format!("refused: {denial}"),
     };
 
     let (old_text, _) = old_text.into_parts_for_decoding();
@@ -444,31 +468,39 @@ fn edit_file<S: Sink, C: Confirmer>(
     };
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
-    let request = WriteRequest {
-        path: proposed_path.clone(),
-        contents: replaced.contents.clone(),
-        existing: Some(current.clone()),
-        intent: Intent::Edit,
-    };
 
-    if confirmer.confirm_write(&request) == Decision::Reject {
-        return format!(
-            "refused: the user did not approve editing {proposed_path}. Do not retry the \
-             same edit; ask what they would prefer."
-        );
+    // The result is the model's edit applied to trusted text, so its integrity is that of the
+    // context the model was working from.
+    let body = policy.label_model_output("edit_file", replaced.contents);
+    let body_label = body.label();
+
+    if policy.write_needs_approval(&proposed_path, body_label) {
+        let request = WriteRequest {
+            path: proposed_path.clone(),
+            contents: {
+                let proof = policy.authorise_display_release("proposed edit");
+                body.clone().declassify(&proof)
+            },
+            existing: Some(current.clone()),
+            intent: Intent::Edit,
+        };
+
+        if confirmer.confirm_write(&request) == Decision::Reject {
+            return format!(
+                "refused: the user did not approve editing {proposed_path}. Do not retry the \
+                 same edit; ask what they would prefer."
+            );
+        }
     }
 
     policy.issue_grant("file_write", "path", proposed_path.clone());
 
-    let body = Labelled::new(
-        replaced.contents,
-        bua_core::label::Label::untrusted_public(),
-    );
+    let occurrences = replaced.occurrences;
     match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
-        Ok(_) => format!(
-            "edited {proposed_path}: {} replacement(s)",
-            replaced.occurrences
-        ),
+        Ok(_) => {
+            policy.reconcile_after_write(&proposed_path, body_label);
+            format!("edited {proposed_path}: {occurrences} replacement(s)")
+        }
         Err(e) => format!("error: {e}"),
     }
 }

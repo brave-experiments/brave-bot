@@ -332,6 +332,38 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Labelled::new(text, label)
     }
 
+    /// Read content that is trusted, so a decision may be made from it.
+    ///
+    /// The rule is that *untrusted* content must never reach a branch. Trusted content carries
+    /// no such restriction: it came from somewhere the user vouched for, so comparing it — to
+    /// locate a passage to replace, say — decides nothing an attacker can steer.
+    ///
+    /// Refuses untrusted content rather than returning it, which is what keeps the rule from
+    /// being bypassed by a caller that would rather have the bytes. Confidentiality is
+    /// deliberately not checked: staying inside the process releases nothing, and workspace
+    /// content is private as a matter of course.
+    pub fn read_trusted_content(&mut self, tool: &str, value: &Labelled<String>) -> Gated<String> {
+        let label = value.label();
+        if !label.is_trusted() {
+            return Err(self.deny(
+                "trusted-read",
+                Principle::IntegrityGate,
+                format!(
+                    "{tool} needs to examine content to decide what to do, and this content is \
+                     {label}. Untrusted content must not influence a decision — vouch for the \
+                     path if this is your own work"
+                ),
+            ));
+        }
+
+        self.allow(
+            "trusted-read",
+            format!("{tool}: examined trusted content, {label}"),
+        );
+        let proof = Declassification::authorise("trusted content examined in-process");
+        Ok(value.clone().declassify(&proof))
+    }
+
     /// Whether writing data of `contents` integrity to `path` must be shown to a person.
     ///
     /// From the truth table this design is specified by:

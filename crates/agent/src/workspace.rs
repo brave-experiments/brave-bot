@@ -137,9 +137,8 @@ impl Workspace {
 
     /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.
     ///
-    /// The contents come back labelled untrusted-private: a workspace file may contain
-    /// anything, including text fetched from the network earlier, and it is the user's
-    /// data.
+    /// The contents are private — they are the user's data — and their integrity comes from
+    /// the trust map: a file read out of a trusted directory is trusted, anything else is not.
     ///
     /// Deliberately uncapped, because the callers that need it need all of it: an edit
     /// replaces text in the whole file and compares against it to detect a concurrent
@@ -163,7 +162,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
-        let label = policy.observe(Capability::FileRead)?;
+        let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
             path: relative.clone(),
@@ -210,7 +209,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
-        let label = policy.observe(Capability::FileRead)?;
+        let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
             path: relative.clone(),

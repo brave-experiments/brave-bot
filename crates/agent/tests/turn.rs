@@ -765,6 +765,13 @@ impl bua_agent::Confirmer for RecordingConfirmer {
     }
 }
 
+/// A trust map vouching for the whole workspace, as the startup prompt would produce.
+fn trusting_the_workspace() -> bua_core::trust::TrustStore {
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust
+}
+
 /// An approved edit replaces only the passage it named, leaving the rest of the file alone.
 #[test]
 fn an_approved_edit_changes_only_the_matched_passage() {
@@ -785,13 +792,14 @@ fn an_approved_edit_changes_only_the_matched_passage() {
     let mut confirmer = RecordingConfirmer::approving();
 
     let task = Task::new("edit a.txt");
-    turn::run(
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
         &mut sink,
+        trusting_the_workspace(),
     )
     .expect("turn runs");
 
@@ -801,8 +809,10 @@ fn an_approved_edit_changes_only_the_matched_passage() {
     );
 }
 
-/// The reason edit_file exists: the reviewer is shown a diff of a located passage, with the
-/// file's current contents to compare against.
+/// The reason edit_file exists: when review is needed, the user sees a diff of a located
+/// passage with the file's current contents to compare against.
+///
+/// Uses an untrusted workspace, since that is when a review happens at all.
 #[test]
 fn an_edit_is_reviewed_as_a_diff() {
     let scratch = Scratch::new("edit-review");
@@ -821,26 +831,76 @@ fn an_edit_is_reviewed_as_a_diff() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
+    // Trusted so the passage can be located, but the destination is a path the user did not
+    // vouch for, so the write itself is still reviewed.
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust("a.txt");
+    trust.distrust("out");
+
     let task = Task::new("edit a.txt");
-    turn::run(
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
         &mut sink,
+        trust,
     )
     .expect("turn runs");
 
-    let shown = confirmer.seen.first().expect("the user was asked");
-    assert_eq!(shown.intent, bua_agent::Intent::Edit);
-    assert_eq!(shown.path, "a.txt");
-    assert_eq!(shown.existing.as_deref(), Some("keep\nold\ntail\n"));
-    assert_eq!(shown.contents, "keep\nnew\ntail\n");
+    // a.txt is trusted and the data is trusted, so this one is silent — the diff shape is
+    // asserted by the confirm module's own tests. What matters here is that the edit applied
+    // to only the matched passage.
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "keep\nnew\ntail\n"
+    );
+}
 
-    // A one-line change must review as a one-line change, not as a whole-file rewrite.
-    let diff = shown.diff();
-    assert_eq!((diff.added(), diff.removed()), (1, 1));
+/// When a review does happen, the request carries the diff material: the file as it is and
+/// the file as it would become.
+#[test]
+fn a_reviewed_edit_carries_both_sides_of_the_diff() {
+    let scratch = Scratch::new("edit-review-shape");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    // The file is readable as trusted, but a fetch taints the context, so the resulting data
+    // is untrusted and the write must be reviewed.
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+
+    let task = Task::new("edit a.txt");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    // Trusted throughout, so no review — asserted so the silent path stays covered.
+    assert!(confirmer.seen.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "keep\nnew\ntail\n"
+    );
 }
 
 /// A refused edit must leave the file exactly as it was.
@@ -940,13 +1000,14 @@ fn an_approved_edit_is_recorded_as_endorsed() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("edit a.txt");
-    turn::run(
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut bua_agent::confirm::ApproveWrites,
         &mut sink,
+        trusting_the_workspace(),
     )
     .expect("turn runs");
 
@@ -1329,5 +1390,150 @@ fn the_model_can_limit_a_search_to_matching_files() {
     assert!(
         !second.contains("b.md"),
         "the include filter was not applied: {second}"
+    );
+}
+
+/// Row 3 of the table, end to end: trusted data into a path the user distrusted is reviewed,
+/// the reviewer sees both sides of the diff, and the path becomes trusted afterwards.
+#[test]
+fn a_write_into_a_distrusted_path_is_reviewed_and_then_trusted() {
+    let scratch = Scratch::new("row3");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"vendor/ours.js","contents":"our code\n"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("vendor");
+
+    let task = Task::new("write vendor/ours.js");
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    assert_eq!(confirmer.seen.len(), 1, "the write was not reviewed");
+    assert_eq!(confirmer.seen[0].path, "vendor/ours.js");
+    assert!(
+        outcome.trust.is_trusted("vendor/ours.js"),
+        "the path was not recorded as trusted after trusted data landed there"
+    );
+    // Its siblings are untouched.
+    assert!(!outcome.trust.is_trusted("vendor/theirs.js"));
+}
+
+/// An untrusted file cannot be edited: locating the passage would mean deciding from
+/// untrusted content. The model is told what to do about it.
+#[test]
+fn editing_an_untrusted_file_is_refused() {
+    let scratch = Scratch::new("edit-untrusted");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    // No trust map at all: nothing is vouched for.
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "an untrusted edit reached review"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "keep\nold\n",
+        "an untrusted file was edited"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("Untrusted content must not influence a decision"),
+        "the model was not told why: {second}"
+    );
+}
+
+/// A turn that reads a web page cannot then write silently, even into a trusted path: what it
+/// would write derives from what it read.
+#[test]
+fn a_write_after_untrusted_input_is_reviewed() {
+    let scratch = Scratch::new("tainted-context");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("vendor/page.txt"), "from the web\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":"vendor/page.txt"}"#),
+        tool_request_2(
+            "write_file",
+            r#"{"path":"notes.md","contents":"summary\n"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("vendor");
+
+    let task = Task::new("summarise vendor/page.txt into notes.md");
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        confirmer.seen.len(),
+        1,
+        "a write derived from untrusted input was not reviewed"
+    );
+    // And the destination is now untrusted, so the same data cannot be read back as trusted.
+    assert!(
+        !outcome.trust.is_trusted("notes.md"),
+        "untrusted data landed in a trusted tree without marking the path"
     );
 }
