@@ -59,10 +59,19 @@ fn routing() -> Routing {
 }
 
 /// A policy permissive enough for a shell script to run, while still confining it.
+///
+/// Network is granted, which is not what a real processor policy would do. The Linux
+/// backend refuses a policy requiring network denial because that is not implemented
+/// there yet, and refusing is the correct behaviour — so a test that wants a successful
+/// spawn on both platforms has to ask for the weaker policy the backend can honour.
 fn sandbox_policy() -> SandboxPolicy {
     SandboxPolicy::strict()
+        .allow_network_egress()
         .allow_read("/usr")
         .allow_read("/bin")
+        .allow_read("/lib")
+        .allow_read("/lib64")
+        // macOS puts the temporary directory under /private/var; Linux uses /tmp.
         .allow_read("/private/var/folders")
         .allow_read("/tmp")
         .allow_read("/var")
