@@ -8,6 +8,7 @@ pub mod app;
 pub mod confirm;
 pub mod history;
 pub mod indicator;
+pub mod markdown;
 pub mod remote_confirm;
 pub mod render;
 pub mod state;

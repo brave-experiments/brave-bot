@@ -16,6 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
+use crate::markdown;
 use crate::state::{Session, Speaker, Status};
 use crate::wrap;
 
@@ -115,19 +116,18 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                     )));
                 }
             }
+            // The model writes markdown whether or not it is asked to, so the reply is styled
+            // rather than shown with its markers.
             Speaker::Assistant => {
                 for (index, text) in entry.text.lines().enumerate() {
-                    if index == 0 {
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("{TURN_MARKER} "),
-                                Style::default().fg(Color::Green),
-                            ),
-                            Span::raw(text.to_string()),
-                        ]));
+                    let lead = if index == 0 {
+                        Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Green))
                     } else {
-                        lines.push(Line::from(format!("  {text}")));
-                    }
+                        Span::raw("  ")
+                    };
+                    let mut spans = vec![lead];
+                    spans.extend(markdown::spans(text, Style::default()));
+                    lines.push(Line::from(spans));
                 }
             }
             Speaker::System => {
@@ -440,6 +440,22 @@ mod tests {
         // The user's line is prefixed, the assistant's is marked.
         assert!(output.contains("> what is this"));
         assert!(output.contains(TURN_MARKER));
+    }
+
+    /// Markdown markers belong to the model's formatting, not to what it said.
+    #[test]
+    fn a_reply_is_shown_as_markdown_rather_than_its_markers() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete("edit **main.rs** now", Vec::new(), 0);
+
+        let output = rendered(&session);
+        assert!(output.contains("edit main.rs now"), "not styled: {output}");
+        assert!(
+            !output.contains("**"),
+            "the markers are still shown: {output}"
+        );
     }
 
     /// The trail is hidden until asked for, so ordinary use is not noisy.
