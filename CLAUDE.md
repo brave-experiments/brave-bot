@@ -5,36 +5,23 @@ can be carried and written, but it can never decide what happens.
 
 ## The rule that overrides everything
 
-**Untrusted content never influences a decision.**
+**The driver and the planner NEVER have untrusted content in their context.**
 
-The driver is the Rust code in this repository. The planner is the model. The guarantee is
-different for each, and conflating them leads to writing code that looks safe and is not.
+The whole repository is predicated on this. It is not a matter of degree, not a matter of the
+model behaving well, and not "influenced but unable to act". Untrusted content does not enter
+either context at all.
 
-**The driver is never influenced, structurally.**
+The driver is the Rust code here. The planner is the model. Neither receives untrusted bytes.
 
-- It may **carry** untrusted content (`Labelled<String>`), **hand it to** an effect (a write,
-  a request body), and **release it for display** to a human.
-- It may **not branch** on untrusted content: no `if`, `match`, comparison, or early return
-  whose condition is derived from untrusted bytes.
+- The driver may **carry** untrusted content (`Labelled<String>`) and **hand it to** an effect
+  without ever seeing it.
+- The driver may **not branch** on untrusted content: no `if`, `match`, comparison, or early
+  return whose condition is derived from untrusted bytes.
+- Moving such a branch from `bua-agent` into `bua-core` does not fix it. `bua-core` is the
+  driver too. Relocating a decision is not the same as removing it.
 
-**The planner may be influenced in what it says, never in what happens.** A coding agent has
-to read files, and reading is being influenced — that cannot be designed away. What is
-designed away is the path from influence to effect:
-
-- Untrusted text can never become **routing**. It cannot choose a path, a URL, or a recipient.
-- The model may propose a *read* path, because a read changes nothing and is confined to the
-  workspace. It may never propose an effect's destination.
-- Every irreversible effect needs a human endorsement bound to an exact value.
-- The turn carries a provenance **watermark**: once it observes untrusted data, everything it
-  produces afterwards is untrusted, because the model's output is a function of what it read.
-  A trusted read later does not restore it.
-
-So: do not write code that assumes the model was not influenced. Write code that makes the
-influence unable to reach an effect.
-
-If a decision must be made from untrusted content, it belongs **behind a policy gate** in
-`bua-core`, which owns the verdict and emits it as an audited event. The driver then acts on
-the verdict, not on the bytes.
+Never weaken this statement. If an implementation cannot satisfy it, the implementation is
+wrong — do not restate the rule to match the code.
 
 `Labelled<T>` enforces the mechanical half of this at compile time: no `Deref`, `PartialEq`,
 or `Display`, and no infallible accessor. Reading the value requires a `Declassification`
@@ -51,6 +38,16 @@ if text.matches(old).count() > 1 {
     return "error: ambiguous";
 }
 ```
+
+## Labels only ever degrade
+
+Integrity may go trusted → untrusted. It may **never** go the other way. `Label::degrades_to`
+is the check; `Labelled::relabel` returns `None` rather than upgrading.
+
+Never construct a `Labelled` by hand to give a value a better label than its inputs had. That
+is laundering, whichever crate it happens in and however well-audited the event looks. If a
+value derived from untrusted input needs to be trusted for something to work, the design is
+wrong, not the label.
 
 ## Routing vs content
 

@@ -3,14 +3,27 @@
 A coding agent whose defining property is **structural resistance to indirect prompt
 injection (IPI)**.
 
+> The statement under "The rule everything else is predicated on" is load-bearing. Do not
+> weaken, qualify, or remove it.
+
 Most agents treat injection as a content problem: scan the text, ask a model whether it looks
 malicious, filter it. That approach depends on the model noticing. This one does not. Every
 value carries an information-flow label the model never sees and cannot address, and every
 consequential action passes through a gate that refuses labels it does not accept. Injected
-text can influence *what* a message says; it has no structural path to *where* an action goes.
+text is never in a position to be noticed or missed, because it never reaches the components
+that decide anything.
 
 > Status: early but working. It answers questions about a real workspace, choosing and
 > chaining its own tools, with every decision recorded.
+
+## The rule everything else is predicated on
+
+**The driver and the planner NEVER have untrusted content in their context.**
+
+Not "influenced but unable to act on it". Not a matter of degree, or of the model behaving
+sensibly. Untrusted content does not enter the driver's context or the planner's context at
+all. Every other design decision in this repository follows from that, and anything that
+cannot be built while respecting it does not get built.
 
 ## The idea
 
