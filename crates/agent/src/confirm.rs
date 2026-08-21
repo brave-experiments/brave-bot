@@ -5,24 +5,46 @@
 //! So the trust for a write comes from a person.
 //!
 //! The approval is what mints the endorsement. That endorsement is single-use and bound to
-//! the exact path and body shown, so an approval cannot be replayed against a second write
-//! or redirected to a different file after the fact.
+//! the exact path shown, so an approval cannot be replayed against a second write or
+//! redirected to a different file after the fact.
+//!
+//! What is shown is a diff, not a body. An approval the reviewer cannot actually read is
+//! decorative, and a whole-file body asks them to spot the difference themselves.
 
+use crate::diff::Diff;
 use std::fmt;
+
+/// How a proposed write came about.
+///
+/// A reviewer needs this distinction: an edit replaces a passage the model located, while
+/// an overwrite discards whatever the file held. The resulting diff may look similar, so
+/// the intent is carried explicitly rather than inferred from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    /// A file that does not exist yet.
+    Create,
+    /// A whole-file replacement.
+    Overwrite,
+    /// A targeted replacement of matched text.
+    Edit,
+}
 
 /// A write the model has asked to perform.
 ///
-/// Both fields are untrusted strings at this point — they are shown to a person precisely
-/// because nothing else can vouch for them.
+/// `path` and `contents` are untrusted strings at this point — they are shown to a person
+/// precisely because nothing else can vouch for them. `contents` is always the complete
+/// resulting file, including for an edit, so a reviewer sees the outcome rather than
+/// having to apply a patch mentally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteRequest {
     /// Workspace-relative path, as the model proposed it.
     pub path: String,
-    /// The body the model wants written.
+    /// The complete body that would end up on disk.
     pub contents: String,
     /// The current contents, when the file already exists, so a reviewer can see what
     /// would be lost.
     pub existing: Option<String>,
+    pub intent: Intent,
 }
 
 impl WriteRequest {
@@ -31,15 +53,33 @@ impl WriteRequest {
         self.existing.is_some()
     }
 
+    /// The change this would make, for display.
+    pub fn diff(&self) -> Diff {
+        Diff::compute(self.existing.as_deref().unwrap_or(""), &self.contents)
+    }
+
     /// A short description for a prompt line.
     pub fn summary(&self) -> String {
-        let verb = if self.is_overwrite() {
-            "overwrite"
-        } else {
-            "create"
+        let verb = match self.intent {
+            Intent::Create => "create",
+            Intent::Overwrite => "overwrite",
+            Intent::Edit => "edit",
         };
-        let lines = self.contents.lines().count();
-        format!("{verb} {} ({lines} lines)", self.path)
+        match self.intent {
+            Intent::Create => {
+                let lines = self.contents.lines().count();
+                format!("create {} ({lines} lines)", self.path)
+            }
+            _ => {
+                let diff = self.diff();
+                format!(
+                    "{verb} {} (+{} -{})",
+                    self.path,
+                    diff.added(),
+                    diff.removed()
+                )
+            }
+        }
     }
 }
 
@@ -101,6 +141,7 @@ mod tests {
             path: "notes.md".into(),
             contents: "one\ntwo\n".into(),
             existing: None,
+            intent: Intent::Create,
         }
     }
 
@@ -116,10 +157,59 @@ mod tests {
     fn an_existing_file_is_described_as_an_overwrite() {
         let r = WriteRequest {
             existing: Some("old".into()),
+            intent: Intent::Overwrite,
             ..request()
         };
         assert!(r.is_overwrite());
         assert!(r.summary().starts_with("overwrite"));
+    }
+
+    /// An overwrite summary counts the lines lost, not just those written — that is the
+    /// number a reviewer is deciding about.
+    #[test]
+    fn an_overwrite_summary_counts_both_sides() {
+        let r = WriteRequest {
+            contents: "one\ntwo\n".into(),
+            existing: Some("a\nb\nc\n".into()),
+            intent: Intent::Overwrite,
+            ..request()
+        };
+        assert_eq!(r.summary(), "overwrite notes.md (+2 -3)");
+    }
+
+    /// An edit must not be described as an overwrite: the reviewer's question is
+    /// different even when the diff is not.
+    #[test]
+    fn an_edit_is_described_as_an_edit() {
+        let r = WriteRequest {
+            contents: "one\nTWO\n".into(),
+            existing: Some("one\ntwo\n".into()),
+            intent: Intent::Edit,
+            ..request()
+        };
+        assert_eq!(r.summary(), "edit notes.md (+1 -1)");
+    }
+
+    /// The diff is against what is on disk, so an unchanged region is not reported as a
+    /// change.
+    #[test]
+    fn the_diff_compares_against_the_existing_file() {
+        let r = WriteRequest {
+            contents: "keep\nnew\n".into(),
+            existing: Some("keep\nold\n".into()),
+            intent: Intent::Edit,
+            ..request()
+        };
+        let diff = r.diff();
+        assert_eq!((diff.added(), diff.removed()), (1, 1));
+    }
+
+    /// A creation has nothing to compare against, so every line is an addition.
+    #[test]
+    fn a_creation_diffs_against_nothing() {
+        let diff = request().diff();
+        assert_eq!(diff.added(), 2);
+        assert_eq!(diff.removed(), 0);
     }
 
     /// The default where nobody can be asked must be refusal.

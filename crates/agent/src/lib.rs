@@ -10,6 +10,6 @@ pub mod tools;
 pub mod turn;
 pub mod workspace;
 
-pub use confirm::{Confirmer, Decision, RefuseWrites, WriteRequest};
+pub use confirm::{Confirmer, Decision, Intent, RefuseWrites, WriteRequest};
 pub use turn::{Outcome, Task, TurnError};
 pub use workspace::{Workspace, WorkspaceError};

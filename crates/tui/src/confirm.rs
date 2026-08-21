@@ -7,7 +7,8 @@
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.
 
-use bua_agent::confirm::{Confirmer, Decision, WriteRequest};
+use bua_agent::confirm::{Confirmer, Decision, Intent, WriteRequest};
+use bua_agent::diff::Change;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode};
@@ -16,11 +17,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
-/// How many lines of the proposed body to show.
+/// How many diff lines to show.
 ///
 /// Enough to judge a small edit; a reviewer who needs more can decline and ask to see the
-/// file. Showing an unbounded body would push the question itself off screen.
+/// file. Showing an unbounded diff would push the question itself off screen.
 const PREVIEW_LINES: usize = 16;
+
+/// Unchanged lines shown either side of a change, for orientation.
+const CONTEXT_LINES: usize = 2;
 
 /// Prompts in the terminal for each write.
 pub struct TerminalConfirmer<'t, B: Backend> {
@@ -63,38 +67,43 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
     let area = centred(frame.area());
     frame.render_widget(Clear, area);
 
-    let verb = if request.is_overwrite() {
-        "Overwrite"
-    } else {
-        "Create"
+    let (verb, colour) = match request.intent {
+        Intent::Create => ("Create", Color::Green),
+        Intent::Overwrite => ("Overwrite", Color::Yellow),
+        Intent::Edit => ("Edit", Color::Cyan),
     };
+
+    let diff = request.diff();
 
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
                 format!("{verb} "),
-                Style::default()
-                    .fg(if request.is_overwrite() {
-                        Color::Yellow
-                    } else {
-                        Color::Green
-                    })
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(colour).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 request.path.clone(),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
+            Span::styled(
+                format!("  +{} -{}", diff.added(), diff.removed()),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         Line::raw(""),
     ];
 
-    if let Some(existing) = &request.existing {
+    // A diff that could not be computed must say so. Rendering nothing would read as
+    // "this write changes nothing", which is the opposite of the truth.
+    if !diff.is_exact() {
         lines.push(Line::from(Span::styled(
-            format!("  replaces {} existing lines", existing.lines().count()),
+            format!(
+                "  the change is too large to show: {} lines replace {}",
+                diff.added(),
+                diff.removed()
+            ),
             Style::default().fg(Color::Yellow),
         )));
-        lines.push(Line::raw(""));
     }
 
     // The preview is capped by the space actually available, not just by PREVIEW_LINES:
@@ -106,17 +115,31 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
         .saturating_sub(reserved);
     let shown = PREVIEW_LINES.min(budget);
 
-    for line in request.contents.lines().take(shown) {
-        lines.push(Line::from(Span::styled(
-            format!("  {line}"),
-            Style::default().fg(Color::DarkGray),
-        )));
+    let changes = diff.condensed(CONTEXT_LINES);
+    for change in changes.iter().take(shown) {
+        lines.push(match change {
+            Change::Added(text) => Line::from(Span::styled(
+                format!("  +{text}"),
+                Style::default().fg(Color::Green),
+            )),
+            Change::Removed(text) => Line::from(Span::styled(
+                format!("  -{text}"),
+                Style::default().fg(Color::Red),
+            )),
+            Change::Kept(text) => Line::from(Span::styled(
+                format!("   {text}"),
+                Style::default().fg(Color::DarkGray),
+            )),
+            Change::Elided(count) => Line::from(Span::styled(
+                format!("   … {count} unchanged lines"),
+                Style::default().fg(Color::DarkGray),
+            )),
+        });
     }
 
-    let total = request.contents.lines().count();
-    if total > shown {
+    if changes.len() > shown {
         lines.push(Line::from(Span::styled(
-            format!("  … {} more lines", total - shown),
+            format!("  … {} more diff lines", changes.len() - shown),
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -181,6 +204,11 @@ mod tests {
         WriteRequest {
             path: "src/main.rs".into(),
             contents: contents.into(),
+            intent: if existing.is_some() {
+                Intent::Overwrite
+            } else {
+                Intent::Create
+            },
             existing: existing.map(str::to_string),
         }
     }
@@ -206,15 +234,20 @@ mod tests {
         assert!(output.contains("write it"));
     }
 
-    /// Overwriting is the dangerous case, so the prompt must say what would be lost.
+    /// Overwriting is the dangerous case, so the prompt must show the lines it discards,
+    /// not merely count them.
     #[test]
-    fn an_overwrite_prompt_says_what_it_replaces() {
+    fn an_overwrite_prompt_shows_what_it_replaces() {
         let output = rendered(&request("new", Some("a\nb\nc")));
         assert!(output.contains("Overwrite"));
-        assert!(
-            output.contains("replaces 3 existing lines"),
-            "the prompt does not say what is lost: {output}"
-        );
+        assert!(output.contains("+1 -3"), "no change counts: {output}");
+        for lost in ["-a", "-b", "-c"] {
+            assert!(
+                output.contains(lost),
+                "the discarded line {lost} was not shown: {output}"
+            );
+        }
+        assert!(output.contains("+new"), "the new line was not shown");
     }
 
     /// A large body must not push the question off screen.
@@ -225,8 +258,54 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let output = rendered(&request(&body, None));
-        assert!(output.contains("more lines"), "no truncation notice");
+        assert!(output.contains("more diff lines"), "no truncation notice");
         assert!(output.contains("write it"), "the question was pushed off");
+    }
+
+    /// The reason this exists: a one-line change to a large file must show that one line
+    /// rather than a screenful of unchanged text.
+    #[test]
+    fn a_small_edit_in_a_large_file_shows_only_the_change() {
+        let before: String = (0..300).map(|n| format!("line {n}\n")).collect::<String>();
+        let after = before.replace("line 150\n", "line 150 changed\n");
+
+        let output = rendered(&WriteRequest {
+            path: "src/main.rs".into(),
+            contents: after,
+            existing: Some(before),
+            intent: Intent::Edit,
+        });
+
+        assert!(output.contains("Edit"));
+        assert!(output.contains("+1 -1"), "wrong counts: {output}");
+        assert!(
+            output.contains("+line 150 changed"),
+            "the change was not shown: {output}"
+        );
+        assert!(
+            output.contains("unchanged lines"),
+            "the unchanged bulk was not elided: {output}"
+        );
+        assert!(output.contains("write it"), "the question was pushed off");
+    }
+
+    /// A diff too large to compute must not render as an empty change.
+    #[test]
+    fn an_uncomputable_diff_says_so() {
+        let before: String = (0..3000).map(|n| format!("old {n}\n")).collect();
+        let after: String = (0..3000).map(|n| format!("new {n}\n")).collect();
+
+        let output = rendered(&WriteRequest {
+            path: "src/main.rs".into(),
+            contents: after,
+            existing: Some(before),
+            intent: Intent::Overwrite,
+        });
+
+        assert!(
+            output.contains("too large to show"),
+            "an uncomputable diff rendered as nothing: {output}"
+        );
     }
 
     #[test]

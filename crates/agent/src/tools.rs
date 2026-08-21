@@ -11,7 +11,7 @@
 //! endorsement bound to the exact path. A refusal, or a context where nobody can be asked,
 //! means no write.
 
-use crate::confirm::{Confirmer, Decision, WriteRequest};
+use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use bua_aichat::protocol::{Tool, ToolCall};
 use bua_core::event::Sink;
 use bua_core::policy::Policy;
@@ -223,8 +223,14 @@ fn write_file<S: Sink, C: Confirmer>(
     let proposed_path = path.clone().into_parts_for_decoding().0;
     let proposed_body = contents.clone().into_parts_for_decoding().0;
 
+    let existing = workspace.peek_for_review(&proposed_path);
     let request = WriteRequest {
-        existing: workspace.peek_for_review(&proposed_path),
+        intent: if existing.is_some() {
+            Intent::Overwrite
+        } else {
+            Intent::Create
+        },
+        existing,
         path: proposed_path.clone(),
         contents: proposed_body,
     };
