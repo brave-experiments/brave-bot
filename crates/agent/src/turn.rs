@@ -38,6 +38,11 @@ them.
 Use tools when you need information you do not have. When you have enough, answer the \
 task directly and concisely.
 
+Narrow your searches: pass a glob to list_files, or include to search, rather than listing \
+or searching everything. Results are capped, and a capped result says so — if it does, \
+narrow the query rather than assuming you have seen everything. A long file is returned one \
+page at a time and tells you the offset to continue from.
+
 You may write files, but every write is shown to the user for approval first. Say what you \
 intend to change before writing it, and if a write is refused do not retry the same one.
 

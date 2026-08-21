@@ -348,7 +348,7 @@ fn list_enumerates_files_recursively() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect("list succeeds");
 
     // Filenames come from the user's tree, so they are untrusted content too.
@@ -378,7 +378,7 @@ fn list_skips_noise_directories() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect("list succeeds");
     let rendered = format!("{listing:?}");
     // Debug shows only the label, never contents, so assert via the count instead.
@@ -410,6 +410,7 @@ fn grep_finds_matches_with_line_numbers() {
             &mut policy,
             &Labelled::trusted("needle".to_string()),
             &Labelled::trusted(".".to_string()),
+            None,
         )
         .expect("grep succeeds");
 
@@ -436,7 +437,12 @@ fn grep_refuses_an_untrusted_pattern() {
 
     let injected = Labelled::new("secret".to_string(), Label::untrusted_public());
     let error = workspace
-        .grep(&mut policy, &injected, &Labelled::trusted(".".to_string()))
+        .grep(
+            &mut policy,
+            &injected,
+            &Labelled::trusted(".".to_string()),
+            None,
+        )
         .expect_err("an untrusted pattern must be refused");
     assert!(error.to_string().contains("injection blocked"));
 }
@@ -460,6 +466,7 @@ fn grep_refuses_a_directory_outside_the_workspace() {
             &mut policy,
             &Labelled::trusted("x".to_string()),
             &Labelled::trusted("..".to_string()),
+            None,
         )
         .expect_err("traversal must be refused");
     assert!(matches!(error, WorkspaceError::Escapes { .. }));
@@ -487,6 +494,7 @@ fn grep_skips_unreadable_files() {
             &mut policy,
             &Labelled::trusted("needle".to_string()),
             &Labelled::trusted(".".to_string()),
+            None,
         )
         .expect("grep succeeds despite the binary file");
     assert_eq!(found.label(), Label::untrusted_private());
@@ -511,6 +519,7 @@ fn grep_refuses_an_empty_pattern() {
             &mut policy,
             &Labelled::trusted(String::new()),
             &Labelled::trusted(".".to_string()),
+            None,
         )
         .expect_err("an empty pattern is refused");
     assert!(matches!(error, WorkspaceError::Invalid { .. }));
@@ -531,7 +540,7 @@ fn listing_requires_the_read_capability() {
     .expect("policy");
 
     let error = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect_err("read capability was not granted");
     assert!(error.to_string().contains("file_read"));
 }
@@ -660,7 +669,7 @@ fn a_listing_past_the_cap_reports_truncation() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
     let listing = listing.declassify(&proof);
@@ -689,7 +698,7 @@ fn a_listing_within_the_cap_reports_no_truncation() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
     let listing = listing.declassify(&proof);
@@ -721,6 +730,7 @@ fn a_search_past_the_cap_reports_truncation() {
             &mut policy,
             &Labelled::trusted("needle".to_string()),
             &Labelled::trusted(".".to_string()),
+            None,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -750,6 +760,7 @@ fn a_search_within_the_cap_reports_no_truncation() {
             &mut policy,
             &Labelled::trusted("needle".to_string()),
             &Labelled::trusted(".".to_string()),
+            None,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -785,6 +796,7 @@ fn a_long_match_line_is_truncated_without_panicking() {
             &mut policy,
             &Labelled::trusted("needle".to_string()),
             &Labelled::trusted(".".to_string()),
+            None,
         )
         .expect("grep must not panic on multi-byte text");
     let proof = policy.authorise_content_release("test", "matches");
@@ -1096,4 +1108,265 @@ fn an_empty_file_is_not_binary() {
         .expect("an empty file must read");
     let proof = policy.authorise_content_release("test", "contents");
     assert_eq!(contents.declassify(&proof), "");
+}
+
+/// The point of the filter: ask for one kind of file instead of the whole tree.
+#[test]
+fn a_listing_can_be_narrowed_by_glob() {
+    let scratch = Scratch::new("list-glob");
+    std::fs::create_dir_all(scratch.path.join("src")).unwrap();
+    std::fs::write(scratch.path.join("src/main.rs"), "x").unwrap();
+    std::fs::write(scratch.path.join("src/lib.rs"), "x").unwrap();
+    std::fs::write(scratch.path.join("Cargo.toml"), "x").unwrap();
+    std::fs::write(scratch.path.join("README.md"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            Some(&Labelled::trusted("*.rs".to_string())),
+        )
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(listing.files, vec!["src/lib.rs", "src/main.rs"]);
+}
+
+/// An untrusted pattern must not choose what is looked at, exactly as an untrusted
+/// directory must not.
+#[test]
+fn an_untrusted_list_pattern_is_refused() {
+    let scratch = Scratch::new("list-glob-untrusted");
+    std::fs::write(scratch.path.join("a.rs"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let injected = Labelled::new("*.rs".to_string(), Label::untrusted_public());
+    let error = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            Some(&injected),
+        )
+        .expect_err("an untrusted pattern must be refused");
+    assert!(matches!(error, WorkspaceError::Denied(_)));
+}
+
+/// Searching everything when only one file type is relevant wastes the result cap on
+/// matches the task cannot use.
+#[test]
+fn a_search_can_be_limited_to_matching_files() {
+    let scratch = Scratch::new("grep-include");
+    std::fs::write(scratch.path.join("a.rs"), "needle in rust\n").unwrap();
+    std::fs::write(scratch.path.join("b.md"), "needle in markdown\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+            Some(&Labelled::trusted("*.rs".to_string())),
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert_eq!(found.matches.len(), 1, "the filter was not applied");
+    assert_eq!(found.matches[0].path, "a.rs");
+}
+
+#[test]
+fn an_untrusted_include_pattern_is_refused() {
+    let scratch = Scratch::new("grep-include-untrusted");
+    std::fs::write(scratch.path.join("a.rs"), "needle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let injected = Labelled::new("*.rs".to_string(), Label::untrusted_public());
+    let error = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+            Some(&injected),
+        )
+        .expect_err("an untrusted include must be refused");
+    assert!(matches!(error, WorkspaceError::Denied(_)));
+}
+
+/// A pattern matching nothing is an empty result, not an error: the model needs to be able
+/// to tell "no such files" from "that was rejected".
+#[test]
+fn a_pattern_matching_nothing_returns_an_empty_listing() {
+    let scratch = Scratch::new("list-glob-empty");
+    std::fs::write(scratch.path.join("a.txt"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            Some(&Labelled::trusted("*.nope".to_string())),
+        )
+        .expect("an unmatched pattern is not an error");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert!(listing.files.is_empty());
+    assert!(!listing.truncated);
+}
+
+/// The filter must apply before the cap, or a narrow pattern in a large tree returns
+/// nothing and looks identical to the file being absent.
+#[test]
+fn a_filter_applies_before_the_entry_cap() {
+    let scratch = Scratch::new("list-glob-cap");
+    // Far more noise files than the cap, plus a handful of interesting ones that sort last.
+    for n in 0..2_500 {
+        std::fs::write(scratch.path.join(format!("noise{n:05}.txt")), "x").unwrap();
+    }
+    std::fs::write(scratch.path.join("zzz.rs"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            Some(&Labelled::trusted("*.rs".to_string())),
+        )
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(
+        listing.files,
+        vec!["zzz.rs"],
+        "the filter was applied after the cap, so the match was lost"
+    );
+    assert!(!listing.truncated, "a filtered result claimed truncation");
+}
+
+/// The skip list is not Rust-specific: a Python or JS tree would otherwise be dominated by
+/// dependency and cache directories.
+#[test]
+fn noise_directories_from_other_ecosystems_are_skipped() {
+    let scratch = Scratch::new("list-skip-more");
+    for noise in [
+        "node_modules",
+        "dist",
+        "build",
+        ".venv",
+        "__pycache__",
+        ".next",
+    ] {
+        std::fs::create_dir_all(scratch.path.join(noise)).unwrap();
+        std::fs::write(scratch.path.join(noise).join("junk.js"), "x").unwrap();
+    }
+    std::fs::write(scratch.path.join("keep.js"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(
+        listing.files,
+        vec!["keep.js"],
+        "a noise directory was listed"
+    );
+}
+
+/// The original three skips must keep working — the list was broadened, not replaced.
+#[test]
+fn the_original_noise_directories_are_still_skipped() {
+    let scratch = Scratch::new("list-skip-original");
+    for noise in [".git", "target", "node_modules"] {
+        std::fs::create_dir_all(scratch.path.join(noise)).unwrap();
+        std::fs::write(scratch.path.join(noise).join("junk"), "x").unwrap();
+    }
+    std::fs::write(scratch.path.join("keep.txt"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(listing.files, vec!["keep.txt"]);
 }

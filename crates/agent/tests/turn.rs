@@ -1255,3 +1255,79 @@ fn a_binary_file_does_not_break_search() {
         "the text file was not searched: {second}"
     );
 }
+
+/// The filter must be reachable from a tool call, not just from the workspace API.
+#[test]
+fn the_model_can_narrow_a_listing_by_glob() {
+    let scratch = Scratch::new("list-glob-turn");
+    std::fs::create_dir_all(scratch.path.join("src")).unwrap();
+    std::fs::write(scratch.path.join("src/main.rs"), "x").unwrap();
+    std::fs::write(scratch.path.join("notes.md"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("list_files", r#"{"directory":".","pattern":"*.rs"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("list the rust files");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(second.contains("src/main.rs"), "the match is missing");
+    assert!(
+        !second.contains("notes.md"),
+        "the filter was not applied: {second}"
+    );
+}
+
+/// And the same for narrowing a search.
+#[test]
+fn the_model_can_limit_a_search_to_matching_files() {
+    let scratch = Scratch::new("grep-include-turn");
+    std::fs::write(scratch.path.join("a.rs"), "needle here\n").unwrap();
+    std::fs::write(scratch.path.join("b.md"), "needle there\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "search",
+            r#"{"pattern":"needle","directory":".","include":"*.rs"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("find needle in rust files");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(second.contains("a.rs"), "the match is missing");
+    assert!(
+        !second.contains("b.md"),
+        "the include filter was not applied: {second}"
+    );
+}

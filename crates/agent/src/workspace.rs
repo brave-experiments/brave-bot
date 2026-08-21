@@ -414,6 +414,28 @@ const MAX_LINE: usize = 2_000;
 /// Bytes inspected when deciding whether a file is text.
 const SNIFF_BYTES: usize = 8_192;
 
+/// Directories skipped when walking a tree.
+///
+/// Version control and build output would dominate a listing without adding anything a task
+/// needs. This is size hygiene applied to *directory names*, not to content: nothing is
+/// read to decide, so it cannot be steered by what a file contains.
+const IGNORED_DIRECTORIES: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+];
+
 /// Shorten a string to at most `limit` bytes without splitting a character.
 ///
 /// `String::truncate` panics if the index is not a character boundary, so a matching line
@@ -510,10 +532,13 @@ impl Workspace {
     /// The directory is routing, so content cannot choose where to look. The resulting
     /// *paths* are untrusted-private: a filename is content the user's tree supplied,
     /// and a file could be named to look like an instruction.
+    /// `pattern` narrows the result to matching paths. It is routing like the directory: a
+    /// filter chooses what is looked at, so untrusted text must not supply one.
     pub fn list<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
         directory: &Labelled<String>,
+        pattern: Option<&Labelled<String>>,
     ) -> Result<Labelled<Listing>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_list", "directory", Role::Routing, directory)?;
@@ -526,11 +551,27 @@ impl Workspace {
                 reason: "the directory was not trusted",
             })?;
 
+        let glob = match pattern {
+            Some(pattern) => {
+                policy.before_action("file_list", "pattern", Role::Routing, pattern)?;
+                Some(
+                    pattern
+                        .clone()
+                        .into_trusted()
+                        .map_err(|_| WorkspaceError::Invalid {
+                            path: "<untrusted>".into(),
+                            reason: "the pattern was not trusted",
+                        })?,
+                )
+            }
+            None => None,
+        };
+
         let root = self.resolve(&relative)?;
         let label = policy.observe(Capability::FileRead)?;
 
         let mut found = Vec::new();
-        self.walk(&root, &mut found)?;
+        self.walk_filtered(&root, glob.as_deref(), &mut found)?;
         found.sort();
 
         // `walk` collects one entry past the cap so reaching it is detectable. Which
@@ -559,6 +600,7 @@ impl Workspace {
         policy: &mut Policy<'_, S>,
         pattern: &Labelled<String>,
         directory: &Labelled<String>,
+        include: Option<&Labelled<String>>,
     ) -> Result<Labelled<Matches>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_grep", "pattern", Role::Routing, pattern)?;
@@ -586,11 +628,28 @@ impl Workspace {
             });
         }
 
+        // Which files are searched is routing, exactly like the directory.
+        let glob = match include {
+            Some(include) => {
+                policy.before_action("file_grep", "include", Role::Routing, include)?;
+                Some(
+                    include
+                        .clone()
+                        .into_trusted()
+                        .map_err(|_| WorkspaceError::Invalid {
+                            path: "<untrusted>".into(),
+                            reason: "the include pattern was not trusted",
+                        })?,
+                )
+            }
+            None => None,
+        };
+
         let root = self.resolve(&relative)?;
         let label = policy.observe(Capability::FileRead)?;
 
         let mut paths = Vec::new();
-        self.walk(&root, &mut paths)?;
+        self.walk_filtered(&root, glob.as_deref(), &mut paths)?;
         paths.sort();
 
         // Collected one past the cap for the same reason as `walk`: reaching the limit has
@@ -637,7 +696,16 @@ impl Workspace {
     /// Stops once one entry *past* [`MAX_ENTRIES`] is collected. The extra entry is what
     /// lets the caller distinguish a tree that exactly fills the cap from one that
     /// overflows it, so truncation can be reported rather than guessed at.
-    fn walk(&self, directory: &Path, out: &mut Vec<String>) -> Result<(), WorkspaceError> {
+    /// `pattern`, when given, keeps only matching paths. The filter is applied before the
+    /// cap, so the cap bounds *matches* rather than files examined — filtering afterwards
+    /// would make a narrow pattern return nothing in a large tree, which looks identical to
+    /// the file being absent.
+    fn walk_filtered(
+        &self,
+        directory: &Path,
+        pattern: Option<&str>,
+        out: &mut Vec<String>,
+    ) -> Result<(), WorkspaceError> {
         let entries = std::fs::read_dir(directory).map_err(|e| WorkspaceError::Io {
             path: self.relative_display(directory),
             detail: e.to_string(),
@@ -660,14 +728,18 @@ impl Workspace {
                 // adding anything a task needs.
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name == ".git" || name == "target" || name == "node_modules" {
+                if IGNORED_DIRECTORIES.contains(&name.as_ref()) {
                     continue;
                 }
-                self.walk(&path, out)?;
+                self.walk_filtered(&path, pattern, out)?;
                 continue;
             }
             if kind.is_file() {
-                out.push(self.relative_display(&path));
+                let relative = self.relative_display(&path);
+                match pattern {
+                    Some(pattern) if !crate::glob::matches(pattern, &relative) => continue,
+                    _ => out.push(relative),
+                }
             }
         }
         Ok(())

@@ -57,13 +57,20 @@ pub fn available() -> Vec<Tool> {
         ),
         Tool::function(
             "list_files",
-            "List files in the workspace, recursively, under a directory.",
+            "List files in the workspace, recursively, under a directory. Give a glob \
+             pattern to narrow the result rather than listing everything.",
             json!({
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
                         "description": "Workspace-relative directory. Use \".\" for the root."
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Optional glob, e.g. \"*.rs\" for Rust files at any \
+                                        depth, or \"src/**/*.rs\" to anchor it. Supports \
+                                        *, ? and **; brace groups are not supported."
                     }
                 },
                 "required": ["directory"]
@@ -134,6 +141,12 @@ pub fn available() -> Vec<Tool> {
                     "directory": {
                         "type": "string",
                         "description": "Workspace-relative directory to search. Defaults to \".\"."
+                    },
+                    "include": {
+                        "type": "string",
+                        "description": "Optional glob limiting which files are searched, \
+                                        e.g. \"*.rs\". Supports *, ? and **; brace groups \
+                                        are not supported."
                     }
                 },
                 "required": ["pattern"]
@@ -291,7 +304,17 @@ fn list_files<S: Sink>(
         Err(denial) => return format!("refused: {denial}"),
     };
 
-    match workspace.list(policy, &directory) {
+    // A filter only narrows a confined, non-destructive read, so it is promotable on the
+    // same terms as the directory itself.
+    let pattern = match argument(arguments, "pattern") {
+        Some(proposed) => match policy.promote_confined_read("list_files", "pattern", &proposed) {
+            Ok(p) => Some(p),
+            Err(denial) => return format!("refused: {denial}"),
+        },
+        None => None,
+    };
+
+    match workspace.list(policy, &directory, pattern.as_ref()) {
         Ok(listing) => {
             let proof = policy.authorise_content_release("list_files", "paths");
             let listing = listing.declassify(&proof);
@@ -467,7 +490,15 @@ fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments:
         Err(denial) => return format!("refused: {denial}"),
     };
 
-    match workspace.grep(policy, &pattern, &directory) {
+    let include = match argument(arguments, "include") {
+        Some(proposed) => match policy.promote_confined_read("search", "include", &proposed) {
+            Ok(p) => Some(p),
+            Err(denial) => return format!("refused: {denial}"),
+        },
+        None => None,
+    };
+
+    match workspace.grep(policy, &pattern, &directory, include.as_ref()) {
         Ok(found) => {
             let proof = policy.authorise_content_release("search", "matches");
             let found = found.declassify(&proof);

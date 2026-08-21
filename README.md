@@ -76,13 +76,21 @@ The model can read files, list them, and search their contents. Each splits into
 
 | Tool | Routing | Result |
 |---|---|---|
-| `read_file` | path | contents, untrusted |
-| `list_files` | directory | filenames, untrusted |
-| `search` | pattern, directory | matches, untrusted |
+| `read_file` | path, offset, limit | contents, untrusted |
+| `list_files` | directory, glob | filenames, untrusted |
+| `search` | pattern, directory, include glob | matches, untrusted |
 | `write_file` | path — **needs your approval** | — |
 | `edit_file` | path — **needs your approval** | — |
 
 Filenames are untrusted too — a file can be named to read like an instruction.
+
+Globs and paging exist to keep results small: a large file comes back a page at a time, and
+a listing or search can be narrowed to `*.rs` rather than returning a whole tree. A glob is
+*routing* — it decides what gets looked at — so an untrusted one is refused like any other
+address. Every result is capped, and a capped result says so: silence there would let a
+model conclude a file does not exist when the answer was merely cut off. Search matches
+literal text rather than a regular expression, since a backtracking pattern arriving through
+a turn would be a denial-of-service vector.
 
 The model may choose *which* file to read next, because a read cannot change anything and
 is confined to the workspace. Every such choice is recorded as a promotion, so an audit

@@ -6,6 +6,7 @@
 
 pub mod confirm;
 pub mod diff;
+pub mod glob;
 pub mod replace;
 pub mod tools;
 pub mod turn;
