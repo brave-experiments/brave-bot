@@ -44,7 +44,8 @@ fn print_help() {
     println!("Interactive keys:");
     println!("  Enter                 Send");
     println!("  Ctrl-T                Toggle the audit trail");
-    println!("  Wheel, Up/Down        Scroll the transcript");
+    println!("  Up/Down               Walk back through sent prompts");
+    println!("  Wheel, PageUp/Down    Scroll the transcript");
     println!("  Home/End              Jump to the start or the latest");
     println!("  Esc                   Cancel a running turn, clear the input, or leave");
     println!("  Ctrl-C                Leave");

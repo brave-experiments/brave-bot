@@ -256,19 +256,25 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
             .collect()
     };
 
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if working {
-                    dim()
-                } else {
-                    Style::default().fg(Color::Cyan)
-                }),
-        ),
-        area,
-    );
+    // The position sits in the border while browsing, labelling the box without taking a row
+    // away from the text.
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if working {
+            dim()
+        } else {
+            Style::default().fg(Color::Cyan)
+        });
+
+    if let Some((index, total)) = session.history.position() {
+        block = block.title_top(Line::from(Span::styled(
+            format!(" History {index}/{total} "),
+            dim(),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// The shortcut line. Keeps the bindings discoverable without a help command.
@@ -602,5 +608,45 @@ mod tests {
         let mut session = typed(&"word ".repeat(50));
         session.submit();
         assert_eq!(input_height(&session, 50, 24), 3);
+    }
+    /// The position belongs in the border, where it labels the box without costing a row.
+    #[test]
+    fn browsing_history_shows_the_position_in_the_border() {
+        let mut session = Session::new("none");
+        for n in 1..=83 {
+            for c in format!("prompt {n}").chars() {
+                session.type_char(c);
+            }
+            session.submit().expect("submitted");
+            session.complete("ok", Vec::new(), 0);
+        }
+        for _ in 0..6 {
+            session.recall_older();
+        }
+
+        let output = rendered_at(&session, 60, 10);
+        assert!(
+            output.contains("History 78/83"),
+            "the position is not shown: {output}"
+        );
+        assert!(
+            output.contains("prompt 78"),
+            "the recalled prompt is not shown: {output}"
+        );
+    }
+
+    /// And it is absent when not browsing, so the border is not permanently labelled.
+    #[test]
+    fn an_unbrowsed_input_has_no_position_in_the_border() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit().expect("submitted");
+        session.complete("ok", Vec::new(), 0);
+
+        let output = rendered_at(&session, 60, 10);
+        assert!(
+            !output.contains("History"),
+            "the border was labelled: {output}"
+        );
     }
 }

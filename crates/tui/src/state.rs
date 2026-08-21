@@ -81,6 +81,8 @@ pub struct Session {
     pub turns: usize,
     /// Tokens spent across the whole session.
     pub tokens: u64,
+    /// Prompts already sent, for recall with the arrow keys.
+    pub history: crate::history::History,
     /// When the turn in flight started. `None` when idle.
     ///
     /// An `Instant` rather than a stored elapsed value so the display advances between redraws
@@ -99,6 +101,7 @@ impl Session {
             confinement: confinement.into(),
             turns: 0,
             tokens: 0,
+            history: crate::history::History::new(),
             started: None,
         }
     }
@@ -123,12 +126,16 @@ impl Session {
     /// interleaved with a turn in flight.
     pub fn type_char(&mut self, c: char) {
         if self.status == Status::Idle {
+            // Editing a recalled prompt makes it the working line rather than a view of history,
+            // so the position indicator goes away as soon as a key is pressed.
+            self.history.leave();
             self.input.push(c);
         }
     }
 
     pub fn backspace(&mut self) {
         if self.status == Status::Idle {
+            self.history.leave();
             self.input.pop();
         }
     }
@@ -140,6 +147,9 @@ impl Session {
     pub fn restore(&mut self, prompt: impl Into<String>) {
         self.status = Status::Idle;
         self.started = None;
+        // Popped because the text is going back into the box: offering it from history as well
+        // would present the same line from two places.
+        self.history.pop();
         self.input = prompt.into();
         // The submitted prompt is still in the transcript, so it is removed: the turn produced
         // nothing, and leaving it would read as a question that went unanswered.
@@ -155,7 +165,28 @@ impl Session {
     /// mid-turn would mean the field the user returns to is not the one they left.
     pub fn clear_input(&mut self) {
         if self.status == Status::Idle {
+            self.history.leave();
             self.input.clear();
+        }
+    }
+
+    /// Show the previous prompt, stepping further back on each call.
+    pub fn recall_older(&mut self) {
+        if self.status != Status::Idle {
+            return;
+        }
+        if let Some(prompt) = self.history.older(&self.input) {
+            self.input = prompt;
+        }
+    }
+
+    /// Step forward through recalled prompts, back to the line being typed.
+    pub fn recall_newer(&mut self) {
+        if self.status != Status::Idle {
+            return;
+        }
+        if let Some(prompt) = self.history.newer() {
+            self.input = prompt;
         }
     }
 
@@ -172,6 +203,7 @@ impl Session {
             return None;
         }
         self.input.clear();
+        self.history.push(prompt.clone());
         self.transcript.push(Entry::user(prompt.clone()));
         self.status = Status::Working;
         self.scroll = 0;
@@ -491,5 +523,52 @@ mod tests {
         s.restore(second);
 
         assert_eq!(s.transcript.len(), 2, "an earlier exchange was removed");
+    }
+    /// A submitted prompt is recallable afterwards.
+    #[test]
+    fn submitting_records_the_prompt_in_history() {
+        let mut s = session();
+        for c in "a question".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+        s.complete("answer", Vec::new(), 0);
+
+        assert_eq!(s.history.len(), 1);
+        s.recall_older();
+        assert_eq!(s.input, "a question");
+    }
+
+    /// A cancelled prompt goes back into the box, so it must leave history rather than being
+    /// offered from two places at once.
+    #[test]
+    fn cancelling_pops_the_prompt_from_history() {
+        let mut s = session();
+        for c in "abandoned".chars() {
+            s.type_char(c);
+        }
+        let prompt = s.submit().expect("submitted");
+        assert_eq!(s.history.len(), 1);
+
+        s.restore(prompt);
+        assert_eq!(s.input, "abandoned");
+        assert!(
+            s.history.is_empty(),
+            "the cancelled prompt stayed in history"
+        );
+    }
+
+    /// Recall is refused mid-turn, like the other input methods: the box is not the user's to
+    /// edit while a turn owns it.
+    #[test]
+    fn recall_is_refused_while_a_turn_is_running() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+
+        s.recall_older();
+        assert!(s.input.is_empty(), "history was recalled mid-turn");
     }
 }

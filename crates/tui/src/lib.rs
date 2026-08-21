@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod confirm;
+pub mod history;
 pub mod indicator;
 pub mod remote_confirm;
 pub mod render;

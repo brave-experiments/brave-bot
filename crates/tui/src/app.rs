@@ -92,9 +92,17 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.backspace();
             Action::Redraw
         }
-        // Arrows scroll the transcript. There is no cursor movement to conflict with,
-        // since the input is a single line edited at its end, so the obvious keys are free to
-        // do the obvious thing rather than requiring PageUp.
+        // Up and Down walk the prompt history, which is what they do in a shell and so what a
+        // user expects at a prompt. Scrolling the transcript keeps the wheel and the page keys,
+        // and Up still scrolls once there is no history left to walk.
+        KeyCode::Up if !session.history.is_empty() => {
+            session.recall_older();
+            Action::Redraw
+        }
+        KeyCode::Down if session.history.is_browsing() => {
+            session.recall_newer();
+            Action::Redraw
+        }
         KeyCode::Up => {
             session.scroll_up(1);
             Action::Redraw
@@ -496,10 +504,9 @@ mod tests {
         assert!(!session.show_trail);
     }
 
-    /// Arrows are the obvious keys for looking back, so they must work without a
-    /// modifier and without needing PageUp.
+    /// With nothing sent yet, the arrows scroll: there is no history to walk.
     #[test]
-    fn arrow_keys_scroll() {
+    fn arrow_keys_scroll_when_there_is_no_history() {
         let mut session = Session::new("none");
         handle_key(&mut session, key(KeyCode::Up));
         assert_eq!(session.scroll, 1);
@@ -507,6 +514,74 @@ mod tests {
         assert_eq!(session.scroll, 2);
         handle_key(&mut session, key(KeyCode::Down));
         assert_eq!(session.scroll, 1);
+    }
+
+    /// Once something has been sent, Up recalls it, which is what a shell does and so what a
+    /// user expects at a prompt.
+    #[test]
+    fn up_recalls_a_previous_prompt() {
+        let mut session = Session::new("none");
+        for c in "first question".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("an answer", Vec::new(), 0);
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Up)), Action::Redraw);
+        assert_eq!(session.input, "first question");
+        assert_eq!(session.scroll, 0, "recall scrolled the transcript as well");
+    }
+
+    /// Down walks back out of history, restoring the line that was being typed.
+    #[test]
+    fn down_returns_from_history_to_the_typed_line() {
+        let mut session = Session::new("none");
+        for c in "sent".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("ok", Vec::new(), 0);
+
+        for c in "being typed".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Up));
+        assert_eq!(session.input, "sent");
+
+        handle_key(&mut session, key(KeyCode::Down));
+        assert_eq!(
+            session.input, "being typed",
+            "the half-typed line was not restored"
+        );
+    }
+
+    /// Typing over a recalled prompt makes it the working line, so the position label goes away.
+    #[test]
+    fn typing_leaves_history_browsing() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('a')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("ok", Vec::new(), 0);
+
+        handle_key(&mut session, key(KeyCode::Up));
+        assert!(session.history.is_browsing());
+        handle_key(&mut session, key(KeyCode::Char('b')));
+        assert!(!session.history.is_browsing());
+    }
+
+    /// Escape leaves history along with clearing, so it cannot be left labelled with an empty box.
+    #[test]
+    fn escape_leaves_history_browsing() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('a')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("ok", Vec::new(), 0);
+
+        handle_key(&mut session, key(KeyCode::Up));
+        assert!(session.history.is_browsing());
+        handle_key(&mut session, key(KeyCode::Esc));
+        assert!(!session.history.is_browsing());
+        assert!(session.input.is_empty());
     }
 
     #[test]
