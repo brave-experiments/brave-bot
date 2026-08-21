@@ -15,7 +15,10 @@ use bua_core::event::RecordingSink;
 use bua_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -70,12 +73,32 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.backspace();
             Action::Redraw
         }
+        // Arrows scroll the transcript. There is no cursor movement to conflict with —
+        // the input is a single line edited at its end — so the obvious keys are free to
+        // do the obvious thing rather than requiring PageUp.
+        KeyCode::Up => {
+            session.scroll_up(1);
+            Action::Redraw
+        }
+        KeyCode::Down => {
+            session.scroll_down(1);
+            Action::Redraw
+        }
         KeyCode::PageUp => {
-            session.scroll_up(5);
+            session.scroll_up(10);
             Action::Redraw
         }
         KeyCode::PageDown => {
-            session.scroll_down(5);
+            session.scroll_down(10);
+            Action::Redraw
+        }
+        // Jump to either end of the transcript.
+        KeyCode::Home => {
+            session.scroll_up(u16::MAX);
+            Action::Redraw
+        }
+        KeyCode::End => {
+            session.scroll_down(u16::MAX);
             Action::Redraw
         }
         // Any other control combination is ignored rather than typed. Without this,
@@ -89,11 +112,30 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     }
 }
 
+/// Interpret a mouse event.
+///
+/// The wheel is what most people reach for first, so it scrolls without any modifier.
+pub fn handle_mouse(session: &mut Session, mouse: MouseEvent) -> Action {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            session.scroll_up(3);
+            Action::Redraw
+        }
+        MouseEventKind::ScrollDown => {
+            session.scroll_down(3);
+            Action::Redraw
+        }
+        _ => Action::None,
+    }
+}
+
 /// Run the interface until the user leaves.
 pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Mouse capture is what makes the wheel scroll the transcript. It costs the
+    // terminal's own text selection, so it is disabled again on the way out.
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(&mut terminal, config, workspace, confinement);
@@ -101,7 +143,11 @@ pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::R
     // Restore the terminal even if the loop failed: leaving a user in raw mode on an
     // alternate screen is worse than the original error.
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -131,11 +177,13 @@ fn event_loop(
             continue;
         }
 
-        let TermEvent::Key(key) = event::read()? else {
-            continue;
+        let action = match event::read()? {
+            TermEvent::Key(key) => handle_key(&mut session, key),
+            TermEvent::Mouse(mouse) => handle_mouse(&mut session, mouse),
+            _ => Action::None,
         };
 
-        match handle_key(&mut session, key) {
+        match action {
             Action::Quit => return Ok(()),
             Action::Submit(prompt) => {
                 // Show "working" before the request goes out, so the interface is not
@@ -259,13 +307,82 @@ mod tests {
         assert!(!session.show_trail);
     }
 
+    /// Arrows are the obvious keys for looking back, so they must work without a
+    /// modifier and without needing PageUp.
     #[test]
-    fn page_keys_scroll() {
+    fn arrow_keys_scroll() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Up));
+        assert_eq!(session.scroll, 1);
+        handle_key(&mut session, key(KeyCode::Up));
+        assert_eq!(session.scroll, 2);
+        handle_key(&mut session, key(KeyCode::Down));
+        assert_eq!(session.scroll, 1);
+    }
+
+    #[test]
+    fn page_keys_scroll_further() {
         let mut session = Session::new("none");
         handle_key(&mut session, key(KeyCode::PageUp));
-        assert_eq!(session.scroll, 5);
+        assert_eq!(session.scroll, 10);
         handle_key(&mut session, key(KeyCode::PageDown));
         assert_eq!(session.scroll, 0);
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_extremes() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Home));
+        assert_eq!(session.scroll, u16::MAX);
+        handle_key(&mut session, key(KeyCode::End));
+        assert_eq!(session.scroll, 0);
+    }
+
+    /// The wheel is what most people reach for, so it scrolls with no modifier.
+    #[test]
+    fn the_mouse_wheel_scrolls() {
+        let mut session = Session::new("none");
+        let wheel = |kind| MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert_eq!(
+            handle_mouse(&mut session, wheel(MouseEventKind::ScrollUp)),
+            Action::Redraw
+        );
+        assert_eq!(session.scroll, 3);
+        handle_mouse(&mut session, wheel(MouseEventKind::ScrollDown));
+        assert_eq!(session.scroll, 0);
+    }
+
+    /// Clicks and drags are not bound to anything, so they must be ignored rather than
+    /// misinterpreted as scrolling.
+    #[test]
+    fn other_mouse_events_are_ignored() {
+        let mut session = Session::new("none");
+        let moved = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(handle_mouse(&mut session, moved), Action::None);
+        assert_eq!(session.scroll, 0);
+    }
+
+    /// Typing must not be captured by the scroll bindings.
+    #[test]
+    fn scroll_keys_do_not_disturb_the_input() {
+        let mut session = Session::new("none");
+        for c in "hello".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Up));
+        handle_key(&mut session, key(KeyCode::Down));
+        assert_eq!(session.input, "hello", "scrolling altered the input");
     }
 
     #[test]

@@ -42,10 +42,11 @@ fn print_help() {
     println!("  bua doctor                        Check configuration and confinement");
     println!();
     println!("Interactive keys:");
-    println!("  Enter            Send");
-    println!("  Ctrl-T           Toggle the audit trail");
-    println!("  PageUp/PageDown  Scroll");
-    println!("  Ctrl-C, Esc      Leave");
+    println!("  Enter                 Send");
+    println!("  Ctrl-T                Toggle the audit trail");
+    println!("  Wheel, Up/Down        Scroll the transcript");
+    println!("  Home/End              Jump to the start or the latest");
+    println!("  Ctrl-C, Esc           Leave");
     println!();
     println!("Options:");
     println!("  --file <path>    Include a workspace file as context (repeatable)");
