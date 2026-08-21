@@ -231,13 +231,14 @@ direnv allow
 ## Credit
 
 The security approach here — enforcing information-flow labels at every boundary, and
-separating routing from content so untrusted text cannot redirect an action — comes from
-research by **Ali Shahin Shamsabadi**, Senior Privacy Researcher at Brave.
+separating routing from content so untrusted text cannot redirect an action — was developed
+jointly by **Ali Shahin Shamsabadi**, Senior Privacy Researcher at Brave, and **Brian R.
+Bondy**.
 
-It was developed and demonstrated in
-[**SafeHouse**](https://github.com/brave-experiments/safehouse), his research project, which
-showed that indirect prompt injection can be made structurally impossible rather than merely
-unlikely. This repository reimplements that model for a coding agent; the design is his.
+It was first prototyped by Ali in
+[**SafeHouse**](https://github.com/brave-experiments/safehouse), which showed that indirect
+prompt injection can be made structurally impossible rather than merely unlikely. This
+repository applies that model to a coding agent.
 
 ## License
 

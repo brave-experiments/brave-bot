@@ -9,9 +9,9 @@
 //!
 //! The enforcement model implemented here — the `L = I × C` lattice, write-once
 //! quarantine, and the routing/content asymmetry that makes injected text unable to
-//! redirect an action — is the work of Ali Shahin Shamsabadi, Senior Privacy Researcher
-//! at Brave, developed in his SafeHouse research project. This is a reimplementation of
-//! that design for a coding agent.
+//! redirect an action — was developed jointly by Ali Shahin Shamsabadi, Senior Privacy
+//! Researcher at Brave, and Brian R. Bondy, and first prototyped by Ali in the SafeHouse
+//! research project. This applies that model to a coding agent.
 
 pub mod capability;
 pub mod event;
