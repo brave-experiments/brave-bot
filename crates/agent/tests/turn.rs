@@ -734,3 +734,260 @@ fn an_approved_write_is_recorded_as_endorsed() {
     });
     assert!(granted, "the endorsement was not recorded in the trail");
 }
+
+/// Records what the user was shown, so a test can assert on the review itself rather than
+/// only on the outcome.
+struct RecordingConfirmer {
+    seen: Vec<bua_agent::WriteRequest>,
+    decision: bua_agent::Decision,
+}
+
+impl RecordingConfirmer {
+    fn approving() -> Self {
+        Self {
+            seen: Vec::new(),
+            decision: bua_agent::Decision::Approve,
+        }
+    }
+
+    fn rejecting() -> Self {
+        Self {
+            seen: Vec::new(),
+            decision: bua_agent::Decision::Reject,
+        }
+    }
+}
+
+impl bua_agent::Confirmer for RecordingConfirmer {
+    fn confirm_write(&mut self, request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+        self.seen.push(request.clone());
+        self.decision
+    }
+}
+
+/// An approved edit replaces only the passage it named, leaving the rest of the file alone.
+#[test]
+fn an_approved_edit_changes_only_the_matched_passage() {
+    let scratch = Scratch::new("edit-approved");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "keep\nnew\ntail\n"
+    );
+}
+
+/// The reason edit_file exists: the reviewer is shown a diff of a located passage, with the
+/// file's current contents to compare against.
+#[test]
+fn an_edit_is_reviewed_as_a_diff() {
+    let scratch = Scratch::new("edit-review");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let shown = confirmer.seen.first().expect("the user was asked");
+    assert_eq!(shown.intent, bua_agent::Intent::Edit);
+    assert_eq!(shown.path, "a.txt");
+    assert_eq!(shown.existing.as_deref(), Some("keep\nold\ntail\n"));
+    assert_eq!(shown.contents, "keep\nnew\ntail\n");
+
+    // A one-line change must review as a one-line change, not as a whole-file rewrite.
+    let diff = shown.diff();
+    assert_eq!((diff.added(), diff.removed()), (1, 1));
+}
+
+/// A refused edit must leave the file exactly as it was.
+#[test]
+fn a_refused_edit_does_not_happen() {
+    let scratch = Scratch::new("edit-refused");
+    std::fs::write(scratch.path.join("a.txt"), "original\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"original","new_text":"replaced"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::rejecting();
+
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "original\n",
+        "a refused edit modified the file"
+    );
+}
+
+/// An ambiguous edit must be refused before anyone is asked to approve it: there is no
+/// single change to review.
+#[test]
+fn an_ambiguous_edit_is_refused_without_asking() {
+    let scratch = Scratch::new("edit-ambiguous");
+    std::fs::write(scratch.path.join("a.txt"), "x\nx\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"x","new_text":"y"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "an ambiguous edit reached the approval prompt"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "x\nx\n"
+    );
+}
+
+/// An edit still needs an endorsement, so the trail records one just as a write does.
+#[test]
+fn an_approved_edit_is_recorded_as_endorsed() {
+    let scratch = Scratch::new("edit-endorsed");
+    std::fs::write(scratch.path.join("a.txt"), "old\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let granted = sink.events().iter().any(|e| {
+        matches!(e, Event::GatePassed { gate: "grant", detail } if detail.contains("file_write"))
+    });
+    assert!(granted, "the endorsement was not recorded in the trail");
+}
+
+/// An edit cannot reach outside the workspace, exactly as a read cannot.
+#[test]
+fn an_edit_cannot_escape_the_workspace() {
+    let scratch = Scratch::new("edit-escape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"../escaped.txt","old_text":"a","new_text":"b"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("edit outside");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "an escaping path reached the approval prompt"
+    );
+    assert!(!scratch.path.parent().unwrap().join("escaped.txt").exists());
+}

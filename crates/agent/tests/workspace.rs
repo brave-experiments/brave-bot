@@ -535,3 +535,106 @@ fn listing_requires_the_read_capability() {
         .expect_err("read capability was not granted");
     assert!(error.to_string().contains("file_read"));
 }
+
+/// An edit is approved against contents read moments earlier. If the file changed in
+/// between, the approved diff no longer describes what would happen, so the write is
+/// refused rather than applied to text nobody reviewed.
+#[test]
+fn an_endorsed_write_is_refused_when_the_file_changed() {
+    let scratch = Scratch::new("stale-edit");
+    let file = scratch.path.join("a.txt");
+    std::fs::write(&file, "as read\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    // Someone else writes to the file after it was read and approved.
+    std::fs::write(&file, "changed underneath\n").unwrap();
+
+    let path = Labelled::new("a.txt".to_string(), Label::untrusted_public());
+    let body = Labelled::new("edited\n".to_string(), Label::untrusted_public());
+    policy.issue_grant("file_write", "path", "a.txt".to_string());
+
+    let error = workspace
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "as read\n")
+        .expect_err("a stale edit must be refused");
+
+    assert!(
+        matches!(error, WorkspaceError::Stale { .. }),
+        "expected staleness, got {error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "changed underneath\n",
+        "a stale edit overwrote a concurrent change"
+    );
+}
+
+/// The guard must not refuse the ordinary case, where nothing changed.
+#[test]
+fn an_endorsed_write_proceeds_when_the_file_is_unchanged() {
+    let scratch = Scratch::new("fresh-edit");
+    let file = scratch.path.join("a.txt");
+    std::fs::write(&file, "as read\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::new("a.txt".to_string(), Label::untrusted_public());
+    let body = Labelled::new("edited\n".to_string(), Label::untrusted_public());
+    policy.issue_grant("file_write", "path", "a.txt".to_string());
+
+    workspace
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "as read\n")
+        .expect("an unchanged file may be edited");
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
+}
+
+/// Staleness is checked before the gates, so a refused edit does not burn the single-use
+/// endorsement — the user's approval is still there to be used once the model re-reads.
+#[test]
+fn a_stale_write_does_not_consume_the_endorsement() {
+    let scratch = Scratch::new("stale-grant");
+    let file = scratch.path.join("a.txt");
+    std::fs::write(&file, "as read\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::new("a.txt".to_string(), Label::untrusted_public());
+    let body = Labelled::new("edited\n".to_string(), Label::untrusted_public());
+    policy.issue_grant("file_write", "path", "a.txt".to_string());
+
+    std::fs::write(&file, "changed\n").unwrap();
+    workspace
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "as read\n")
+        .expect_err("stale");
+
+    // The same endorsement still authorises a write against what is now on disk.
+    workspace
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "changed\n")
+        .expect("the endorsement survived a staleness refusal");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
+}

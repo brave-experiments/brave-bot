@@ -71,6 +71,39 @@ pub fn available() -> Vec<Tool> {
             }),
         ),
         Tool::function(
+            "edit_file",
+            "Replace an exact passage of text in an existing workspace file. Prefer this to \
+             write_file when changing part of a file: the user approves a diff, which is \
+             easier to review than a whole body. The user must approve each edit before it \
+             happens, so explain what you are changing.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path, e.g. src/main.rs"
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "The exact text to replace, matched byte for byte \
+                                        including whitespace and indentation. Must occur \
+                                        exactly once unless replace_all is true. Include \
+                                        enough surrounding lines to be unique."
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "The text to put in its place."
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every occurrence instead of requiring \
+                                        exactly one. Defaults to false."
+                    }
+                },
+                "required": ["path", "old_text", "new_text"]
+            }),
+        ),
+        Tool::function(
             "search",
             "Find a literal substring in workspace files. Returns matching lines.",
             json!({
@@ -129,6 +162,7 @@ pub fn dispatch<S: Sink, C: Confirmer>(
         "list_files" => list_files(policy, workspace, &arguments),
         "search" => search(policy, workspace, &arguments),
         "write_file" => write_file(policy, workspace, confirmer, &arguments),
+        "edit_file" => edit_file(policy, workspace, confirmer, &arguments),
         other => format!("error: no such tool '{other}'"),
     };
 
@@ -251,6 +285,90 @@ fn write_file<S: Sink, C: Confirmer>(
     }
 }
 
+/// Replace an exact passage in a file, after a person approves the diff.
+///
+/// Same endorsement shape as [`write_file`] — the model never decides a write destination —
+/// but the reviewer is shown a diff of a located passage rather than a whole body, which is
+/// the point of having this tool at all.
+///
+/// The file is read through the gates rather than peeked at, so the read is recorded and
+/// the contents carry their label. The replacement then happens on released bytes, and the
+/// result is written back only if the file still matches what was read.
+fn edit_file<S: Sink, C: Confirmer>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> String {
+    let Some(proposed) = argument(arguments, "path") else {
+        return "error: 'path' is required and must be a string".to_string();
+    };
+    let Some(old_text) = argument(arguments, "old_text") else {
+        return "error: 'old_text' is required and must be a string".to_string();
+    };
+    let Some(new_text) = argument(arguments, "new_text") else {
+        return "error: 'new_text' is required and must be a string".to_string();
+    };
+    // Absent or non-boolean means the strict single-match behaviour, which is the safe
+    // reading of an ambiguous argument.
+    let replace_all = arguments
+        .get("replace_all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // Reading to locate the passage is non-destructive and confined, so the path may be
+    // promoted here exactly as it is for read_file. The write below is what needs a person.
+    let path = match policy.promote_confined_read("edit_file", "path", &proposed) {
+        Ok(p) => p,
+        Err(denial) => return format!("refused: {denial}"),
+    };
+
+    let current = match workspace.read(policy, &path) {
+        Ok(contents) => {
+            let proof = policy.authorise_content_release("edit_file", "contents");
+            contents.declassify(&proof)
+        }
+        Err(e) => return format!("error: {e}"),
+    };
+
+    let (old_text, _) = old_text.into_parts_for_decoding();
+    let (new_text, _) = new_text.into_parts_for_decoding();
+
+    let replaced = match crate::replace::replace(&current, &old_text, &new_text, replace_all) {
+        Ok(r) => r,
+        Err(e) => return format!("error: {e}"),
+    };
+
+    let (proposed_path, _) = proposed.into_parts_for_decoding();
+    let request = WriteRequest {
+        path: proposed_path.clone(),
+        contents: replaced.contents.clone(),
+        existing: Some(current.clone()),
+        intent: Intent::Edit,
+    };
+
+    if confirmer.confirm_write(&request) == Decision::Reject {
+        return format!(
+            "refused: the user did not approve editing {proposed_path}. Do not retry the \
+             same edit; ask what they would prefer."
+        );
+    }
+
+    policy.issue_grant("file_write", "path", proposed_path.clone());
+
+    let body = Labelled::new(
+        replaced.contents,
+        bua_core::label::Label::untrusted_public(),
+    );
+    match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
+        Ok(_) => format!(
+            "edited {proposed_path}: {} replacement(s)",
+            replaced.occurrences
+        ),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
 fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments: &Value) -> String {
     let Some(pattern) = argument(arguments, "pattern") else {
         return "error: 'pattern' is required and must be a string".to_string();
@@ -291,14 +409,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tool_set_is_reads_plus_a_gated_write() {
+    fn the_tool_set_is_reads_plus_gated_writes() {
         let names: Vec<String> = available()
             .iter()
             .map(|t| t.function.name.clone())
             .collect();
         assert_eq!(
             names,
-            vec!["read_file", "list_files", "write_file", "search"]
+            vec![
+                "read_file",
+                "list_files",
+                "write_file",
+                "edit_file",
+                "search"
+            ]
         );
     }
 
@@ -315,18 +439,37 @@ mod tests {
         }
     }
 
-    /// The write tool must advertise that approval is required, so the model explains a
-    /// change before proposing it.
+    /// Every mutating tool must advertise that approval is required, so the model explains
+    /// a change before proposing it.
     #[test]
-    fn the_write_tool_states_that_approval_is_required() {
-        let write = available()
+    fn the_mutating_tools_state_that_approval_is_required() {
+        for name in ["write_file", "edit_file"] {
+            let tool = available()
+                .into_iter()
+                .find(|t| t.function.name == name)
+                .unwrap_or_else(|| panic!("{name} is offered"));
+            assert!(
+                tool.function.description.contains("approve"),
+                "{name} does not mention approval: {}",
+                tool.function.description
+            );
+        }
+    }
+
+    /// The edit tool must state that matching is exact, since a model that assumes fuzzy
+    /// matching will propose passages that are refused.
+    #[test]
+    fn the_edit_tool_states_that_matching_is_exact() {
+        let edit = available()
             .into_iter()
-            .find(|t| t.function.name == "write_file")
-            .expect("write_file is offered");
+            .find(|t| t.function.name == "edit_file")
+            .expect("edit_file is offered");
+        let old_text = edit.function.parameters["properties"]["old_text"]["description"]
+            .as_str()
+            .expect("old_text is described");
         assert!(
-            write.function.description.contains("approve"),
-            "the description does not mention approval: {}",
-            write.function.description
+            old_text.contains("exact") && old_text.contains("whitespace"),
+            "the description does not require an exact match: {old_text}"
         );
     }
 
