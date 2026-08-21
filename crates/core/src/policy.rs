@@ -417,6 +417,63 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         same
     }
 
+    /// Label a model-supplied value with the turn's provenance.
+    ///
+    /// Model output arrives untrusted by construction, which is safe but says nothing useful:
+    /// under that label a vouched-for directory would still prompt on every write. What
+    /// actually determines whether the model could have been influenced is what the turn has
+    /// *observed*. A turn that has read only vouched-for files produces text derived solely
+    /// from trusted input; one that has fetched a page does not, whatever the text looks like.
+    ///
+    /// So the value takes the watermark's integrity. This can raise integrity relative to the
+    /// incoming label, which is why it lives in the kernel behind an audited event rather than
+    /// being something a caller can do with a relabel: the claim being made is about
+    /// provenance, and only the policy knows the turn's history.
+    pub fn attribute_to_turn(&mut self, tool: &str, value: &Labelled<String>) -> Labelled<String> {
+        let from = value.label();
+        let to = Label::new(self.watermark, from.confidentiality);
+
+        self.allow(
+            "provenance",
+            format!("{tool}: model output attributed to the turn, {from} -> {to}"),
+        );
+
+        let proof = Declassification::authorise("attributed to the turn's provenance");
+        Labelled::new(value.clone().declassify(&proof), to)
+    }
+
+    /// Declassify workspace content so it can be written back into the same workspace.
+    ///
+    /// Workspace content is private, and the content gate requires public at release time
+    /// because an effect releases what it is given. A write back into the workspace the data
+    /// came from is the one release that crosses no confidentiality boundary: the bytes are
+    /// already there, and the user already has them.
+    ///
+    /// Integrity is preserved deliberately. Only the confidentiality axis moves, so a value
+    /// derived from untrusted content stays untrusted and the approval gate and
+    /// [`Policy::reconcile_after_write`] still see the truth. Collapsing both axes here —
+    /// which is what re-wrapping the bytes by hand would do — would silently hand trust to
+    /// data that never had it.
+    ///
+    /// Not a general escape hatch: this is valid only for a destination inside the workspace
+    /// the content was read from. Anything leaving the machine goes through the release plan.
+    pub fn declassify_for_workspace_write(
+        &mut self,
+        tool: &str,
+        contents: &Labelled<String>,
+    ) -> Labelled<String> {
+        let from = contents.label();
+        let to = Label::new(from.integrity, crate::label::Confidentiality::Public);
+
+        self.allow(
+            "release",
+            format!("{tool}: workspace content written back within the workspace, {from} -> {to}"),
+        );
+
+        let proof = Declassification::authorise("written back into the same workspace");
+        Labelled::new(contents.clone().declassify(&proof), to)
+    }
+
     /// Bring a path's recorded trust into line with what was just written to it.
     ///
     /// The invariant: a path's effective trust must equal the integrity of the bytes in it.

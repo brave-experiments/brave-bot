@@ -269,18 +269,26 @@ impl Workspace {
     /// changed in between — another process, the user's editor — the approved diff no
     /// longer describes what would happen, so the write is refused rather than applied to
     /// text nobody reviewed.
+    ///
+    /// The comparison happens in the policy rather than here: both sides are untrusted file
+    /// content, and deciding from them in this crate would be a branch on untrusted data.
+    /// What comes back is a bool, which is not.
     pub fn write_endorsed_if_unchanged<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
         path: &Labelled<String>,
         contents: &Labelled<String>,
-        expected: &str,
+        expected: &Labelled<String>,
     ) -> Result<PathBuf, WorkspaceError> {
         // Checked before the gates so a stale edit is reported as staleness rather than
         // consuming the single-use endorsement.
         let relative = self.peek_relative(path)?;
-        let current = self.peek_for_review(&relative).unwrap_or_default();
-        if current != expected {
+        let current = Labelled::new(
+            self.peek_for_review(&relative).unwrap_or_default(),
+            read_label(),
+        );
+
+        if !policy.contents_unchanged("file_write", &current, expected) {
             return Err(WorkspaceError::Stale { path: relative });
         }
 
