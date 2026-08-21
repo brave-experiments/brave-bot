@@ -157,6 +157,65 @@ impl Workspace {
         Ok(Labelled::new(contents, label))
     }
 
+    /// The current contents of a workspace file, for showing a reviewer what a write
+    /// would replace.
+    ///
+    /// Deliberately outside the policy gates: this is read on the user's behalf to
+    /// populate a confirmation prompt, never handed to the model. `None` when the file
+    /// does not exist or cannot be read as text.
+    pub fn peek_for_review(&self, relative: &str) -> Option<String> {
+        let resolved = self.resolve(relative).ok()?;
+        std::fs::read_to_string(resolved).ok()
+    }
+
+    /// Write a file whose path was endorsed by a person.
+    ///
+    /// Distinct from [`Workspace::write`], which requires the path to be trusted
+    /// beforehand. Here the path arrives untrusted from the model and the endorsement is
+    /// what authorises it, so the gate consumes a single-use grant bound to this exact
+    /// value. A grant for a different path does not match.
+    pub fn write_endorsed<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        contents: &Labelled<String>,
+    ) -> Result<PathBuf, WorkspaceError> {
+        policy.before_capability(Capability::FileWrite)?;
+
+        // Promotion alone would not be enough for a write; the grant check below is what
+        // makes this safe, and it fails unless a person approved this exact path.
+        let promoted = policy.promote_confined_read("file_write", "path", path)?;
+        policy.before_granted_action("file_write", "path", &promoted)?;
+        policy.before_action("file_write", "contents", Role::Content, contents)?;
+
+        let relative = promoted
+            .clone()
+            .into_trusted()
+            .map_err(|_| WorkspaceError::Invalid {
+                path: "<untrusted>".into(),
+                reason: "the path was not trusted after endorsement",
+            })?;
+
+        let resolved = self.resolve(&relative)?;
+
+        let proof = policy.authorise_content_release("file_write", "contents");
+        let body = contents.clone().declassify(&proof);
+
+        if let Some(parent) = resolved.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| WorkspaceError::Io {
+                path: relative.clone(),
+                detail: e.to_string(),
+            })?;
+        }
+
+        std::fs::write(&resolved, body).map_err(|e| WorkspaceError::Io {
+            path: relative,
+            detail: e.to_string(),
+        })?;
+
+        Ok(resolved)
+    }
+
     /// Write a file. The path is routing; the contents are content.
     ///
     /// Untrusted contents are permitted — that asymmetry is the point. What is refused

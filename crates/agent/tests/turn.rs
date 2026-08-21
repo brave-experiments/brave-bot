@@ -105,7 +105,15 @@ fn a_turn_without_files_reaches_the_model() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("what is 2 + 2?");
-    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
 
     assert_eq!(outcome.model, "test-model");
     assert!(outcome.clean, "no gate should have refused");
@@ -128,7 +136,15 @@ fn a_turn_includes_requested_file_contents() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("explain this file").with_file("main.rs");
-    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
     assert!(outcome.clean);
 
     let body = received.recv().expect("request body");
@@ -155,7 +171,15 @@ fn file_contents_cannot_redirect_the_turn() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("summarise this file").with_file("readme.md");
-    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
 
     assert!(
         outcome.clean,
@@ -204,7 +228,15 @@ fn routing_is_precommitted_before_any_read() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read it").with_file("a.txt");
-    turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
 
     let first_precommit = sink
         .events()
@@ -245,7 +277,15 @@ fn a_turn_reads_only_the_files_it_precommitted() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("look").with_file("wanted.txt");
-    turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
 
     let body = received.recv().expect("request body");
     assert!(body.contains("wanted"));
@@ -263,8 +303,15 @@ fn a_missing_file_fails_the_turn() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("explain").with_file("does-not-exist.rs");
-    let error = turn::run(&config, &egress, &workspace, &task, &mut sink)
-        .expect_err("a missing file should fail the turn");
+    let error = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect_err("a missing file should fail the turn");
     assert!(error.to_string().contains("does-not-exist.rs"));
 }
 
@@ -338,7 +385,15 @@ fn the_model_can_call_a_tool_and_then_answer() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("what does target.txt say?");
-    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
 
     assert_eq!(outcome.steps, 1, "one tool round expected");
     assert!(outcome.clean);
@@ -369,7 +424,15 @@ fn a_model_chosen_path_is_promoted_and_recorded() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read a.txt");
-    turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
 
     assert!(
         sink.events().iter().any(|e| matches!(
@@ -400,7 +463,15 @@ fn a_model_cannot_escape_the_workspace() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read the passwd file");
-    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
     assert_eq!(outcome.steps, 1);
 
     let _first = received.recv().expect("first request");
@@ -433,8 +504,15 @@ fn a_runaway_tool_loop_is_bounded() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("loop forever");
-    let error = turn::run(&config, &egress, &workspace, &task, &mut sink)
-        .expect_err("the loop must be bounded");
+    let error = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect_err("the loop must be bounded");
     assert!(
         error.to_string().contains("still calling tools"),
         "got: {error}"
@@ -456,10 +534,203 @@ fn an_unknown_tool_is_reported_to_the_model() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("delete it all");
-    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
     assert_eq!(outcome.steps, 1);
 
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
     assert!(second.contains("no such tool"), "got: {second}");
+}
+
+fn tool_request_2(tool: &str, arguments: &str) -> String {
+    let escaped = arguments.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"{tool}","arguments":"{escaped}"}}}}]}}}}]}}"#
+    )
+}
+
+/// An approved write actually happens.
+#[test]
+fn an_approved_write_is_applied() {
+    let scratch = Scratch::new("write-approved");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"out.txt","contents":"written body"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write out.txt");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+    assert_eq!(outcome.steps, 1);
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("out.txt")).unwrap(),
+        "written body"
+    );
+}
+
+/// The property that matters: a refused write does not touch the disk.
+#[test]
+fn a_refused_write_does_not_happen() {
+    let scratch = Scratch::new("write-refused");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"out.txt","contents":"should not exist"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write out.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        !scratch.path.join("out.txt").exists(),
+        "a refused write reached the disk"
+    );
+
+    // The model is told, so it can respond rather than silently retrying.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(second.contains("did not approve"), "got: {second}");
+}
+
+/// An existing file must not be overwritten when the write is refused.
+#[test]
+fn a_refused_overwrite_leaves_the_original() {
+    let scratch = Scratch::new("write-refused-overwrite");
+    std::fs::write(scratch.path.join("keep.txt"), "original contents").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"keep.txt","contents":"clobbered"}"#,
+        ),
+        reply_with("ok"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("replace keep.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("keep.txt")).unwrap(),
+        "original contents",
+        "a refused overwrite destroyed the original"
+    );
+}
+
+/// A model-chosen write path still cannot escape the workspace, even when approved.
+#[test]
+fn an_approved_write_cannot_escape_the_workspace() {
+    let scratch = Scratch::new("write-escape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let outside = scratch.path.parent().unwrap().join("bua-escaped-write.txt");
+    let _ = std::fs::remove_file(&outside);
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"../bua-escaped-write.txt","contents":"escaped"}"#,
+        ),
+        reply_with("could not"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write outside");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        !outside.exists(),
+        "an approved write escaped the workspace root"
+    );
+}
+
+/// The write appears in the trail as a granted action, so an audit shows a person
+/// authorised it.
+#[test]
+fn an_approved_write_is_recorded_as_endorsed() {
+    let scratch = Scratch::new("write-trail");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"a.txt","contents":"x"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let granted = sink.events().iter().any(|e| {
+        matches!(e, Event::GatePassed { gate: "grant", detail } if detail.contains("file_write"))
+    });
+    assert!(granted, "the endorsement was not recorded in the trail");
 }

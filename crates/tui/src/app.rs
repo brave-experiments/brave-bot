@@ -162,6 +162,9 @@ fn event_loop(
     confinement: String,
 ) -> io::Result<()> {
     let egress = Egress::new();
+    // Interactive prompting is not wired yet, so writes are refused rather than applied
+    // without being seen.
+    let mut confirmer = bua_agent::RefuseWrites;
     let mut session = Session::new(confinement);
 
     loop {
@@ -191,7 +194,14 @@ fn event_loop(
                 terminal
                     .draw(|frame| render::draw(frame, &session))
                     .map_err(io::Error::other)?;
-                run_turn(&mut session, config, &egress, workspace, &prompt);
+                run_turn(
+                    &mut session,
+                    config,
+                    &egress,
+                    workspace,
+                    &mut confirmer,
+                    &prompt,
+                );
             }
             Action::None | Action::Redraw => {}
         }
@@ -199,17 +209,18 @@ fn event_loop(
 }
 
 /// Run one turn and fold the result into the session.
-fn run_turn(
+fn run_turn<C: bua_agent::Confirmer>(
     session: &mut Session,
     config: &Config,
     egress: &Egress,
     workspace: &Workspace,
+    confirmer: &mut C,
     prompt: &str,
 ) {
     let mut sink = RecordingSink::new();
     let task = Task::new(prompt);
 
-    match turn::run(config, egress, workspace, &task, &mut sink) {
+    match turn::run(config, egress, workspace, &task, confirmer, &mut sink) {
         Ok(outcome) => {
             let trail = sink.events().to_vec();
             session.complete(outcome.reply_for_display().to_string(), trail);

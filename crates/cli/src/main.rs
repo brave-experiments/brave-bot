@@ -118,7 +118,18 @@ fn run_task(args: &[String]) -> ExitCode {
         task = task.with_file(file);
     }
 
-    match turn::run(&config, &egress, &workspace, &task, &mut sink) {
+    // A one-shot run has nobody to ask about a write, so writes are refused rather than
+    // silently applied.
+    let mut confirmer = bua_agent::RefuseWrites;
+
+    match turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    ) {
         Ok(outcome) => {
             // The reply is untrusted model output. Printing it is safe — the terminal is
             // not a decision — so it is released explicitly for display.

@@ -5,10 +5,13 @@
 //! possible; nothing here can change the workspace, so a wrong choice costs a step
 //! rather than causing harm.
 //!
-//! Writing is deliberately absent. A write destination chosen by the model would be
-//! routing derived from whatever it just read, which is the attack this system exists to
-//! prevent. Writes stay with the user, through the `--write` path.
+//! Writing is present but gated differently. A write destination chosen by the model is
+//! routing derived from whatever it just read, so it is never promoted on its own: the
+//! user is shown the path and body and must approve, and that approval mints a single-use
+//! endorsement bound to the exact path. A refusal, or a context where nobody can be asked,
+//! means no write.
 
+use crate::confirm::{Confirmer, Decision, WriteRequest};
 use bua_aichat::protocol::{Tool, ToolCall};
 use bua_core::event::Sink;
 use bua_core::policy::Policy;
@@ -49,6 +52,25 @@ pub fn available() -> Vec<Tool> {
             }),
         ),
         Tool::function(
+            "write_file",
+            "Write a UTF-8 text file in the workspace. The user must approve each write \
+             before it happens, so explain what you are changing.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path, e.g. src/main.rs"
+                    },
+                    "contents": {
+                        "type": "string",
+                        "description": "The complete new contents of the file."
+                    }
+                },
+                "required": ["path", "contents"]
+            }),
+        ),
+        Tool::function(
             "search",
             "Find a literal substring in workspace files. Returns matching lines.",
             json!({
@@ -84,9 +106,10 @@ pub struct Output {
 /// Errors are returned as text rather than failing the turn: a model that asked for a
 /// missing file should be told so and allowed to try again, exactly as it would be told
 /// about a compile error.
-pub fn dispatch<S: Sink>(
+pub fn dispatch<S: Sink, C: Confirmer>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
+    confirmer: &mut C,
     call: &ToolCall,
 ) -> Output {
     let name = call.function.name.clone();
@@ -105,6 +128,7 @@ pub fn dispatch<S: Sink>(
         "read_file" => read_file(policy, workspace, &arguments),
         "list_files" => list_files(policy, workspace, &arguments),
         "search" => search(policy, workspace, &arguments),
+        "write_file" => write_file(policy, workspace, confirmer, &arguments),
         other => format!("error: no such tool '{other}'"),
     };
 
@@ -175,6 +199,52 @@ fn list_files<S: Sink>(
     }
 }
 
+/// Write a file, after a person approves it.
+///
+/// The order matters: the user sees the exact path and body *before* any grant exists, and
+/// the grant is issued only for what they saw. Issuing it earlier would mean approving a
+/// value that could still change.
+fn write_file<S: Sink, C: Confirmer>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> String {
+    let Some(path) = argument(arguments, "path") else {
+        return "error: 'path' is required and must be a string".to_string();
+    };
+    let Some(contents) = argument(arguments, "contents") else {
+        return "error: 'contents' is required and must be a string".to_string();
+    };
+
+    // Reading the proposed values to show a person is not a decision the agent makes on
+    // the model's behalf, so it does not need a gate — but it must not be fed back into
+    // the flow except through the approval below.
+    let proposed_path = path.clone().into_parts_for_decoding().0;
+    let proposed_body = contents.clone().into_parts_for_decoding().0;
+
+    let request = WriteRequest {
+        existing: workspace.peek_for_review(&proposed_path),
+        path: proposed_path.clone(),
+        contents: proposed_body,
+    };
+
+    if confirmer.confirm_write(&request) == Decision::Reject {
+        return format!(
+            "refused: the user did not approve writing {proposed_path}. Do not retry \
+             the same write; ask what they would prefer."
+        );
+    }
+
+    // The approval is what makes the path trusted, and it is bound to this exact value.
+    policy.issue_grant("file_write", "path", proposed_path.clone());
+
+    match workspace.write_endorsed(policy, &path, &contents) {
+        Ok(_) => format!("wrote {proposed_path}"),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
 fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments: &Value) -> String {
     let Some(pattern) = argument(arguments, "pattern") else {
         return "error: 'pattern' is required and must be a string".to_string();
@@ -215,19 +285,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tool_set_is_read_only() {
+    fn the_tool_set_is_reads_plus_a_gated_write() {
         let names: Vec<String> = available()
             .iter()
             .map(|t| t.function.name.clone())
             .collect();
-        assert_eq!(names, vec!["read_file", "list_files", "search"]);
-        // No write, exec, or fetch tool: a model-chosen destination for any of those
-        // would be routing derived from untrusted content.
-        for name in &names {
-            assert!(!name.contains("write"));
-            assert!(!name.contains("exec"));
-            assert!(!name.contains("shell"));
+        assert_eq!(
+            names,
+            vec!["read_file", "list_files", "write_file", "search"]
+        );
+    }
+
+    /// Command execution stays absent. Unlike a write, a command has no separable routing
+    /// field to endorse — the string is destination and payload at once — so there is
+    /// nothing a user could meaningfully approve.
+    #[test]
+    fn no_command_execution_is_offered() {
+        for tool in available() {
+            let name = tool.function.name;
+            assert!(!name.contains("exec"), "{name} executes commands");
+            assert!(!name.contains("shell"), "{name} executes commands");
+            assert!(!name.contains("run"), "{name} executes commands");
         }
+    }
+
+    /// The write tool must advertise that approval is required, so the model explains a
+    /// change before proposing it.
+    #[test]
+    fn the_write_tool_states_that_approval_is_required() {
+        let write = available()
+            .into_iter()
+            .find(|t| t.function.name == "write_file")
+            .expect("write_file is offered");
+        assert!(
+            write.function.description.contains("approve"),
+            "the description does not mention approval: {}",
+            write.function.description
+        );
     }
 
     #[test]
