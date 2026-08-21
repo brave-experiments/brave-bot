@@ -370,13 +370,17 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The guarantee it rests on is the one in CLAUDE.md: untrusted content never enters the
     /// planner's context. If it did, [`Policy::absorb`] has already dropped the context to
     /// untrusted, and everything produced afterwards is untrusted too.
-    pub fn label_model_output(&mut self, tool: &str, text: String) -> Labelled<String> {
+    /// Not restricted to text. A tool call arrives as JSON and may decode into a list or a
+    /// record before anything labels it; requiring a `String` here would mean labelling the
+    /// serialised form and decoding it again later, which is more handling of model output, not
+    /// less.
+    pub fn label_model_output<T>(&mut self, tool: &str, value: T) -> Labelled<T> {
         let label = Label::new(self.context, crate::label::Confidentiality::Public);
         self.allow(
             "provenance",
             format!("{tool}: model output labelled {label} from its context"),
         );
-        Labelled::new(text, label)
+        Labelled::new(value, label)
     }
 
     /// Transform content without exposing it, keeping its label.

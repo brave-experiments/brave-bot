@@ -18,13 +18,18 @@
 //! since a guess would mutate bytes that were never shown to anyone.
 
 use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
+use crate::report::Reporter;
 use bua_aichat::protocol::{Tool, ToolCall};
 use bua_core::event::Sink;
 use bua_core::policy::Policy;
+use bua_core::todo::{self, Item, List, Status};
 use bua_core::value::Labelled;
 use serde_json::{Value, json};
 
 use crate::workspace::{Page, Workspace};
+
+/// The statuses the schema advertises, taken from the kernel so the two cannot drift.
+const TODO_STATUSES: [&str; 3] = Status::NAMES;
 
 /// The tools the model may call.
 pub fn available() -> Vec<Tool> {
@@ -129,6 +134,40 @@ pub fn available() -> Vec<Tool> {
             }),
         ),
         Tool::function(
+            "todo_write",
+            "Record the task list for what you are doing, and keep it current. Send the whole \
+             list every time: it replaces the previous one, so include finished tasks with \
+             status completed rather than dropping them. Use it when the work takes several \
+             steps, and update it as you go so the user can see progress. Skip it for a single \
+             step or a question.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The complete list, in the order the work will happen.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "The task, in a few words."
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": TODO_STATUSES,
+                                    "description": "Mark exactly one task in_progress while \
+                                                    work remains on it."
+                                }
+                            },
+                            "required": ["content", "status"]
+                        }
+                    }
+                },
+                "required": ["todos"]
+            }),
+        ),
+        Tool::function(
             "search",
             "Find a literal substring in workspace files. Returns matching lines.",
             json!({
@@ -176,10 +215,11 @@ pub struct Output {
 /// Errors are returned as text rather than failing the turn: a model that asked for a
 /// missing file should be told so and allowed to try again, exactly as it would be told
 /// about a compile error.
-pub fn dispatch<S: Sink, C: Confirmer>(
+pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     confirmer: &mut C,
+    reporter: &mut R,
     call: &ToolCall,
 ) -> Output {
     let name = call.function.name.clone();
@@ -201,6 +241,7 @@ pub fn dispatch<S: Sink, C: Confirmer>(
         "search" => search(policy, workspace, &arguments),
         "write_file" => write_file(policy, workspace, confirmer, &arguments),
         "edit_file" => edit_file(policy, workspace, confirmer, &arguments),
+        "todo_write" => todo_write(policy, reporter, &arguments),
         other => (
             Labelled::trusted(format!("error: no such tool '{other}'")),
             String::new(),
@@ -530,6 +571,79 @@ fn edit_file<S: Sink, C: Confirmer>(
     }
 }
 
+/// Record the task list and show it.
+///
+/// The one tool here with no workspace effect at all: nothing is read, nothing is written, and
+/// there is no path to endorse. It is the planner's own note to itself, carried to a screen.
+///
+/// Two things follow from that. The list is model output, so its integrity is the context's, and
+/// it is never upgraded on the way through. And the whole list arrives every time, because
+/// amending a single entry would mean locating it by model-authored text, which is a comparison
+/// on untrusted content. Replacing the list wholesale compares nothing.
+fn todo_write<S: Sink, R: Reporter>(
+    policy: &mut Policy<'_, S>,
+    reporter: &mut R,
+    arguments: &Value,
+) -> (Labelled<String>, String) {
+    let Some(todos) = arguments.get("todos").and_then(Value::as_array) else {
+        return own_words("error: 'todos' is required and must be an array");
+    };
+
+    // Parsing is not a decision about what happens: every entry becomes an item, and an
+    // unreadable status becomes outstanding work rather than being rejected. A malformed entry
+    // is skipped only because there is nothing to show for it.
+    let items: Vec<Item> = todos
+        .iter()
+        .filter_map(|entry| {
+            let content = entry.get("content")?.as_str()?.to_string();
+            let status = entry
+                .get("status")
+                .and_then(Value::as_str)
+                .map(Status::parse)
+                .unwrap_or(Status::Pending);
+            Some(Item::new(content, status))
+        })
+        .collect();
+
+    if items.len() != todos.len() {
+        return own_words(
+            "error: every todo needs a 'content' string; the list was not changed. Send the \
+             whole list again.",
+        );
+    }
+
+    // The model's words, at the integrity of the context they came from.
+    let list = policy.label_model_output("todo_write", List::new(items));
+
+    // Shaped inside the kernel, because choosing a glyph means reading the statuses and the
+    // driver may not hold them. Every item yields a row, so nothing in the content decides
+    // what the user is shown the existence of.
+    let rows = policy.render_in_place("todo_write", &list, |list| todo::rows(&list));
+
+    // Showing a person what the model is doing is a release to a screen, which is one of the
+    // destinations a witness exists for. It cannot feed an effect.
+    let proof = policy.authorise_display_release("task list");
+    reporter.todos(rows.declassify(&proof));
+
+    // The model gets its own list back as the tool result, which is how it knows what is next:
+    // the turn keeps no state, so the echo in the conversation *is* the memory. Rendered through
+    // the kernel like everything else, then presented under the usual gate by the caller.
+    let summary = policy.render_in_place("todo_write", &list, |list| {
+        if list.is_empty() {
+            return "the task list is now empty".to_string();
+        }
+        let lines = list
+            .items
+            .iter()
+            .map(|item| format!("[{}] {}", item.status, item.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{} of {} done\n{lines}", list.done(), list.len())
+    });
+
+    (summary, String::new())
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -608,6 +722,7 @@ mod tests {
                 "list_files",
                 "write_file",
                 "edit_file",
+                "todo_write",
                 "search"
             ]
         );
@@ -681,5 +796,233 @@ mod tests {
         assert!(argument(&json!({}), "path").is_none());
         // A non-string is treated as absent rather than coerced.
         assert!(argument(&json!({"path": 42}), "path").is_none());
+    }
+
+    /// The advertised statuses come from the kernel, so the instruction cannot describe a
+    /// vocabulary the parser does not read.
+    #[test]
+    fn the_todo_schema_advertises_the_statuses_the_kernel_parses() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "todo_write")
+            .expect("todo_write is offered");
+        let advertised = tool.function.parameters["properties"]["todos"]["items"]["properties"]
+            ["status"]["enum"]
+            .as_array()
+            .expect("the statuses are enumerated");
+
+        for value in advertised {
+            let name = value.as_str().expect("a string");
+            assert_eq!(
+                Status::parse(name).to_string(),
+                name,
+                "'{name}' is advertised but does not round-trip"
+            );
+        }
+    }
+
+    /// The model has to be told the list is replaced wholesale, or it will send only what changed
+    /// and the finished tasks will vanish from the display.
+    #[test]
+    fn the_todo_tool_states_that_the_whole_list_is_required() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "todo_write")
+            .expect("todo_write is offered");
+        assert!(
+            tool.function.description.contains("whole list"),
+            "the description does not ask for the whole list: {}",
+            tool.function.description
+        );
+    }
+
+    mod todos {
+        use super::*;
+        use crate::report::RecordingReporter;
+        use bua_core::capability::{Capability, CapabilitySet};
+        use bua_core::event::RecordingSink;
+        use bua_core::label::{Integrity, Label};
+        use bua_core::policy::{ReleasePlan, Routing};
+
+        fn routing() -> Routing {
+            let mut r = Routing::new();
+            r.insert_trusted("task", "do some work");
+            r
+        }
+
+        /// Run the tool against a fresh policy, returning what the reporter saw and what the model
+        /// was told.
+        fn call(arguments: Value) -> (RecordingReporter, Labelled<String>) {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy");
+            let mut reporter = RecordingReporter::default();
+            let (text, origin) = todo_write(&mut policy, &mut reporter, &arguments);
+            // A task list has no destination, so there is nothing for an origin to name.
+            assert!(origin.is_empty(), "a task list named an origin: {origin}");
+            (reporter, text)
+        }
+
+        /// Read what the model was told, through the display gate rather than by minting a
+        /// witness: only the policy layer can mint one, which is the point.
+        fn released(text: &Labelled<String>) -> String {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy");
+            let proof = policy.authorise_display_release("test inspects the tool result");
+            text.clone().declassify(&proof)
+        }
+
+        fn list(entries: &[(&str, &str)]) -> Value {
+            json!({
+                "todos": entries
+                    .iter()
+                    .map(|(content, status)| json!({"content": content, "status": status}))
+                    .collect::<Vec<_>>()
+            })
+        }
+
+        #[test]
+        fn a_list_reaches_the_display_shaped_for_it() {
+            let (reporter, _) = call(list(&[
+                ("Read the file", "completed"),
+                ("Make the change", "in_progress"),
+                ("Run the tests", "pending"),
+            ]));
+
+            let rows = reporter.updates.last().expect("the display was told");
+            assert_eq!(rows.len(), 3);
+            assert!(rows[0].struck(), "the finished task is not struck through");
+            assert!(!rows[1].struck());
+            assert_eq!(rows[1].content, "Make the change");
+        }
+
+        /// The tool result is how the model knows what is next: the turn keeps no state, so the
+        /// echo in the conversation is the only memory of the list.
+        #[test]
+        fn the_model_is_told_the_list_back() {
+            let (_, text) = call(list(&[
+                ("Read the file", "completed"),
+                ("Make the change", "in_progress"),
+            ]));
+
+            let shown = released(&text);
+            assert!(shown.contains("Make the change"), "the list is not echoed");
+            assert!(shown.contains("1 of 2"), "progress is not reported");
+        }
+
+        /// The list is model output, so it can only ever be as trusted as the context it came
+        /// from, and never more.
+        #[test]
+        fn the_list_is_labelled_from_the_context_not_upgraded() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy");
+
+            // An untrusted read drops the context, exactly as reading an unvouched file would.
+            policy
+                .observe_path(Capability::FileRead, "somewhere/nobody/vouched/for")
+                .expect("observed");
+            assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+
+            let mut reporter = RecordingReporter::default();
+            let (text, _) = todo_write(
+                &mut policy,
+                &mut reporter,
+                &list(&[("after reading something untrusted", "pending")]),
+            );
+
+            assert_eq!(
+                text.label().integrity,
+                Integrity::Untrusted,
+                "a list written after an untrusted read was labelled trusted"
+            );
+            assert!(
+                text.into_trusted().is_err(),
+                "the list came back as bare text"
+            );
+        }
+
+        /// An unreadable status is outstanding work. Treating it as done would let a typo mark
+        /// work finished that never was.
+        #[test]
+        fn an_unrecognised_status_shows_as_outstanding() {
+            let (reporter, _) = call(list(&[("something", "nearly done")]));
+            let rows = reporter.updates.last().expect("told");
+            assert!(!rows[0].struck());
+        }
+
+        /// A list with no items is a list the model cleared, and the display must follow rather
+        /// than keeping the previous one on screen.
+        #[test]
+        fn an_empty_list_is_reported_as_empty() {
+            let (reporter, text) = call(json!({"todos": []}));
+            assert_eq!(reporter.updates.last().expect("told").len(), 0);
+
+            assert!(released(&text).contains("empty"));
+        }
+
+        /// A malformed list changes nothing. Showing a partial list would be worse than showing
+        /// none, since the user could not tell which tasks were dropped.
+        #[test]
+        fn a_malformed_entry_leaves_the_list_alone() {
+            let (reporter, text) = call(json!({"todos": [
+                {"content": "fine", "status": "pending"},
+                {"status": "pending"},
+            ]}));
+
+            assert!(
+                reporter.updates.is_empty(),
+                "a partial list reached the display"
+            );
+            assert!(released(&text).starts_with("error:"));
+        }
+
+        #[test]
+        fn a_missing_list_is_an_error() {
+            let (reporter, text) = call(json!({}));
+            assert!(reporter.updates.is_empty());
+            assert!(released(&text).starts_with("error:"));
+        }
+
+        /// Nothing about a task list is routing: it lands nowhere, so no gate should have been
+        /// asked to endorse a destination.
+        #[test]
+        fn recording_a_list_needs_no_endorsement() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                // No write capability at all, so a tool that tried to route anywhere would fail.
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy");
+
+            let mut reporter = RecordingReporter::default();
+            todo_write(
+                &mut policy,
+                &mut reporter,
+                &list(&[("a task", "in_progress")]),
+            );
+
+            assert_eq!(reporter.updates.len(), 1);
+            assert!(policy.finish(), "a gate refused something");
+        }
     }
 }

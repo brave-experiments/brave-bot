@@ -23,6 +23,7 @@ use bua_net::Egress;
 use std::fmt;
 
 use crate::confirm::Confirmer;
+use crate::report::{IgnoreReports, Reporter};
 use crate::tools;
 use crate::workspace::{Workspace, WorkspaceError};
 
@@ -52,7 +53,12 @@ intend to change before writing it, and if a write is refused do not retry the s
 
 To change part of an existing file, prefer edit_file over write_file: the user reviews a \
 diff rather than a whole body. Read the file first so the text you replace matches exactly, \
-and include enough surrounding lines to identify it uniquely.";
+and include enough surrounding lines to identify it uniquely.
+
+When the work takes several steps, call todo_write to record the steps, then call it again as \
+each one finishes so the user can watch progress. Send the whole list every time, keeping \
+finished tasks in it marked completed, and keep exactly one task in_progress while work \
+remains on it. Do not use it for a single step or a question.";
 
 /// Tool-calling rounds allowed before the turn stops.
 ///
@@ -183,20 +189,26 @@ pub fn run<S: Sink, C: Confirmer>(
     )
 }
 
-/// As [`run_with_trust`], with a token the caller can use to stop the turn.
+/// As [`run_with_trust`], with a token the caller can use to stop the turn and a reporter to tell
+/// about progress.
+///
+/// The reporter is separate from the confirmer because it cannot affect the turn: it is told
+/// things and has no reply, so a caller with nowhere to draw passes [`IgnoreReports`] and loses
+/// nothing but the display.
 #[allow(clippy::too_many_arguments)]
-pub fn run_cancellable<S: Sink, C: Confirmer>(
+pub fn run_cancellable<S: Sink, C: Confirmer, R: Reporter>(
     config: &Config,
     egress: &Egress,
     workspace: &Workspace,
     task: &Task,
     confirmer: &mut C,
+    reporter: &mut R,
     sink: &mut S,
     trust: TrustStore,
     cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
     run_inner(
-        config, egress, workspace, task, confirmer, sink, trust, cancel,
+        config, egress, workspace, task, confirmer, reporter, sink, trust, cancel,
     )
 }
 
@@ -220,6 +232,7 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
         workspace,
         task,
         confirmer,
+        &mut IgnoreReports,
         sink,
         trust,
         &Cancel::new(),
@@ -227,12 +240,13 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_inner<S: Sink, C: Confirmer>(
+fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     config: &Config,
     egress: &Egress,
     workspace: &Workspace,
     task: &Task,
     confirmer: &mut C,
+    reporter: &mut R,
     sink: &mut S,
     trust: TrustStore,
     cancel: &Cancel,
@@ -352,7 +366,7 @@ fn run_inner<S: Sink, C: Confirmer>(
                 return Err(TurnError::Cancelled);
             }
 
-            let output = tools::dispatch(&mut policy, workspace, confirmer, call);
+            let output = tools::dispatch(&mut policy, workspace, confirmer, reporter, call);
 
             // The same gate as file context. A tool result the kernel judges untrusted is
             // quarantined and the planner is told its shape; only trusted results are shown.
