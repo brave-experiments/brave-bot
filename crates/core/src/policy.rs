@@ -275,6 +275,59 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(Declassification::authorise("precommitted release source"))
     }
 
+    /// Promote a model-proposed value to routing for a **non-destructive, confined**
+    /// operation.
+    ///
+    /// This is the one deliberate relaxation in the design, and it exists because an
+    /// iterative agent is useless without it: the model must be able to say "read this
+    /// file next" based on what it has already seen, and that proposal is untrusted
+    /// by construction.
+    ///
+    /// The trust does not come from the value. It comes from two things that hold
+    /// regardless of what the model asks for:
+    ///
+    /// - the operation cannot change anything, so a wrong choice wastes a step rather
+    ///   than causing harm; and
+    /// - the operation is confined to a boundary the user established — a workspace root
+    ///   — so the *set* of reachable targets was authorised up front even though the
+    ///   individual choice was not.
+    ///
+    /// It must never be used for an effect. A write, an exec, or a network destination
+    /// chosen this way would hand routing to whatever text the model just read, which is
+    /// precisely the attack this system prevents. Those require
+    /// [`Policy::before_granted_action`] and a human endorsement.
+    ///
+    /// Every promotion is recorded, so the audit trail shows which choices were the
+    /// model's rather than the user's.
+    pub fn promote_confined_read(
+        &mut self,
+        tool: &str,
+        field: &str,
+        proposed: &Labelled<String>,
+    ) -> Gated<Labelled<String>> {
+        let label = proposed.label();
+
+        // Private content is not promotable: reading it back out would launder the
+        // user's data into a value the model can steer.
+        if !label.is_public() {
+            return Err(self.deny(
+                "promote",
+                Principle::Confinement,
+                format!(
+                    "{tool}.{field} cannot be promoted from {label}: private content must \
+                     be declassified first"
+                ),
+            ));
+        }
+
+        let value = proposed.clone().into_parts_for_decoding().0;
+        self.allow(
+            "promote",
+            format!("{tool}.{field} proposed by the model, confined and non-destructive"),
+        );
+        Ok(Labelled::trusted(value))
+    }
+
     /// Authorise releasing a value for display to the user.
     ///
     /// Showing untrusted text to a human is not a decision the agent makes on that
@@ -743,6 +796,80 @@ mod tests {
             policy
                 .before_granted_action("shell", "command", &other)
                 .is_err()
+        );
+    }
+
+    /// The iterative-agent escape hatch: a model-proposed path may become routing for a
+    /// confined read.
+    #[test]
+    fn a_model_proposal_can_be_promoted_for_a_confined_read() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "explore"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        let proposed = Labelled::new("src/main.rs".to_string(), Label::untrusted_public());
+        let promoted = policy
+            .promote_confined_read("file_read", "path", &proposed)
+            .expect("a public proposal is promotable");
+
+        assert_eq!(promoted.label(), Label::trusted_public());
+        assert_eq!(promoted.into_trusted().unwrap(), "src/main.rs");
+        assert!(policy.finish(), "promotion is not a refusal");
+    }
+
+    /// Private content must not be promotable, or the user's own data could be laundered
+    /// into a value the model steers.
+    #[test]
+    fn private_content_cannot_be_promoted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "explore"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        let private = Labelled::new("secret.txt".to_string(), Label::untrusted_private());
+        let err = policy
+            .promote_confined_read("file_read", "path", &private)
+            .expect_err("private content must not be promoted");
+        assert_eq!(err.principle, Principle::Confinement);
+        assert!(!policy.finish());
+    }
+
+    /// Promotion is recorded, so an audit shows which choices were the model's.
+    #[test]
+    fn promotion_appears_in_the_audit_trail() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "explore"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        let proposed = Labelled::new("a.txt".to_string(), Label::untrusted_public());
+        policy
+            .promote_confined_read("file_read", "path", &proposed)
+            .unwrap();
+        drop(policy);
+
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed {
+                    gate: "promote",
+                    ..
+                }
+            )),
+            "the promotion was not recorded"
         );
     }
 
