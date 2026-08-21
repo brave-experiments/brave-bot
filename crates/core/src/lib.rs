@@ -7,11 +7,10 @@
 //!
 //! # Credit
 //!
-//! The enforcement model implemented here — the `L = I × C` lattice, write-once
-//! quarantine, and the routing/content asymmetry that makes injected text unable to
-//! redirect an action — was developed jointly by Ali Shahin Shamsabadi, Senior Privacy
-//! Researcher at Brave, and Brian R. Bondy, and first prototyped by Ali in the SafeHouse
-//! research project. This applies that model to a coding agent.
+//! Ali Shahin Shamsabadi and Brian R. Bondy developed the idea this crate implements: the
+//! `L = I × C` lattice, write-once quarantine, and the routing/content asymmetry that
+//! makes injected text unable to redirect an action. Ali built the first prototype of it
+//! in SafeHouse; this applies the same idea to a coding agent.
 
 pub mod capability;
 pub mod event;
