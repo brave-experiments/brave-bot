@@ -2,7 +2,7 @@
 //!
 //! Runs turns one at a time. Each turn builds its own policy inside `turn::run`, so
 //! nothing about the interface can extend a policy's life beyond the turn that created
-//! it — the session only accumulates text for display.
+//! it: the session only accumulates text for display.
 //!
 //! Turns run synchronously: the interface shows "working" and stops accepting input until
 //! the reply arrives. That is honest about what is happening, and it keeps two turns from
@@ -74,8 +74,8 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.backspace();
             Action::Redraw
         }
-        // Arrows scroll the transcript. There is no cursor movement to conflict with —
-        // the input is a single line edited at its end — so the obvious keys are free to
+        // Arrows scroll the transcript. There is no cursor movement to conflict with,
+        // since the input is a single line edited at its end, so the obvious keys are free to
         // do the obvious thing rather than requiring PageUp.
         KeyCode::Up => {
             session.scroll_up(1);
@@ -237,7 +237,7 @@ fn run_turn<C: bua_agent::Confirmer>(
 
     // Kept so a failed turn does not lose the user's decisions. A turn that fails partway may
     // still have written something, and the rules recorded for it are inside the outcome we
-    // will not receive — so this is the floor, never an upgrade.
+    // will not receive, so this is the floor, never an upgrade.
     let fallback = trust.clone();
 
     match turn::run_with_trust(
@@ -245,7 +245,11 @@ fn run_turn<C: bua_agent::Confirmer>(
     ) {
         Ok(outcome) => {
             let trail = sink.events().to_vec();
-            session.complete(outcome.reply_for_display().to_string(), trail);
+            session.complete(
+                outcome.reply_for_display().to_string(),
+                trail,
+                outcome.tokens,
+            );
             if !outcome.clean {
                 session.note("a policy gate refused something during that turn");
             }

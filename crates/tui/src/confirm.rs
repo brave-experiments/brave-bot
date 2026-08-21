@@ -1,8 +1,8 @@
 //! Asking the user about a write, in the terminal.
 //!
 //! Turns run synchronously, so this can draw a prompt and block on a keypress from inside
-//! the turn that requested the write. The alternative — collecting writes and asking
-//! afterwards — would mean the model continuing on the assumption a write had happened.
+//! the turn that requested the write. The alternative, collecting writes and asking
+//! afterwards, would mean the model continuing on the assumption a write had happened.
 //!
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.

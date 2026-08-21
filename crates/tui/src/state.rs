@@ -5,6 +5,7 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use bua_core::event::Event;
+use std::time::{Duration, Instant};
 
 /// Who produced a transcript entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,15 @@ pub struct Session {
     pub scroll: u16,
     /// Confinement in force, reported so the user knows what they have.
     pub confinement: String,
+    /// How many turns have been submitted, which picks the indicator's word.
+    pub turns: usize,
+    /// Tokens spent across the whole session.
+    pub tokens: u64,
+    /// When the turn in flight started. `None` when idle.
+    ///
+    /// An `Instant` rather than a stored elapsed value so the display advances between redraws
+    /// without anything having to tick it.
+    started: Option<Instant>,
 }
 
 impl Session {
@@ -87,7 +97,26 @@ impl Session {
             show_trail: false,
             scroll: 0,
             confinement: confinement.into(),
+            turns: 0,
+            tokens: 0,
+            started: None,
         }
+    }
+
+    /// How long the turn in flight has been running, or zero when idle.
+    pub fn elapsed(&self) -> Duration {
+        self.started.map(|t| t.elapsed()).unwrap_or_default()
+    }
+
+    /// The indicator to show, or `None` when no turn is running.
+    pub fn indicator(&self) -> Option<crate::indicator::Indicator> {
+        (self.status == Status::Working).then(|| {
+            crate::indicator::Indicator::new(
+                self.turns.saturating_sub(1),
+                self.elapsed(),
+                self.tokens,
+            )
+        })
     }
 
     /// Accept a typed character. Ignored while a turn is running, so input cannot be
@@ -120,14 +149,20 @@ impl Session {
         self.transcript.push(Entry::user(prompt.clone()));
         self.status = Status::Working;
         self.scroll = 0;
+        self.turns += 1;
+        self.started = Some(Instant::now());
         Some(prompt)
     }
 
-    /// Record a completed turn.
-    pub fn complete(&mut self, reply: impl Into<String>, trail: Vec<Event>) {
+    /// Record a completed turn, and what it cost.
+    pub fn complete(&mut self, reply: impl Into<String>, trail: Vec<Event>, tokens: u64) {
         self.transcript.push(Entry::assistant(reply, trail));
         self.status = Status::Idle;
         self.scroll = 0;
+        self.started = None;
+        // Accumulated across the session: the figure answers "what has this cost me", which is
+        // about the session rather than the last turn.
+        self.tokens += tokens;
     }
 
     /// Record a failure. The turn is over either way, so the session returns to idle.
@@ -135,6 +170,7 @@ impl Session {
         self.transcript.push(Entry::system(message));
         self.status = Status::Idle;
         self.scroll = 0;
+        self.started = None;
     }
 
     pub fn note(&mut self, message: impl Into<String>) {
@@ -224,7 +260,7 @@ mod tests {
         let mut s = session();
         s.type_char('a');
         s.submit();
-        s.complete("the reply", Vec::new());
+        s.complete("the reply", Vec::new(), 0);
 
         assert_eq!(s.status, Status::Idle);
         assert_eq!(s.transcript.len(), 2);
@@ -253,6 +289,7 @@ mod tests {
                 capability: bua_core::capability::Capability::FileRead,
                 label: Label::untrusted_private(),
             }],
+            0,
         );
         assert_eq!(s.transcript[1].trail.len(), 1);
     }
@@ -293,5 +330,63 @@ mod tests {
         assert!(!s.is_quitting());
         s.quit();
         assert!(s.is_quitting());
+    }
+    /// The indicator only exists while a turn is in flight.
+    #[test]
+    fn the_indicator_appears_only_while_working() {
+        let mut s = session();
+        assert!(s.indicator().is_none());
+        s.type_char('a');
+        s.submit();
+        assert!(s.indicator().is_some());
+        s.complete("reply", Vec::new(), 0);
+        assert!(s.indicator().is_none());
+    }
+
+    /// Each turn advances the word, so a new turn is visibly a new turn.
+    #[test]
+    fn each_turn_gets_a_different_word() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        let first = s.indicator().expect("working").verb;
+        s.complete("r", Vec::new(), 0);
+
+        s.type_char('b');
+        s.submit();
+        let second = s.indicator().expect("working").verb;
+        assert_ne!(first, second);
+    }
+
+    /// The count is for the session, not the last turn: the question it answers is what the
+    /// whole conversation has cost.
+    #[test]
+    fn tokens_accumulate_across_turns() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.complete("r", Vec::new(), 1_000);
+        assert_eq!(s.tokens, 1_000);
+
+        s.type_char('b');
+        s.submit();
+        s.complete("r", Vec::new(), 500);
+        assert_eq!(s.tokens, 1_500);
+    }
+
+    /// A failed turn must stop the clock, or an idle session would keep counting.
+    #[test]
+    fn a_failure_stops_the_clock() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.fail("error");
+        assert_eq!(s.elapsed(), Duration::ZERO);
+        assert!(s.indicator().is_none());
+    }
+
+    #[test]
+    fn an_idle_session_has_no_elapsed_time() {
+        assert_eq!(session().elapsed(), Duration::ZERO);
     }
 }

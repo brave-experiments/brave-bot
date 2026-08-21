@@ -2,7 +2,7 @@
 //!
 //! The answer decides how the session behaves. Trusting the directory means work inside it
 //! proceeds without a prompt for every write, because reads from it return trusted data.
-//! Declining means everything is untrusted, so every write is shown — which is the correct
+//! Declining means everything is untrusted, so every write is shown, which is the correct
 //! behaviour for a directory whose contents came from somewhere else.
 //!
 //! Nothing is trusted by default. An unreadable terminal, an unexpected key, or a lost event

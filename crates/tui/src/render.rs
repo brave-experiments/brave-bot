@@ -1,6 +1,6 @@
 //! Drawing the session.
 //!
-//! Untrusted content — model replies, tool output — is shown, but the interface makes its
+//! Untrusted content, whether model replies or tool output, is shown, but the interface makes its
 //! provenance visible rather than presenting everything as equally authoritative. That is
 //! the point of showing labels in the trail: a user can see which text the system trusted
 //! and which it merely carried.
@@ -106,13 +106,6 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
     }
 
-    if session.status == Status::Working {
-        lines.push(Line::from(Span::styled(
-            format!("{TURN_MARKER} working…"),
-            Style::default().fg(Color::Green),
-        )));
-    }
-
     lines
 }
 
@@ -183,7 +176,21 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     let working = session.status == Status::Working;
 
     let body = if working {
-        Line::from(Span::styled("  waiting for the model…", dim()))
+        match session.indicator() {
+            Some(indicator) => Line::from(vec![
+                Span::styled(
+                    format!("  {} ", indicator.glyph),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::styled(
+                    format!("{}… ", indicator.verb),
+                    Style::default().fg(Color::Green),
+                ),
+                // Dim: the counters answer a question without competing for attention.
+                Span::styled(indicator.detail(), dim()),
+            ]),
+            None => Line::from(Span::styled("  waiting for the model…", dim())),
+        }
     } else {
         Line::from(vec![
             Span::styled("> ", Style::default().fg(Color::Cyan)),
@@ -270,13 +277,44 @@ mod tests {
     }
 
     #[test]
-    fn a_working_session_says_so() {
+    fn a_working_session_shows_the_indicator() {
         let mut session = Session::new("partial");
         session.type_char('a');
         session.submit();
         let output = rendered(&session);
-        assert!(output.contains("working"));
-        assert!(output.contains("waiting for the model"));
+
+        let indicator = session.indicator().expect("a turn is in flight");
+        assert!(
+            output.contains(indicator.verb),
+            "the indicator's word is missing: {output}"
+        );
+        assert!(
+            output.contains(indicator.glyph),
+            "the spinner glyph is missing: {output}"
+        );
+        // Shown from the start, so a slow first response still reads as alive.
+        assert!(output.contains("0s"), "no elapsed time: {output}");
+    }
+
+    /// Tokens accumulated earlier in the session appear once there are some to report.
+    #[test]
+    fn the_indicator_reports_accumulated_tokens() {
+        let mut session = Session::new("partial");
+        session.type_char('a');
+        session.submit();
+        session.complete("first reply", Vec::new(), 38_300);
+        session.type_char('b');
+        session.submit();
+
+        let output = rendered(&session);
+        assert!(output.contains("38.3k tokens"), "no token count: {output}");
+    }
+
+    /// An idle session shows no indicator at all.
+    #[test]
+    fn an_idle_session_shows_no_indicator() {
+        let session = Session::new("partial");
+        assert!(session.indicator().is_none());
     }
 
     #[test]
@@ -286,7 +324,7 @@ mod tests {
             session.type_char(c);
         }
         session.submit();
-        session.complete("it is a project", Vec::new());
+        session.complete("it is a project", Vec::new(), 0);
 
         let output = rendered(&session);
         assert!(output.contains("what is this"), "the prompt is not echoed");
@@ -308,6 +346,7 @@ mod tests {
                 capability: Capability::FileRead,
                 label: Label::untrusted_private(),
             }],
+            0,
         );
 
         assert!(!rendered(&session).contains("(U,priv)"));
@@ -340,6 +379,7 @@ mod tests {
                 detail: String::new(),
                 reason: "injection blocked".into(),
             }],
+            0,
         );
 
         assert!(rendered(&session).contains("injection blocked"));
@@ -358,7 +398,7 @@ mod tests {
         let mut session = Session::new("none");
         session.type_char('a');
         session.submit();
-        session.complete("x".repeat(5_000), Vec::new());
+        session.complete("x".repeat(5_000), Vec::new(), 0);
         assert!(rendered(&session).contains('x'));
     }
 
@@ -379,7 +419,7 @@ mod tests {
         for turn in 0..40 {
             session.type_char('q');
             session.submit();
-            session.complete(format!("reply number {turn}"), Vec::new());
+            session.complete(format!("reply number {turn}"), Vec::new(), 0);
         }
 
         let bottom = rendered(&session);
