@@ -423,7 +423,7 @@ fn write_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             // The file now holds this data, so the map must say what the path means.
             policy.reconcile_after_write(&proposed_path, body_label);
-            return own_words(format!("wrote {proposed_path}"));
+            own_words(format!("wrote {proposed_path}"))
         }
         Err(e) => own_words(format!("error: {e}")),
     }
@@ -525,9 +525,9 @@ fn edit_file<S: Sink, C: Confirmer>(
     match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
-            return own_words(format!(
+            own_words(format!(
                 "edited {proposed_path}: {occurrences} replacement(s)"
-            ));
+            ))
         }
         Err(e) => own_words(format!("error: {e}")),
     }
