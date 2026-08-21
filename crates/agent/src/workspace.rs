@@ -567,11 +567,14 @@ impl Workspace {
         };
 
         let root = self.resolve(&relative)?;
-        let label = policy.observe(Capability::FileRead)?;
 
         let mut found = Vec::new();
         self.walk_filtered(&root, glob.as_deref(), &mut found)?;
         found.sort();
+
+        // Labelled after the walk, because which paths were visited is not known before it. A
+        // listing is trusted only if every path in it is.
+        let label = policy.observe_paths(Capability::FileRead, found.iter().map(String::as_str))?;
 
         // `walk` collects one entry past the cap so reaching it is detectable. Which
         // entries survive is down to traversal order, so a truncated listing is a sample
@@ -645,11 +648,13 @@ impl Workspace {
         };
 
         let root = self.resolve(&relative)?;
-        let label = policy.observe(Capability::FileRead)?;
 
         let mut paths = Vec::new();
         self.walk_filtered(&root, glob.as_deref(), &mut paths)?;
         paths.sort();
+
+        // Trusted only if every file the search reads is trusted.
+        let label = policy.observe_paths(Capability::FileRead, paths.iter().map(String::as_str))?;
 
         // Collected one past the cap for the same reason as `walk`: reaching the limit has
         // to be distinguishable from happening to have exactly that many matches.

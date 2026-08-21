@@ -160,9 +160,15 @@ pub fn available() -> Vec<Tool> {
 pub struct Output {
     pub call_id: Option<String>,
     pub tool: String,
-    /// Rendered result. Untrusted — it is workspace content — and released for the model
-    /// to read, which is not an effect.
-    pub text: String,
+    /// The rendered result, still labelled.
+    ///
+    /// Deliberately not a plain `String`: whether the planner may see this is the kernel's
+    /// decision, made from the label in `Policy::present`. A tool that could hand back bare
+    /// text would be a tool that decided for itself, and untrusted workspace content would
+    /// reach the planner's context by whichever tool forgot.
+    pub text: Labelled<String>,
+    /// Where the content came from, for the reference the planner is shown instead.
+    pub origin: String,
 }
 
 /// Run one tool call the model asked for.
@@ -183,25 +189,36 @@ pub fn dispatch<S: Sink, C: Confirmer>(
             return Output {
                 call_id: call.id.clone(),
                 tool: name,
-                text: format!("error: the arguments were not valid JSON: {e}"),
+                text: Labelled::trusted(format!("error: the arguments were not valid JSON: {e}")),
+                origin: String::new(),
             };
         }
     };
 
-    let text = match name.as_str() {
+    let (text, origin) = match name.as_str() {
         "read_file" => read_file(policy, workspace, &arguments),
         "list_files" => list_files(policy, workspace, &arguments),
         "search" => search(policy, workspace, &arguments),
         "write_file" => write_file(policy, workspace, confirmer, &arguments),
         "edit_file" => edit_file(policy, workspace, confirmer, &arguments),
-        other => format!("error: no such tool '{other}'"),
+        other => (
+            Labelled::trusted(format!("error: no such tool '{other}'")),
+            String::new(),
+        ),
     };
 
     Output {
         call_id: call.id.clone(),
         tool: name,
         text,
+        origin,
     }
+}
+
+/// A tool's own words — an error, a refusal, a confirmation — which the driver wrote and so are
+/// trusted. Distinct from workspace content, which never is unless the trust map says so.
+fn own_words(text: impl Into<String>) -> (Labelled<String>, String) {
+    (Labelled::trusted(text.into()), String::new())
 }
 
 /// Extract a string argument the model supplied, labelled untrusted because it is.
@@ -217,14 +234,14 @@ fn read_file<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     arguments: &Value,
-) -> String {
+) -> (Labelled<String>, String) {
     let Some(proposed) = argument(arguments, "path") else {
-        return "error: 'path' is required and must be a string".to_string();
+        return own_words("error: 'path' is required and must be a string");
     };
 
     let path = match policy.promote_confined_read("read_file", "path", &proposed) {
         Ok(p) => p,
-        Err(denial) => return format!("refused: {denial}"),
+        Err(denial) => return own_words(format!("refused: {denial}")),
     };
 
     // A model that omits these gets the head of the file, which is the useful default.
@@ -239,13 +256,18 @@ fn read_file<S: Sink>(
         .unwrap_or(u64::MAX)
         .min(usize::MAX as u64) as usize;
 
+    let (proposed_path, _) = proposed.into_parts_for_decoding();
+
     match workspace.read_page(policy, &path, offset, limit) {
         Ok(page) => {
+            let label = page.label();
+            // Rendered inside the label: the numbers come from the page's own metadata, and the
+            // text stays wrapped so only `Policy::present` decides whether the model sees it.
             let proof = policy.authorise_content_release("read_file", "contents");
-            let page = page.declassify(&proof);
-            render_page(&page)
+            let rendered = render_page(&page.declassify(&proof));
+            (Labelled::new(rendered, label), proposed_path)
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => own_words(format!("error: {e}")),
     }
 }
 
@@ -294,14 +316,14 @@ fn list_files<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     arguments: &Value,
-) -> String {
+) -> (Labelled<String>, String) {
     let proposed = argument(arguments, "directory").unwrap_or_else(|| {
         Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
     });
 
     let directory = match policy.promote_confined_read("list_files", "directory", &proposed) {
         Ok(d) => d,
-        Err(denial) => return format!("refused: {denial}"),
+        Err(denial) => return own_words(format!("refused: {denial}")),
     };
 
     // A filter only narrows a confined, non-destructive read, so it is promotable on the
@@ -309,16 +331,19 @@ fn list_files<S: Sink>(
     let pattern = match argument(arguments, "pattern") {
         Some(proposed) => match policy.promote_confined_read("list_files", "pattern", &proposed) {
             Ok(p) => Some(p),
-            Err(denial) => return format!("refused: {denial}"),
+            Err(denial) => return own_words(format!("refused: {denial}")),
         },
         None => None,
     };
 
+    let (proposed_dir, _) = proposed.into_parts_for_decoding();
+
     match workspace.list(policy, &directory, pattern.as_ref()) {
         Ok(listing) => {
+            let label = listing.label();
             let proof = policy.authorise_content_release("list_files", "paths");
             let listing = listing.declassify(&proof);
-            if listing.files.is_empty() {
+            let rendered = if listing.files.is_empty() {
                 "(no files)".to_string()
             } else if listing.truncated {
                 // Said plainly, because a model given a silently capped listing will treat
@@ -331,9 +356,10 @@ fn list_files<S: Sink>(
                 )
             } else {
                 listing.files.join("\n")
-            }
+            };
+            (Labelled::new(rendered, label), proposed_dir)
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => own_words(format!("error: {e}")),
     }
 }
 
@@ -347,12 +373,12 @@ fn write_file<S: Sink, C: Confirmer>(
     workspace: &Workspace,
     confirmer: &mut C,
     arguments: &Value,
-) -> String {
+) -> (Labelled<String>, String) {
     let Some(path) = argument(arguments, "path") else {
-        return "error: 'path' is required and must be a string".to_string();
+        return own_words("error: 'path' is required and must be a string");
     };
     let Some(contents) = argument(arguments, "contents") else {
-        return "error: 'contents' is required and must be a string".to_string();
+        return own_words("error: 'contents' is required and must be a string");
     };
 
     // The path is routing, so naming a destination from it is not a content decision.
@@ -383,10 +409,10 @@ fn write_file<S: Sink, C: Confirmer>(
         };
 
         if confirmer.confirm_write(&request) == Decision::Reject {
-            return format!(
+            return own_words(format!(
                 "refused: the user did not approve writing {proposed_path}. Do not retry \
                  the same write; ask what they would prefer."
-            );
+            ));
         }
     }
 
@@ -397,9 +423,9 @@ fn write_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             // The file now holds this data, so the map must say what the path means.
             policy.reconcile_after_write(&proposed_path, body_label);
-            format!("wrote {proposed_path}")
+            return own_words(format!("wrote {proposed_path}"));
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => own_words(format!("error: {e}")),
     }
 }
 
@@ -417,15 +443,15 @@ fn edit_file<S: Sink, C: Confirmer>(
     workspace: &Workspace,
     confirmer: &mut C,
     arguments: &Value,
-) -> String {
+) -> (Labelled<String>, String) {
     let Some(proposed) = argument(arguments, "path") else {
-        return "error: 'path' is required and must be a string".to_string();
+        return own_words("error: 'path' is required and must be a string");
     };
     let Some(old_text) = argument(arguments, "old_text") else {
-        return "error: 'old_text' is required and must be a string".to_string();
+        return own_words("error: 'old_text' is required and must be a string");
     };
     let Some(new_text) = argument(arguments, "new_text") else {
-        return "error: 'new_text' is required and must be a string".to_string();
+        return own_words("error: 'new_text' is required and must be a string");
     };
     // Absent or non-boolean means the strict single-match behaviour, which is the safe
     // reading of an ambiguous argument.
@@ -438,12 +464,12 @@ fn edit_file<S: Sink, C: Confirmer>(
     // promoted here exactly as it is for read_file. The write below is what needs a person.
     let path = match policy.promote_confined_read("edit_file", "path", &proposed) {
         Ok(p) => p,
-        Err(denial) => return format!("refused: {denial}"),
+        Err(denial) => return own_words(format!("refused: {denial}")),
     };
 
     let source = match workspace.read(policy, &path) {
         Ok(contents) => contents,
-        Err(e) => return format!("error: {e}"),
+        Err(e) => return own_words(format!("error: {e}")),
     };
 
     // Locating the passage means comparing text, which is a decision. It is only permissible
@@ -456,7 +482,7 @@ fn edit_file<S: Sink, C: Confirmer>(
     // this comparison is safe to make.
     let current = match policy.read_trusted_content("edit_file", &source) {
         Ok(text) => text,
-        Err(denial) => return format!("refused: {denial}"),
+        Err(denial) => return own_words(format!("refused: {denial}")),
     };
 
     let (old_text, _) = old_text.into_parts_for_decoding();
@@ -464,7 +490,7 @@ fn edit_file<S: Sink, C: Confirmer>(
 
     let replaced = match crate::replace::replace(&current, &old_text, &new_text, replace_all) {
         Ok(r) => r,
-        Err(e) => return format!("error: {e}"),
+        Err(e) => return own_words(format!("error: {e}")),
     };
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
@@ -486,10 +512,10 @@ fn edit_file<S: Sink, C: Confirmer>(
         };
 
         if confirmer.confirm_write(&request) == Decision::Reject {
-            return format!(
+            return own_words(format!(
                 "refused: the user did not approve editing {proposed_path}. Do not retry the \
                  same edit; ask what they would prefer."
-            );
+            ));
         }
     }
 
@@ -499,15 +525,21 @@ fn edit_file<S: Sink, C: Confirmer>(
     match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
-            format!("edited {proposed_path}: {occurrences} replacement(s)")
+            return own_words(format!(
+                "edited {proposed_path}: {occurrences} replacement(s)"
+            ));
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => own_words(format!("error: {e}")),
     }
 }
 
-fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments: &Value) -> String {
+fn search<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    arguments: &Value,
+) -> (Labelled<String>, String) {
     let Some(pattern) = argument(arguments, "pattern") else {
-        return "error: 'pattern' is required and must be a string".to_string();
+        return own_words("error: 'pattern' is required and must be a string");
     };
     let proposed_dir = argument(arguments, "directory").unwrap_or_else(|| {
         Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
@@ -515,26 +547,29 @@ fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments:
 
     let pattern = match policy.promote_confined_read("search", "pattern", &pattern) {
         Ok(p) => p,
-        Err(denial) => return format!("refused: {denial}"),
+        Err(denial) => return own_words(format!("refused: {denial}")),
     };
     let directory = match policy.promote_confined_read("search", "directory", &proposed_dir) {
         Ok(d) => d,
-        Err(denial) => return format!("refused: {denial}"),
+        Err(denial) => return own_words(format!("refused: {denial}")),
     };
 
     let include = match argument(arguments, "include") {
         Some(proposed) => match policy.promote_confined_read("search", "include", &proposed) {
             Ok(p) => Some(p),
-            Err(denial) => return format!("refused: {denial}"),
+            Err(denial) => return own_words(format!("refused: {denial}")),
         },
         None => None,
     };
 
+    let (proposed_where, _) = proposed_dir.into_parts_for_decoding();
+
     match workspace.grep(policy, &pattern, &directory, include.as_ref()) {
         Ok(found) => {
+            let label = found.label();
             let proof = policy.authorise_content_release("search", "matches");
             let found = found.declassify(&proof);
-            if found.matches.is_empty() {
+            let rendered = if found.matches.is_empty() {
                 "(no matches)".to_string()
             } else {
                 let rendered = found
@@ -554,9 +589,10 @@ fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments:
                 } else {
                     rendered
                 }
-            }
+            };
+            (Labelled::new(rendered, label), proposed_where)
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => own_words(format!("error: {e}")),
     }
 }
 

@@ -109,6 +109,17 @@ impl SlotStore {
         items
     }
 
+    /// Hand a slot's content to an effect, still labelled.
+    ///
+    /// For the case where the planner named a reference and the kernel is carrying out what it
+    /// asked. The value stays wrapped, so a caller can pass it to a write but not read it.
+    ///
+    /// Bypasses the reader ceiling deliberately: a ceiling limits what a *reader* may see, and
+    /// this is not a read. Nobody sees these bytes; they travel from the slot to the effect.
+    pub fn take_for_effect(&self, id: &SlotId) -> Option<Labelled<String>> {
+        self.slots.get(id).cloned()
+    }
+
     /// Mint a single-use write capability with a fixed label.
     ///
     /// The label is supplied by the caller minting the writer — the policy layer —
@@ -188,6 +199,41 @@ impl SlotWriter<'_> {
             .insert(self.id, Labelled::new(content.into(), self.label));
         Ok(())
     }
+
+    /// Write an already-labelled value, returning its measurements.
+    ///
+    /// The measuring happens here because the shape of untrusted content is the only thing
+    /// anyone outside is allowed to learn about it. Measuring elsewhere would mean the caller
+    /// holding the bytes, which is the thing quarantine exists to prevent.
+    ///
+    /// The value's own label is kept rather than the writer's when the value is *more*
+    /// restricted, so quarantining cannot raise integrity or lower confidentiality by accident.
+    pub fn write_measured(self, content: Labelled<String>) -> Result<Measured, SlotError> {
+        if self.store.is_written(&self.id) {
+            return Err(SlotError::AlreadyWritten(self.id));
+        }
+
+        let label = crate::label::taint_all([self.label, content.label()]);
+
+        // Reading to measure, not to decide: nothing about the bytes influences control flow,
+        // and the counts leave here as numbers.
+        let proof = crate::value::Declassification::authorise("measured on the way into a slot");
+        let text = content.declassify(&proof);
+        let measured = Measured {
+            lines: text.lines().count(),
+            bytes: text.len(),
+        };
+
+        self.store.slots.insert(self.id, Labelled::new(text, label));
+        Ok(measured)
+    }
+}
+
+/// The shape of quarantined content: everything anyone outside the slot store may know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Measured {
+    pub lines: usize,
+    pub bytes: usize,
 }
 
 /// A read capability scoped to a fixed set of slots, with a label ceiling.

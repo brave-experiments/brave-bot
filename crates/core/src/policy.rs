@@ -312,6 +312,53 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(label)
     }
 
+    /// Record an observation spanning several paths, taking the meet of their integrity.
+    ///
+    /// A listing or a search touches many files, so it is trusted only if *every* path it
+    /// visited is. One untrusted file among them taints the whole result, which is the correct
+    /// reading: the result is a function of all of them.
+    pub fn observe_paths<'p>(
+        &mut self,
+        capability: Capability,
+        paths: impl IntoIterator<Item = &'p str>,
+    ) -> Gated<Label> {
+        let base = capability.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: format!("'{capability}' produces no observation to label"),
+        })?;
+
+        let mut integrity = Integrity::Trusted;
+        let mut visited = 0usize;
+        for path in paths {
+            visited += 1;
+            let this = match self.trust.integrity_of(path) {
+                Some(Integrity::Trusted) => Integrity::Trusted,
+                _ => Integrity::Untrusted,
+            };
+            integrity = integrity.meet(this);
+        }
+
+        // A result covering nothing is the driver's own empty answer, not workspace content.
+        if visited == 0 {
+            integrity = Integrity::Trusted;
+        }
+
+        let label = Label::new(integrity, base.confidentiality);
+        self.sink.emit(Event::Observed { capability, label });
+        self.allow(
+            "trust",
+            format!(
+                "{visited} path(s) observed together, {}",
+                match integrity {
+                    Integrity::Trusted => "all trusted",
+                    Integrity::Untrusted => "at least one untrusted",
+                }
+            ),
+        );
+        self.absorb(integrity);
+        Ok(label)
+    }
+
     /// Label text the model produced, at the integrity of the context it came from.
     ///
     /// **This is not a relabel and never upgrades anything.** The model's output is a function
@@ -362,6 +409,102 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
         let proof = Declassification::authorise("trusted content examined in-process");
         Ok(value.clone().declassify(&proof))
+    }
+
+    /// Decide what the planner is told about content, and quarantine it if it may not see it.
+    ///
+    /// This is the gate the rule in CLAUDE.md rests on. Trusted content is returned visible,
+    /// because a path the user vouched for holds no injected text. Untrusted content is written
+    /// into a slot and only a [`Reference`] comes back: shape and provenance, never a byte.
+    ///
+    /// The decision is the kernel's and is made from the label alone. A tool cannot ask for
+    /// content to be shown, and the planner cannot ask either — asking is not a mechanism here,
+    /// because a planner that could request the bytes would be a planner an injection could
+    /// talk into requesting them.
+    ///
+    /// `slot` names where quarantined content goes. It is chosen by the caller from trusted
+    /// input — a counter, a path — never from content.
+    pub fn present(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        origin: &str,
+        content: &Labelled<String>,
+        slots: &mut crate::slot::SlotStore,
+    ) -> Gated<crate::reference::Presentation> {
+        let label = content.label();
+
+        if label.is_trusted() {
+            self.allow(
+                "present",
+                format!("{tool}: {origin} is {label}, so the planner may read it"),
+            );
+            let proof = Declassification::authorise("trusted content shown to the planner");
+            return Ok(crate::reference::Presentation::Visible(
+                content.clone().declassify(&proof),
+            ));
+        }
+
+        // Untrusted. The bytes go into quarantine and the planner gets a description. The
+        // measurements are taken here, inside the kernel, because taking them outside would
+        // mean the driver holding the content to measure it.
+        let writer = slots.writer_for(slot.clone(), label).map_err(|e| Denial {
+            principle: Principle::Confinement,
+            message: format!("{tool}: could not quarantine {origin}: {e}"),
+        })?;
+
+        let measured = writer.write_measured(content.clone()).map_err(|e| Denial {
+            principle: Principle::Confinement,
+            message: format!("{tool}: could not quarantine {origin}: {e}"),
+        })?;
+
+        self.sink.emit(Event::SlotWritten {
+            slot: slot.clone(),
+            label,
+        });
+        self.allow(
+            "present",
+            format!(
+                "{tool}: {origin} is {label}, quarantined as {slot}; the planner sees a \
+                 reference only"
+            ),
+        );
+        // The planner has learned nothing but shape, so the context is not tainted by this.
+        Ok(crate::reference::Presentation::Quarantined(
+            crate::reference::Reference::new(slot, origin, measured.lines, measured.bytes, label),
+        ))
+    }
+
+    /// Resolve a reference the planner supplied back into content, for an effect.
+    ///
+    /// The planner names a slot; the kernel produces the bytes. This is what lets an agent move
+    /// untrusted content into a file without ever having seen it. The slot id is routing — the
+    /// planner chose it, so it must be trusted — and the content that comes back keeps the
+    /// label it was quarantined at.
+    pub fn resolve(
+        &mut self,
+        tool: &str,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<Labelled<String>> {
+        match slots.label_of(slot) {
+            Some(label) => {
+                self.allow(
+                    "resolve",
+                    format!("{tool}: {slot} resolved to its quarantined content, {label}"),
+                );
+                self.absorb(label.integrity);
+                slots.take_for_effect(slot).ok_or_else(|| Denial {
+                    principle: Principle::Confinement,
+                    message: format!("{tool}: '{slot}' has no content"),
+                })
+            }
+            None => Err(self.deny(
+                "resolve",
+                Principle::Confinement,
+                format!("{tool}: '{slot}' is not a reference to anything"),
+            )),
+        }
     }
 
     /// Whether writing data of `contents` integrity to `path` must be shown to a person.
