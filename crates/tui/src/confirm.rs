@@ -39,25 +39,38 @@ impl<'t, B: Backend> TerminalConfirmer<'t, B> {
 
 impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
-        // A terminal that cannot be drawn to cannot carry a question, so refuse rather
-        // than proceed unseen.
-        if self.terminal.draw(|frame| draw(frame, request)).is_err() {
-            return Decision::Reject;
-        }
+        ask(self.terminal, request)
+    }
+}
 
-        loop {
-            match event::read() {
-                Ok(TermEvent::Key(key)) => match key.code {
-                    KeyCode::Char('y' | 'Y') => return Decision::Approve,
-                    KeyCode::Char('n' | 'N') | KeyCode::Esc => return Decision::Reject,
-                    // Enter is deliberately not an approval: it is the key most likely to
-                    // be pressed out of habit.
-                    _ => continue,
-                },
-                Ok(_) => continue,
-                // Losing the event stream must not approve anything.
-                Err(_) => return Decision::Reject,
-            }
+/// Draw the prompt and wait for an answer.
+///
+/// Standalone as well as available through [`TerminalConfirmer`], because a turn running on a
+/// worker thread cannot hold the terminal: the main thread calls this on its behalf.
+pub fn ask<B: Backend>(terminal: &mut Terminal<B>, request: &WriteRequest) -> Decision {
+    // A terminal that cannot be drawn to cannot carry a question, so refuse rather
+    // than proceed unseen.
+    if terminal.draw(|frame| draw(frame, request)).is_err() {
+        return Decision::Reject;
+    }
+
+    read_decision()
+}
+
+/// Block until the user answers.
+fn read_decision() -> Decision {
+    loop {
+        match event::read() {
+            Ok(TermEvent::Key(key)) => match key.code {
+                KeyCode::Char('y' | 'Y') => return Decision::Approve,
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => return Decision::Reject,
+                // Enter is deliberately not an approval: it is the key most likely to
+                // be pressed out of habit.
+                _ => continue,
+            },
+            Ok(_) => continue,
+            // Losing the event stream must not approve anything.
+            Err(_) => return Decision::Reject,
         }
     }
 }

@@ -7,6 +7,7 @@
 pub mod app;
 pub mod confirm;
 pub mod indicator;
+pub mod remote_confirm;
 pub mod render;
 pub mod state;
 pub mod trust_prompt;

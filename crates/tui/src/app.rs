@@ -25,6 +25,8 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use std::io;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use crate::render;
@@ -33,6 +35,10 @@ use crate::state::Session;
 /// How long to wait for a key before redrawing. Short enough that a status change appears
 /// promptly, long enough not to spin.
 const POLL: Duration = Duration::from_millis(100);
+
+/// How often to redraw while a turn runs. Matches the spinner's own frame time so the animation
+/// advances by one glyph per redraw rather than skipping.
+const FRAME: Duration = Duration::from_millis(120);
 
 /// What a key press asked for.
 #[derive(Debug, PartialEq, Eq)]
@@ -162,7 +168,6 @@ fn event_loop(
     workspace: &Workspace,
     confinement: String,
 ) -> io::Result<()> {
-    let egress = Egress::new();
     let mut session = Session::new(confinement);
 
     // Asked once, before any turn: the answer decides whether ordinary work in this directory
@@ -196,53 +201,100 @@ fn event_loop(
         match action {
             Action::Quit => return Ok(()),
             Action::Submit(prompt) => {
-                // Show "working" before the request goes out, so the interface is not
-                // frozen without explanation.
-                terminal
-                    .draw(|frame| render::draw(frame, &session))
-                    .map_err(io::Error::other)?;
-                // The confirmer borrows the terminal to draw its prompt, so it is created
-                // per turn rather than held for the loop's lifetime.
-                let mut confirmer = crate::confirm::TerminalConfirmer::new(terminal);
                 // The map is threaded through: a turn that writes untrusted data into a
                 // trusted path records that, and the next turn must honour it.
-                trust = run_turn(
-                    &mut session,
-                    config,
-                    &egress,
-                    workspace,
-                    &mut confirmer,
-                    &prompt,
-                    trust,
-                );
+                trust =
+                    run_turn_animated(terminal, &mut session, config, workspace, &prompt, trust)?;
             }
             Action::None | Action::Redraw => {}
         }
     }
 }
 
-/// Run one turn and fold the result into the session.
+/// Run a turn on a worker thread, redrawing while it works.
+///
+/// The turn itself blocks on network requests, so running it here would freeze the indicator on
+/// its first frame and make a slow model look like a hang. Off-thread, the loop below keeps
+/// drawing, and the elapsed time and spinner advance on their own.
+///
+/// Write approvals come back over a channel because only this thread owns the terminal. The
+/// worker blocks until an answer arrives, which is what a write must wait for anyway.
 #[allow(clippy::too_many_arguments)]
-fn run_turn<C: bua_agent::Confirmer>(
+fn run_turn_animated(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
     config: &Config,
-    egress: &Egress,
     workspace: &Workspace,
-    confirmer: &mut C,
     prompt: &str,
     trust: TrustStore,
-) -> TrustStore {
-    let mut sink = RecordingSink::new();
-    let task = Task::new(prompt);
+) -> io::Result<TrustStore> {
+    let (question_tx, question_rx) = mpsc::channel::<bua_agent::WriteRequest>();
+    let (answer_tx, answer_rx) = mpsc::channel::<bua_agent::Decision>();
 
-    // Kept so a failed turn does not lose the user's decisions. A turn that fails partway may
-    // still have written something, and the rules recorded for it are inside the outcome we
-    // will not receive, so this is the floor, never an upgrade.
+    // Cloned rather than borrowed so the worker owns everything it needs. Config and Workspace
+    // are cheap handles; Egress builds its own connection pool.
+    let worker_config = config.clone();
+    let worker_workspace = workspace.clone();
+    let task = Task::new(prompt);
+    // Kept so a failed turn does not lose the user's decisions.
     let fallback = trust.clone();
 
-    match turn::run_with_trust(
-        config, egress, workspace, &task, confirmer, &mut sink, trust,
-    ) {
+    let worker = thread::spawn(move || {
+        let mut sink = RecordingSink::new();
+        let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(question_tx, answer_rx);
+        let egress = Egress::new();
+        let outcome = turn::run_with_trust(
+            &worker_config,
+            &egress,
+            &worker_workspace,
+            &task,
+            &mut confirmer,
+            &mut sink,
+            trust,
+        );
+        (outcome, sink)
+    });
+
+    // Redraw until the turn finishes, answering any approval it asks for on the way.
+    loop {
+        terminal
+            .draw(|frame| render::draw(frame, session))
+            .map_err(io::Error::other)?;
+
+        match question_rx.recv_timeout(FRAME) {
+            Ok(request) => {
+                let decision = crate::confirm::ask(terminal, &request);
+                // A closed channel means the worker is already gone, so there is nothing to
+                // answer and the loop below will collect its result.
+                let _ = answer_tx.send(decision);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // The worker dropped its sender, so the turn is over.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let (outcome, sink) = worker.join().unwrap_or_else(|_| {
+        // A panicked turn is reported rather than propagated: the session survives.
+        (
+            Err(turn::TurnError::Precommit(
+                "the turn ended unexpectedly".to_string(),
+            )),
+            RecordingSink::new(),
+        )
+    });
+
+    Ok(fold_outcome(session, outcome, sink, fallback))
+}
+
+/// Fold a finished turn into the session.
+fn fold_outcome(
+    session: &mut Session,
+    outcome: Result<turn::Outcome, turn::TurnError>,
+    sink: RecordingSink,
+    fallback: TrustStore,
+) -> TrustStore {
+    match outcome {
         Ok(outcome) => {
             let trail = sink.events().to_vec();
             session.complete(
