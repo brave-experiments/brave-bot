@@ -1,0 +1,17 @@
+[package]
+name = "bua-aichat"
+description = "Client for the OpenAI-compatible aichat backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bua-config = { path = "../config" }
+bua-core = { path = "../core" }
+bua-net = { path = "../net" }
+bua-signing = { path = "../signing" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+

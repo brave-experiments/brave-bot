@@ -80,6 +80,21 @@ impl<T> Labelled<T> {
         }
     }
 
+    /// Split a labelled value into its parts at a protocol boundary.
+    ///
+    /// Needed where a transport envelope must be decoded — a JSON response body, say —
+    /// because the decoder has to see the bytes. The label is returned alongside so it
+    /// cannot be dropped silently, and callers are expected to re-wrap the decoded
+    /// value immediately.
+    ///
+    /// This is the one place the "carryable but not inspectable" rule is relaxed, so it
+    /// is named to stand out in review. It must never be used to *decide* anything:
+    /// branching on untrusted content requires [`Labelled::declassify`] and a
+    /// policy-minted witness.
+    pub fn into_parts_for_decoding(self) -> (T, Label) {
+        (self.value, self.label)
+    }
+
     /// Re-label a value, which may only degrade it. Returns `None` if the requested
     /// label is not reachable by degradation from the current one.
     pub fn relabel(self, to: Label) -> Option<Self> {
