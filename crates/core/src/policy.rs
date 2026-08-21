@@ -19,8 +19,9 @@
 
 use crate::capability::{Capability, CapabilitySet};
 use crate::event::{Event, Principle, Role, Sink};
-use crate::label::Label;
+use crate::label::{Integrity, Label};
 use crate::slot::SlotId;
+use crate::trust::TrustStore;
 use crate::value::{Declassification, Labelled};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -134,6 +135,18 @@ pub struct Policy<'sink, S: Sink> {
     grants: Vec<Grant>,
     sink: &'sink mut S,
     denials: usize,
+    /// Which paths the user vouched for.
+    trust: TrustStore,
+    /// The integrity of every observation this turn has made, met together.
+    ///
+    /// Starts trusted — the task is the user's own words — and drops to untrusted the moment
+    /// the turn observes anything untrusted. It never recovers: a later trusted read does not
+    /// un-see what was already read.
+    ///
+    /// This is not a way to make untrusted data trusted. It is the record of what the model's
+    /// context contains, which is the only thing that can say whether text the model produced
+    /// is derived from trusted input. See [`Policy::label_model_output`].
+    context: Integrity,
 }
 
 /// Shows the turn's shape but not the sink, and never any content.
@@ -143,6 +156,7 @@ impl<S: Sink> fmt::Debug for Policy<'_, S> {
             .field("routing_fields", &self.routing.keys().collect::<Vec<_>>())
             .field("pending_grants", &self.grants.len())
             .field("denials", &self.denials)
+            .field("context", &self.context)
             .finish_non_exhaustive()
     }
 }
@@ -177,6 +191,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             grants: Vec::new(),
             sink,
             denials: 0,
+            trust: TrustStore::new(),
+            context: Integrity::Trusted,
         })
     }
 
@@ -227,7 +243,165 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             message: format!("'{capability}' produces no observation to label"),
         })?;
         self.sink.emit(Event::Observed { capability, label });
+        self.absorb(label.integrity);
         Ok(label)
+    }
+
+    /// Install the user's trust decisions, before the turn runs.
+    pub fn with_trust(mut self, trust: TrustStore) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    /// The trust decisions in force, including any this turn recorded.
+    pub fn trust(&self) -> &TrustStore {
+        &self.trust
+    }
+
+    /// The integrity of everything the model's context contains.
+    pub fn context_integrity(&self) -> Integrity {
+        self.context
+    }
+
+    /// Lower the recorded context integrity to include `observed`.
+    ///
+    /// One-way: [`Integrity::meet`] cannot raise it, so nothing a turn reads later restores
+    /// integrity it has already lost.
+    fn absorb(&mut self, observed: Integrity) {
+        let lowered = self.context.meet(observed);
+        if lowered != self.context {
+            self.context = lowered;
+            self.allow(
+                "context",
+                "untrusted data entered the context; output is untrusted from here".to_string(),
+            );
+        }
+    }
+
+    /// Record an observation of a file whose integrity the trust store decides.
+    ///
+    /// Reading a file out of a trusted directory yields trusted data. A bare
+    /// [`Policy::observe`] cannot know that, because a capability has no idea where its bytes
+    /// came from; the trust store does.
+    pub fn observe_path(&mut self, capability: Capability, path: &str) -> Gated<Label> {
+        let base = capability.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: format!("'{capability}' produces no observation to label"),
+        })?;
+
+        // "Never mentioned" and "explicitly untrusted" both mean untrusted. Trust is granted,
+        // never inferred from silence.
+        let integrity = match self.trust.integrity_of(path) {
+            Some(Integrity::Trusted) => Integrity::Trusted,
+            _ => Integrity::Untrusted,
+        };
+
+        let label = Label::new(integrity, base.confidentiality);
+        self.sink.emit(Event::Observed { capability, label });
+        self.allow(
+            "trust",
+            format!(
+                "{path} read as {}",
+                match integrity {
+                    Integrity::Trusted => "trusted, from a trusted path",
+                    Integrity::Untrusted => "untrusted",
+                }
+            ),
+        );
+        self.absorb(integrity);
+        Ok(label)
+    }
+
+    /// Label text the model produced, at the integrity of the context it came from.
+    ///
+    /// **This is not a relabel and never upgrades anything.** The model's output is a function
+    /// of its context and nothing else, so the context's integrity *is* this value's integrity;
+    /// there is no earlier, truer label being overridden. It exists because the transport
+    /// cannot know this — a JSON string arrives with no provenance — so the kernel, which
+    /// tracked what entered the context, is the only thing that can say.
+    ///
+    /// The guarantee it rests on is the one in CLAUDE.md: untrusted content never enters the
+    /// planner's context. If it did, [`Policy::absorb`] has already dropped the context to
+    /// untrusted, and everything produced afterwards is untrusted too.
+    pub fn label_model_output(&mut self, tool: &str, text: String) -> Labelled<String> {
+        let label = Label::new(self.context, crate::label::Confidentiality::Public);
+        self.allow(
+            "provenance",
+            format!("{tool}: model output labelled {label} from its context"),
+        );
+        Labelled::new(text, label)
+    }
+
+    /// Whether writing data of `contents` integrity to `path` must be shown to a person.
+    ///
+    /// From the truth table this design is specified by:
+    ///
+    /// | data | destination | prompt | trust map |
+    /// |---|---|---|---|
+    /// | trusted | trusted | no | unchanged |
+    /// | untrusted | trusted | **yes** | path becomes untrusted |
+    /// | trusted | untrusted | **yes** | path becomes trusted |
+    /// | untrusted | untrusted | **yes** | unchanged |
+    ///
+    /// Only the first row is silent. Every other case either changes what a path means or
+    /// writes data nobody vouched for, and both are decisions for a person.
+    ///
+    /// Takes a [`Label`], never the bytes.
+    pub fn write_needs_approval(&mut self, path: &str, contents: Label) -> bool {
+        let destination_trusted = self.trust.is_trusted(path);
+        let data_trusted = contents.is_trusted();
+
+        let needed = !(destination_trusted && data_trusted);
+        let reason = match (data_trusted, destination_trusted) {
+            (true, true) => "trusted data to a trusted path",
+            (false, true) => "untrusted data into a trusted path, which it will make untrusted",
+            (true, false) => "trusted data into an untrusted path, which it will make trusted",
+            (false, false) => "untrusted data to an untrusted path",
+        };
+        self.allow(
+            "approval",
+            format!(
+                "{path}: {reason} — {}",
+                if needed { "asking" } else { "no prompt" }
+            ),
+        );
+        needed
+    }
+
+    /// Update the trust map to match what was just written to `path`.
+    ///
+    /// The invariant: a path's effective trust equals the integrity of the data in it. A rule
+    /// is recorded only when the write disagrees with the rule already covering the path —
+    /// rows one and four of the table in [`Policy::write_needs_approval`] change nothing.
+    ///
+    /// Untrusted data landing in a trusted tree *must* mark that path untrusted, or reading it
+    /// back would return it as trusted and launder it. That is the loop this closes.
+    ///
+    /// Always the exact path, never its parent: one untrusted file must not distrust its
+    /// siblings. Most-specific-wins then resolves the two rules correctly.
+    pub fn reconcile_after_write(&mut self, path: &str, written: Label) {
+        let effective = self.trust.integrity_of(path);
+        let actual = written.integrity;
+
+        if effective == Some(actual) {
+            return;
+        }
+
+        match actual {
+            Integrity::Untrusted => self.trust.distrust(path),
+            Integrity::Trusted => self.trust.trust(path),
+        }
+
+        self.allow(
+            "trust",
+            format!(
+                "{path} recorded as {} to match what was written",
+                match actual {
+                    Integrity::Trusted => "trusted",
+                    Integrity::Untrusted => "untrusted",
+                }
+            ),
+        );
     }
 
     /// Issue a single-use endorsement for a routing field at an exact value.
@@ -892,5 +1066,235 @@ mod tests {
                 ..
             })
         ));
+    }
+    // ---- the write/trust truth table ----
+
+    fn policy_trusting<'a>(
+        sink: &'a mut RecordingSink,
+        paths: &[&str],
+    ) -> Policy<'a, RecordingSink> {
+        let mut store = TrustStore::new();
+        for p in paths {
+            store.trust(p);
+        }
+        Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            sink,
+        )
+        .expect("policy")
+        .with_trust(store)
+    }
+
+    /// Row 1: trusted data to a trusted path. Silent, and the map is untouched.
+    #[test]
+    fn trusted_data_into_a_trusted_path_is_silent_and_changes_nothing() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        assert!(!policy.write_needs_approval("src/a.rs", Label::trusted_public()));
+
+        let before = policy.trust().rules().count();
+        policy.reconcile_after_write("src/a.rs", Label::trusted_public());
+        assert_eq!(policy.trust().rules().count(), before, "the map changed");
+        assert!(policy.trust().is_trusted("src/a.rs"));
+    }
+
+    /// Row 2: untrusted data into a trusted path. Prompts, and the path becomes untrusted.
+    #[test]
+    fn untrusted_data_into_a_trusted_path_prompts_and_distrusts_the_path() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        assert!(policy.write_needs_approval("src/a.rs", Label::untrusted_public()));
+
+        policy.reconcile_after_write("src/a.rs", Label::untrusted_public());
+        assert!(!policy.trust().is_trusted("src/a.rs"));
+        // Only that path: its siblings keep the directory's trust.
+        assert!(policy.trust().is_trusted("src/b.rs"));
+    }
+
+    /// Row 3: trusted data into an untrusted path. Prompts, and the path becomes trusted.
+    #[test]
+    fn trusted_data_into_an_untrusted_path_prompts_and_trusts_the_path() {
+        let mut sink = RecordingSink::new();
+        let mut store = TrustStore::new();
+        store.distrust("vendor");
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(store);
+
+        assert!(policy.write_needs_approval("vendor/ours.js", Label::trusted_public()));
+
+        policy.reconcile_after_write("vendor/ours.js", Label::trusted_public());
+        assert!(policy.trust().is_trusted("vendor/ours.js"));
+        assert!(!policy.trust().is_trusted("vendor/theirs.js"));
+    }
+
+    /// Row 4: untrusted data into an untrusted path. Prompts, map unchanged.
+    #[test]
+    fn untrusted_data_into_an_untrusted_path_prompts_and_changes_nothing() {
+        let mut sink = RecordingSink::new();
+        let mut store = TrustStore::new();
+        store.distrust("vendor");
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(store);
+
+        assert!(policy.write_needs_approval("vendor/x.js", Label::untrusted_public()));
+
+        let before = policy.trust().rules().count();
+        policy.reconcile_after_write("vendor/x.js", Label::untrusted_public());
+        assert_eq!(policy.trust().rules().count(), before);
+    }
+
+    /// A path nobody vouched for is untrusted, so writes there prompt.
+    #[test]
+    fn an_unvouched_path_prompts() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        assert!(policy.write_needs_approval("a.rs", Label::trusted_public()));
+        assert!(policy.write_needs_approval("a.rs", Label::untrusted_public()));
+    }
+
+    /// Reading out of a trusted directory yields trusted data. This is what lets row 1 of
+    /// the table ever apply.
+    #[test]
+    fn a_read_from_a_trusted_path_is_trusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Trusted);
+        assert_eq!(policy.context_integrity(), Integrity::Trusted);
+    }
+
+    #[test]
+    fn a_read_from_an_unvouched_path_is_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Untrusted);
+    }
+
+    /// The anti-laundering loop: untrusted bytes written into a trusted tree cannot be read
+    /// back as trusted.
+    #[test]
+    fn a_file_written_with_untrusted_data_reads_back_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        policy.reconcile_after_write("src/fetched.json", Label::untrusted_public());
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/fetched.json")
+            .expect("observes");
+        assert_eq!(
+            label.integrity,
+            Integrity::Untrusted,
+            "untrusted data was laundered by a round trip through a file"
+        );
+    }
+
+    /// Model output is labelled at its context's integrity. With a clean context that is
+    /// trusted, which is what makes silent writes possible at all.
+    #[test]
+    fn model_output_from_a_clean_context_is_trusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+
+        let value = policy.label_model_output("write_file", "some code".to_string());
+        assert_eq!(value.label(), Label::trusted_public());
+    }
+
+    /// And once anything untrusted has entered the context, everything the model produces
+    /// afterwards is untrusted.
+    #[test]
+    fn model_output_after_untrusted_input_is_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        policy.observe(Capability::WebFetch).expect("observes");
+        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+
+        let value = policy.label_model_output("write_file", "payload".to_string());
+        assert_eq!(value.label().integrity, Integrity::Untrusted);
+    }
+
+    /// Context integrity must not recover, or a trusted read after an untrusted one would
+    /// launder the whole turn.
+    #[test]
+    fn context_integrity_never_recovers() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        policy.observe(Capability::WebFetch).expect("observes");
+        policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+
+        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+        let value = policy.label_model_output("write_file", "x".to_string());
+        assert_eq!(value.label().integrity, Integrity::Untrusted);
+    }
+
+    /// Reading an untrusted file is enough to taint the context: the model saw it.
+    #[test]
+    fn reading_an_untrusted_file_taints_the_context() {
+        let mut sink = RecordingSink::new();
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("vendor");
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(store);
+
+        policy
+            .observe_path(Capability::FileRead, "vendor/x.js")
+            .expect("observes");
+
+        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+        // So a later write into the trusted tree now prompts, because what would be written
+        // derives from that file.
+        let value = policy.label_model_output("write_file", "x".to_string());
+        assert!(policy.write_needs_approval("src/a.rs", value.label()));
     }
 }
