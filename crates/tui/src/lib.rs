@@ -4,6 +4,7 @@
 //! interface holds transcript and input state only: no policy outlives a turn, so
 //! conversation history can never become routing for a later one.
 
+pub mod app;
 pub mod render;
 pub mod state;
 
