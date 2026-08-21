@@ -30,6 +30,8 @@ pub enum WorkspaceError {
     Invalid { path: String, reason: &'static str },
     /// The operation failed on disk.
     Io { path: String, detail: String },
+    /// The file changed after it was read, so the approved change no longer applies.
+    Stale { path: String },
 }
 
 impl fmt::Display for WorkspaceError {
@@ -42,6 +44,10 @@ impl fmt::Display for WorkspaceError {
             ),
             Self::Invalid { path, reason } => write!(f, "'{path}' is not usable: {reason}"),
             Self::Io { path, detail } => write!(f, "'{path}': {detail}"),
+            Self::Stale { path } => write!(
+                f,
+                "'{path}' changed after it was read; read it again before editing"
+            ),
         }
     }
 }
@@ -166,6 +172,41 @@ impl Workspace {
     pub fn peek_for_review(&self, relative: &str) -> Option<String> {
         let resolved = self.resolve(relative).ok()?;
         std::fs::read_to_string(resolved).ok()
+    }
+
+    /// Write an endorsed file, but only if it still holds `expected`.
+    ///
+    /// An edit is approved against contents that were read moments earlier. If the file
+    /// changed in between — another process, the user's editor — the approved diff no
+    /// longer describes what would happen, so the write is refused rather than applied to
+    /// text nobody reviewed.
+    pub fn write_endorsed_if_unchanged<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        contents: &Labelled<String>,
+        expected: &str,
+    ) -> Result<PathBuf, WorkspaceError> {
+        // Checked before the gates so a stale edit is reported as staleness rather than
+        // consuming the single-use endorsement.
+        let relative = self.peek_relative(path)?;
+        let current = self.peek_for_review(&relative).unwrap_or_default();
+        if current != expected {
+            return Err(WorkspaceError::Stale { path: relative });
+        }
+
+        self.write_endorsed(policy, path, contents)
+    }
+
+    /// The path as a plain string, for a check made on the user's behalf.
+    ///
+    /// Does not promote or trust anything: the value is used to look at the filesystem,
+    /// never to decide that a write may proceed. The gates in [`Workspace::write_endorsed`]
+    /// still run afterwards.
+    fn peek_relative(&self, path: &Labelled<String>) -> Result<String, WorkspaceError> {
+        let (value, _) = path.clone().into_parts_for_decoding();
+        self.resolve(&value)?;
+        Ok(value)
     }
 
     /// Write a file whose path was endorsed by a person.
