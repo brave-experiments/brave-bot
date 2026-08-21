@@ -250,7 +250,9 @@ fn run_turn_animated(
     prompt: &str,
     trust: TrustStore,
 ) -> io::Result<TrustStore> {
-    let (question_tx, question_rx) = mpsc::channel::<bua_agent::WriteRequest>();
+    // One channel for everything the worker sends, because the main thread waits on exactly one
+    // thing and `mpsc` cannot select across two. Only a write expects a reply.
+    let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
     let (answer_tx, answer_rx) = mpsc::channel::<bua_agent::Decision>();
 
     // A fresh token per turn: reusing one could cancel a turn before it started.
@@ -267,7 +269,10 @@ fn run_turn_animated(
 
     let worker = thread::spawn(move || {
         let mut sink = RecordingSink::new();
-        let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(question_tx, answer_rx);
+        // Two handles over one channel back to the thread that owns the terminal: one asks about
+        // writes and waits, the other reports progress and moves on.
+        let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main.clone());
+        let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(to_main, answer_rx);
         let egress = Egress::new();
         let outcome = turn::run_cancellable(
             &worker_config,
@@ -275,6 +280,7 @@ fn run_turn_animated(
             &worker_workspace,
             &task,
             &mut confirmer,
+            &mut reporter,
             &mut sink,
             trust,
             &worker_cancel,
@@ -298,15 +304,17 @@ fn run_turn_animated(
             session.note("cancelling…");
         }
 
-        match question_rx.recv_timeout(FRAME) {
-            Ok(request) => {
+        match from_worker.recv_timeout(FRAME) {
+            Ok(crate::remote_confirm::ToMain::Write(request)) => {
                 let decision = crate::confirm::ask(terminal, &request);
                 // A closed channel means the worker is already gone, so there is nothing to
                 // answer and the loop below will collect its result.
                 let _ = answer_tx.send(decision);
             }
+            // No reply: the list is recorded and the next redraw, one iteration away, shows it.
+            Ok(crate::remote_confirm::ToMain::Todos(rows)) => session.set_todos(rows),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            // The worker dropped its sender, so the turn is over.
+            // The worker dropped its senders, so the turn is over.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }

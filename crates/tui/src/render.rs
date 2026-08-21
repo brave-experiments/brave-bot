@@ -23,9 +23,46 @@ use crate::wrap;
 const TURN_MARKER: &str = "⏺";
 /// Marks a detail belonging to the entry above it.
 const DETAIL_MARKER: &str = "⎿";
+/// Joins the first task to the line above it, so the list reads as belonging to that turn.
+const BRANCH_MARKER: &str = "└";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
+}
+
+/// Draw a task list beneath whatever it belongs to.
+///
+/// The first row carries a branch so the block attaches to the line above rather than floating.
+/// Finished tasks are struck through and dimmed, which is what makes progress legible at a
+/// glance: the eye finds the unstruck lines.
+fn todo_lines(todos: &[bua_core::todo::Row]) -> Vec<Line<'static>> {
+    todos
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let lead = if index == 0 {
+                format!("  {BRANCH_MARKER} ")
+            } else {
+                "    ".to_string()
+            };
+            let (marker, text) = if row.struck() {
+                (
+                    Style::default().fg(Color::Green),
+                    dim().add_modifier(Modifier::CROSSED_OUT),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::Yellow),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )
+            };
+            Line::from(vec![
+                Span::styled(lead, dim()),
+                Span::styled(format!("{} ", row.marker), marker),
+                Span::styled(row.content.clone(), text),
+            ])
+        })
+        .collect()
 }
 
 /// Draw the whole interface.
@@ -102,6 +139,9 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                 }
             }
         }
+
+        // The plan the turn worked to, kept next to what it produced.
+        lines.extend(todo_lines(&entry.todos));
 
         if session.show_trail && !entry.trail.is_empty() {
             for event in &entry.trail {
@@ -190,9 +230,13 @@ fn input_text_width(total: u16) -> usize {
 /// Grows with the text up to [`wrap::MAX_ROWS`], and never takes so much of a short terminal that
 /// the transcript disappears.
 fn input_height(session: &Session, width: u16, height: u16) -> u16 {
-    // While a turn runs the box holds the one-line indicator instead of the input.
+    // Leave at least one line of transcript and the hint line, whatever is in the box.
+    let ceiling = (height as usize).saturating_sub(2).max(3);
+
+    // While a turn runs the box holds the indicator, and the task list beneath it if there is
+    // one, instead of the input.
     if session.status == Status::Working {
-        return 3;
+        return (3 + session.todos.len()).min(ceiling) as u16;
     }
 
     let rows = wrap::wrap(&session.input, input_text_width(width))
@@ -200,8 +244,6 @@ fn input_height(session: &Session, width: u16, height: u16) -> u16 {
         .len()
         .min(wrap::MAX_ROWS);
 
-    // Leave at least one line of transcript and the hint line, whatever the text does.
-    let ceiling = (height as usize).saturating_sub(2).max(3);
     (rows + 2).min(ceiling) as u16
 }
 
@@ -231,7 +273,12 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     // Wrapping is computed here rather than left to `Paragraph`, because the cursor has to be
     // placed after the last character and only an explicit wrap knows where that is.
     let lines: Vec<Line> = if working {
-        vec![body]
+        // The list sits under the indicator, so what is being worked on and what remains are read
+        // together. Trimmed to what the box was given rather than overflowing it.
+        let room = (area.height as usize).saturating_sub(3);
+        let mut lines = vec![body];
+        lines.extend(todo_lines(&session.todos).into_iter().take(room));
+        lines
     } else {
         let wrapped = wrap::wrap(&session.input, input_text_width(area.width));
         let visible = (area.height as usize).saturating_sub(2).max(1);
@@ -346,7 +393,7 @@ mod tests {
 
         let indicator = session.indicator().expect("a turn is in flight");
         assert!(
-            output.contains(indicator.verb),
+            output.contains(indicator.verb.as_ref()),
             "the indicator's word is missing: {output}"
         );
         assert!(
@@ -633,6 +680,149 @@ mod tests {
             output.contains("prompt 78"),
             "the recalled prompt is not shown: {output}"
         );
+    }
+
+    mod todos {
+        use super::*;
+        use bua_core::todo::{Item, List, Status, rows};
+
+        fn list(entries: &[(&str, Status)]) -> Vec<bua_core::todo::Row> {
+            rows(&List::new(
+                entries
+                    .iter()
+                    .map(|(content, status)| Item::new(*content, *status))
+                    .collect(),
+            ))
+        }
+
+        fn three() -> Vec<bua_core::todo::Row> {
+            list(&[
+                ("Escape cancels a turn", Status::Done),
+                ("Add prompt history", Status::Active),
+                ("Persist it across sessions", Status::Pending),
+            ])
+        }
+
+        fn working_with(todos: Vec<bua_core::todo::Row>) -> Session {
+            let mut session = Session::new("test");
+            session.type_char('a');
+            session.submit();
+            session.set_todos(todos);
+            session
+        }
+
+        /// The whole list is on screen while the turn runs, which is the point of the feature:
+        /// what is done, what is being worked on, and what is left.
+        #[test]
+        fn a_running_turn_shows_the_whole_list() {
+            let output = rendered_at(&working_with(three()), 60, 16);
+            for task in [
+                "Escape cancels a turn",
+                "Add prompt history",
+                "Persist it across sessions",
+            ] {
+                assert!(output.contains(task), "'{task}' is missing: {output}");
+            }
+        }
+
+        /// The box has to grow, or the list would be drawn outside it or clipped away.
+        #[test]
+        fn the_box_grows_to_hold_the_list() {
+            let bare = input_height(&working_with(Vec::new()), 60, 24);
+            let with_list = input_height(&working_with(three()), 60, 24);
+            assert_eq!(
+                with_list as usize,
+                bare as usize + 3,
+                "the box did not grow by one row per task"
+            );
+        }
+
+        /// A long list on a short terminal must not squeeze the transcript out entirely.
+        #[test]
+        fn a_long_list_leaves_room_for_the_transcript() {
+            let many: Vec<_> = (0..40)
+                .map(|n| (format!("task {n}"), Status::Pending))
+                .collect();
+            let borrowed: Vec<_> = many.iter().map(|(t, s)| (t.as_str(), *s)).collect();
+            let height = 10;
+            let used = input_height(&working_with(list(&borrowed)), 60, height);
+            assert!(
+                used < height - 1,
+                "the list took {used} of {height} rows, leaving nothing for the transcript"
+            );
+        }
+
+        /// And it must not panic when the box is smaller than the list.
+        #[test]
+        fn a_list_taller_than_the_terminal_renders() {
+            let many: Vec<_> = (0..60)
+                .map(|n| (format!("task {n}"), Status::Active))
+                .collect();
+            let borrowed: Vec<_> = many.iter().map(|(t, s)| (t.as_str(), *s)).collect();
+            rendered_at(&working_with(list(&borrowed)), 30, 8);
+        }
+
+        /// Finished work is struck through: that is what makes the list readable at a glance,
+        /// and a marker alone would not show it.
+        #[test]
+        fn a_finished_task_is_drawn_struck_through() {
+            let session = working_with(three());
+            let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("terminal");
+            terminal
+                .draw(|frame| draw(frame, &session))
+                .expect("draw succeeds");
+
+            // Found by content rather than position, so the assertion survives a layout change.
+            let buffer = terminal.backend().buffer().clone();
+            let struck = buffer
+                .content()
+                .iter()
+                .any(|cell| cell.modifier.contains(Modifier::CROSSED_OUT));
+            assert!(struck, "no cell was drawn struck through");
+        }
+
+        /// Outstanding work must not be struck through, or every task would look finished.
+        #[test]
+        fn outstanding_tasks_are_not_struck_through() {
+            let session = working_with(list(&[("still to do", Status::Pending)]));
+            let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("terminal");
+            terminal
+                .draw(|frame| draw(frame, &session))
+                .expect("draw succeeds");
+
+            let buffer = terminal.backend().buffer().clone();
+            let struck = buffer
+                .content()
+                .iter()
+                .any(|cell| cell.modifier.contains(Modifier::CROSSED_OUT));
+            assert!(!struck, "an unfinished task was drawn struck through");
+        }
+
+        /// The list stays visible after the turn, attached to the reply it belongs to.
+        #[test]
+        fn a_finished_turn_still_shows_its_list() {
+            let mut session = working_with(three());
+            session.complete("all done", Vec::new(), 0);
+
+            let output = rendered_at(&session, 60, 20);
+            assert!(output.contains("all done"));
+            assert!(
+                output.contains("Add prompt history"),
+                "the list vanished when the turn ended: {output}"
+            );
+        }
+
+        /// A turn that never calls the tool must look exactly as it did before.
+        #[test]
+        fn a_turn_without_a_list_is_unchanged() {
+            let mut with = Session::new("test");
+            with.type_char('a');
+            with.submit();
+            let before = rendered_at(&with, 60, 16);
+
+            with.set_todos(Vec::new());
+            assert_eq!(before, rendered_at(&with, 60, 16));
+        }
     }
 
     /// And it is absent when not browsing, so the border is not permanently labelled.

@@ -15,6 +15,7 @@
 //! Rendering is separated from drawing so the whole thing is testable without a terminal.
 
 use crate::verbs;
+use std::borrow::Cow;
 use std::time::Duration;
 
 /// Glyphs the spinner cycles through.
@@ -32,8 +33,11 @@ const FRAME_MILLIS: u128 = 120;
 pub struct Indicator {
     /// The spinner glyph for this moment.
     pub glyph: &'static str,
-    /// The word for this turn.
-    pub verb: &'static str,
+    /// What to call what is happening.
+    ///
+    /// Usually the turn's own word. A turn keeping a task list lends its active task instead,
+    /// which is why this is not a `&'static str`: the text came from the model.
+    pub verb: Cow<'static, str>,
     /// Elapsed time, already formatted.
     pub elapsed: String,
     /// Tokens spent, already formatted. `None` when the server reported none.
@@ -50,10 +54,20 @@ impl Indicator {
         let frame = (elapsed.as_millis() / FRAME_MILLIS) as usize % FRAMES.len();
         Self {
             glyph: FRAMES[frame],
-            verb: verbs::for_turn(turn),
+            verb: Cow::Borrowed(verbs::for_turn(turn)),
             elapsed: format_elapsed(elapsed),
             tokens: (tokens > 0).then(|| format_tokens(tokens)),
         }
+    }
+
+    /// Replace the word with what the model says it is doing.
+    ///
+    /// Naming the work is better than naming the turn: "Adding prompt history…" answers the
+    /// question a waiting user has, and the generic word does not. Only the label changes, so a
+    /// list that says nothing useful costs nothing but a worse word.
+    pub fn labelled(mut self, what: String) -> Self {
+        self.verb = Cow::Owned(what);
+        self
     }
 
     /// The counters, parenthesised, for rendering in their own style.
@@ -112,6 +126,21 @@ mod tests {
     fn the_line_has_the_expected_shape() {
         let indicator = Indicator::new(0, Duration::from_secs(751), 38_300);
         assert_eq!(indicator.line(), "✳ Grooving… (12m 31s · ↓ 38.3k tokens)");
+    }
+
+    /// A named task replaces the word, so the line says what is happening rather than which turn
+    /// this is. Everything else about the line is untouched.
+    #[test]
+    fn a_named_task_replaces_the_word_and_nothing_else() {
+        let generic = Indicator::new(0, Duration::from_secs(751), 38_300);
+        let named = generic.clone().labelled("Adding prompt history".to_string());
+
+        assert_eq!(
+            named.line(),
+            "✳ Adding prompt history… (12m 31s · ↓ 38.3k tokens)"
+        );
+        assert_eq!(named.glyph, generic.glyph);
+        assert_eq!(named.detail(), generic.detail());
     }
 
     /// Something must move, or the interface is indistinguishable from a hang.

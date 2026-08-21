@@ -25,6 +25,11 @@ pub struct Entry {
     pub text: String,
     /// Gate events recorded while producing this entry, shown when the trail is visible.
     pub trail: Vec<Event>,
+    /// The task list as it stood when this entry was made, if the turn kept one.
+    ///
+    /// Held on the entry rather than in one place so the scrollback shows what each turn did.
+    /// A live list belongs to the turn in flight and goes here when that turn ends.
+    pub todos: Vec<bua_core::todo::Row>,
 }
 
 impl Entry {
@@ -33,6 +38,7 @@ impl Entry {
             speaker: Speaker::User,
             text: text.into(),
             trail: Vec::new(),
+            todos: Vec::new(),
         }
     }
 
@@ -41,6 +47,7 @@ impl Entry {
             speaker: Speaker::Assistant,
             text: text.into(),
             trail,
+            todos: Vec::new(),
         }
     }
 
@@ -49,7 +56,14 @@ impl Entry {
             speaker: Speaker::System,
             text: text.into(),
             trail: Vec::new(),
+            todos: Vec::new(),
         }
+    }
+
+    /// Attach the task list the turn finished with.
+    pub fn with_todos(mut self, todos: Vec<bua_core::todo::Row>) -> Self {
+        self.todos = todos;
+        self
     }
 }
 
@@ -83,6 +97,12 @@ pub struct Session {
     pub tokens: u64,
     /// Prompts already sent, for recall with the arrow keys.
     pub history: crate::history::History,
+    /// The task list for the turn in flight, as the model last reported it.
+    ///
+    /// Already shaped and released: these rows came out of the kernel's render gate, so drawing
+    /// them decides nothing and needs no label. Cleared when a turn starts, so one turn's plan
+    /// never appears beneath another's work.
+    pub todos: Vec<bua_core::todo::Row>,
     /// Whether history is written to disk.
     ///
     /// Off by default so constructing a session does no I/O: a test would otherwise read and
@@ -108,6 +128,7 @@ impl Session {
             turns: 0,
             tokens: 0,
             history: crate::history::History::new(),
+            todos: Vec::new(),
             persist: false,
             started: None,
         }
@@ -133,14 +154,31 @@ impl Session {
     }
 
     /// The indicator to show, or `None` when no turn is running.
+    ///
+    /// The task in progress names it when there is one, so the line reads as what the model is
+    /// actually doing rather than a generic word. Falls back to the generic word when nothing is
+    /// marked active, which is every turn that does not keep a list.
     pub fn indicator(&self) -> Option<crate::indicator::Indicator> {
         (self.status == Status::Working).then(|| {
-            crate::indicator::Indicator::new(
+            let base = crate::indicator::Indicator::new(
                 self.turns.saturating_sub(1),
                 self.elapsed(),
                 self.tokens,
-            )
+            );
+            match self
+                .todos
+                .iter()
+                .find(|row| row.status == bua_core::todo::Status::Active)
+            {
+                Some(row) => base.labelled(row.content.clone()),
+                None => base,
+            }
         })
+    }
+
+    /// Record the task list the turn just reported.
+    pub fn set_todos(&mut self, rows: Vec<bua_core::todo::Row>) {
+        self.todos = rows;
     }
 
     /// Accept a typed character. Ignored while a turn is running, so input cannot be
@@ -181,6 +219,9 @@ impl Session {
         if matches!(self.transcript.last(), Some(entry) if entry.speaker == Speaker::User) {
             self.transcript.pop();
         }
+        // Discarded rather than kept: the prompt is going back into the box as though it had never
+        // been sent, so a plan for a turn that is being un-sent has nothing to describe.
+        self.todos.clear();
         self.scroll = 0;
     }
 
@@ -236,13 +277,20 @@ impl Session {
         self.status = Status::Working;
         self.scroll = 0;
         self.turns += 1;
+        // The previous turn's plan is not this turn's. Leaving it would show finished work as
+        // though the new turn had it outstanding.
+        self.todos.clear();
         self.started = Some(Instant::now());
         Some(prompt)
     }
 
     /// Record a completed turn, and what it cost.
     pub fn complete(&mut self, reply: impl Into<String>, trail: Vec<Event>, tokens: u64) {
-        self.transcript.push(Entry::assistant(reply, trail));
+        // The list moves onto the entry rather than being dropped, so what the turn set out to do
+        // stays in the scrollback next to the answer it produced.
+        let todos = std::mem::take(&mut self.todos);
+        self.transcript
+            .push(Entry::assistant(reply, trail).with_todos(todos));
         self.status = Status::Idle;
         self.scroll = 0;
         self.started = None;
@@ -252,8 +300,13 @@ impl Session {
     }
 
     /// Record a failure. The turn is over either way, so the session returns to idle.
+    ///
+    /// The list is kept on the entry as it stood, unfinished. A failed turn that had got three of
+    /// five tasks done is more useful shown that way than blank.
     pub fn fail(&mut self, message: impl Into<String>) {
-        self.transcript.push(Entry::system(message));
+        let todos = std::mem::take(&mut self.todos);
+        self.transcript
+            .push(Entry::system(message).with_todos(todos));
         self.status = Status::Idle;
         self.scroll = 0;
         self.started = None;
@@ -599,6 +652,136 @@ mod tests {
         s.recall_older();
         assert!(s.input.is_empty(), "history was recalled mid-turn");
     }
+    mod todos {
+        use super::*;
+        use bua_core::todo::{Item, List, Status, rows};
+
+        fn list(entries: &[(&str, Status)]) -> Vec<bua_core::todo::Row> {
+            rows(&List::new(
+                entries
+                    .iter()
+                    .map(|(content, status)| Item::new(*content, *status))
+                    .collect(),
+            ))
+        }
+
+        fn working() -> Session {
+            let mut s = session();
+            s.type_char('a');
+            s.submit();
+            s
+        }
+
+        #[test]
+        fn a_reported_list_is_kept_for_the_display() {
+            let mut s = working();
+            s.set_todos(list(&[("first", Status::Active)]));
+            assert_eq!(s.todos.len(), 1);
+        }
+
+        /// An update replaces the previous list rather than adding to it, matching the tool: the
+        /// model sends the whole list every time.
+        #[test]
+        fn a_later_report_replaces_the_earlier_one() {
+            let mut s = working();
+            s.set_todos(list(&[("first", Status::Active), ("second", Status::Pending)]));
+            s.set_todos(list(&[("first", Status::Done), ("second", Status::Active)]));
+
+            assert_eq!(s.todos.len(), 2);
+            assert!(s.todos[0].struck(), "the first task did not get crossed off");
+        }
+
+        /// An empty list must clear the display. Keeping the previous one would leave finished
+        /// work on screen that the model has said is no longer its plan.
+        #[test]
+        fn an_empty_report_clears_the_display() {
+            let mut s = working();
+            s.set_todos(list(&[("something", Status::Active)]));
+            s.set_todos(Vec::new());
+            assert!(s.todos.is_empty());
+        }
+
+        /// The list belongs to the turn that reported it. A new turn starting with the previous
+        /// turn's plan would show finished work as outstanding again.
+        #[test]
+        fn a_new_turn_starts_with_no_list() {
+            let mut s = working();
+            s.set_todos(list(&[("from the first turn", Status::Done)]));
+            s.complete("done", Vec::new(), 0);
+
+            s.type_char('b');
+            s.submit();
+            assert!(s.todos.is_empty(), "the previous turn's list carried over");
+        }
+
+        /// It moves onto the entry instead of being dropped, so the scrollback shows what each
+        /// turn set out to do next to the answer it gave.
+        #[test]
+        fn a_finished_turn_keeps_its_list_in_the_transcript() {
+            let mut s = working();
+            s.set_todos(list(&[("a task", Status::Done)]));
+            s.complete("the answer", Vec::new(), 0);
+
+            let entry = s.transcript.last().expect("an entry");
+            assert_eq!(entry.speaker, Speaker::Assistant);
+            assert_eq!(entry.todos.len(), 1);
+            assert!(s.todos.is_empty(), "the live list was not handed over");
+        }
+
+        /// A failed turn keeps its list too, unfinished. Three of five done is more useful shown
+        /// than blank.
+        #[test]
+        fn a_failed_turn_keeps_its_unfinished_list() {
+            let mut s = working();
+            s.set_todos(list(&[("done", Status::Done), ("not done", Status::Active)]));
+            s.fail("the model call failed");
+
+            let entry = s.transcript.last().expect("an entry");
+            assert_eq!(entry.todos.len(), 2);
+            assert!(!entry.todos[1].struck());
+        }
+
+        /// A cancelled turn is being un-sent, so its plan goes with the prompt rather than
+        /// staying on screen describing work nobody asked for.
+        #[test]
+        fn a_cancelled_turn_discards_its_list() {
+            let mut s = session();
+            for c in "a question".chars() {
+                s.type_char(c);
+            }
+            let prompt = s.submit().expect("submitted");
+            s.set_todos(list(&[("started this", Status::Active)]));
+
+            s.restore(prompt);
+            assert!(s.todos.is_empty(), "the cancelled turn's list stayed");
+            assert!(s.transcript.is_empty());
+        }
+
+        /// The active task names the indicator, which is what makes the line say what is
+        /// happening rather than a generic word.
+        #[test]
+        fn the_active_task_names_the_indicator() {
+            let mut s = working();
+            s.set_todos(list(&[
+                ("Escape cancels a turn", Status::Done),
+                ("Add prompt history", Status::Active),
+            ]));
+
+            assert_eq!(s.indicator().expect("working").verb, "Add prompt history");
+        }
+
+        /// With no list, or nothing active in it, the turn's own word is used: a session that
+        /// never calls the tool must look exactly as it did before.
+        #[test]
+        fn without_an_active_task_the_indicator_keeps_its_own_word() {
+            let mut s = working();
+            let generic = s.indicator().expect("working").verb.to_string();
+
+            s.set_todos(list(&[("all finished", Status::Done)]));
+            assert_eq!(s.indicator().expect("working").verb, generic);
+        }
+    }
+
     /// Constructing a session must do no I/O, or every test would read and write the developer's
     /// own history and a second run would see the first run's prompts.
     #[test]
