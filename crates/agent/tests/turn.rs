@@ -267,3 +267,199 @@ fn a_missing_file_fails_the_turn() {
         .expect_err("a missing file should fail the turn");
     assert!(error.to_string().contains("does-not-exist.rs"));
 }
+
+/// Serve a sequence of replies, one per request, so a multi-step loop can be driven.
+fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        for reply in replies {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+
+            let mut content_length = 0usize;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                    break;
+                }
+                if header == "\r\n" || header == "\n" {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            let _ = reader.read_exact(&mut body);
+            let _ = sender.send(String::from_utf8_lossy(&body).to_string());
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (format!("http://127.0.0.1:{port}"), receiver)
+}
+
+fn tool_request(tool: &str, arguments: &str) -> String {
+    let escaped = arguments.replace('"', "\\\"");
+    format!(
+        r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"{tool}","arguments":"{escaped}"}}}}]}}}}]}}"#
+    )
+}
+
+/// The model asks to read a file, gets the contents, then answers.
+#[test]
+fn the_model_can_call_a_tool_and_then_answer() {
+    let scratch = Scratch::new("tool-loop");
+    std::fs::write(scratch.path.join("target.txt"), "the file body").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"target.txt"}"#),
+        reply_with("the file says: the file body"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what does target.txt say?");
+    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+
+    assert_eq!(outcome.steps, 1, "one tool round expected");
+    assert!(outcome.clean);
+
+    // The second request must carry the tool result back to the model.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("the file body"),
+        "the tool result was not returned to the model"
+    );
+}
+
+/// A model-chosen path is untrusted, so the read is only permitted because it is
+/// confined and non-destructive. The promotion must appear in the trail.
+#[test]
+fn a_model_chosen_path_is_promoted_and_recorded() {
+    let scratch = Scratch::new("promotion");
+    std::fs::write(scratch.path.join("a.txt"), "contents").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read a.txt");
+    turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+
+    assert!(
+        sink.events().iter().any(|e| matches!(
+            e,
+            Event::GatePassed {
+                gate: "promote",
+                ..
+            }
+        )),
+        "the model's choice was not recorded as a promotion"
+    );
+}
+
+/// A model-chosen path still cannot escape the workspace: promotion grants routing, not
+/// unrestricted reach.
+#[test]
+fn a_model_cannot_escape_the_workspace() {
+    let scratch = Scratch::new("escape");
+    std::fs::write(scratch.path.join("inside.txt"), "fine").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"../../../../etc/passwd"}"#),
+        reply_with("could not read it"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("read the passwd file");
+    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    assert_eq!(outcome.steps, 1);
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    // The tool reported an error rather than returning anything from outside.
+    assert!(
+        second.contains("outside the workspace") || second.contains("error"),
+        "expected a refusal to be reported back: {second}"
+    );
+    assert!(
+        !second.contains("root:"),
+        "content from outside the workspace reached the model"
+    );
+}
+
+/// A model that never stops calling tools must be bounded rather than looping forever.
+#[test]
+fn a_runaway_tool_loop_is_bounded() {
+    let scratch = Scratch::new("runaway");
+    std::fs::write(scratch.path.join("a.txt"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // More tool requests than the limit allows.
+    let replies: Vec<String> = (0..20)
+        .map(|_| tool_request("read_file", r#"{"path":"a.txt"}"#))
+        .collect();
+    let (endpoint, _received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("loop forever");
+    let error = turn::run(&config, &egress, &workspace, &task, &mut sink)
+        .expect_err("the loop must be bounded");
+    assert!(
+        error.to_string().contains("still calling tools"),
+        "got: {error}"
+    );
+}
+
+/// An unknown tool is reported back as text rather than failing the turn.
+#[test]
+fn an_unknown_tool_is_reported_to_the_model() {
+    let scratch = Scratch::new("unknown-tool");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("delete_everything", r#"{}"#),
+        reply_with("that tool does not exist"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("delete it all");
+    let outcome = turn::run(&config, &egress, &workspace, &task, &mut sink).expect("turn runs");
+    assert_eq!(outcome.steps, 1);
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(second.contains("no such tool"), "got: {second}");
+}

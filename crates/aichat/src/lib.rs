@@ -61,6 +61,11 @@ pub struct Completion {
     /// unrecognised names are reset to automatic, and some entries resolve randomly
     /// within a weighted ensemble.
     pub model: String,
+    /// Tools the model asked to call. Empty when it answered directly.
+    ///
+    /// The arguments are model output and therefore untrusted; a caller must gate them
+    /// before letting any of it direct an operation.
+    pub calls: Vec<protocol::ToolCall>,
 }
 
 pub struct AichatClient<'a> {
@@ -104,11 +109,19 @@ impl<'a> AichatClient<'a> {
                 detail: format!("{e} (received {} bytes)", bytes.len()),
             })?;
 
-        let content = parsed.first_content().ok_or(ChatError::NoContent)?;
+        let calls = parsed.tool_calls().to_vec();
+
+        // A response requesting tools carries no text of its own, which is not an error.
+        let content = match parsed.first_content() {
+            Some(text) => text,
+            None if !calls.is_empty() => String::new(),
+            None => return Err(ChatError::NoContent),
+        };
 
         Ok(Completion {
             content: Labelled::new(content, label),
             model: parsed.model.unwrap_or_else(|| "unreported".to_string()),
+            calls,
         })
     }
 }

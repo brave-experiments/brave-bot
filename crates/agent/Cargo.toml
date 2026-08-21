@@ -12,4 +12,5 @@ bua-aichat = { path = "../aichat" }
 bua-config = { path = "../config" }
 bua-core = { path = "../core" }
 bua-net = { path = "../net" }
+serde_json = { workspace = true }
 
