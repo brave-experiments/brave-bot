@@ -1,0 +1,14 @@
+[package]
+name = "bua-agent"
+description = "Task execution: label-aware tools and the turn loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bua-aichat = { path = "../aichat" }
+bua-config = { path = "../config" }
+bua-core = { path = "../core" }
+bua-net = { path = "../net" }

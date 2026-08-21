@@ -24,6 +24,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bua-agent"
+version = "0.1.0"
+dependencies = [
+ "bua-aichat",
+ "bua-config",
+ "bua-core",
+ "bua-net",
+]
+
+[[package]]
 name = "bua-aichat"
 version = "0.1.0"
 dependencies = [

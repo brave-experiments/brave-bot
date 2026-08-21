@@ -275,6 +275,24 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(Declassification::authorise("precommitted release source"))
     }
 
+    /// Authorise reading a value that has already passed [`Policy::before_action`] as
+    /// content.
+    ///
+    /// Distinct from [`Policy::declassify`], which releases a *slot* named in the
+    /// precommitted release plan. This releases a value the content gate has just
+    /// approved — the gate proved it is public, so the effect that was authorised may
+    /// now see the bytes it is about to write or send.
+    ///
+    /// Takes `&mut self` and emits an event so every release is recorded, even though it
+    /// cannot fail.
+    pub fn authorise_content_release(&mut self, tool: &str, field: &str) -> Declassification {
+        self.allow(
+            "release",
+            format!("{tool}.{field} content released after the action gate"),
+        );
+        Declassification::authorise("content approved by the action gate")
+    }
+
     /// The final check before an effect fires.
     ///
     /// `Routing` fields must be `(T,pub)`: untrusted integrity means an injection may
