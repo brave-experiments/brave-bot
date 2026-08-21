@@ -19,8 +19,9 @@
 
 use crate::capability::{Capability, CapabilitySet};
 use crate::event::{Event, Principle, Role, Sink};
-use crate::label::Label;
+use crate::label::{Integrity, Label};
 use crate::slot::SlotId;
+use crate::trust::TrustStore;
 use crate::value::{Declassification, Labelled};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -134,6 +135,19 @@ pub struct Policy<'sink, S: Sink> {
     grants: Vec<Grant>,
     sink: &'sink mut S,
     denials: usize,
+    /// Which paths the user vouched for.
+    trust: TrustStore,
+    /// The integrity of everything this turn has observed, met together.
+    ///
+    /// Starts trusted — the task prompt is the user's own words — and drops to untrusted the
+    /// first time the turn observes untrusted data. It never recovers: a later trusted read
+    /// does not un-see what was already read, and anything the model produces from here on is
+    /// a function of that untrusted input.
+    ///
+    /// This is what makes path trust worth anything. Model output is untrusted by
+    /// construction, so without a provenance watermark a vouched-for directory would still
+    /// prompt on every write and trusting it would buy nothing.
+    watermark: Integrity,
 }
 
 /// Shows the turn's shape but not the sink, and never any content.
@@ -143,6 +157,7 @@ impl<S: Sink> fmt::Debug for Policy<'_, S> {
             .field("routing_fields", &self.routing.keys().collect::<Vec<_>>())
             .field("pending_grants", &self.grants.len())
             .field("denials", &self.denials)
+            .field("watermark", &self.watermark)
             .finish_non_exhaustive()
     }
 }
@@ -177,6 +192,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             grants: Vec::new(),
             sink,
             denials: 0,
+            trust: TrustStore::new(),
+            watermark: Integrity::Trusted,
         })
     }
 
@@ -227,13 +244,222 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             message: format!("'{capability}' produces no observation to label"),
         })?;
         self.sink.emit(Event::Observed { capability, label });
+        self.absorb(label.integrity);
         Ok(label)
+    }
+
+    /// Record an observation of a file whose integrity the trust store decides.
+    ///
+    /// A bare [`Policy::observe`] has to assume the worst, because a capability cannot know
+    /// where its bytes came from. A read of a path the user vouched for is different: the
+    /// user's own decision is the evidence, so the content comes back trusted. That is what
+    /// the trust store is for, and it is also why [`Policy::reconcile_after_write`] exists —
+    /// without it this method would launder untrusted bytes.
+    pub fn observe_path(&mut self, capability: Capability, path: &str) -> Gated<Label> {
+        let base = capability.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: format!("'{capability}' produces no observation to label"),
+        })?;
+
+        // "Never mentioned" and "explicitly untrusted" both mean untrusted: trust is
+        // granted, never inferred from silence.
+        let integrity = match self.trust.integrity_of(path) {
+            Some(Integrity::Trusted) => Integrity::Trusted,
+            _ => Integrity::Untrusted,
+        };
+
+        let label = Label::new(integrity, base.confidentiality);
+        self.sink.emit(Event::Observed { capability, label });
+        self.allow(
+            "trust",
+            format!(
+                "{path} read as {}",
+                match integrity {
+                    Integrity::Trusted => "trusted, by the user's decision",
+                    Integrity::Untrusted => "untrusted",
+                }
+            ),
+        );
+        self.absorb(integrity);
+        Ok(label)
+    }
+
+    /// Lower the turn's watermark to include `observed`.
+    ///
+    /// One-way: [`Integrity::meet`] cannot raise it, so no sequence of reads restores trust
+    /// the turn has already lost.
+    fn absorb(&mut self, observed: Integrity) {
+        let lowered = self.watermark.meet(observed);
+        if lowered != self.watermark {
+            self.watermark = lowered;
+            self.allow(
+                "watermark",
+                "the turn observed untrusted data; its output is untrusted from here".to_string(),
+            );
+        }
+    }
+
+    /// The integrity of everything observed so far.
+    pub fn watermark(&self) -> Integrity {
+        self.watermark
+    }
+
+    /// Install the user's trust decisions, before the turn runs.
+    pub fn with_trust(mut self, trust: TrustStore) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    /// The trust decisions in force, including any recorded during this turn.
+    pub fn trust(&self) -> &TrustStore {
+        &self.trust
+    }
+
+    /// Whether writing to `path` needs a person to approve it.
+    ///
+    /// Silent only when the destination was vouched for *and* the data is trusted. Either half
+    /// failing means a person decides: an unvouched destination because nobody said it was
+    /// safe to change, and untrusted data because that is the case this design exists to
+    /// contain.
+    ///
+    /// Takes a [`Label`], never the bytes. The decision is made from provenance, so the
+    /// driver's own call to this cannot become a branch on untrusted content.
+    pub fn write_needs_approval(&mut self, path: &str, contents: Label) -> bool {
+        let destination_trusted = self.trust.is_trusted(path);
+        // The watermark as well as the value's own label: model output is a function of
+        // everything the turn has seen, whatever label is attached to these particular bytes.
+        let data_trusted = contents.is_trusted() && self.watermark == Integrity::Trusted;
+
+        let needed = !(destination_trusted && data_trusted);
+        let reason = match (destination_trusted, data_trusted) {
+            (true, true) => "trusted data to a trusted path",
+            (true, false) => "untrusted data to a trusted path",
+            (false, true) => "trusted data to a path nobody vouched for",
+            (false, false) => "untrusted data to a path nobody vouched for",
+        };
+        self.allow(
+            "approval",
+            format!(
+                "{path}: {reason} — {}",
+                if needed { "asking" } else { "no prompt" }
+            ),
+        );
+        needed
     }
 
     /// Issue a single-use endorsement for a routing field at an exact value.
     ///
     /// The value is recorded, so the endorsement cannot be replayed against a
     /// different one.
+    /// Locate a passage in untrusted content and replace it, keeping the decision here.
+    ///
+    /// The driver must not decide whether an edit applies: presence and uniqueness are
+    /// properties of untrusted bytes, and branching on them in the driver would let file
+    /// content choose whether an effect happens. So the search runs in the kernel, the
+    /// outcome is recorded, and the driver receives either a still-labelled result or a
+    /// refusal it can report but not inspect.
+    ///
+    /// The returned contents carry the meet of every input's label, so an edit built from
+    /// model-supplied text is untrusted however trusted the file was.
+    pub fn splice_content(
+        &mut self,
+        tool: &str,
+        source: &Labelled<String>,
+        old: &Labelled<String>,
+        new: &Labelled<String>,
+        all: bool,
+    ) -> Gated<crate::splice::Splice> {
+        // Minted here rather than by the caller: the witness is the audited record that these
+        // bytes were read, and only the kernel may decide that reading them is permitted.
+        let proof = Declassification::authorise("located a passage for an edit");
+
+        match crate::splice::splice(source, old, new, all, &proof) {
+            Ok(spliced) => {
+                self.allow(
+                    "splice",
+                    format!(
+                        "{tool}: located the passage, {} occurrence(s) replaced",
+                        spliced.occurrences
+                    ),
+                );
+                Ok(spliced)
+            }
+            Err(refusal) => {
+                let principle = match refusal {
+                    crate::splice::SpliceRefusal::Ambiguous { .. } => Principle::AmbiguousEffect,
+                    _ => Principle::IntegrityGate,
+                };
+                Err(self.deny("splice", principle, format!("{tool}: {refusal}")))
+            }
+        }
+    }
+
+    /// Whether two labelled values are byte-identical, decided here rather than in the
+    /// driver.
+    ///
+    /// Used for the staleness check before an endorsed edit. Comparing them in the driver
+    /// would be a branch on untrusted content; the bool that comes back is not.
+    pub fn contents_unchanged(
+        &mut self,
+        tool: &str,
+        candidate: &Labelled<String>,
+        expected: &Labelled<String>,
+    ) -> bool {
+        let proof = Declassification::authorise("compared contents for staleness");
+        let same = crate::splice::contents_match(candidate, expected, &proof);
+        self.allow(
+            "staleness",
+            format!(
+                "{tool}: the file {} since it was read",
+                if same { "is unchanged" } else { "changed" }
+            ),
+        );
+        same
+    }
+
+    /// Bring a path's recorded trust into line with what was just written to it.
+    ///
+    /// The invariant: a path's effective trust must equal the integrity of the bytes in it.
+    /// Whenever a write disagrees with the rule that currently covers its destination, a
+    /// rule for that exact path is recorded so the two agree again.
+    ///
+    /// Both directions matter, and for different reasons:
+    ///
+    /// - Untrusted bytes into a trusted subtree must mark the path untrusted, or reading it
+    ///   back would launder them into trusted — the trust store would become a bypass for
+    ///   the gate it supports.
+    /// - Trusted bytes into an untrusted subtree must mark the path trusted, or the agent's
+    ///   own vouched-for output would read back as untrusted and every later edit to it
+    ///   would prompt again.
+    ///
+    /// Always the exact path, never its parent: one tainted file in a trusted directory must
+    /// not distrust the whole directory. Most-specific-wins then resolves it correctly.
+    pub fn reconcile_after_write(&mut self, path: &str, written: Label) {
+        let effective = self.trust.integrity_of(path);
+        let actual = written.integrity;
+
+        if effective == Some(actual) {
+            // Already consistent; a redundant rule would only clutter the store.
+            return;
+        }
+
+        match actual {
+            Integrity::Untrusted => self.trust.distrust(path),
+            Integrity::Trusted => self.trust.trust(path),
+        }
+
+        self.allow(
+            "trust",
+            format!(
+                "{path} recorded as {} to match what was written",
+                match actual {
+                    Integrity::Trusted => "trusted",
+                    Integrity::Untrusted => "untrusted",
+                }
+            ),
+        );
+    }
+
     pub fn issue_grant(
         &mut self,
         tool: impl Into<String>,
@@ -892,5 +1118,335 @@ mod tests {
                 ..
             })
         ));
+    }
+    // ---- trust, watermark, and the approval decision ----
+
+    fn trusting(paths: &[&str]) -> TrustStore {
+        let mut store = TrustStore::new();
+        for p in paths {
+            store.trust(p);
+        }
+        store
+    }
+
+    /// The case the feature exists for: ordinary work in a vouched-for directory is not
+    /// interrupted.
+    #[test]
+    fn trusted_data_to_a_trusted_path_is_not_questioned() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        assert!(!policy.write_needs_approval("src/main.rs", Label::trusted_public()));
+    }
+
+    /// The case the user described: untrusted data into a trusted directory still asks.
+    #[test]
+    fn untrusted_data_to_a_trusted_path_is_questioned() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        assert!(policy.write_needs_approval("src/main.rs", Label::untrusted_public()));
+    }
+
+    /// Declining to vouch for anything means every write is shown, which is what an empty
+    /// trust store must produce.
+    #[test]
+    fn without_any_trust_every_write_is_questioned() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        assert!(policy.write_needs_approval("src/main.rs", Label::trusted_public()));
+        assert!(policy.write_needs_approval("anything", Label::untrusted_public()));
+    }
+
+    /// An untrusted subtree inside a trusted project must still prompt.
+    #[test]
+    fn a_distrusted_subpath_is_questioned_inside_a_trusted_tree() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("vendor");
+
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(store);
+
+        assert!(!policy.write_needs_approval("src/a.rs", Label::trusted_public()));
+        assert!(policy.write_needs_approval("vendor/a.js", Label::trusted_public()));
+    }
+
+    /// The watermark is what makes trust meaningful: once a turn has seen untrusted data,
+    /// its writes are questioned even into a vouched-for path, because everything it produces
+    /// now derives from that data.
+    #[test]
+    fn observing_untrusted_data_makes_later_writes_ask() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        assert!(!policy.write_needs_approval("src/a.rs", Label::trusted_public()));
+
+        // A web fetch is untrusted by capability.
+        policy.observe(Capability::WebFetch).expect("observes");
+        assert_eq!(policy.watermark(), Integrity::Untrusted);
+
+        assert!(
+            policy.write_needs_approval("src/a.rs", Label::trusted_public()),
+            "a turn that has seen the web still wrote without asking"
+        );
+    }
+
+    /// The watermark must not recover, or a trusted read after an untrusted one would launder
+    /// the whole turn back to trusted.
+    #[test]
+    fn the_watermark_never_recovers() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        policy.observe(Capability::WebFetch).expect("observes");
+        policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+
+        assert_eq!(
+            policy.watermark(),
+            Integrity::Untrusted,
+            "a trusted read restored trust the turn had already lost"
+        );
+    }
+
+    /// Reading a vouched-for path yields trusted content — the point of the trust store.
+    #[test]
+    fn a_read_of_a_trusted_path_is_trusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Trusted);
+        assert_eq!(policy.watermark(), Integrity::Trusted);
+    }
+
+    /// An unmentioned path is untrusted: trust is granted, never assumed from silence.
+    #[test]
+    fn a_read_of_an_unvouched_path_is_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/a.rs")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Untrusted);
+    }
+
+    /// The anti-laundering rule. Writing untrusted bytes into a trusted tree must make that
+    /// exact path untrusted, or reading it back would recover trust the data never had.
+    #[test]
+    fn writing_untrusted_data_distrusts_the_destination() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        policy.reconcile_after_write("src/fetched.json", Label::untrusted_public());
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/fetched.json")
+            .expect("observes");
+        assert_eq!(
+            label.integrity,
+            Integrity::Untrusted,
+            "untrusted bytes were laundered into trusted by a round trip through a file"
+        );
+    }
+
+    /// The reverse direction the user asked about: trusted bytes into an untrusted tree
+    /// record a trusted rule, so the agent's own output does not read back as untrusted.
+    #[test]
+    fn writing_trusted_data_trusts_the_destination() {
+        let mut store = TrustStore::new();
+        store.distrust("vendor");
+
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(store);
+
+        policy.reconcile_after_write("vendor/ours.js", Label::trusted_public());
+
+        let label = policy
+            .observe_path(Capability::FileRead, "vendor/ours.js")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Trusted);
+        // The surrounding directory is untouched: only the exact path gained a rule.
+        let sibling = policy
+            .observe_path(Capability::FileRead, "vendor/theirs.js")
+            .expect("observes");
+        assert_eq!(sibling.integrity, Integrity::Untrusted);
+    }
+
+    /// Taint must be per file. One tainted file in a trusted directory must not distrust its
+    /// siblings, or a single fetch would poison the whole project.
+    #[test]
+    fn distrust_from_a_write_does_not_spread_to_siblings() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        policy.reconcile_after_write("src/fetched.json", Label::untrusted_public());
+
+        let sibling = policy
+            .observe_path(Capability::FileRead, "src/main.rs")
+            .expect("observes");
+        assert_eq!(
+            sibling.integrity,
+            Integrity::Trusted,
+            "distrust spread beyond the file that was written"
+        );
+    }
+
+    /// A write that agrees with the existing rule needs no new rule; recording one anyway
+    /// would fill the store with redundant entries.
+    #[test]
+    fn a_consistent_write_records_no_new_rule() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trusting(&["."]));
+
+        let before = policy.trust().rules().count();
+        policy.reconcile_after_write("src/a.rs", Label::trusted_public());
+        assert_eq!(policy.trust().rules().count(), before);
+    }
+
+    /// The splice decision belongs to the kernel, so an ambiguous edit is refused here and
+    /// the refusal names the principle it upholds.
+    #[test]
+    fn an_ambiguous_splice_is_refused_by_the_policy() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let u = |s: &str| Labelled::new(s.to_string(), Label::untrusted_private());
+        let denial = policy
+            .splice_content("edit_file", &u("x\nx\n"), &u("x"), &u("y"), false)
+            .expect_err("ambiguous edits must be refused");
+
+        assert_eq!(denial.principle, Principle::AmbiguousEffect);
+        assert!(!policy.finish(), "a refusal was not recorded");
+    }
+
+    #[test]
+    fn a_unique_splice_is_permitted_and_recorded() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let u = |s: &str| Labelled::new(s.to_string(), Label::untrusted_private());
+        let spliced = policy
+            .splice_content("edit_file", &u("a\nb\n"), &u("b"), &u("B"), false)
+            .expect("a unique passage splices");
+        assert_eq!(spliced.occurrences, 1);
+        assert!(policy.finish());
+    }
+
+    /// Staleness is a comparison of untrusted values, so the kernel decides it.
+    #[test]
+    fn staleness_is_decided_by_the_policy() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let u = |s: &str| Labelled::new(s.to_string(), Label::untrusted_private());
+        assert!(policy.contents_unchanged("edit_file", &u("same"), &u("same")));
+        assert!(!policy.contents_unchanged("edit_file", &u("now"), &u("then")));
     }
 }
