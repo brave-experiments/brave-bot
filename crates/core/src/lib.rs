@@ -4,6 +4,14 @@
 //! capabilities, and the policy gates every consequential action passes through.
 //! Nothing here prints: diagnostics leave through typed events so the audit trail
 //! stays machine-readable.
+//!
+//! # Credit
+//!
+//! The enforcement model implemented here — the `L = I × C` lattice, write-once
+//! quarantine, and the routing/content asymmetry that makes injected text unable to
+//! redirect an action — is the work of Ali Shahin Shamsabadi, Senior Privacy Researcher
+//! at Brave, developed in his SafeHouse research project. This is a reimplementation of
+//! that design for a coding agent.
 
 pub mod capability;
 pub mod event;
