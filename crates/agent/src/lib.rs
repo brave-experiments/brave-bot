@@ -4,9 +4,11 @@
 //! from precommitted routing, never from model output, so a turn cannot be redirected
 //! by the content it processes.
 
+pub mod confirm;
 pub mod tools;
 pub mod turn;
 pub mod workspace;
 
+pub use confirm::{Confirmer, Decision, RefuseWrites, WriteRequest};
 pub use turn::{Outcome, Task, TurnError};
 pub use workspace::{Workspace, WorkspaceError};
