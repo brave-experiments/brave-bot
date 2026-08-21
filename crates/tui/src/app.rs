@@ -162,9 +162,6 @@ fn event_loop(
     confinement: String,
 ) -> io::Result<()> {
     let egress = Egress::new();
-    // Interactive prompting is not wired yet, so writes are refused rather than applied
-    // without being seen.
-    let mut confirmer = bua_agent::RefuseWrites;
     let mut session = Session::new(confinement);
 
     loop {
@@ -194,6 +191,9 @@ fn event_loop(
                 terminal
                     .draw(|frame| render::draw(frame, &session))
                     .map_err(io::Error::other)?;
+                // The confirmer borrows the terminal to draw its prompt, so it is created
+                // per turn rather than held for the loop's lifetime.
+                let mut confirmer = crate::confirm::TerminalConfirmer::new(terminal);
                 run_turn(
                     &mut session,
                     config,
