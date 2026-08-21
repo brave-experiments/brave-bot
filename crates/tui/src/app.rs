@@ -12,6 +12,7 @@ use bua_agent::Workspace;
 use bua_agent::turn::{self, Task};
 use bua_config::Config;
 use bua_core::event::RecordingSink;
+use bua_core::trust::TrustStore;
 use bua_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -164,6 +165,15 @@ fn event_loop(
     let egress = Egress::new();
     let mut session = Session::new(confinement);
 
+    // Asked once, before any turn: the answer decides whether ordinary work in this directory
+    // is interrupted for every write. Nothing is trusted unless the user says so.
+    let mut trust = crate::trust_prompt::ask(terminal, workspace.root());
+    if trust.is_empty() {
+        session.note("this directory is not trusted; every write will be shown to you");
+    } else {
+        session.note(format!("trusting {}", workspace.root().display()));
+    }
+
     loop {
         terminal
             .draw(|frame| render::draw(frame, &session))
@@ -194,13 +204,16 @@ fn event_loop(
                 // The confirmer borrows the terminal to draw its prompt, so it is created
                 // per turn rather than held for the loop's lifetime.
                 let mut confirmer = crate::confirm::TerminalConfirmer::new(terminal);
-                run_turn(
+                // The map is threaded through: a turn that writes untrusted data into a
+                // trusted path records that, and the next turn must honour it.
+                trust = run_turn(
                     &mut session,
                     config,
                     &egress,
                     workspace,
                     &mut confirmer,
                     &prompt,
+                    trust,
                 );
             }
             Action::None | Action::Redraw => {}
@@ -209,6 +222,7 @@ fn event_loop(
 }
 
 /// Run one turn and fold the result into the session.
+#[allow(clippy::too_many_arguments)]
 fn run_turn<C: bua_agent::Confirmer>(
     session: &mut Session,
     config: &Config,
@@ -216,17 +230,28 @@ fn run_turn<C: bua_agent::Confirmer>(
     workspace: &Workspace,
     confirmer: &mut C,
     prompt: &str,
-) {
+    trust: TrustStore,
+) -> TrustStore {
     let mut sink = RecordingSink::new();
     let task = Task::new(prompt);
 
-    match turn::run(config, egress, workspace, &task, confirmer, &mut sink) {
+    // Kept so a failed turn does not lose the user's decisions. A turn that fails partway may
+    // still have written something, and the rules recorded for it are inside the outcome we
+    // will not receive — so this is the floor, never an upgrade.
+    let fallback = trust.clone();
+
+    match turn::run_with_trust(
+        config, egress, workspace, &task, confirmer, &mut sink, trust,
+    ) {
         Ok(outcome) => {
             let trail = sink.events().to_vec();
             session.complete(outcome.reply_for_display().to_string(), trail);
             if !outcome.clean {
                 session.note("a policy gate refused something during that turn");
             }
+            // Carries forward any rule the turn recorded, so a path that received untrusted
+            // data cannot be read back as trusted by the next turn.
+            outcome.trust
         }
         Err(error) => {
             // The trail is kept on failure too: a refusal is exactly when a user wants
@@ -236,6 +261,7 @@ fn run_turn<C: bua_agent::Confirmer>(
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;
             }
+            fallback
         }
     }
 }

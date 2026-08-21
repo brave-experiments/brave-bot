@@ -8,5 +8,6 @@ pub mod app;
 pub mod confirm;
 pub mod render;
 pub mod state;
+pub mod trust_prompt;
 
 pub use state::{Entry, Session, Speaker, Status};
