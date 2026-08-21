@@ -11,6 +11,7 @@
 use bua_agent::Workspace;
 use bua_agent::turn::{self, Task};
 use bua_config::Config;
+use bua_core::cancel::Cancel;
 use bua_core::event::RecordingSink;
 use bua_core::trust::TrustStore;
 use bua_net::Egress;
@@ -30,7 +31,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::render;
-use crate::state::Session;
+use crate::state::{Session, Status};
 
 /// How long to wait for a key before redrawing. Short enough that a status change appears
 /// promptly, long enough not to spin.
@@ -46,6 +47,8 @@ pub enum Action {
     None,
     Redraw,
     Submit(String),
+    /// Stop the turn in flight.
+    Cancel,
     Quit,
 }
 
@@ -68,7 +71,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.toggle_trail();
             Action::Redraw
         }
-        // Escape discards a half-typed prompt, and only leaves once the line is already empty.
+        // Escape means "stop what is happening" before it means anything else, so a turn in
+        // flight is cancelled first. The prompt comes back for editing rather than being lost.
+        KeyCode::Esc if session.status == Status::Working => Action::Cancel,
+        // Then it discards a half-typed prompt, and only leaves once the line is already empty.
         // Pressing it to abandon a thought should not also end the session.
         KeyCode::Esc if !session.input.is_empty() => {
             session.clear_input();
@@ -212,7 +218,8 @@ fn event_loop(
                 trust =
                     run_turn_animated(terminal, &mut session, config, workspace, &prompt, trust)?;
             }
-            Action::None | Action::Redraw => {}
+            // Only reachable while a turn runs, which is handled inside `run_turn_animated`.
+            Action::Cancel | Action::None | Action::Redraw => {}
         }
     }
 }
@@ -237,6 +244,10 @@ fn run_turn_animated(
     let (question_tx, question_rx) = mpsc::channel::<bua_agent::WriteRequest>();
     let (answer_tx, answer_rx) = mpsc::channel::<bua_agent::Decision>();
 
+    // A fresh token per turn: reusing one could cancel a turn before it started.
+    let cancel = Cancel::new();
+    let worker_cancel = cancel.clone();
+
     // Cloned rather than borrowed so the worker owns everything it needs. Config and Workspace
     // are cheap handles; Egress builds its own connection pool.
     let worker_config = config.clone();
@@ -249,7 +260,7 @@ fn run_turn_animated(
         let mut sink = RecordingSink::new();
         let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(question_tx, answer_rx);
         let egress = Egress::new();
-        let outcome = turn::run_with_trust(
+        let outcome = turn::run_cancellable(
             &worker_config,
             &egress,
             &worker_workspace,
@@ -257,15 +268,26 @@ fn run_turn_animated(
             &mut confirmer,
             &mut sink,
             trust,
+            &worker_cancel,
         );
         (outcome, sink)
     });
 
-    // Redraw until the turn finishes, answering any approval it asks for on the way.
+    // Redraw until the turn finishes, answering approvals and watching for a cancel on the way.
     loop {
         terminal
             .draw(|frame| render::draw(frame, session))
             .map_err(io::Error::other)?;
+
+        // Keys are polled here rather than in the outer loop, which is blocked for the duration
+        // of the turn. Without this the interface would take no input at all while working.
+        if event::poll(Duration::ZERO)?
+            && let TermEvent::Key(key) = event::read()?
+            && wants_cancel(key)
+        {
+            cancel.cancel();
+            session.note("cancelling…");
+        }
 
         match question_rx.recv_timeout(FRAME) {
             Ok(request) => {
@@ -290,7 +312,23 @@ fn run_turn_animated(
         )
     });
 
+    // A cancelled turn returns the prompt for editing instead of recording a failure: the user
+    // stopped it deliberately, so there is nothing to report.
+    if matches!(outcome, Err(turn::TurnError::Cancelled)) {
+        session.restore(prompt);
+        return Ok(fallback);
+    }
+
     Ok(fold_outcome(session, outcome, sink, fallback))
+}
+
+/// Whether a key press asks for the turn in flight to stop.
+///
+/// Escape is the obvious key, and Ctrl-C is included because a user reaching for the usual
+/// interrupt should not have to discover a different one.
+fn wants_cancel(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Esc)
+        || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')))
 }
 
 /// Fold a finished turn into the session.
@@ -399,6 +437,30 @@ mod tests {
             !session.is_quitting(),
             "clearing the input ended the session"
         );
+    }
+
+    /// Escape means "stop this" before it means anything else, so a turn in flight is cancelled
+    /// rather than the input being cleared.
+    #[test]
+    fn escape_cancels_a_turn_in_flight() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('x')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Cancel);
+        assert!(!session.is_quitting(), "cancelling ended the session");
+    }
+
+    /// The keys that ask a running turn to stop. Ctrl-C is included because it is what a user
+    /// reaches for out of habit.
+    #[test]
+    fn cancel_keys_are_escape_and_ctrl_c() {
+        assert!(wants_cancel(key(KeyCode::Esc)));
+        assert!(wants_cancel(ctrl('c')));
+        assert!(!wants_cancel(key(KeyCode::Char('c'))));
+        assert!(!wants_cancel(key(KeyCode::Enter)));
+        assert!(!wants_cancel(key(KeyCode::Up)));
     }
 
     /// And a second press then leaves, so the key still reaches the exit without a detour.

@@ -104,6 +104,18 @@ fn tool_request_with_usage(tool: &str, arguments: &str, prompt: u64, completion:
     )
 }
 
+/// A response asking for two tool calls in one round.
+fn two_tool_requests(first: (&str, &str), second: (&str, &str)) -> String {
+    let escape = |a: &str| a.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"{}","arguments":"{}"}}}},{{"id":"c2","type":"function","function":{{"name":"{}","arguments":"{}"}}}}]}}}}]}}"#,
+        first.0,
+        escape(first.1),
+        second.0,
+        escape(second.1)
+    )
+}
+
 fn reply_with(content: &str) -> String {
     format!(
         r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","content":"{content}"}}}}]}}"#
@@ -1864,4 +1876,131 @@ fn a_turn_without_reported_usage_reports_zero_tokens() {
     .expect("turn runs");
 
     assert_eq!(outcome.tokens, 0);
+}
+
+/// A user who changed their mind should not have to wait out a slow model.
+#[test]
+fn a_cancelled_turn_stops_before_the_first_request() {
+    let scratch = Scratch::new("cancel-early");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // No server is needed: cancellation is checked before anything goes out.
+    let config = config_for("http://127.0.0.1:1");
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let cancel = bua_core::cancel::Cancel::new();
+    cancel.cancel();
+
+    let error = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("do something"),
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &cancel,
+    )
+    .expect_err("a cancelled turn must not succeed");
+
+    assert!(matches!(error, turn::TurnError::Cancelled), "got {error:?}");
+}
+
+/// Cancelling mid-round must stop the loop before the remaining tool calls run, since a tool
+/// may write. Deterministic rather than timed: an untrusted workspace means the write is
+/// reviewed, and the reviewer cancels while being asked, which is a point the turn genuinely
+/// reaches between two calls.
+#[test]
+fn a_cancelled_turn_stops_before_running_a_tool() {
+    /// Cancels the turn the moment it is consulted, then approves anyway. The approval must
+    /// still not reach the second call.
+    struct CancelWhenAsked {
+        cancel: bua_core::cancel::Cancel,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl bua_agent::Confirmer for CancelWhenAsked {
+        fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+            self.asked
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.cancel.cancel();
+            bua_agent::Decision::Approve
+        }
+    }
+
+    let scratch = Scratch::new("cancel-tool");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Two writes in one round. No trust map, so each is reviewed, and the first review cancels.
+    let (endpoint, _received) = serve_sequence(vec![
+        two_tool_requests(
+            ("write_file", r#"{"path":"first.txt","contents":"one"}"#),
+            ("write_file", r#"{"path":"second.txt","contents":"two"}"#),
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let cancel = bua_core::cancel::Cancel::new();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut confirmer = CancelWhenAsked {
+        cancel: cancel.clone(),
+        asked: asked.clone(),
+    };
+
+    let error = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("write both"),
+        &mut confirmer,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &cancel,
+    )
+    .expect_err("a cancelled turn must not succeed");
+
+    assert!(matches!(error, turn::TurnError::Cancelled), "got {error:?}");
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the second write was still reviewed after cancellation"
+    );
+    assert!(
+        scratch.path.join("first.txt").exists(),
+        "the approved write did not happen"
+    );
+    assert!(
+        !scratch.path.join("second.txt").exists(),
+        "a tool ran after the turn was cancelled"
+    );
+}
+
+/// An uncancelled turn is unaffected, so the check cannot be stopping turns by accident.
+#[test]
+fn an_uncancelled_turn_completes_normally() {
+    let scratch = Scratch::new("cancel-none");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![reply_with("the answer")]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ask"),
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("an uncancelled turn runs");
+
+    assert_eq!(outcome.reply_for_display(), "the answer");
 }

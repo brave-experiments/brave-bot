@@ -133,6 +133,22 @@ impl Session {
         }
     }
 
+    /// Put a submitted prompt back for editing after its turn was cancelled.
+    ///
+    /// The text returns to the box so a user who changed their mind can adjust it rather than
+    /// retype it, which is the whole point of cancelling rather than waiting.
+    pub fn restore(&mut self, prompt: impl Into<String>) {
+        self.status = Status::Idle;
+        self.started = None;
+        self.input = prompt.into();
+        // The submitted prompt is still in the transcript, so it is removed: the turn produced
+        // nothing, and leaving it would read as a question that went unanswered.
+        if matches!(self.transcript.last(), Some(entry) if entry.speaker == Speaker::User) {
+            self.transcript.pop();
+        }
+        self.scroll = 0;
+    }
+
     /// Discard whatever has been typed.
     ///
     /// Guarded like the other editing methods: input belongs to the idle state, and clearing it
@@ -423,5 +439,57 @@ mod tests {
 
         s.clear_input();
         assert_eq!(s.input, "mid-turn", "the input was cleared mid-turn");
+    }
+    /// Cancelling returns the prompt for editing, which is the point of cancelling rather than
+    /// waiting: the text is not lost.
+    #[test]
+    fn restoring_puts_the_prompt_back_and_returns_to_idle() {
+        let mut s = session();
+        for c in "half an idea".chars() {
+            s.type_char(c);
+        }
+        let prompt = s.submit().expect("submitted");
+        assert_eq!(s.status, Status::Working);
+
+        s.restore(prompt);
+
+        assert_eq!(s.input, "half an idea");
+        assert_eq!(s.status, Status::Idle);
+        assert!(s.indicator().is_none(), "the indicator kept running");
+    }
+
+    /// The cancelled prompt is removed from the transcript: it produced nothing, and leaving it
+    /// would read as a question that went unanswered.
+    #[test]
+    fn restoring_removes_the_unanswered_prompt() {
+        let mut s = session();
+        for c in "question".chars() {
+            s.type_char(c);
+        }
+        let prompt = s.submit().expect("submitted");
+        assert_eq!(s.transcript.len(), 1);
+
+        s.restore(prompt);
+        assert!(
+            s.transcript.is_empty(),
+            "the prompt was left in the transcript"
+        );
+    }
+
+    /// Earlier exchanges are untouched, so cancelling does not eat the conversation.
+    #[test]
+    fn restoring_keeps_earlier_exchanges() {
+        let mut s = session();
+        s.type_char('a');
+        let first = s.submit().expect("submitted");
+        s.complete("an answer", Vec::new(), 0);
+        assert_eq!(s.transcript.len(), 2);
+        let _ = first;
+
+        s.type_char('b');
+        let second = s.submit().expect("submitted");
+        s.restore(second);
+
+        assert_eq!(s.transcript.len(), 2, "an earlier exchange was removed");
     }
 }

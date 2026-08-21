@@ -11,6 +11,7 @@
 use bua_aichat::AichatClient;
 use bua_aichat::protocol::{ChatRequest, Message};
 use bua_config::Config;
+use bua_core::cancel::Cancel;
 use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::Sink;
 use bua_core::policy::{Policy, ReleasePlan, Routing};
@@ -61,6 +62,8 @@ const MAX_STEPS: usize = 8;
 
 #[derive(Debug)]
 pub enum TurnError {
+    /// The user asked for the turn to stop.
+    Cancelled,
     /// Routing could not be precommitted.
     Precommit(String),
     /// A file operation failed or was refused.
@@ -74,6 +77,7 @@ pub enum TurnError {
 impl fmt::Display for TurnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "cancelled"),
             Self::Precommit(detail) => write!(f, "{detail}"),
             Self::Workspace(e) => write!(f, "{e}"),
             Self::Chat(e) => write!(f, "{e}"),
@@ -179,6 +183,23 @@ pub fn run<S: Sink, C: Confirmer>(
     )
 }
 
+/// As [`run_with_trust`], with a token the caller can use to stop the turn.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cancellable<S: Sink, C: Confirmer>(
+    config: &Config,
+    egress: &Egress,
+    workspace: &Workspace,
+    task: &Task,
+    confirmer: &mut C,
+    sink: &mut S,
+    trust: TrustStore,
+    cancel: &Cancel,
+) -> Result<Outcome, TurnError> {
+    run_inner(
+        config, egress, workspace, task, confirmer, sink, trust, cancel,
+    )
+}
+
 /// As [`run`], with the user's trust decisions.
 ///
 /// The map comes back in the [`Outcome`] because a turn can change it: writing untrusted data
@@ -192,6 +213,29 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
     confirmer: &mut C,
     sink: &mut S,
     trust: TrustStore,
+) -> Result<Outcome, TurnError> {
+    run_inner(
+        config,
+        egress,
+        workspace,
+        task,
+        confirmer,
+        sink,
+        trust,
+        &Cancel::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_inner<S: Sink, C: Confirmer>(
+    config: &Config,
+    egress: &Egress,
+    workspace: &Workspace,
+    task: &Task,
+    confirmer: &mut C,
+    sink: &mut S,
+    trust: TrustStore,
+    cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
     let mut routing = Routing::new();
     routing.insert_trusted("task", task.prompt.clone());
@@ -266,6 +310,12 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
     let mut steps = 0;
     let mut tokens = 0u64;
     let completion = loop {
+        // Checked before each request rather than mid-flight: a request already on the wire has
+        // to finish, but nothing new needs to start.
+        if cancel.is_cancelled() {
+            return Err(TurnError::Cancelled);
+        }
+
         let request = ChatRequest::new(&config.model, messages.clone()).with_tools(offered.clone());
         let completion = client.complete(&mut policy, &request)?;
         tokens += completion.usage.total();
@@ -296,6 +346,12 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
         )));
 
         for call in &completion.calls {
+            // Checked per call, because a tool may write. Stopping here means the remaining
+            // calls in this round never run.
+            if cancel.is_cancelled() {
+                return Err(TurnError::Cancelled);
+            }
+
             let output = tools::dispatch(&mut policy, workspace, confirmer, call);
 
             // The same gate as file context. A tool result the kernel judges untrusted is
