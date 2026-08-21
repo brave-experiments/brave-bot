@@ -188,7 +188,8 @@ fn event_loop(
     workspace: &Workspace,
     confinement: String,
 ) -> io::Result<()> {
-    let mut session = Session::new(confinement);
+    // The one place persistence is turned on: history in ~/.bua outlives the session.
+    let mut session = Session::new(confinement).with_stored_history();
 
     // Asked once, before any turn: the answer decides whether ordinary work in this directory
     // is interrupted for every write. Nothing is trusted unless the user says so.

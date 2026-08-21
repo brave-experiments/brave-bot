@@ -27,6 +27,20 @@ impl History {
         Self::default()
     }
 
+    /// Start from prompts stored by earlier sessions, oldest first.
+    pub fn from_entries(entries: Vec<String>) -> Self {
+        Self {
+            entries,
+            back: None,
+            stashed: String::new(),
+        }
+    }
+
+    /// Every stored prompt, oldest first, for writing back to disk.
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
     /// Record a submitted prompt.
     ///
     /// Consecutive duplicates are collapsed: sending the same thing twice is usually a retry, and

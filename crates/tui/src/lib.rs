@@ -11,6 +11,7 @@ pub mod indicator;
 pub mod remote_confirm;
 pub mod render;
 pub mod state;
+pub mod store;
 pub mod trust_prompt;
 pub mod verbs;
 pub mod wrap;

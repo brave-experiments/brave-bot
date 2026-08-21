@@ -83,6 +83,12 @@ pub struct Session {
     pub tokens: u64,
     /// Prompts already sent, for recall with the arrow keys.
     pub history: crate::history::History,
+    /// Whether history is written to disk.
+    ///
+    /// Off by default so constructing a session does no I/O: a test would otherwise read and
+    /// write the developer's own history, and one that ran twice would see the first run's
+    /// prompts. The real session turns it on with [`Session::with_stored_history`].
+    persist: bool,
     /// When the turn in flight started. `None` when idle.
     ///
     /// An `Instant` rather than a stored elapsed value so the display advances between redraws
@@ -102,8 +108,23 @@ impl Session {
             turns: 0,
             tokens: 0,
             history: crate::history::History::new(),
+            persist: false,
             started: None,
         }
+    }
+
+    /// Load history from disk and keep writing to it.
+    ///
+    /// Separate from [`Session::new`] so persistence is a deliberate choice at one call site
+    /// rather than a side effect of constructing a session.
+    ///
+    /// What comes back is not trusted: the file can be edited, so a recalled prompt goes into the
+    /// input box for the user to read and submit. That keystroke is what makes it trusted, exactly
+    /// as typing it would have been.
+    pub fn with_stored_history(mut self) -> Self {
+        self.history = crate::history::History::from_entries(crate::store::load_history());
+        self.persist = true;
+        self
     }
 
     /// How long the turn in flight has been running, or zero when idle.
@@ -148,8 +169,12 @@ impl Session {
         self.status = Status::Idle;
         self.started = None;
         // Popped because the text is going back into the box: offering it from history as well
-        // would present the same line from two places.
+        // would present the same line from two places. Rewritten rather than appended, since the
+        // stored copy has to go too.
         self.history.pop();
+        if self.persist {
+            crate::store::save_history(self.history.entries());
+        }
         self.input = prompt.into();
         // The submitted prompt is still in the transcript, so it is removed: the turn produced
         // nothing, and leaving it would read as a question that went unanswered.
@@ -204,6 +229,9 @@ impl Session {
         }
         self.input.clear();
         self.history.push(prompt.clone());
+        if self.persist {
+            crate::store::append_history(&prompt);
+        }
         self.transcript.push(Entry::user(prompt.clone()));
         self.status = Status::Working;
         self.scroll = 0;
@@ -570,5 +598,19 @@ mod tests {
 
         s.recall_older();
         assert!(s.input.is_empty(), "history was recalled mid-turn");
+    }
+    /// Constructing a session must do no I/O, or every test would read and write the developer's
+    /// own history and a second run would see the first run's prompts.
+    #[test]
+    fn a_plain_session_does_not_persist() {
+        let mut s = session();
+        for c in "not stored".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+
+        // In memory for recall, but nothing was written: `persist` is off.
+        assert_eq!(s.history.len(), 1);
+        assert!(!s.persist, "a plain session was persisting");
     }
 }
