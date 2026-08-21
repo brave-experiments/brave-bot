@@ -137,9 +137,10 @@ impl Workspace {
 
     /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.
     ///
-    /// The contents come back labelled untrusted-private: a workspace file may contain
-    /// anything, including text fetched from the network earlier, and it is the user's
-    /// data.
+    /// The contents are private — they are the user's data — and their integrity comes from
+    /// the trust store: trusted if the user vouched for this path, untrusted otherwise. A
+    /// file that received untrusted bytes earlier is recorded as untrusted, so a round trip
+    /// through the filesystem cannot launder anything.
     ///
     /// Deliberately uncapped, because the callers that need it need all of it: an edit
     /// replaces text in the whole file and compares against it to detect a concurrent
@@ -163,7 +164,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
-        let label = policy.observe(Capability::FileRead)?;
+        let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
             path: relative.clone(),
@@ -210,7 +211,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
-        let label = policy.observe(Capability::FileRead)?;
+        let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
             path: relative.clone(),
@@ -285,7 +286,7 @@ impl Workspace {
         let relative = self.peek_relative(path)?;
         let current = Labelled::new(
             self.peek_for_review(&relative).unwrap_or_default(),
-            read_label(),
+            conservative_read_label(),
         );
 
         if !policy.contents_unchanged("file_write", &current, expected) {
@@ -398,9 +399,12 @@ impl Workspace {
     }
 }
 
-/// The label a workspace read produces, exposed for callers that need to reason about
-/// it without performing a read.
-pub fn read_label() -> Label {
+/// The most conservative label workspace content can carry.
+///
+/// A read's actual integrity depends on the trust store, so this is a floor rather than the
+/// answer: used where content is wrapped only to be compared or discarded, and where treating
+/// it as untrusted can only be safe.
+pub fn conservative_read_label() -> Label {
     Label::untrusted_private()
 }
 

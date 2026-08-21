@@ -445,6 +445,13 @@ fn edit_file<S: Sink, C: Confirmer>(
         Err(e) => return format!("error: {e}"),
     };
 
+    // The passage and its replacement are the model's words, so their integrity is the turn's
+    // rather than the blanket untrusted every argument arrives with. A turn that has read only
+    // vouched-for files is proposing text derived from trusted input; without this the splice
+    // result would always be untrusted and a vouched-for workspace would still prompt.
+    let old_text = policy.attribute_to_turn("edit_file", &old_text);
+    let new_text = policy.attribute_to_turn("edit_file", &new_text);
+
     let spliced =
         match policy.splice_content("edit_file", &current, &old_text, &new_text, replace_all) {
             Ok(spliced) => spliced,

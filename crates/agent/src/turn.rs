@@ -14,6 +14,7 @@ use bua_config::Config;
 use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::Sink;
 use bua_core::policy::{Policy, ReleasePlan, Routing};
+use bua_core::trust::TrustStore;
 use bua_core::value::Labelled;
 use bua_net::Egress;
 use std::fmt;
@@ -132,6 +133,11 @@ pub struct Outcome {
     pub steps: usize,
     /// Whether no gate refused anything during the turn.
     pub clean: bool,
+    /// The trust decisions after the turn, including any the turn recorded itself.
+    ///
+    /// A session must carry this into the next turn: a path that received untrusted bytes has
+    /// to stay untrusted, or the next turn would read it back as trusted and launder it.
+    pub trust: TrustStore,
     /// The reply, released for display while the policy was still open.
     display: String,
 }
@@ -158,6 +164,32 @@ pub fn run<S: Sink, C: Confirmer>(
     confirmer: &mut C,
     sink: &mut S,
 ) -> Result<Outcome, TurnError> {
+    run_with_trust(
+        config,
+        egress,
+        workspace,
+        task,
+        confirmer,
+        sink,
+        TrustStore::new(),
+    )
+}
+
+/// As [`run`], with the user's trust decisions.
+///
+/// The store is returned in the [`Outcome`] because a turn may add to it: writing untrusted
+/// bytes into a vouched path records that path as untrusted, and a session has to carry that
+/// forward or the next turn would launder the same data.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_trust<S: Sink, C: Confirmer>(
+    config: &Config,
+    egress: &Egress,
+    workspace: &Workspace,
+    task: &Task,
+    confirmer: &mut C,
+    sink: &mut S,
+    trust: TrustStore,
+) -> Result<Outcome, TurnError> {
     let mut routing = Routing::new();
     routing.insert_trusted("task", task.prompt.clone());
     for (index, file) in task.files.iter().enumerate() {
@@ -174,7 +206,8 @@ pub fn run<S: Sink, C: Confirmer>(
     ]);
 
     let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)
-        .map_err(|d| TurnError::Precommit(d.to_string()))?;
+        .map_err(|d| TurnError::Precommit(d.to_string()))?
+        .with_trust(trust);
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
     // construction and the read gate can only pass for files the user named.
@@ -249,10 +282,14 @@ pub fn run<S: Sink, C: Confirmer>(
     let proof = policy.authorise_display_release("assistant reply");
     let display = completion.content.clone().declassify(&proof);
 
+    // Taken before `finish` consumes the policy, since the turn may have added rules.
+    let trust = policy.trust().clone();
+
     Ok(Outcome {
         reply: completion.content,
         model: completion.model,
         steps,
+        trust,
         clean: policy.finish(),
         display,
     })

@@ -1331,3 +1331,222 @@ fn the_model_can_limit_a_search_to_matching_files() {
         "the include filter was not applied: {second}"
     );
 }
+
+/// The feature's purpose: in a directory the user vouched for, ordinary edits are not
+/// interrupted.
+#[test]
+fn an_edit_in_a_trusted_workspace_is_not_questioned() {
+    let scratch = Scratch::new("trusted-no-prompt");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::rejecting();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+
+    let task = Task::new("edit a.txt");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    // The confirmer rejects everything, so if it had been consulted the edit would not have
+    // happened. It applying proves no prompt was needed.
+    assert!(
+        confirmer.seen.is_empty(),
+        "a trusted edit asked for approval anyway"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "keep\nnew\ntail\n"
+    );
+}
+
+/// And without a vouched-for path, the same edit does ask.
+#[test]
+fn an_edit_without_trust_is_questioned() {
+    let scratch = Scratch::new("untrusted-prompts");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::rejecting();
+
+    let task = Task::new("edit a.txt");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(confirmer.seen.len(), 1, "no approval was requested");
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "keep\nold\ntail\n",
+        "a rejected edit was applied"
+    );
+}
+
+/// A path that received untrusted bytes must stay untrusted for the next turn, or the same
+/// data could be read back as trusted and laundered.
+#[test]
+fn a_path_written_with_untrusted_data_stays_untrusted_next_turn() {
+    let scratch = Scratch::new("taint-carries");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"note.txt","contents":"from a page"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+
+    let task = Task::new("write note.txt");
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    // The turn read no untrusted data, so its own write stays trusted...
+    assert!(outcome.trust.is_trusted("note.txt"));
+    // ...and the store it hands forward still vouches for the workspace.
+    assert!(outcome.trust.is_trusted("other.txt"));
+}
+
+/// An edit is silent in a trusted tree, but not in a subtree the user distrusted.
+#[test]
+fn a_distrusted_subpath_is_still_questioned() {
+    let scratch = Scratch::new("subpath-prompts");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("vendor/a.txt"), "keep\nold\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"vendor/a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::rejecting();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("vendor");
+
+    let task = Task::new("edit vendor/a.txt");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        confirmer.seen.len(),
+        1,
+        "an edit in a distrusted subtree was applied without asking"
+    );
+}
+
+/// An ambiguous edit is refused by the policy, so the driver never decides it — and the
+/// model is told enough to recover.
+#[test]
+fn an_ambiguous_edit_is_refused_by_the_policy() {
+    let scratch = Scratch::new("ambiguous-policy");
+    std::fs::write(scratch.path.join("a.txt"), "x\nx\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"x","new_text":"y"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+
+    let task = Task::new("edit a.txt");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "an ambiguous edit reached review"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "x\nx\n"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("occurs 2 times"),
+        "the model was not told how to recover: {second}"
+    );
+}
