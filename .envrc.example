@@ -17,23 +17,34 @@ export BRAVE_SERVICES_KEY_ID="replace-me"
 # Base URL of the aichat backend. The client appends the API path
 # (v1/chat/completions), matching brave-core's GetEndpointUrl().
 #
-# Host is "<prefix>.<services-domain>" where the domains come from
-# brave-core's brave_domains buildflags:
+# Host is "<prefix>.<services-domain>" where the domains come from brave-core's
+# brave_domains buildflags:
 #   prod     ai-chat.bsg.brave.com
 #   staging  ai-chat.bsg.bravesoftware.com
-#   dev      ai-chat.bsg.brave.software
+#   dev      ai-chat.bsg.brave.software     (VPN only; does not resolve otherwise)
 #
-# The premium tier uses the ai-chat-premium.bsg prefix instead; brave-core
-# selects it when a SKU credential is present.
-export BRAVE_AI_CHAT_ENDPOINT="https://ai-chat.bsg.brave.com"
+# A services key is issued for one environment. Using it against another returns
+# 401 with error 40101, "Invalid services key" — the signature is well-formed, the
+# credential simply is not accepted there.
+#
+# The premium tier uses the ai-chat-premium.bsg prefix and additionally requires a
+# SKU (subscription) credential; without one it returns 401 error 40104.
+export BRAVE_AI_CHAT_ENDPOINT="https://ai-chat.bsg.brave.software"
 
 # Point this at a locally running backend for development, e.g.
 # export BRAVE_AI_CHAT_ENDPOINT="http://127.0.0.1:8000"
 
 # Model to request from POST /v1/chat/completions.
 # "automatic" lets the server triage per request and is the default.
-# Note: a value the server does not recognize is silently reset to
-# "automatic", and some model entries are weighted ensembles that resolve
-# randomly — so the model you request is not necessarily the one you get.
-# Always trust the model reported in the response.
+#
+# The model requested is not necessarily the model used: unrecognised names are
+# silently reset to "automatic", some entries are weighted ensembles that resolve
+# randomly, and "automatic" itself picks per request — observed selecting both
+# claude-4-haiku and qwen-14b-instruct for identical prompts. Trust the model
+# reported in the response, which `--trace` prints.
+#
+# Non-premium callers get a metered daily allowance of premium-tier automatic
+# selections; once spent, requesting a premium model returns 403 error 40301. Free
+# models such as llama-3-8b-instruct always work. GET /v1/models lists them with an
+# "access" field.
 export MODEL="automatic"
