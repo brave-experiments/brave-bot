@@ -127,6 +127,7 @@ dependencies = [
  "bua-core",
  "bua-net",
  "bua-sandbox",
+ "bua-tui",
 ]
 
 [[package]]

@@ -17,3 +17,4 @@ bua-config = { path = "../config" }
 bua-core = { path = "../core" }
 bua-net = { path = "../net" }
 bua-sandbox = { path = "../sandbox" }
+bua-tui = { path = "../tui" }

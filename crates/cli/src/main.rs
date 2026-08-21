@@ -16,10 +16,12 @@ fn main() -> ExitCode {
             println!("bua {VERSION}");
             ExitCode::SUCCESS
         }
-        Some("--help" | "-h") | None => {
+        Some("--help" | "-h") => {
             print_help();
             ExitCode::SUCCESS
         }
+        // With no arguments the interactive session is the natural default.
+        None => interactive(),
         Some("doctor") => doctor(),
         Some(flag) if flag.starts_with('-') => {
             eprintln!("unknown option: {flag}");
@@ -35,8 +37,15 @@ fn print_help() {
     println!("bua {VERSION} — a coding agent resistant to prompt injection");
     println!();
     println!("Usage:");
-    println!("  bua \"<task>\" [--file <path>]...   Run a task");
+    println!("  bua                               Start an interactive session");
+    println!("  bua \"<task>\" [--file <path>]...   Run a single task");
     println!("  bua doctor                        Check configuration and confinement");
+    println!();
+    println!("Interactive keys:");
+    println!("  Enter            Send");
+    println!("  Ctrl-T           Toggle the audit trail");
+    println!("  PageUp/PageDown  Scroll");
+    println!("  Ctrl-C, Esc      Leave");
     println!();
     println!("Options:");
     println!("  --file <path>    Include a workspace file as context (repeatable)");
@@ -92,12 +101,7 @@ fn run_task(args: &[String]) -> ExitCode {
         }
     };
 
-    // The workspace is the current directory: file arguments are resolved relative to
-    // it, and confinement keeps reads inside it.
-    let workspace = match std::env::current_dir()
-        .map_err(|e| e.to_string())
-        .and_then(|dir| Workspace::new(dir).map_err(|e| e.to_string()))
-    {
+    let workspace = match current_workspace() {
         Ok(w) => w,
         Err(err) => {
             eprintln!("workspace error: {err}");
@@ -168,6 +172,48 @@ fn print_trace(sink: &RecordingSink) {
             }
         }
     }
+}
+
+/// Start an interactive session.
+fn interactive() -> ExitCode {
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("configuration error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let workspace = match current_workspace() {
+        Ok(w) => w,
+        Err(err) => {
+            eprintln!("workspace error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Reported in the status bar so the guarantee in force is visible for the whole
+    // session rather than assumed.
+    let confinement = match bua_sandbox::for_current_platform() {
+        Ok(sandbox) => sandbox.capabilities().level.to_string(),
+        Err(_) => "none".to_string(),
+    };
+
+    match bua_tui::app::run(&config, &workspace, confinement) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("interface error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The workspace is the current directory: file arguments resolve relative to it, and
+/// confinement keeps reads inside it.
+fn current_workspace() -> Result<Workspace, String> {
+    std::env::current_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|dir| Workspace::new(dir).map_err(|e| e.to_string()))
 }
 
 /// Report whether configuration is usable, without revealing the signing key.
