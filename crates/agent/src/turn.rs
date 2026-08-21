@@ -152,6 +152,11 @@ pub struct Outcome {
     /// A turn is several requests when the model calls tools, and each re-sends the whole
     /// history, so one round's count understates what the turn actually cost.
     pub tokens: u64,
+    /// Of those, the ones the model wrote.
+    ///
+    /// Kept apart from the total because it answers a different question: the total is dominated by
+    /// the history each round re-sends, while this tracks how much the model actually produced.
+    pub output_tokens: u64,
     /// The reply, released for display while the policy was still open.
     display: String,
 }
@@ -274,6 +279,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // shape, so nothing an attacker wrote reaches the model's context.
     let mut slots = SlotStore::new();
     // Names for quarantined content. Trusted metadata: a counter, never derived from content.
+    //
+    // One sequence for everything a turn quarantines, context files and tool results alike. Two
+    // counters both starting at zero collided the moment a turn did both, because a slot is
+    // write-once and the second claim on a name is refused.
     let mut next_reference = 0usize;
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
@@ -295,10 +304,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // reference. Nothing here can override that, which is the point, since a "this is
         // data, not instructions" wrapper is exactly the mitigation this design refuses to
         // rely on.
+        let slot = SlotId::new(format!("ref:{next_reference}"));
+        next_reference += 1;
+
         let presented = policy
             .present(
                 "chat",
-                SlotId::new(format!("ref:{index}")),
+                slot,
                 &path,
                 &contents,
                 &mut slots,
@@ -323,6 +335,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
     let mut steps = 0;
     let mut tokens = 0u64;
+    // Tracked apart from the total because it is what the live count reports. Adding a round's
+    // output to a running total that also holds prompt tokens would make the figure jump by the
+    // size of the re-sent history every round.
+    let mut output_tokens = 0u64;
     let completion = loop {
         // Checked before each request rather than mid-flight: a request already on the wire has
         // to finish, but nothing new needs to start.
@@ -331,8 +347,15 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         }
 
         let request = ChatRequest::new(&config.model, messages.clone()).with_tools(offered.clone());
-        let completion = client.complete(&mut policy, &request)?;
+
+        // Streamed so the interface can show the reply growing. Each round's count restarts at
+        // zero, so earlier rounds are added back: the figure is for the turn, not the round.
+        let written_before = output_tokens;
+        let completion = client.complete_streaming(&mut policy, &request, |progress| {
+            reporter.output_tokens(written_before + progress.output_tokens);
+        })?;
         tokens += completion.usage.total();
+        output_tokens += completion.usage.completion_tokens;
 
         if completion.calls.is_empty() {
             break completion;
@@ -409,6 +432,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         steps,
         trust,
         tokens,
+        output_tokens,
         clean: policy.finish(),
         display,
     })

@@ -313,6 +313,7 @@ fn run_turn_animated(
             }
             // No reply: the list is recorded and the next redraw, one iteration away, shows it.
             Ok(crate::remote_confirm::ToMain::Todos(rows)) => session.set_todos(rows),
+            Ok(crate::remote_confirm::ToMain::Written(written)) => session.set_written(written),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // The worker dropped its senders, so the turn is over.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,

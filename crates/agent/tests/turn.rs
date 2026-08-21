@@ -9,6 +9,7 @@ use bua_agent::turn::{self, Task};
 use bua_config::Config;
 use bua_core::event::{Event, RecordingSink};
 use bua_core::label::Label;
+use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -68,15 +69,81 @@ fn serve(reply: &str) -> (String, mpsc::Receiver<String>) {
         reader.read_exact(&mut body).expect("body");
         let _ = sender.send(String::from_utf8_lossy(&body).to_string());
 
+        let frames = as_sse(&reply);
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-            reply.len()
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{frames}",
+            frames.len()
         );
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
     });
 
     (format!("http://127.0.0.1:{port}"), receiver)
+}
+
+/// Re-express a whole chat response as the SSE stream that would have delivered it.
+///
+/// The turn loop streams, so the mock server has to. Tests still describe a reply as one complete
+/// response, which is the thing being asserted about, and this splits it into frames the way a
+/// server would: text a piece at a time, tool arguments fragmented, usage last.
+///
+/// Splitting text deliberately, rather than sending it in one frame, is what keeps these tests
+/// exercising reassembly instead of quietly bypassing it.
+fn as_sse(reply: &str) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(reply).expect("a valid reply");
+    let mut frames = String::new();
+    let mut frame = |value: serde_json::Value| {
+        frames.push_str(&format!("data: {value}\n\n"));
+    };
+
+    let model = parsed.get("model").cloned().unwrap_or(json!("test-model"));
+    frame(json!({"model": model, "choices": [{"delta": {"role": "assistant"}}]}));
+
+    let message = parsed
+        .pointer("/choices/0/message")
+        .cloned()
+        .unwrap_or(json!({}));
+
+    if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+        // Two frames when there is room, so accumulation is genuinely tested.
+        let split = content.len() / 2;
+        for piece in [&content[..split], &content[split..]] {
+            if !piece.is_empty() {
+                frame(json!({"choices": [{"delta": {"content": piece}}]}));
+            }
+        }
+    }
+
+    if let Some(calls) = message.get("tool_calls").and_then(|c| c.as_array()) {
+        for (index, call) in calls.iter().enumerate() {
+            let name = call.pointer("/function/name").cloned().unwrap_or(json!(""));
+            let id = call.get("id").cloned().unwrap_or(json!(null));
+            frame(json!({"choices": [{"delta": {"tool_calls": [
+                {"index": index, "id": id, "function": {"name": name, "arguments": ""}}
+            ]}}]}));
+
+            // Arguments arrive in fragments, as they really do.
+            let arguments = call
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            for chunk in arguments.as_bytes().chunks(8) {
+                let piece = String::from_utf8_lossy(chunk).to_string();
+                frame(json!({"choices": [{"delta": {"tool_calls": [
+                    {"index": index, "function": {"arguments": piece}}
+                ]}}]}));
+            }
+        }
+    }
+
+    let usage = parsed.get("usage").cloned();
+    let mut final_frame = json!({"choices": [{"finish_reason": "stop"}]});
+    if let Some(usage) = usage {
+        final_frame["usage"] = usage;
+    }
+    frame(final_frame);
+    frames.push_str("data: [DONE]\n\n");
+    frames
 }
 
 fn config_for(endpoint: &str) -> Config {
@@ -379,9 +446,10 @@ fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
             let _ = reader.read_exact(&mut body);
             let _ = sender.send(String::from_utf8_lossy(&body).to_string());
 
+            let frames = as_sse(&reply);
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                reply.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{frames}",
+                frames.len()
             );
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
@@ -2006,4 +2074,121 @@ fn an_uncancelled_turn_completes_normally() {
     .expect("an uncancelled turn runs");
 
     assert_eq!(outcome.reply_for_display(), "the answer");
+}
+
+/// Output tokens have to reach the reporter while the reply is arriving, not only at the end:
+/// that is the entire reason the turn streams.
+#[test]
+fn output_tokens_are_reported_as_the_reply_arrives() {
+    let scratch = Scratch::new("streamed-progress");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![reply_with_usage("a longer reply here", 100, 4)]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("hello"),
+        &mut bua_agent::RefuseWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        !reporter.written.is_empty(),
+        "nothing was reported while the reply arrived"
+    );
+    assert!(
+        reporter.written.windows(2).all(|w| w[1] >= w[0]),
+        "the count went backwards: {:?}",
+        reporter.written
+    );
+    // Ends on the server's figure rather than the frame estimate.
+    assert_eq!(reporter.written.last().copied(), Some(4));
+    assert_eq!(outcome.output_tokens, 4);
+    // And the total still counts what was sent as well as what came back.
+    assert_eq!(outcome.tokens, 104);
+}
+
+/// Across rounds the figure has to keep climbing rather than restarting, since each round's count
+/// begins again at zero on the wire.
+#[test]
+fn output_tokens_accumulate_across_tool_rounds() {
+    let scratch = Scratch::new("streamed-rounds");
+    std::fs::write(scratch.path.join("a.rs"), "fn main() {}\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_with_usage("read_file", r#"{"path":"a.rs"}"#, 50, 6),
+        reply_with_usage("all done now", 80, 3),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read it"),
+        &mut bua_agent::RefuseWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        reporter.written.windows(2).all(|w| w[1] >= w[0]),
+        "the count restarted between rounds: {:?}",
+        reporter.written
+    );
+    assert_eq!(outcome.output_tokens, 9);
+    assert_eq!(outcome.tokens, 139);
+}
+
+/// A context file and a tool result must not be quarantined under the same name.
+///
+/// Both used to number from zero independently, so the first untrusted tool result in a turn that
+/// had already quarantined a context file collided with it and the turn failed. The counter has to
+/// be one sequence covering both.
+#[test]
+fn a_context_file_and_a_tool_result_get_distinct_slots() {
+    let scratch = Scratch::new("slot-collision");
+    // Untrusted, since nothing vouched for this path, so presenting it quarantines rather than
+    // showing it. That is what makes a slot get written at all.
+    std::fs::write(scratch.path.join("context.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(scratch.path.join("other.rs"), "fn other() {}\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_with_usage("read_file", r#"{"path":"other.rs"}"#, 10, 2),
+        reply_with("read them both"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("compare these").with_file("context.rs");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+    )
+    .expect("a turn that quarantines a file and then a tool result must still run");
+
+    assert_eq!(outcome.reply_for_display(), "read them both");
 }

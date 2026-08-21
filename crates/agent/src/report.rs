@@ -18,6 +18,12 @@ use bua_core::todo::Row;
 pub trait Reporter {
     /// The task list changed. Rows are already shaped for display and released.
     fn todos(&mut self, rows: Vec<Row>);
+
+    /// The model has written more of its reply.
+    ///
+    /// A count and nothing else. The reply is untrusted model output, so passing the text here
+    /// would put untrusted content in the driver's hands; how much was written is not content.
+    fn output_tokens(&mut self, _written: u64) {}
 }
 
 /// Discards every report.
@@ -37,11 +43,17 @@ impl Reporter for IgnoreReports {
 pub struct RecordingReporter {
     /// Every update in order, so a test can assert on the sequence rather than the end state.
     pub updates: Vec<Vec<Row>>,
+    /// Every output-token count reported, in order.
+    pub written: Vec<u64>,
 }
 
 impl Reporter for RecordingReporter {
     fn todos(&mut self, rows: Vec<Row>) {
         self.updates.push(rows);
+    }
+
+    fn output_tokens(&mut self, written: u64) {
+        self.written.push(written);
     }
 }
 

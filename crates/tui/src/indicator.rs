@@ -42,6 +42,11 @@ pub struct Indicator {
     pub elapsed: String,
     /// Tokens spent, already formatted. `None` when the server reported none.
     pub tokens: Option<String>,
+    /// Tokens the model has written, already formatted. `None` before it writes any.
+    ///
+    /// Shown separately from the total because it is the part that moves while someone waits: the
+    /// total is mostly the history each round re-sends, and it only changes between rounds.
+    pub written: Option<String>,
 }
 
 impl Indicator {
@@ -57,7 +62,17 @@ impl Indicator {
             verb: Cow::Borrowed(verbs::for_turn(turn)),
             elapsed: format_elapsed(elapsed),
             tokens: (tokens > 0).then(|| format_tokens(tokens)),
+            written: None,
         }
+    }
+
+    /// Report how much the model has written so far.
+    ///
+    /// Zero is left absent rather than shown, so the counter appears when there is something to
+    /// count instead of sitting at `0` through the whole wait before the first chunk lands.
+    pub fn writing(mut self, written: u64) -> Self {
+        self.written = (written > 0).then(|| format_tokens(written));
+        self
     }
 
     /// Replace the word with what the model says it is doing.
@@ -76,6 +91,11 @@ impl Indicator {
         if let Some(tokens) = &self.tokens {
             // The arrow marks these as tokens consumed, matching how usage is reported.
             detail.push_str(&format!(" · ↓ {tokens} tokens"));
+        }
+        if let Some(written) = &self.written {
+            // The opposite arrow, since these went the other way. No unit: it sits beside a figure
+            // already labelled tokens, and repeating the word crowds the line.
+            detail.push_str(&format!(" · ↑ {written}"));
         }
         format!("({detail})")
     }
@@ -133,7 +153,9 @@ mod tests {
     #[test]
     fn a_named_task_replaces_the_word_and_nothing_else() {
         let generic = Indicator::new(0, Duration::from_secs(751), 38_300);
-        let named = generic.clone().labelled("Adding prompt history".to_string());
+        let named = generic
+            .clone()
+            .labelled("Adding prompt history".to_string());
 
         assert_eq!(
             named.line(),
@@ -141,6 +163,35 @@ mod tests {
         );
         assert_eq!(named.glyph, generic.glyph);
         assert_eq!(named.detail(), generic.detail());
+    }
+
+    /// Output tokens sit beside the total, marked with the opposite arrow: one is what was sent,
+    /// the other what came back.
+    #[test]
+    fn written_tokens_appear_alongside_the_total() {
+        let indicator = Indicator::new(0, Duration::from_secs(12), 9_200).writing(512);
+        assert_eq!(
+            indicator.detail(),
+            "(12s \u{b7} \u{2193} 9.2k tokens \u{b7} \u{2191} 512)"
+        );
+    }
+
+    /// Nothing written yet means no counter, rather than a `0` sitting there through the wait
+    /// before the first chunk lands.
+    #[test]
+    fn nothing_written_shows_no_counter() {
+        let indicator = Indicator::new(0, Duration::from_secs(3), 0).writing(0);
+        assert!(indicator.written.is_none());
+        assert_eq!(indicator.detail(), "(3s)");
+    }
+
+    /// The figure has to be able to climb, since that is the whole point of streaming it.
+    #[test]
+    fn the_written_count_climbs() {
+        let first = Indicator::new(0, Duration::from_secs(1), 0).writing(10);
+        let later = Indicator::new(0, Duration::from_secs(1), 0).writing(120);
+        assert_ne!(first.written, later.written);
+        assert_eq!(later.written.as_deref(), Some("120"));
     }
 
     /// Something must move, or the interface is indistinguishable from a hang.

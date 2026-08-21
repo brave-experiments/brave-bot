@@ -26,6 +26,8 @@ pub enum ToMain {
     Write(WriteRequest),
     /// The task list changed. No reply.
     Todos(Vec<Row>),
+    /// The model has written this many output tokens so far. No reply.
+    Written(u64),
 }
 
 /// The worker's end for questions: sends a write, waits for the answer.
@@ -72,6 +74,10 @@ impl Reporter for RemoteReporter {
         // Deliberately ignored. Unlike a write, there is no decision resting on this arriving,
         // so a closed channel means the display is gone, not that the turn should stop.
         let _ = self.outbound.send(ToMain::Todos(rows));
+    }
+
+    fn output_tokens(&mut self, written: u64) {
+        let _ = self.outbound.send(ToMain::Written(written));
     }
 }
 
@@ -210,6 +216,7 @@ mod tests {
             while let Ok(message) = inbound.recv() {
                 match message {
                     ToMain::Todos(_) => seen.push("todos"),
+                    ToMain::Written(_) => seen.push("written"),
                     ToMain::Write(_) => {
                         seen.push("write");
                         answer_tx.send(Decision::Approve).expect("answered");
@@ -221,7 +228,35 @@ mod tests {
         });
 
         reporter.todos(rows(&List::new(vec![Item::new("step", Status::Active)])));
+        reporter.output_tokens(42);
         assert_eq!(confirmer.confirm_write(&request()), Decision::Approve);
-        assert_eq!(responder.join().expect("finished"), vec!["todos", "write"]);
+        assert_eq!(
+            responder.join().expect("finished"),
+            vec!["todos", "written", "write"]
+        );
+    }
+
+    /// A count travels with no reply, like a task list: there is nothing to answer.
+    #[test]
+    fn a_written_count_travels_without_an_answer() {
+        let (outbound, inbound) = channel::<ToMain>();
+
+        let mut reporter = RemoteReporter::new(outbound);
+        reporter.output_tokens(512);
+
+        match inbound.recv().expect("a message arrived") {
+            ToMain::Written(written) => assert_eq!(written, 512),
+            other => panic!("expected a count, got {other:?}"),
+        }
+    }
+
+    /// And a closed channel drops it rather than failing the turn: nobody watching is not an error.
+    #[test]
+    fn a_closed_channel_drops_a_written_count_without_failing() {
+        let (outbound, inbound) = channel::<ToMain>();
+        drop(inbound);
+
+        let mut reporter = RemoteReporter::new(outbound);
+        reporter.output_tokens(7);
     }
 }

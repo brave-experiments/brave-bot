@@ -97,6 +97,11 @@ pub struct Session {
     pub tokens: u64,
     /// Prompts already sent, for recall with the arrow keys.
     pub history: crate::history::History,
+    /// Tokens the model has written during the turn in flight.
+    ///
+    /// Reset when a turn starts, since it measures the reply being written now. The session total
+    /// lives in `tokens` and accumulates instead.
+    pub written: u64,
     /// The task list for the turn in flight, as the model last reported it.
     ///
     /// Already shaped and released: these rows came out of the kernel's render gate, so drawing
@@ -128,6 +133,7 @@ impl Session {
             turns: 0,
             tokens: 0,
             history: crate::history::History::new(),
+            written: 0,
             todos: Vec::new(),
             persist: false,
             started: None,
@@ -165,6 +171,7 @@ impl Session {
                 self.elapsed(),
                 self.tokens,
             );
+            let base = base.writing(self.written);
             match self
                 .todos
                 .iter()
@@ -179,6 +186,11 @@ impl Session {
     /// Record the task list the turn just reported.
     pub fn set_todos(&mut self, rows: Vec<bua_core::todo::Row>) {
         self.todos = rows;
+    }
+
+    /// Record how much the model has written so far in the turn in flight.
+    pub fn set_written(&mut self, written: u64) {
+        self.written = written;
     }
 
     /// Accept a typed character. Ignored while a turn is running, so input cannot be
@@ -280,6 +292,7 @@ impl Session {
         // The previous turn's plan is not this turn's. Leaving it would show finished work as
         // though the new turn had it outstanding.
         self.todos.clear();
+        self.written = 0;
         self.started = Some(Instant::now());
         Some(prompt)
     }
@@ -684,11 +697,17 @@ mod tests {
         #[test]
         fn a_later_report_replaces_the_earlier_one() {
             let mut s = working();
-            s.set_todos(list(&[("first", Status::Active), ("second", Status::Pending)]));
+            s.set_todos(list(&[
+                ("first", Status::Active),
+                ("second", Status::Pending),
+            ]));
             s.set_todos(list(&[("first", Status::Done), ("second", Status::Active)]));
 
             assert_eq!(s.todos.len(), 2);
-            assert!(s.todos[0].struck(), "the first task did not get crossed off");
+            assert!(
+                s.todos[0].struck(),
+                "the first task did not get crossed off"
+            );
         }
 
         /// An empty list must clear the display. Keeping the previous one would leave finished
@@ -733,7 +752,10 @@ mod tests {
         #[test]
         fn a_failed_turn_keeps_its_unfinished_list() {
             let mut s = working();
-            s.set_todos(list(&[("done", Status::Done), ("not done", Status::Active)]));
+            s.set_todos(list(&[
+                ("done", Status::Done),
+                ("not done", Status::Active),
+            ]));
             s.fail("the model call failed");
 
             let entry = s.transcript.last().expect("an entry");
@@ -779,6 +801,49 @@ mod tests {
 
             s.set_todos(list(&[("all finished", Status::Done)]));
             assert_eq!(s.indicator().expect("working").verb, generic);
+        }
+
+        /// The written count reaches the indicator, which is the whole point of streaming it.
+        #[test]
+        fn the_written_count_reaches_the_indicator() {
+            let mut s = working();
+            assert!(s.indicator().expect("working").written.is_none());
+
+            s.set_written(512);
+            assert_eq!(
+                s.indicator().expect("working").written.as_deref(),
+                Some("512")
+            );
+        }
+
+        /// It measures the reply being written now, so a new turn starts from nothing rather than
+        /// continuing the previous turn's figure.
+        #[test]
+        fn a_new_turn_resets_the_written_count() {
+            let mut s = working();
+            s.set_written(900);
+            s.complete("done", Vec::new(), 1_000);
+
+            s.type_char('b');
+            s.submit();
+            assert_eq!(s.written, 0, "the previous turn's count carried over");
+            assert!(s.indicator().expect("working").written.is_none());
+        }
+
+        /// The session total still accumulates, since it answers a different question: what the
+        /// whole conversation has cost.
+        #[test]
+        fn the_session_total_still_accumulates_across_turns() {
+            let mut s = working();
+            s.set_written(100);
+            s.complete("first", Vec::new(), 1_000);
+
+            s.type_char('b');
+            s.submit();
+            s.set_written(50);
+            s.complete("second", Vec::new(), 500);
+
+            assert_eq!(s.tokens, 1_500);
         }
     }
 
