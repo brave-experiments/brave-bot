@@ -1393,10 +1393,10 @@ fn the_model_can_limit_a_search_to_matching_files() {
     );
 }
 
-/// Row 3 of the table, end to end: trusted data into a path the user distrusted is reviewed,
-/// the reviewer sees both sides of the diff, and the path becomes trusted afterwards.
+/// Trusted data into a path the user distrusted needs no prompt: nothing an attacker
+/// influenced is in it, and the path only gains trust. The map records that afterwards.
 #[test]
-fn a_write_into_a_distrusted_path_is_reviewed_and_then_trusted() {
+fn trusted_data_into_a_distrusted_path_is_silent_and_trusts_the_path() {
     let scratch = Scratch::new("row3");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
@@ -1410,7 +1410,8 @@ fn a_write_into_a_distrusted_path_is_reviewed_and_then_trusted() {
     let config = config_for(&endpoint);
     let egress = bua_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut confirmer = RecordingConfirmer::approving();
+    // Rejects everything, so the write happening proves nothing was asked.
+    let mut confirmer = RecordingConfirmer::rejecting();
 
     let mut trust = bua_core::trust::TrustStore::new();
     trust.trust(".");
@@ -1428,14 +1429,68 @@ fn a_write_into_a_distrusted_path_is_reviewed_and_then_trusted() {
     )
     .expect("turn runs");
 
-    assert_eq!(confirmer.seen.len(), 1, "the write was not reviewed");
-    assert_eq!(confirmer.seen[0].path, "vendor/ours.js");
+    assert!(
+        confirmer.seen.is_empty(),
+        "writing trusted data asked for approval"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("vendor/ours.js")).unwrap(),
+        "our code\n"
+    );
     assert!(
         outcome.trust.is_trusted("vendor/ours.js"),
         "the path was not recorded as trusted after trusted data landed there"
     );
     // Its siblings are untouched.
     assert!(!outcome.trust.is_trusted("vendor/theirs.js"));
+}
+
+/// Untrusted data into an already untrusted path needs no prompt either: the path is already
+/// untrusted, so nothing changes and nothing is lost.
+#[test]
+fn untrusted_data_into_an_untrusted_path_is_silent() {
+    let scratch = Scratch::new("row4");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("vendor/page.txt"), "from the web\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":"vendor/page.txt"}"#),
+        tool_request_2(
+            "write_file",
+            r#"{"path":"vendor/summary.txt","contents":"summary\n"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::rejecting();
+
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("vendor");
+
+    let task = Task::new("summarise the page");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "an untrusted write into an untrusted path asked for approval"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("vendor/summary.txt")).unwrap(),
+        "summary\n"
+    );
 }
 
 /// An untrusted file cannot be edited: locating the passage would mean deciding from

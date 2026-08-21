@@ -92,8 +92,8 @@ The model can read files, list them, and search their contents. Each splits into
 | `read_file` | path, offset, limit | contents, untrusted |
 | `list_files` | directory, glob | filenames, untrusted |
 | `search` | pattern, directory, include glob | matches, untrusted |
-| `write_file` | path — **needs your approval** | — |
-| `edit_file` | path — **needs your approval** | — |
+| `write_file` | path — approval when trust would be lost | — |
+| `edit_file` | path — approval when trust would be lost | — |
 
 Filenames are untrusted too — a file can be named to read like an instruction.
 
@@ -123,17 +123,26 @@ every edit. Decline and nothing is trusted, so every write is shown to you.
 Trust is per path, and the **most specific rule wins** — so a trusted project can contain an
 untrusted subtree, and that subtree can contain a trusted path again.
 
-Whether a write interrupts you depends on both the data and the destination:
+A prompt asks you one thing: **may this path stop being trusted?** That is the only
+consequence a later step cannot undo, since a path recorded as untrusted can no longer be
+examined or edited.
 
 | data | destination | prompt? | effect on the trust map |
 |---|---|---|---|
 | trusted | trusted | no | unchanged |
 | untrusted | trusted | **yes** | that path becomes untrusted |
-| trusted | untrusted | **yes** | that path becomes trusted |
-| untrusted | untrusted | **yes** | unchanged |
+| trusted | untrusted | no | that path becomes trusted |
+| untrusted | untrusted | no | unchanged |
+| either | *never mentioned* | **yes** | that path takes the data's trust |
 
-Only the first row is silent. The others either write data nobody vouched for or change what a
-path means, and both are yours to decide.
+Writing trusted data never asks. For data to be trusted the turn must have observed nothing
+untrusted, so there is no attacker-influenced byte in it — and the destination only gains
+trust, never loses it.
+
+The last row is why a path nobody has mentioned differs from one you deliberately marked
+untrusted: the first has no decision behind it, so the first write there is the moment to ask.
+This is also what makes declining at startup meaningful — with nothing vouched for, every
+write is shown.
 
 The second row is what closes the obvious hole. If untrusted data — anything derived from the
 web, or from a file outside a trusted path — is written into a trusted directory, that file is

@@ -105,9 +105,11 @@ that distinction.
 wins. Both polarities are expressible, so trusted-inside-untrusted works as well as the
 reverse. Empty means nothing is trusted: trust is granted, never assumed from silence.
 
-A write is silent only when trusted data goes to a trusted path. The other three combinations
-prompt, and two of them change what the path means — see the table in the README, which is the
-specification.
+A prompt asks one thing: may this path stop being trusted? So the only case that asks is
+untrusted data into a trusted path — plus the first write to a path nobody has mentioned, which
+is why `integrity_of` returns an `Option`. Writing trusted data never asks, since trusted data
+contains nothing an attacker influenced and the destination only gains trust. See the table in
+the README, which is the specification.
 
 `Policy::reconcile_after_write` keeps the invariant that a path's recorded trust equals the
 integrity of the data in it. Untrusted data landing in a trusted tree *must* mark that path

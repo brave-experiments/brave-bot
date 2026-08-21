@@ -366,30 +366,50 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
     /// Whether writing data of `contents` integrity to `path` must be shown to a person.
     ///
-    /// From the truth table this design is specified by:
+    /// A prompt asks for one thing only: **may this path stop being trusted?** That is the
+    /// single consequence a later step cannot undo, because a path recorded as untrusted can no
+    /// longer be examined or edited. Everything else is either ordinary work or a change that
+    /// only ever adds trust.
     ///
-    /// | data | destination | prompt | trust map |
+    /// | data | destination rule | prompt | trust map |
     /// |---|---|---|---|
     /// | trusted | trusted | no | unchanged |
     /// | untrusted | trusted | **yes** | path becomes untrusted |
-    /// | trusted | untrusted | **yes** | path becomes trusted |
-    /// | untrusted | untrusted | **yes** | unchanged |
+    /// | trusted | untrusted | no | path becomes trusted |
+    /// | untrusted | untrusted | no | unchanged |
+    /// | either | *no rule* | **yes** | path takes the data's integrity |
     ///
-    /// Only the first row is silent. Every other case either changes what a path means or
-    /// writes data nobody vouched for, and both are decisions for a person.
+    /// The last row is why [`TrustStore::integrity_of`] returns an option. A path nobody has
+    /// mentioned is not the same as one the user deliberately marked untrusted: the first has
+    /// no decision behind it, so the first write there is the moment to ask. Collapsing the two
+    /// would mean that declining to trust anything at startup produced a session that never
+    /// asked about anything, which is the opposite of what declining means.
+    ///
+    /// Writing *trusted* data never needs asking. For data to be trusted the turn must have
+    /// observed nothing untrusted, so there is no attacker-influenced byte in it — and the
+    /// destination only gains trust, never loses it.
     ///
     /// Takes a [`Label`], never the bytes.
     pub fn write_needs_approval(&mut self, path: &str, contents: Label) -> bool {
-        let destination_trusted = self.trust.is_trusted(path);
         let data_trusted = contents.is_trusted();
 
-        let needed = !(destination_trusted && data_trusted);
-        let reason = match (data_trusted, destination_trusted) {
-            (true, true) => "trusted data to a trusted path",
-            (false, true) => "untrusted data into a trusted path, which it will make untrusted",
-            (true, false) => "trusted data into an untrusted path, which it will make trusted",
-            (false, false) => "untrusted data to an untrusted path",
+        let (needed, reason) = match self.trust.integrity_of(path) {
+            // Nobody has said anything about this path, so the first write is the moment to ask.
+            None => (true, "a path nobody has vouched for either way"),
+            // The one irreversible case: a trusted path is about to stop being trusted.
+            Some(Integrity::Trusted) if !data_trusted => (
+                true,
+                "untrusted data into a trusted path, which it will make untrusted",
+            ),
+            Some(Integrity::Trusted) => (false, "trusted data to a trusted path"),
+            // Already untrusted. Trusted data only raises it; untrusted data changes nothing.
+            Some(Integrity::Untrusted) if data_trusted => (
+                false,
+                "trusted data into an untrusted path, which it will make trusted",
+            ),
+            Some(Integrity::Untrusted) => (false, "untrusted data to an already untrusted path"),
         };
+
         self.allow(
             "approval",
             format!(
@@ -403,8 +423,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Update the trust map to match what was just written to `path`.
     ///
     /// The invariant: a path's effective trust equals the integrity of the data in it. A rule
-    /// is recorded only when the write disagrees with the rule already covering the path —
-    /// rows one and four of the table in [`Policy::write_needs_approval`] change nothing.
+    /// is recorded only when the write disagrees with the rule already covering the path, so a
+    /// write that agrees with it leaves the map alone.
     ///
     /// Untrusted data landing in a trusted tree *must* mark that path untrusted, or reading it
     /// back would return it as trusted and launder it. That is the loop this closes.
@@ -1147,9 +1167,10 @@ mod tests {
         assert!(policy.trust().is_trusted("src/b.rs"));
     }
 
-    /// Row 3: trusted data into an untrusted path. Prompts, and the path becomes trusted.
+    /// Trusted data into an untrusted path: silent, and the path becomes trusted. Nothing an
+    /// attacker influenced is in trusted data, and the path only gains trust.
     #[test]
-    fn trusted_data_into_an_untrusted_path_prompts_and_trusts_the_path() {
+    fn trusted_data_into_an_untrusted_path_is_silent_and_trusts_the_path() {
         let mut sink = RecordingSink::new();
         let mut store = TrustStore::new();
         store.distrust("vendor");
@@ -1162,16 +1183,17 @@ mod tests {
         .expect("policy")
         .with_trust(store);
 
-        assert!(policy.write_needs_approval("vendor/ours.js", Label::trusted_public()));
+        assert!(!policy.write_needs_approval("vendor/ours.js", Label::trusted_public()));
 
         policy.reconcile_after_write("vendor/ours.js", Label::trusted_public());
         assert!(policy.trust().is_trusted("vendor/ours.js"));
         assert!(!policy.trust().is_trusted("vendor/theirs.js"));
     }
 
-    /// Row 4: untrusted data into an untrusted path. Prompts, map unchanged.
+    /// Untrusted data into an already untrusted path: silent, map unchanged. The path is
+    /// already untrusted, so nothing is lost and nothing changes.
     #[test]
-    fn untrusted_data_into_an_untrusted_path_prompts_and_changes_nothing() {
+    fn untrusted_data_into_an_untrusted_path_is_silent_and_changes_nothing() {
         let mut sink = RecordingSink::new();
         let mut store = TrustStore::new();
         store.distrust("vendor");
@@ -1184,16 +1206,18 @@ mod tests {
         .expect("policy")
         .with_trust(store);
 
-        assert!(policy.write_needs_approval("vendor/x.js", Label::untrusted_public()));
+        assert!(!policy.write_needs_approval("vendor/x.js", Label::untrusted_public()));
 
         let before = policy.trust().rules().count();
         policy.reconcile_after_write("vendor/x.js", Label::untrusted_public());
         assert_eq!(policy.trust().rules().count(), before);
     }
 
-    /// A path nobody vouched for is untrusted, so writes there prompt.
+    /// A path nobody has mentioned is not the same as one deliberately marked untrusted: there
+    /// is no decision behind it, so the first write there is the moment to ask. Without this,
+    /// declining to trust anything at startup would produce a session that never asked.
     #[test]
-    fn an_unvouched_path_prompts() {
+    fn an_unvouched_path_prompts_either_way() {
         let mut sink = RecordingSink::new();
         let mut policy = Policy::begin(
             routing_with("task", "edit"),
