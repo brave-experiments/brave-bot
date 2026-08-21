@@ -68,6 +68,12 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.toggle_trail();
             Action::Redraw
         }
+        // Escape discards a half-typed prompt, and only leaves once the line is already empty.
+        // Pressing it to abandon a thought should not also end the session.
+        KeyCode::Esc if !session.input.is_empty() => {
+            session.clear_input();
+            Action::Redraw
+        }
         KeyCode::Esc => {
             session.quit();
             Action::Quit
@@ -372,8 +378,36 @@ mod tests {
     }
 
     #[test]
-    fn escape_quits() {
+    fn escape_quits_on_an_empty_line() {
         let mut session = Session::new("none");
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Quit);
+        assert!(session.is_quitting());
+    }
+
+    /// Escape is how a half-typed prompt is abandoned, so it must not also end the session
+    /// while there is something to discard.
+    #[test]
+    fn escape_clears_a_typed_line_without_quitting() {
+        let mut session = Session::new("none");
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
+        assert!(session.input.is_empty(), "the input was not cleared");
+        assert!(
+            !session.is_quitting(),
+            "clearing the input ended the session"
+        );
+    }
+
+    /// And a second press then leaves, so the key still reaches the exit without a detour.
+    #[test]
+    fn escape_twice_clears_then_quits() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('x')));
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
         assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Quit);
     }
 

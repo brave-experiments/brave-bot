@@ -133,6 +133,16 @@ impl Session {
         }
     }
 
+    /// Discard whatever has been typed.
+    ///
+    /// Guarded like the other editing methods: input belongs to the idle state, and clearing it
+    /// mid-turn would mean the field the user returns to is not the one they left.
+    pub fn clear_input(&mut self) {
+        if self.status == Status::Idle {
+            self.input.clear();
+        }
+    }
+
     /// Take the current input as a prompt, if there is one.
     ///
     /// Clears the field and records the prompt in the transcript, so the display reflects
@@ -388,5 +398,30 @@ mod tests {
     #[test]
     fn an_idle_session_has_no_elapsed_time() {
         assert_eq!(session().elapsed(), Duration::ZERO);
+    }
+    #[test]
+    fn clearing_discards_the_input() {
+        let mut s = session();
+        for c in "hello".chars() {
+            s.type_char(c);
+        }
+        s.clear_input();
+        assert!(s.input.is_empty());
+    }
+
+    /// Input belongs to the idle state. Every other editing method is guarded the same way, and
+    /// an unguarded clear would let a stray key empty a field the user had not touched.
+    #[test]
+    fn clearing_is_refused_while_a_turn_is_running() {
+        let mut s = session();
+        for c in "kept".chars() {
+            s.type_char(c);
+        }
+        s.submit();
+        // `submit` takes the text, so put something back the way only a bug could.
+        s.input.push_str("mid-turn");
+
+        s.clear_input();
+        assert_eq!(s.input, "mid-turn", "the input was cleared mid-turn");
     }
 }

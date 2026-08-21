@@ -46,7 +46,8 @@ fn print_help() {
     println!("  Ctrl-T                Toggle the audit trail");
     println!("  Wheel, Up/Down        Scroll the transcript");
     println!("  Home/End              Jump to the start or the latest");
-    println!("  Ctrl-C, Esc           Leave");
+    println!("  Esc                   Clear the input, or leave when it is empty");
+    println!("  Ctrl-C                Leave");
     println!();
     println!("Options:");
     println!("  --file <path>    Include a workspace file as context (repeatable)");
