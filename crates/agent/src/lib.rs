@@ -5,6 +5,7 @@
 //! by the content it processes.
 
 pub mod confirm;
+pub mod diff;
 pub mod tools;
 pub mod turn;
 pub mod workspace;
