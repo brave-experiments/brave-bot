@@ -102,6 +102,18 @@ pub struct Outcome {
     pub model: String,
     /// Whether no gate refused anything during the turn.
     pub clean: bool,
+    /// The reply, released for display while the policy was still open.
+    display: String,
+}
+
+impl Outcome {
+    /// The reply as text, for showing to the user.
+    ///
+    /// Authorised inside [`run`], while the policy is still alive, so the release is
+    /// recorded in the audit trail rather than happening implicitly after the fact.
+    pub fn reply_for_display(&self) -> &str {
+        &self.display
+    }
 }
 
 /// Run one turn.
@@ -160,9 +172,15 @@ pub fn run<S: Sink>(
     let request = ChatRequest::new(&config.model, messages);
     let completion = client.complete(&mut policy, &request)?;
 
+    // Released while the policy is open, so the audit trail records that the reply was
+    // shown rather than leaving the release invisible.
+    let proof = policy.authorise_display_release("assistant reply");
+    let display = completion.content.clone().declassify(&proof);
+
     Ok(Outcome {
         reply: completion.content,
         model: completion.model,
         clean: policy.finish(),
+        display,
     })
 }

@@ -275,6 +275,17 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(Declassification::authorise("precommitted release source"))
     }
 
+    /// Authorise releasing a value for display to the user.
+    ///
+    /// Showing untrusted text to a human is not a decision the agent makes on that
+    /// text's behalf, and the user is entitled to see what was produced. Kept separate
+    /// from the other release paths so display never becomes a way to feed untrusted
+    /// content into an effect.
+    pub fn authorise_display_release(&mut self, what: &str) -> Declassification {
+        self.allow("display", format!("{what} shown to the user"));
+        Declassification::authorise("shown to the user")
+    }
+
     /// Authorise reading a value that has already passed [`Policy::before_action`] as
     /// content.
     ///

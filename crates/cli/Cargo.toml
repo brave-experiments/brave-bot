@@ -12,6 +12,8 @@ name = "bua"
 path = "src/main.rs"
 
 [dependencies]
+bua-agent = { path = "../agent" }
 bua-config = { path = "../config" }
 bua-core = { path = "../core" }
+bua-net = { path = "../net" }
 bua-sandbox = { path = "../sandbox" }

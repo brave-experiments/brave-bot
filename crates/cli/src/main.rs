@@ -1,6 +1,9 @@
 //! Command-line entry point.
 
+use bua_agent::Workspace;
+use bua_agent::turn::{self, Task};
 use bua_config::Config;
+use bua_core::event::{Event, RecordingSink, Role};
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -18,25 +21,153 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("doctor") => doctor(),
-        Some(unknown) => {
-            eprintln!("unknown argument: {unknown}");
+        Some(flag) if flag.starts_with('-') => {
+            eprintln!("unknown option: {flag}");
             print_help();
             ExitCode::FAILURE
         }
+        // Anything else is treated as the task prompt.
+        Some(_) => run_task(&args),
     }
 }
 
 fn print_help() {
     println!("bua {VERSION} — a coding agent resistant to prompt injection");
     println!();
-    println!("Usage: bua [command]");
-    println!();
-    println!("Commands:");
-    println!("  doctor       Check that configuration is usable");
+    println!("Usage:");
+    println!("  bua \"<task>\" [--file <path>]...   Run a task");
+    println!("  bua doctor                        Check configuration and confinement");
     println!();
     println!("Options:");
+    println!("  --file <path>    Include a workspace file as context (repeatable)");
+    println!("  --trace          Print the audit trail");
     println!("  -h, --help       Show this message");
     println!("  -V, --version    Show the version");
+}
+
+/// Parse `<prompt> [--file path]... [--trace]`.
+fn run_task(args: &[String]) -> ExitCode {
+    let mut prompt = String::new();
+    let mut files = Vec::new();
+    let mut trace = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--file" => match args.get(index + 1) {
+                Some(path) => {
+                    files.push(path.clone());
+                    index += 2;
+                }
+                None => {
+                    eprintln!("--file requires a path");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--trace" => {
+                trace = true;
+                index += 1;
+            }
+            other if prompt.is_empty() => {
+                prompt = other.to_string();
+                index += 1;
+            }
+            other => {
+                eprintln!("unexpected argument: {other}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if prompt.is_empty() {
+        eprintln!("a task is required");
+        return ExitCode::FAILURE;
+    }
+
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("configuration error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The workspace is the current directory: file arguments are resolved relative to
+    // it, and confinement keeps reads inside it.
+    let workspace = match std::env::current_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|dir| Workspace::new(dir).map_err(|e| e.to_string()))
+    {
+        Ok(w) => w,
+        Err(err) => {
+            eprintln!("workspace error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut task = Task::new(prompt);
+    for file in files {
+        task = task.with_file(file);
+    }
+
+    match turn::run(&config, &egress, &workspace, &task, &mut sink) {
+        Ok(outcome) => {
+            // The reply is untrusted model output. Printing it is safe — the terminal is
+            // not a decision — so it is released explicitly for display.
+            println!("{}", outcome.reply_for_display());
+            if trace {
+                println!();
+                print_trace(&sink);
+                println!("model: {}", outcome.model);
+            }
+            if outcome.clean {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!();
+                eprintln!("note: a policy gate refused something during this turn");
+                ExitCode::FAILURE
+            }
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Print the audit trail: what was checked, allowed, and refused.
+fn print_trace(sink: &RecordingSink) {
+    println!("audit trail");
+    for event in sink.events() {
+        match event {
+            Event::GatePassed { gate, detail } => println!("  ok      {gate}: {detail}"),
+            Event::GateBlocked { gate, reason, .. } => println!("  BLOCK   {gate}: {reason}"),
+            Event::Observed { capability, label } => {
+                println!("  observe {capability} produced {label}")
+            }
+            Event::SlotWritten { slot, label } => println!("  slot    {slot} at {label}"),
+            Event::Declassified { slot, from, to, .. } => {
+                println!("  release {slot} {from} -> {to}")
+            }
+            Event::ActionField {
+                tool,
+                field,
+                role,
+                label,
+                allowed,
+            } => {
+                let mark = if *allowed { "ok     " } else { "BLOCK  " };
+                let role = match role {
+                    Role::Routing => "routing",
+                    Role::Content => "content",
+                };
+                println!("  {mark} {tool}.{field} [{role}] {label}");
+            }
+        }
+    }
 }
 
 /// Report whether configuration is usable, without revealing the signing key.
