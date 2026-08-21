@@ -101,7 +101,7 @@ Reproducible cross-platform binaries are built in a pinned container, so the sam
 comes out on any host:
 
 ```sh
-make build-all
+make all-platforms
 ```
 
 ## Configuration
