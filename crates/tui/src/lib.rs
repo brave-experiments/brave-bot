@@ -9,5 +9,6 @@ pub mod confirm;
 pub mod render;
 pub mod state;
 pub mod trust_prompt;
+pub mod verbs;
 
 pub use state::{Entry, Session, Speaker, Status};
