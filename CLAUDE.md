@@ -21,20 +21,20 @@ The driver is the Rust code here. The planner is the model. Neither receives unt
   driver too. Relocating a decision is not the same as removing it.
 
 Never weaken this statement. If an implementation cannot satisfy it, the implementation is
-wrong — do not restate the rule to match the code.
+wrong. Do not restate the rule to match the code.
 
 `Labelled<T>` enforces the mechanical half at compile time: no `Deref`, `PartialEq`, or
 `Display`, and no infallible accessor. Reading requires a `Declassification` witness only the
 policy layer can mint.
 
 **A witness is not permission to inspect.** Minting one does not make reading untrusted content
-acceptable; it records that bytes moved somewhere they were already allowed to go — into a
-filesystem write, an HTTP body, a human's screen. The three legitimate destinations have gates
+acceptable; it records that bytes moved somewhere they were already allowed to go, such as a
+filesystem write, an HTTP body, or a human's screen. The three legitimate destinations have gates
 of their own:
 
-- `Policy::present` — decides whether the planner sees content or a reference.
-- `Policy::render_in_place` — reshapes content for presentation without exposing it.
-- `Policy::read_trusted_content` — hands over bytes only when they are trusted, and **refuses**
+- `Policy::present` decides whether the planner sees content or a reference.
+- `Policy::render_in_place` reshapes content for presentation without exposing it.
+- `Policy::read_trusted_content` hands over bytes only when they are trusted, and **refuses**
   otherwise.
 
 If you are calling `declassify` outside those, you are almost certainly adding a violation.
@@ -51,14 +51,14 @@ if text.matches(old).count() > 1 {
 
 ```rust
 // ALSO WRONG: relocating the same branch into bua-core does not fix it.
-// And "it is only for a message to the model" does not either — that is R1.
+// And "it is only for a message to the model" does not either. That is R1.
 messages.push(Message::user(format!("Contents:\n{}", text)));
 ```
 
 ## Trusted content may be examined; untrusted content may not
 
 The rule bans deciding from **untrusted** content. Trusted content carries no such
-restriction — it came from a path the user vouched for, so comparing it decides nothing an
+restriction, since it came from a path the user vouched for, so comparing it decides nothing an
 attacker can steer. `Policy::read_trusted_content` is the gate: it returns the bytes if they
 are trusted and refuses otherwise, so a caller cannot quietly take the untrusted case.
 
@@ -73,7 +73,7 @@ course, and examining it in-process releases nothing.
 Model output is a function of the model's context and nothing else. So when the context holds
 only trusted input, what the model produces is derived only from trusted input, and
 `Policy::label_model_output` labels it accordingly. `Policy::context_integrity` tracks this and
-only ever falls — one untrusted observation and everything afterwards is untrusted.
+only ever falls: one untrusted observation and everything afterwards is untrusted.
 
 This is **not** an upgrade path. It is the first label such text ever receives, assigned from
 provenance the kernel tracked. If you find yourself relabelling a value that already has a
@@ -104,15 +104,15 @@ endorsement.
 
 ## Layering
 
-- `bua-core` — the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
+- `bua-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
   decision derived from content.
-- `bua-agent` — tools and the turn loop. Carries labelled values; must not inspect them.
-- `bua-tui` / `bua-cli` — presentation. May display released content.
-- `bua-net` — the single egress chokepoint. All network traffic passes the policy gate here.
-- `bua-mcp`, `bua-sandbox`, `bua-signing`, `bua-config` — extension, confinement, auth.
+- `bua-agent` holds the tools and the turn loop. Carries labelled values; must not inspect them.
+- `bua-tui` and `bua-cli` are presentation. May display released content.
+- `bua-net` is the single egress chokepoint. All network traffic passes the policy gate here.
+- `bua-mcp`, `bua-sandbox`, `bua-signing`, `bua-config` cover extension, confinement, and auth.
 
 Primitives stay native rather than moving behind MCP when the kernel needs to label parts of
-a call separately — a path as routing, its contents as content. An opaque MCP call erases
+a call separately, such as a path as routing and its contents as content. An opaque MCP call erases
 that distinction.
 
 ## Trust map
@@ -122,7 +122,7 @@ wins. Both polarities are expressible, so trusted-inside-untrusted works as well
 reverse. Empty means nothing is trusted: trust is granted, never assumed from silence.
 
 A prompt asks one thing: may this path stop being trusted? So the only case that asks is
-untrusted data into a trusted path — plus the first write to a path nobody has mentioned, which
+untrusted data into a trusted path, plus the first write to a path nobody has mentioned, which
 is why `integrity_of` returns an `Option`. Writing trusted data never asks, since trusted data
 contains nothing an attacker influenced and the destination only gains trust. See the table in
 the README, which is the specification.
@@ -140,11 +140,14 @@ a human could approve that field alone.
 
 ## Conventions
 
+- **Never use an em-dash.** Not in documentation, commit messages, the README, code comments,
+  pull requests, or anywhere else. Reword instead: a comma, a colon, a semicolon, parentheses,
+  or two sentences will always do the job.
 - Comments explain **why**, never what. Prefer no comment to a restatement of the code.
 - Tests are behavioural and named as sentences. A doc comment on a test says why the property
   matters, not what the test does.
 - Test refusals and denials, not just happy paths. A test that would pass against the buggy
-  code is worthless — verify a new test fails before the fix.
+  code is worthless: verify a new test fails before the fix.
 - Small commits, one property each. Run `make check` (fmt, clippy `-D warnings`, tests)
   before committing.
 - No new dependencies without a reason that survives scrutiny. Patterns that arrive through a
