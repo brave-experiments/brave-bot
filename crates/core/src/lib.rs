@@ -19,6 +19,7 @@ pub mod label;
 pub mod policy;
 pub mod reference;
 pub mod slot;
+pub mod todo;
 pub mod trust;
 pub mod value;
 
@@ -29,5 +30,6 @@ pub use label::{Confidentiality, Integrity, Label, taint_all};
 pub use policy::{Denial, Policy, ReleasePlan, Routing};
 pub use reference::{Presentation, Reference};
 pub use slot::{Measured, SlotError, SlotId, SlotReader, SlotStore, SlotWriter};
+pub use todo::{Item as TodoItem, List as TodoList, Status as TodoStatus};
 pub use trust::TrustStore;
 pub use value::{Declassification, Labelled};

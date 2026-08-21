@@ -386,16 +386,22 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// untrusted bytes, so the transform runs here instead: the closure receives the text, the
     /// kernel keeps the label, and the result is still wrapped on the way out.
     ///
-    /// The closure must not decide anything. It shapes text and returns text; a closure that
-    /// branched on its input and returned something else would be the violation this exists to
-    /// prevent, moved inside a lambda. Deciding from content is
-    /// [`Policy::read_trusted_content`], which refuses when the content is untrusted.
-    pub fn render_in_place<T: Clone>(
+    /// The closure must not decide anything beyond how the content looks. Choosing a glyph or a
+    /// strikethrough from a status is presentation; returning one value rather than another, or
+    /// dropping an item, is a decision and belongs nowhere near here. A closure that branched on
+    /// its input to change what happens would be the violation this exists to prevent, moved
+    /// inside a lambda. Deciding from content is [`Policy::read_trusted_content`], which refuses
+    /// when the content is untrusted.
+    ///
+    /// The output is not required to be a string. Presentation is not always text: a terminal
+    /// needs styled rows, and forcing them through a `String` would mean the driver parsing them
+    /// back out, which is exactly the handling of content this avoids.
+    pub fn render_in_place<T: Clone, R>(
         &mut self,
         tool: &str,
         content: &Labelled<T>,
-        shape: impl FnOnce(T) -> String,
-    ) -> Labelled<String> {
+        shape: impl FnOnce(T) -> R,
+    ) -> Labelled<R> {
         let label = content.label();
         self.allow(
             "render",
@@ -1610,6 +1616,29 @@ mod tests {
         let rendered = policy.render_in_place("read_file", &untrusted, |t| t.replace('\n', " "));
         assert_eq!(rendered.label(), Label::untrusted_private());
         // And it is still wrapped: no bare String came back.
+        assert!(rendered.into_trusted().is_err());
+    }
+
+    /// Presentation is not always text. A terminal needs styled rows, and the label must ride
+    /// along with them exactly as it does with a string, or reshaping into a richer type would
+    /// be a way to shed the label.
+    #[test]
+    fn reshaping_into_a_non_string_also_preserves_its_label() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "read"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let untrusted = Labelled::new("a\nb".to_string(), Label::untrusted_private());
+        let rendered: Labelled<Vec<String>> =
+            policy.render_in_place("read_file", &untrusted, |t| {
+                t.lines().map(str::to_string).collect()
+            });
+        assert_eq!(rendered.label(), Label::untrusted_private());
         assert!(rendered.into_trusted().is_err());
     }
 
