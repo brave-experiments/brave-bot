@@ -21,8 +21,8 @@
 //! # Why writing untrusted data marks the destination untrusted
 //!
 //! Without that rule the trust store would launder data. A turn could fetch a page, write
-//! it into a trusted directory, read it back — now labelled trusted, because the path says
-//! so — and use it for routing. Recording the destination as untrusted when untrusted bytes
+//! it into a trusted directory, read it back (now labelled trusted, because the path says
+//! so) and use it for routing. Recording the destination as untrusted when untrusted bytes
 //! land there closes the loop: what comes out of a file is never more trusted than what
 //! went in.
 //!
@@ -65,7 +65,7 @@ impl TrustStore {
 
     /// The integrity of `path`, by the longest matching rule.
     ///
-    /// `None` when no rule covers it, which the caller should treat as untrusted — this
+    /// `None` when no rule covers it, which the caller should treat as untrusted. This
     /// returns an option rather than defaulting so a caller cannot silently confuse "the
     /// user vouched for this" with "nobody has said".
     pub fn integrity_of(&self, path: &str) -> Option<Integrity> {
@@ -116,7 +116,7 @@ fn normalise(path: &str) -> String {
 /// Whether `prefix` covers `path`, matching whole segments only.
 ///
 /// Segment-wise so `src` does not cover `srcfoo`, which a plain string prefix test would
-/// wrongly accept — and that mistake would hand trust to a path the user never named.
+/// wrongly accept, and that mistake would hand trust to a path the user never named.
 fn covers(prefix: &str, path: &str) -> bool {
     // The workspace root covers everything.
     if prefix.is_empty() {

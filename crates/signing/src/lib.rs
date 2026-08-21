@@ -10,7 +10,7 @@
 //!                signature="<base64(hmac_sha256(key, signing_string))>"
 //! ```
 //!
-//! The signing string is exactly one line — `digest: SHA-256=...` — because only the
+//! The signing string is exactly one line, `digest: SHA-256=...`, because only the
 //! digest header is signed. The server requires `headers` to be exactly `"digest"`
 //! and rejects anything else, so signing additional headers would fail rather than
 //! add protection.

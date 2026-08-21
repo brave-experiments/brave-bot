@@ -31,7 +31,7 @@ pub enum Intent {
 
 /// A write the model has asked to perform.
 ///
-/// `path` and `contents` are untrusted strings at this point — they are shown to a person
+/// `path` and `contents` are untrusted strings at this point. They are shown to a person
 /// precisely because nothing else can vouch for them. `contents` is always the complete
 /// resulting file, including for an edit, so a reviewer sees the outcome rather than
 /// having to apply a patch mentally.
@@ -101,7 +101,7 @@ pub trait Confirmer {
 
 /// Refuses every write.
 ///
-/// The right behaviour where no one can be asked — a one-shot command, a pipeline, a cron
+/// The right behaviour where no one can be asked: a one-shot command, a pipeline, a cron
 /// job. Silently approving in a non-interactive context would make the confirmation
 /// decorative exactly where it matters most.
 #[derive(Debug, Default)]
@@ -164,7 +164,7 @@ mod tests {
         assert!(r.summary().starts_with("overwrite"));
     }
 
-    /// An overwrite summary counts the lines lost, not just those written — that is the
+    /// An overwrite summary counts the lines lost, not just those written, since that is the
     /// number a reviewer is deciding about.
     #[test]
     fn an_overwrite_summary_counts_both_sides() {

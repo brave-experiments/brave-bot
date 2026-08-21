@@ -1,7 +1,7 @@
 //! OS-level confinement for untrusted subprocesses.
 //!
 //! One boundary, several backends. The confined process is whatever acts on model
-//! output — a processor sub-agent, or a stdio MCP server we launch. Trusted code that
+//! output: a processor sub-agent, or a stdio MCP server we launch. Trusted code that
 //! performs already-authorised effects is guarded by information-flow gates instead;
 //! sandboxing it would confine our own code while leaving the untrusted part free.
 //!
@@ -74,8 +74,8 @@ pub trait Sandbox {
     /// Build a confined [`Command`], or refuse.
     ///
     /// Returns a command rather than taking one because `Command` exposes no getters for
-    /// its stdio configuration: a backend that rebuilt the command — as the macOS one
-    /// must, to wrap it in `sandbox-exec` — would silently discard any pipes the caller
+    /// its stdio configuration: a backend that rebuilt the command, as the macOS one
+    /// must, to wrap it in `sandbox-exec`, would silently discard any pipes the caller
     /// had set up. Handing the command back lets the caller configure stdio on the
     /// thing that will actually run.
     fn command(

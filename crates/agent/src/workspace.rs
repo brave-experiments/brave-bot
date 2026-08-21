@@ -3,9 +3,9 @@
 //! Both operations split into a **routing** part and a **content** part, and the split
 //! is what the policy gate checks:
 //!
-//! - `read(path)` — the path is routing. It must be `(T,pub)`, so untrusted content can
+//! - `read(path)`: the path is routing. It must be `(T,pub)`, so untrusted content can
 //!   never choose which file is read.
-//! - `write(path, contents)` — the path is routing, the contents are content. Untrusted
+//! - `write(path, contents)`: the path is routing, the contents are content. Untrusted
 //!   text may be written *into* a file it could not choose.
 //!
 //! Paths are also confined to a workspace root. That is a second, independent check:
@@ -122,7 +122,7 @@ impl Workspace {
         let joined = self.root.join(candidate);
 
         // For paths that already exist, confirm the resolved location is still inside
-        // the root — this is what catches a symlink pointing out of the workspace.
+        // the root. This is what catches a symlink pointing out of the workspace.
         if let Ok(canonical) = joined.canonicalize() {
             if !canonical.starts_with(&self.root) {
                 return Err(WorkspaceError::Escapes {
@@ -137,7 +137,7 @@ impl Workspace {
 
     /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.
     ///
-    /// The contents are private — they are the user's data — and their integrity comes from
+    /// The contents are private, being the user's data, and their integrity comes from
     /// the trust map: a file read out of a trusted directory is trusted, anything else is not.
     ///
     /// Deliberately uncapped, because the callers that need it need all of it: an edit
@@ -186,7 +186,7 @@ impl Workspace {
     ///
     /// A whole file is the wrong unit for a conversation. Every turn re-sends the entire
     /// message history, so one large file read is paid for again on every subsequent
-    /// round — an uncapped read is a cost multiplier, not just a big message.
+    /// round. An uncapped read is a cost multiplier, not just a big message.
     ///
     /// `offset` is 1-based to match how the lines are reported back, so a model can ask
     /// for the next page using the number it was just shown.
@@ -265,7 +265,7 @@ impl Workspace {
     /// Write an endorsed file, but only if it still holds `expected`.
     ///
     /// An edit is approved against contents that were read moments earlier. If the file
-    /// changed in between — another process, the user's editor — the approved diff no
+    /// changed in between, whether by another process or the user's editor, the approved diff no
     /// longer describes what would happen, so the write is refused rather than applied to
     /// text nobody reviewed.
     pub fn write_endorsed_if_unchanged<S: Sink>(
@@ -347,7 +347,7 @@ impl Workspace {
 
     /// Write a file. The path is routing; the contents are content.
     ///
-    /// Untrusted contents are permitted — that asymmetry is the point. What is refused
+    /// Untrusted contents are permitted, and that asymmetry is the point. What is refused
     /// is an untrusted *path*, or contents that are still private.
     pub fn write<S: Sink>(
         &self,
@@ -453,7 +453,7 @@ fn truncate_on_char_boundary(text: &mut String, limit: usize) {
 
 /// Whether a byte run looks like binary rather than text.
 ///
-/// A null byte is decisive — no text file contains one. Beyond that, a high proportion of
+/// A null byte is decisive, since no text file contains one. Beyond that, a high proportion of
 /// control characters means the same thing without needing a file-type list to be kept up
 /// to date. Only the head is inspected, since the answer does not improve by reading more.
 fn looks_binary(bytes: &[u8]) -> bool {
@@ -578,7 +578,7 @@ impl Workspace {
 
         // `walk` collects one entry past the cap so reaching it is detectable. Which
         // entries survive is down to traversal order, so a truncated listing is a sample
-        // of the tree rather than its alphabetical head — hence saying so matters.
+        // of the tree rather than its alphabetical head, hence saying so matters.
         let truncated = found.len() > MAX_ENTRIES;
         found.truncate(MAX_ENTRIES);
 
@@ -701,7 +701,7 @@ impl Workspace {
     /// lets the caller distinguish a tree that exactly fills the cap from one that
     /// overflows it, so truncation can be reported rather than guessed at.
     /// `pattern`, when given, keeps only matching paths. The filter is applied before the
-    /// cap, so the cap bounds *matches* rather than files examined — filtering afterwards
+    /// cap, so the cap bounds *matches* rather than files examined. Filtering afterwards
     /// would make a narrow pattern return nothing in a large tree, which looks identical to
     /// the file being absent.
     fn walk_filtered(

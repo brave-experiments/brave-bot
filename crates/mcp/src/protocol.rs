@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 messages for the Model Context Protocol.
 //!
 //! Only what a client needs: initialise, list tools, call a tool. Server-to-client
-//! requests are not handled — a server that asks the client to do something is not
+//! requests are not handled: a server that asks the client to do something is not
 //! supported, which keeps the trust direction one-way.
 
 use serde::{Deserialize, Serialize};

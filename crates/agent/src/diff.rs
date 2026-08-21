@@ -5,8 +5,8 @@
 //! head and spot the difference. So the confirmation shows a diff, and the parts that did
 //! not change are collapsed to keep the question on screen.
 //!
-//! Both sides arrive here as plain strings — they have already been through the gates and
-//! released for display — so nothing in this module needs to reason about labels.
+//! Both sides arrive here as plain strings. They have already been through the gates and
+//! released for display, so nothing in this module needs to reason about labels.
 
 /// One line of a rendered diff.
 #[derive(Debug, Clone, PartialEq, Eq)]

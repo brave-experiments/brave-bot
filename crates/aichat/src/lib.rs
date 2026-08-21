@@ -4,7 +4,7 @@
 //! API: the server infers the version from the path, so there is no `/v2/` route to
 //! construct. `/v1/conversation` is the older, deprecated surface.
 //!
-//! Requests are signed rather than bearer-authenticated — see [`bua_signing`]. All
+//! Requests are signed rather than bearer-authenticated; see [`bua_signing`]. All
 //! traffic goes through [`bua_net::Egress`] so the policy gate sees it, and the model
 //! reported in the response is preserved because the server may substitute a different
 //! one than was requested.
@@ -57,7 +57,7 @@ pub struct Completion {
     /// The assistant's reply. Untrusted: it is model output, so it may carry anything
     /// an injected instruction put there.
     pub content: Labelled<String>,
-    /// The model reported by the server, which may differ from the one requested —
+    /// The model reported by the server, which may differ from the one requested:
     /// unrecognised names are reset to automatic, and some entries resolve randomly
     /// within a weighted ensemble.
     pub model: String,

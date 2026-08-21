@@ -46,7 +46,7 @@ type Gated<T> = Result<T, Denial>;
 /// The routing block for one turn: trusted key/value pairs that decide where effects
 /// land.
 ///
-/// Every value is `(T,pub)` by construction — [`Routing::insert`] only accepts a
+/// Every value is `(T,pub)` by construction: [`Routing::insert`] only accepts a
 /// trusted-public [`Labelled`], so untrusted content cannot enter routing even by
 /// mistake.
 #[derive(Debug, Default)]
@@ -139,7 +139,7 @@ pub struct Policy<'sink, S: Sink> {
     trust: TrustStore,
     /// The integrity of every observation this turn has made, met together.
     ///
-    /// Starts trusted — the task is the user's own words — and drops to untrusted the moment
+    /// Starts trusted, since the task is the user's own words, and drops to untrusted the moment
     /// the turn observes anything untrusted. It never recovers: a later trusted read does not
     /// un-see what was already read.
     ///
@@ -364,7 +364,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// **This is not a relabel and never upgrades anything.** The model's output is a function
     /// of its context and nothing else, so the context's integrity *is* this value's integrity;
     /// there is no earlier, truer label being overridden. It exists because the transport
-    /// cannot know this — a JSON string arrives with no provenance — so the kernel, which
+    /// cannot know this, since a JSON string arrives with no provenance, so the kernel, which
     /// tracked what entered the context, is the only thing that can say.
     ///
     /// The guarantee it rests on is the one in CLAUDE.md: untrusted content never enters the
@@ -381,7 +381,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
     /// Transform content without exposing it, keeping its label.
     ///
-    /// A tool often needs to reshape what it read — join lines, add a truncation notice — before
+    /// A tool often needs to reshape what it read, joining lines or adding a truncation notice, before
     /// the content is presented. Doing that in the driver would mean the driver holding
     /// untrusted bytes, so the transform runs here instead: the closure receives the text, the
     /// kernel keeps the label, and the result is still wrapped on the way out.
@@ -431,8 +431,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Read content that is trusted, so a decision may be made from it.
     ///
     /// The rule is that *untrusted* content must never reach a branch. Trusted content carries
-    /// no such restriction: it came from somewhere the user vouched for, so comparing it — to
-    /// locate a passage to replace, say — decides nothing an attacker can steer.
+    /// no such restriction: it came from somewhere the user vouched for, so comparing it, to
+    /// locate a passage to replace, decides nothing an attacker can steer.
     ///
     /// Refuses untrusted content rather than returning it, which is what keeps the rule from
     /// being bypassed by a caller that would rather have the bytes. Confidentiality is
@@ -447,7 +447,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 Principle::IntegrityGate,
                 format!(
                     "{tool} needs to examine content to decide what to do, and this content is \
-                     {label}. Untrusted content must not influence a decision — vouch for the \
+                     {label}. Untrusted content must not influence a decision. Vouch for the \
                      path if this is your own work"
                 ),
             ));
@@ -468,12 +468,12 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// into a slot and only a [`Reference`] comes back: shape and provenance, never a byte.
     ///
     /// The decision is the kernel's and is made from the label alone. A tool cannot ask for
-    /// content to be shown, and the planner cannot ask either — asking is not a mechanism here,
+    /// content to be shown, and the planner cannot ask either. Asking is not a mechanism here,
     /// because a planner that could request the bytes would be a planner an injection could
     /// talk into requesting them.
     ///
     /// `slot` names where quarantined content goes. It is chosen by the caller from trusted
-    /// input — a counter, a path — never from content.
+    /// input, such as a counter or a path, never from content.
     pub fn present(
         &mut self,
         tool: &str,
@@ -528,8 +528,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Resolve a reference the planner supplied back into content, for an effect.
     ///
     /// The planner names a slot; the kernel produces the bytes. This is what lets an agent move
-    /// untrusted content into a file without ever having seen it. The slot id is routing — the
-    /// planner chose it, so it must be trusted — and the content that comes back keeps the
+    /// untrusted content into a file without ever having seen it. The slot id is routing, since the
+    /// planner chose it, so it must be trusted, and the content that comes back keeps the
     /// label it was quarantined at.
     pub fn resolve(
         &mut self,
@@ -579,7 +579,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// asked about anything, which is the opposite of what declining means.
     ///
     /// Writing *trusted* data never needs asking. For data to be trusted the turn must have
-    /// observed nothing untrusted, so there is no attacker-influenced byte in it — and the
+    /// observed nothing untrusted, so there is no attacker-influenced byte in it, and the
     /// destination only gains trust, never loses it.
     ///
     /// Takes a [`Label`], never the bytes.
@@ -606,7 +606,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         self.allow(
             "approval",
             format!(
-                "{path}: {reason} — {}",
+                "{path}: {reason}, {}",
                 if needed { "asking" } else { "no prompt" }
             ),
         );
@@ -674,7 +674,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Authorise reading a slot's untrusted content.
     ///
     /// Only slots named in the precommitted [`ReleasePlan`] may be released, and the
-    /// plan was fixed before any content was observed — so content cannot nominate
+    /// plan was fixed before any content was observed, so content cannot nominate
     /// itself for release.
     pub fn declassify(&mut self, slot: &SlotId, from: Label) -> Gated<Declassification> {
         if !self.release.contains(slot) {
@@ -707,8 +707,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// - the operation cannot change anything, so a wrong choice wastes a step rather
     ///   than causing harm; and
-    /// - the operation is confined to a boundary the user established — a workspace root
-    ///   — so the *set* of reachable targets was authorised up front even though the
+    /// - the operation is confined to a boundary the user established, a workspace root,
+    ///   so the *set* of reachable targets was authorised up front even though the
     ///   individual choice was not.
     ///
     /// It must never be used for an effect. A write, an exec, or a network destination
@@ -763,7 +763,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// Distinct from [`Policy::declassify`], which releases a *slot* named in the
     /// precommitted release plan. This releases a value the content gate has just
-    /// approved — the gate proved it is public, so the effect that was authorised may
+    /// approved: the gate proved it is public, so the effect that was authorised may
     /// now see the bytes it is about to write or send.
     ///
     /// Takes `&mut self` and emits an event so every release is recorded, even though it

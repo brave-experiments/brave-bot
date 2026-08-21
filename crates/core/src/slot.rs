@@ -10,7 +10,7 @@
 //! - **Write-once**: [`SlotWriter::write`] consumes the writer, so a second write
 //!   does not compile.
 //! - **Label floor**: the writer's label is fixed when the writer is minted, by the
-//!   policy layer — never chosen by the code doing the writing.
+//!   policy layer, never chosen by the code doing the writing.
 
 use crate::label::Label;
 use crate::value::Labelled;
@@ -122,7 +122,7 @@ impl SlotStore {
 
     /// Mint a single-use write capability with a fixed label.
     ///
-    /// The label is supplied by the caller minting the writer — the policy layer —
+    /// The label is supplied by the caller minting the writer, the policy layer,
     /// not by the code that later writes. `SlotWriter` cannot change it.
     pub fn writer_for(&mut self, id: SlotId, label: Label) -> Result<SlotWriter<'_>, SlotError> {
         if self.is_written(&id) {
@@ -137,7 +137,7 @@ impl SlotStore {
 
     /// Mint a read capability scoped to exactly `ids`, with a label ceiling.
     ///
-    /// The ceiling is checked here, at mint time, for every slot already written —
+    /// The ceiling is checked here, at mint time, for every slot already written,
     /// so an over-privileged read fails when the capability is created rather than
     /// at some later read.
     pub fn reader_for(
@@ -254,7 +254,7 @@ impl SlotReader<'_> {
     }
 
     /// Read a slot. Still labelled on the way out, so the caller gains no ability to
-    /// inspect the content — only to carry it.
+    /// inspect the content, only to carry it.
     ///
     /// The ceiling is re-checked here because a slot may have been written after this
     /// reader was minted, and that write could carry a higher label than the mint-time
@@ -396,8 +396,8 @@ mod tests {
 
     /// A reader minted while a slot is still empty passes the mint-time ceiling check
     /// vacuously, so [`SlotReader::read`] re-checks. The write-after-mint sequence that
-    /// would exploit the gap cannot be expressed in safe code — `SlotReader` holds an
-    /// immutable borrow of the store and `writer_for` needs a mutable one — so this
+    /// would exploit the gap cannot be expressed in safe code: `SlotReader` holds an
+    /// immutable borrow of the store and `writer_for` needs a mutable one, so this
     /// test drives `read`'s check directly rather than through that impossible
     /// interleaving. The runtime check stays as a backstop for any future interior
     /// mutability.

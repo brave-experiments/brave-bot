@@ -7,7 +7,7 @@
 //! The important property is that untrusted content is **carryable but not
 //! inspectable**. `Labelled` deliberately does not implement `Deref`, `PartialEq`,
 //! or `Display`, and exposes no infallible getter. Code can move it, store it, and
-//! hand it to a gate, but cannot branch on its contents — so untrusted data cannot
+//! hand it to a gate, but cannot branch on its contents, so untrusted data cannot
 //! reach a decision. Reading the inner value requires [`Labelled::declassify`],
 //! which demands a [`Declassification`] witness that only the policy layer can mint.
 //!
@@ -32,7 +32,7 @@ impl Declassification {
         Self { reason }
     }
 
-    /// Why this read was permitted — recorded in the audit trail.
+    /// Why this read was permitted, recorded in the audit trail.
     pub fn reason(&self) -> &'static str {
         self.reason
     }
@@ -69,7 +69,7 @@ impl<T> Labelled<T> {
     }
 
     /// Read the inner value without a witness, permitted only when the label is
-    /// already `(T,pub)` — there is nothing to declassify. Returns the original
+    /// already `(T,pub)`, so there is nothing to declassify. Returns the original
     /// value back on mismatch so a caller cannot smuggle content through by
     /// discarding the error.
     pub fn into_trusted(self) -> Result<T, Self> {
@@ -82,7 +82,7 @@ impl<T> Labelled<T> {
 
     /// Split a labelled value into its parts at a protocol boundary.
     ///
-    /// Needed where a transport envelope must be decoded — a JSON response body, say —
+    /// Needed where a transport envelope must be decoded, a JSON response body say,
     /// because the decoder has to see the bytes. The label is returned alongside so it
     /// cannot be dropped silently, and callers are expected to re-wrap the decoded
     /// value immediately.

@@ -1,13 +1,13 @@
 //! What the planner is told about content it may not see.
 //!
 //! The rule in CLAUDE.md is absolute: untrusted content never enters the planner's context.
-//! But an agent still has to be able to work with untrusted files — read them, edit them, move
-//! text between them — so it needs *something* to reason about.
+//! But an agent still has to be able to work with untrusted files, reading them, editing them,
+//! and moving text between them, so it needs *something* to reason about.
 //!
 //! That something is a [`Reference`]: a name for quarantined content plus facts about its
 //! shape. A line count, a byte count, a label. Never a byte of the content itself.
 //!
-//! The model addresses content by reference — "replace lines 40 to 60 of `ref:3`" — and the
+//! The model addresses content by reference, say "replace lines 40 to 60 of `ref:3`", and the
 //! kernel resolves the reference when the effect fires. Nothing the model says can widen a
 //! reference into the bytes behind it, because the bytes only exist inside the slot store.
 //!
@@ -59,11 +59,11 @@ impl Reference {
     /// How the planner is told about this content.
     ///
     /// Shape and provenance only. A reader of this string learns that untrusted text exists,
-    /// where it came from, and how big it is — enough to decide what to do with it, and
+    /// where it came from, and how big it is, enough to decide what to do with it, and
     /// nothing an injection could ride in on.
     pub fn describe(&self) -> String {
         format!(
-            "[{}] {} — {} lines, {} bytes, {}. The contents are quarantined and not shown. \
+            "[{}] {} ({} lines, {} bytes, {}). The contents are quarantined and not shown. \
              Refer to this content as {} in tool arguments.",
             self.slot, self.origin, self.lines, self.bytes, self.label, self.slot,
         )
@@ -171,7 +171,7 @@ mod tests {
         assert!(presentation.reference().is_none());
     }
 
-    /// A reference is metadata, so it must be comparable and printable — unlike content,
+    /// A reference is metadata, so it must be comparable and printable, unlike content,
     /// which deliberately is neither.
     #[test]
     fn references_are_ordinary_values() {

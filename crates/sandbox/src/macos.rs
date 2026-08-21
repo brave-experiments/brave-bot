@@ -157,8 +157,8 @@ mod tests {
     }
 
     /// A path containing a quote must not close the string literal and let its
-    /// remainder be parsed as profile directives. The payload text still appears — it
-    /// is part of the path — but every quote in it is escaped, so Seatbelt reads the
+    /// remainder be parsed as profile directives. The payload text still appears, but it
+    /// is part of the path, but every quote in it is escaped, so Seatbelt reads the
     /// whole thing as one string.
     #[test]
     fn paths_cannot_inject_profile_syntax() {

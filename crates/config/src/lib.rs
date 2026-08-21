@@ -2,7 +2,7 @@
 //!
 //! The signing key is wrapped in [`Secret`] so it cannot be printed. That matters
 //! more than usual here: this is a public repository, and the natural debugging
-//! reflex — dumping the config — would otherwise put a live credential in a log or
+//! reflex, dumping the config, would otherwise put a live credential in a log or
 //! an issue report.
 
 use std::env;
@@ -23,7 +23,7 @@ pub const DEFAULT_MODEL: &str = "automatic";
 /// A value that must not be printed.
 ///
 /// `Debug` and `Display` are deliberately redacting, and the inner value is only
-/// reachable through [`Secret::expose`] — a name chosen so that reading a credential
+/// reachable through [`Secret::expose`], a name chosen so that reading a credential
 /// is visible at the call site during review.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret(String);
@@ -83,7 +83,7 @@ impl std::error::Error for ConfigError {}
 /// Everything needed to talk to the aichat backend.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// HMAC signing key. Never transmitted — used to sign the request digest.
+    /// HMAC signing key. Never transmitted; used only to sign the request digest.
     pub signing_key: Secret,
     /// Key id sent in the Authorization header. The server derives its copy of the
     /// signing key from a master seed plus this id, so the two are a matched pair.

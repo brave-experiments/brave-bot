@@ -34,7 +34,7 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    println!("bua {VERSION} — a coding agent resistant to prompt injection");
+    println!("bua {VERSION}: a coding agent resistant to prompt injection");
     println!();
     println!("Usage:");
     println!("  bua                               Start an interactive session");
@@ -131,8 +131,8 @@ fn run_task(args: &[String]) -> ExitCode {
         &mut sink,
     ) {
         Ok(outcome) => {
-            // The reply is untrusted model output. Printing it is safe — the terminal is
-            // not a decision — so it is released explicitly for display.
+            // The reply is untrusted model output. Printing it is safe, since the
+            // terminal is not a decision, so it is released explicitly for display.
             println!("{}", outcome.reply_for_display());
             if trace {
                 println!();

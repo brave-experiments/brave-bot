@@ -5,7 +5,7 @@
 //! decide its own output is trustworthy.
 //!
 //! The set here is deliberately coding-shaped. Anything domain-specific belongs
-//! behind MCP rather than in this enum — see [`Capability::WebFetch`] for the one
+//! behind MCP rather than in this enum. See [`Capability::WebFetch`] for the one
 //! general-purpose fetch primitive.
 
 use crate::label::Label;
@@ -27,9 +27,9 @@ pub enum Capability {
     /// simultaneously destination and payload, so it cannot be split into routing and
     /// content the way a file write can.
     ShellExec,
-    /// Read repository state — log, diff, status.
+    /// Read repository state: log, diff, status.
     GitRead,
-    /// Mutate repository state — commit, branch, tag.
+    /// Mutate repository state: commit, branch, tag.
     GitWrite,
     /// Fetch a URL. Output is untrusted and public: it is attacker-influenceable but
     /// carries no confidentiality of ours.
@@ -94,7 +94,7 @@ impl fmt::Display for Capability {
 /// Proof that a capability was granted.
 ///
 /// Cannot be constructed outside this crate, so downstream code cannot forge a grant
-/// — it must receive one from a [`CapabilitySet`] built by the policy layer.
+/// It must receive one from a [`CapabilitySet`] built by the policy layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityToken {
     capability: Capability,

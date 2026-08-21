@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// The confinement a process should run under.
 ///
 /// Deny-by-default: [`SandboxPolicy::strict`] permits nothing, and each allowance is
-/// added explicitly. The alternative — starting permissive and subtracting — means a
+/// added explicitly. The alternative, starting permissive and subtracting, means a
 /// forgotten subtraction silently grants access.
 #[derive(Debug, Clone)]
 pub struct SandboxPolicy {
@@ -17,7 +17,7 @@ pub struct SandboxPolicy {
     /// Whether the process may open sockets.
     ///
     /// Normally false. Inference is brokered through the parent, so a confined
-    /// process needs no network of its own — and without a socket, an instruction to
+    /// process needs no network of its own, and without a socket, an instruction to
     /// exfiltrate data has nowhere to send it.
     pub allow_network: bool,
     /// Whether the process may spawn children. False stops a confined process from

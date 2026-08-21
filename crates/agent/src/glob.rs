@@ -1,6 +1,6 @@
 //! Glob matching for workspace paths.
 //!
-//! Listings and searches need narrowing — "just the Rust files under crates" — or a model
+//! Listings and searches need narrowing, say "just the Rust files under crates", or a model
 //! spends a step reading a listing it mostly does not want.
 //!
 //! A glob rather than a regular expression, and hand-written rather than a dependency, for
@@ -16,7 +16,7 @@
 //! - `**` matches across segment boundaries
 //!
 //! A pattern with no `/` matches against the file name alone, so `*.rs` finds Rust files at
-//! any depth — the reading a person intends when they type it.
+//! any depth, which is the reading a person intends when they type it.
 
 /// Whether `path` matches `pattern`.
 ///

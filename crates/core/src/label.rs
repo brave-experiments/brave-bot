@@ -8,7 +8,7 @@
 //! (U,pub) ⊑ (T,pub)  ⊑ (T,priv)
 //! ```
 //!
-//! `(U,priv)` and `(T,pub)` are **incomparable** — neither flows into the other. That
+//! `(U,priv)` and `(T,pub)` are **incomparable**: neither flows into the other. That
 //! is what makes this a lattice rather than a pair of booleans, and it is why
 //! [`Label`] implements [`PartialOrd`] by hand instead of deriving [`Ord`].
 //!
@@ -21,9 +21,9 @@ use std::fmt;
 /// Integrity axis. `U` is bottom: untrusted values cannot become trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Integrity {
-    /// Trusted — derived only from trusted input.
+    /// Trusted, meaning derived only from trusted input.
     Trusted,
-    /// Untrusted — derived from content we do not control.
+    /// Untrusted, meaning derived from content we do not control.
     Untrusted,
 }
 
@@ -47,9 +47,9 @@ impl Integrity {
 /// without an explicit, audited declassification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Confidentiality {
-    /// Public — safe to release.
+    /// Public, so safe to release.
     Public,
-    /// Private — confidential; must be declassified before crossing a bridge.
+    /// Private, meaning confidential; must be declassified before crossing a bridge.
     Private,
 }
 
@@ -84,7 +84,7 @@ impl Label {
         }
     }
 
-    /// `(T,pub)` — the only label routing fields accept.
+    /// `(T,pub)`, the only label routing fields accept.
     pub const fn trusted_public() -> Self {
         Self::new(Integrity::Trusted, Confidentiality::Public)
     }
@@ -101,7 +101,7 @@ impl Label {
         Self::new(Integrity::Untrusted, Confidentiality::Private)
     }
 
-    /// `self ⊑ other` — whether a value labelled `self` may flow into a slot or
+    /// `self ⊑ other`: whether a value labelled `self` may flow into a slot or
     /// agent whose ceiling is `other`.
     pub fn flows_to(self, other: Self) -> bool {
         self.integrity.flows_to(other.integrity)
@@ -160,7 +160,7 @@ impl PartialOrd for Label {
 /// Output label for a computation, given its inputs.
 ///
 /// Integrity meets, confidentiality joins. No inputs means no taint, so the result
-/// is `(T,pub)` — the identity for both operations.
+/// is `(T,pub)`, the identity for both operations.
 pub fn taint_all(labels: impl IntoIterator<Item = Label>) -> Label {
     labels.into_iter().fold(Label::trusted_public(), |acc, l| {
         Label::new(
@@ -305,8 +305,8 @@ mod tests {
         assert_eq!(taint_all([T_PRIV, U_PUB]), taint_all([U_PUB, T_PRIV]));
     }
 
-    /// Taint is not monotone in ⊑ — it descends the integrity axis while ascending
-    /// the confidentiality axis — so the guarantee is stated per axis: the result is
+    /// Taint is not monotone in ⊑: it descends the integrity axis while ascending
+    /// the confidentiality axis, so the guarantee is stated per axis: the result is
     /// never more trusted, and never less private, than any input.
     #[test]
     fn taint_only_degrades_on_each_axis() {

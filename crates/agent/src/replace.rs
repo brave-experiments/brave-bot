@@ -10,8 +10,8 @@
 //! Refusing is safe in a way that guessing is not: a refusal costs a step and tells the
 //! model what to fix, while a wrong guess destroys work the user did not review.
 //!
-//! Matching is exact and byte-for-byte. Fuzzy correction — trimming whitespace, re-indenting
-//! to fit — is deliberately absent: it turns "this is what I am replacing" into a guess, and
+//! Matching is exact and byte-for-byte. Fuzzy correction, meaning trimming whitespace or
+//! re-indenting to fit, is deliberately absent: it turns "this is what I am replacing" into a guess, and
 //! the guess is the part that would not be shown to the reviewer.
 
 use std::fmt;
@@ -164,7 +164,7 @@ mod tests {
     }
 
     /// Only the first occurrence is replaced in the single case, and the count reflects
-    /// that — an overlapping pattern must not be double-counted into ambiguity.
+    /// that, since an overlapping pattern must not be double-counted into ambiguity.
     #[test]
     fn a_match_spanning_lines_is_found() {
         let result = replace("one\ntwo\nthree\n", "one\ntwo", "1\n2", false).expect("spanning");

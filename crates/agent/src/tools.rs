@@ -215,7 +215,7 @@ pub fn dispatch<S: Sink, C: Confirmer>(
     }
 }
 
-/// A tool's own words — an error, a refusal, a confirmation — which the driver wrote and so are
+/// A tool's own words: an error, a refusal, a confirmation. The driver wrote them, so they are
 /// trusted. Distinct from workspace content, which never is unless the trust map says so.
 fn own_words(text: impl Into<String>) -> (Labelled<String>, String) {
     (Labelled::trusted(text.into()), String::new())
@@ -428,7 +428,7 @@ fn write_file<S: Sink, C: Confirmer>(
 
 /// Replace an exact passage in a file, after a person approves the diff.
 ///
-/// Same endorsement shape as [`write_file`] — the model never decides a write destination —
+/// Same endorsement shape as [`write_file`], since the model never decides a write destination,
 /// but the reviewer is shown a diff of a located passage rather than a whole body, which is
 /// the point of having this tool at all.
 ///
@@ -472,7 +472,7 @@ fn edit_file<S: Sink, C: Confirmer>(
     // Locating the passage means comparing text, which is a decision. It is only permissible
     // on trusted content: doing it on untrusted bytes would let file content decide whether an
     // effect happens, which is the one thing this design forbids. An untrusted file is refused
-    // rather than edited blind — the user can vouch for the path if they want edits there.
+    // rather than edited blind. The user can vouch for the path if they want edits there.
     //
     // Confidentiality is not the question here. Workspace content is private, and staying
     // inside the process to locate a passage releases nothing; only integrity decides whether
@@ -614,7 +614,7 @@ mod tests {
     }
 
     /// Command execution stays absent. Unlike a write, a command has no separable routing
-    /// field to endorse — the string is destination and payload at once — so there is
+    /// field to endorse, because the string is destination and payload at once, so there is
     /// nothing a user could meaningfully approve.
     #[test]
     fn no_command_execution_is_offered() {

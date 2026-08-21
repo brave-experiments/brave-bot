@@ -62,7 +62,7 @@ fn routing() -> Routing {
 ///
 /// Network is granted, which is not what a real processor policy would do. The Linux
 /// backend refuses a policy requiring network denial because that is not implemented
-/// there yet, and refusing is the correct behaviour — so a test that wants a successful
+/// there yet, and refusing is the correct behaviour, so a test that wants a successful
 /// spawn on both platforms has to ask for the weaker policy the backend can honour.
 fn sandbox_policy() -> SandboxPolicy {
     SandboxPolicy::strict()

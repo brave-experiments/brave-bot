@@ -7,7 +7,7 @@
 //!
 //! Landlock governs the filesystem only. Network denial needs a separate mechanism
 //! (an empty network namespace, or seccomp filtering of `socket`), which is not
-//! implemented yet — so [`Capabilities::network_denial_enforced`] is `false` and the
+//! implemented yet, so [`Capabilities::network_denial_enforced`] is `false` and the
 //! reported level is [`ConfinementLevel::Partial`]. Claiming kernel-level network
 //! denial here would misreport the guarantee.
 
@@ -55,7 +55,7 @@ impl LandlockSandbox {
     /// surfaces later as `EINVAL` from inside `pre_exec`, where it looks like a spawn
     /// error rather than absent confinement.
     ///
-    /// So the ABI is queried directly. `ENOSYS` means the syscall does not exist —
+    /// So the ABI is queried directly. `ENOSYS` means the syscall does not exist:
     /// the case on Docker Desktop's linuxkit kernel, which does not enable the LSM.
     pub fn new() -> Result<Self, SandboxError> {
         if landlock_abi_version() < 0 {
@@ -174,7 +174,7 @@ mod tests {
     use super::*;
     use std::process::Stdio;
 
-    /// Landlock is absent on older kernels and in some container runtimes — notably
+    /// Landlock is absent on older kernels and in some container runtimes, notably
     /// Docker Desktop's linuxkit kernel, which does not enable the LSM at all.
     ///
     /// Tests needing real enforcement skip there, but set `BUA_REQUIRE_LANDLOCK=1` to

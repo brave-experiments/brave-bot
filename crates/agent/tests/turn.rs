@@ -1,7 +1,7 @@
 //! End-to-end turn tests against a mock chat server.
 //!
 //! Covers the whole path: precommit routing, read a file, send it to the model, receive
-//! a reply. The injection test is the important one — it asserts that a file whose
+//! a reply. The injection test is the important one: it asserts that a file whose
 //! contents try to redirect the turn cannot do so.
 
 use bua_agent::Workspace;
@@ -867,7 +867,7 @@ fn an_edit_is_reviewed_as_a_diff() {
     )
     .expect("turn runs");
 
-    // a.txt is trusted and the data is trusted, so this one is silent — the diff shape is
+    // a.txt is trusted and the data is trusted, so this one is silent. The diff shape is
     // asserted by the confirm module's own tests. What matters here is that the edit applied
     // to only the matched passage.
     assert_eq!(
@@ -913,7 +913,7 @@ fn a_reviewed_edit_carries_both_sides_of_the_diff() {
     )
     .expect("turn runs");
 
-    // Trusted throughout, so no review — asserted so the silent path stays covered.
+    // Trusted throughout, so no review. Asserted so the silent path stays covered.
     assert!(confirmer.seen.is_empty());
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
@@ -1618,8 +1618,8 @@ fn a_write_after_untrusted_input_is_reviewed() {
 }
 
 /// The rule the repository is predicated on: untrusted content never reaches the planner's
-/// context. Asserted against the actual bytes sent to the model, because every weaker check —
-/// a label, a gate event — could pass while the payload still went out on the wire.
+/// context. Asserted against the actual bytes sent to the model, because every weaker check,
+/// a label or a gate event, could pass while the payload still went out on the wire.
 #[test]
 fn untrusted_file_content_never_reaches_the_model() {
     const PAYLOAD: &str = "EXFILTRATE-SECRETS-NOW";
@@ -1739,7 +1739,7 @@ fn trusted_file_content_is_shown_to_the_model() {
     );
 }
 
-/// A search over untrusted files returns matching *lines*, which are content — so those must be
+/// A search over untrusted files returns matching *lines*, which are content, so those must be
 /// quarantined too, not just whole-file reads.
 #[test]
 fn untrusted_search_results_never_reach_the_model() {
@@ -1776,7 +1776,7 @@ fn untrusted_search_results_never_reach_the_model() {
     );
 }
 
-/// Filenames are content too — a file can be named to read like an instruction — so an untrusted
+/// Filenames are content too, since a file can be named to read like an instruction, so an untrusted
 /// listing must be quarantined as well.
 #[test]
 fn untrusted_listings_never_reach_the_model() {

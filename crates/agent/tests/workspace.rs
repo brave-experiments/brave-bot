@@ -615,7 +615,7 @@ fn an_endorsed_write_proceeds_when_the_file_is_unchanged() {
 }
 
 /// Staleness is checked before the gates, so a refused edit does not burn the single-use
-/// endorsement — the user's approval is still there to be used once the model re-reads.
+/// endorsement, so the user's approval is still there to be used once the model re-reads.
 #[test]
 fn a_stale_write_does_not_consume_the_endorsement() {
     let scratch = Scratch::new("stale-grant");
@@ -770,7 +770,7 @@ fn a_search_within_the_cap_reports_no_truncation() {
     assert_eq!(found.matches.len(), 2);
 }
 
-/// A long matching line is capped, and the cap must not split a multi-byte character —
+/// A long matching line is capped, and the cap must not split a multi-byte character:
 /// `String::truncate` would panic and take the turn down with it.
 #[test]
 fn a_long_match_line_is_truncated_without_panicking() {
@@ -970,7 +970,7 @@ fn an_offset_past_the_end_returns_nothing_and_says_the_length() {
     assert_eq!(page.total_lines, 2, "the real length was not reported");
 }
 
-/// An edit needs the whole file, so the uncapped read must stay uncapped — a paged read
+/// An edit needs the whole file, so the uncapped read must stay uncapped: a paged read
 /// here would write back a shortened file and destroy data.
 #[test]
 fn the_whole_file_read_is_not_capped() {
@@ -1066,7 +1066,7 @@ fn text_files_are_not_mistaken_for_binary() {
     // Includes tabs, CRLF and non-ASCII text: all normal in source.
     std::fs::write(
         scratch.path.join("a.txt"),
-        "fn main() {\r\n\tprintln!(\"héllo — wörld\");\r\n}\n",
+        "fn main() {\r\n\tprintln!(\"héllo, wörld\");\r\n}\n",
     )
     .unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
@@ -1087,7 +1087,7 @@ fn text_files_are_not_mistaken_for_binary() {
     assert!(contents.declassify(&proof).contains("héllo"));
 }
 
-/// An empty file is text, not binary — the ratio test must not divide by zero or guess.
+/// An empty file is text, not binary, and the ratio test must not divide by zero or guess.
 #[test]
 fn an_empty_file_is_not_binary() {
     let scratch = Scratch::new("read-empty");
@@ -1342,7 +1342,7 @@ fn noise_directories_from_other_ecosystems_are_skipped() {
     );
 }
 
-/// The original three skips must keep working — the list was broadened, not replaced.
+/// The original three skips must keep working: the list was broadened, not replaced.
 #[test]
 fn the_original_noise_directories_are_still_skipped() {
     let scratch = Scratch::new("list-skip-original");

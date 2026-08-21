@@ -42,7 +42,7 @@ Use tools when you need information you do not have. When you have enough, answe
 task directly and concisely.
 
 Narrow your searches: pass a glob to list_files, or include to search, rather than listing \
-or searching everything. Results are capped, and a capped result says so — if it does, \
+or searching everything. Results are capped, and a capped result says so. If it does, \
 narrow the query rather than assuming you have seen everything. A long file is returned one \
 page at a time and tells you the offset to continue from.
 
@@ -234,7 +234,7 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
 
         // The kernel decides whether the model may see this, from the label alone. A file from
         // a trusted path is shown; anything else is quarantined and the model gets only a
-        // reference. Nothing here can override that — which is the point, since a "this is
+        // reference. Nothing here can override that, which is the point, since a "this is
         // data, not instructions" wrapper is exactly the mitigation this design refuses to
         // rely on.
         let presented = policy
