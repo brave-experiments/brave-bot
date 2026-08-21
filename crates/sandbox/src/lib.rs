@@ -71,8 +71,31 @@ pub trait Sandbox {
     /// What this backend can enforce here, on this kernel.
     fn capabilities(&self) -> Capabilities;
 
-    /// Start a confined process, or refuse.
-    fn spawn(&self, command: Command, policy: &SandboxPolicy) -> Result<Child, SandboxError>;
+    /// Build a confined [`Command`], or refuse.
+    ///
+    /// Returns a command rather than taking one because `Command` exposes no getters for
+    /// its stdio configuration: a backend that rebuilt the command — as the macOS one
+    /// must, to wrap it in `sandbox-exec` — would silently discard any pipes the caller
+    /// had set up. Handing the command back lets the caller configure stdio on the
+    /// thing that will actually run.
+    fn command(
+        &self,
+        program: &str,
+        args: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<Command, SandboxError>;
+
+    /// Build and start a confined process with default stdio.
+    fn spawn(
+        &self,
+        program: &str,
+        args: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<Child, SandboxError> {
+        self.command(program, args, policy)?
+            .spawn()
+            .map_err(SandboxError::SpawnFailed)
+    }
 }
 
 /// The backend for the current platform.
@@ -115,7 +138,12 @@ impl Sandbox for Unavailable {
         }
     }
 
-    fn spawn(&self, _command: Command, _policy: &SandboxPolicy) -> Result<Child, SandboxError> {
+    fn command(
+        &self,
+        _program: &str,
+        _args: &[String],
+        _policy: &SandboxPolicy,
+    ) -> Result<Command, SandboxError> {
         Err(SandboxError::Unavailable {
             platform: std::env::consts::OS,
             detail: "confinement is unavailable".into(),
@@ -130,7 +158,7 @@ mod tests {
     #[test]
     fn an_unavailable_backend_refuses_to_spawn() {
         let sandbox = Unavailable;
-        let result = sandbox.spawn(Command::new("echo"), &SandboxPolicy::strict());
+        let result = sandbox.spawn("echo", &[], &SandboxPolicy::strict());
         assert!(matches!(result, Err(SandboxError::Unavailable { .. })));
     }
 
@@ -140,7 +168,7 @@ mod tests {
     fn refusal_is_not_a_silent_fallback() {
         let sandbox = Unavailable;
         let err = sandbox
-            .spawn(Command::new("echo"), &SandboxPolicy::strict())
+            .spawn("echo", &[], &SandboxPolicy::strict())
             .expect_err("must refuse");
         assert!(err.to_string().contains("refusing to run"));
     }

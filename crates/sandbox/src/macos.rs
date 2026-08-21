@@ -13,7 +13,7 @@
 use crate::policy::{Capabilities, ConfinementLevel, SandboxPolicy};
 use crate::{Sandbox, SandboxError};
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
@@ -99,35 +99,27 @@ impl Sandbox for SeatbeltSandbox {
         }
     }
 
-    fn spawn(&self, command: Command, policy: &SandboxPolicy) -> Result<Child, SandboxError> {
+    fn command(
+        &self,
+        program: &str,
+        args: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<Command, SandboxError> {
         if !policy.is_meaningful() {
             return Err(SandboxError::PolicyTooPermissive);
         }
 
         let mut wrapped = Command::new(SANDBOX_EXEC);
         wrapped.arg("-p").arg(Self::profile(policy));
-        wrapped.arg(command.get_program());
-        wrapped.args(command.get_args());
+        wrapped.arg(program);
+        wrapped.args(args);
 
-        // The caller's environment is intentionally not inherited: credentials must
-        // never reach a confined process. Callers pass through only what is needed.
+        // The caller's environment is deliberately not inherited: credentials must never
+        // reach a confined process. A caller that needs a variable sets it on the
+        // returned command explicitly.
         wrapped.env_clear();
-        for (key, value) in command.get_envs() {
-            match value {
-                Some(v) => {
-                    wrapped.env(key, v);
-                }
-                None => {
-                    wrapped.env_remove(key);
-                }
-            }
-        }
 
-        if let Some(dir) = command.get_current_dir() {
-            wrapped.current_dir(dir);
-        }
-
-        wrapped.spawn().map_err(SandboxError::SpawnFailed)
+        Ok(wrapped)
     }
 }
 
@@ -194,9 +186,13 @@ mod tests {
             .allow_read("/bin")
             .allow_read(r#"/tmp/x") (allow network-outbound) ("#);
 
-        let mut command = Command::new("/usr/bin/true");
-        command.stdout(Stdio::null()).stderr(Stdio::null());
-        let mut child = sandbox.spawn(command, &policy).expect("should spawn");
+        let mut child = sandbox
+            .command("/usr/bin/true", &[], &policy)
+            .expect("command builds")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
         assert!(child.wait().expect("should wait").success());
     }
 
@@ -208,7 +204,7 @@ mod tests {
             .allow_subprocesses()
             .allow_write("/");
         let err = sandbox
-            .spawn(Command::new("/usr/bin/true"), &policy)
+            .spawn("/usr/bin/true", &[], &policy)
             .expect_err("must refuse a policy that confines nothing");
         assert!(matches!(err, SandboxError::PolicyTooPermissive));
     }
@@ -229,10 +225,13 @@ mod tests {
         let policy = SandboxPolicy::strict()
             .allow_read("/usr")
             .allow_read("/bin");
-        let mut command = Command::new("/usr/bin/true");
-        command.stdout(Stdio::null()).stderr(Stdio::null());
-
-        let mut child = sandbox.spawn(command, &policy).expect("should spawn");
+        let mut child = sandbox
+            .command("/usr/bin/true", &[], &policy)
+            .expect("command builds")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
         assert!(child.wait().expect("should wait").success());
     }
 
@@ -247,13 +246,13 @@ mod tests {
         let target = std::env::temp_dir().join("bua-sandbox-must-not-exist");
         let _ = std::fs::remove_file(&target);
 
-        let mut command = Command::new("/usr/bin/touch");
-        command
-            .arg(&target)
+        let mut child = sandbox
+            .command("/usr/bin/touch", &[target.display().to_string()], &policy)
+            .expect("command builds")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let mut child = sandbox.spawn(command, &policy).expect("should spawn");
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
         let status = child.wait().expect("should wait");
 
         assert!(!status.success(), "write should have been denied");
@@ -272,13 +271,17 @@ mod tests {
             .allow_read("/System")
             .allow_read("/Library");
 
-        let mut command = Command::new("/usr/bin/curl");
-        command
-            .args(["-s", "-m", "5", "-o", "/dev/null", "https://example.com"])
+        let args: Vec<String> = ["-s", "-m", "5", "-o", "/dev/null", "https://example.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut child = sandbox
+            .command("/usr/bin/curl", &args, &policy)
+            .expect("command builds")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let mut child = sandbox.spawn(command, &policy).expect("should spawn");
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
         assert!(
             !child.wait().expect("should wait").success(),
             "network access should have been denied"

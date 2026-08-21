@@ -69,6 +69,7 @@ name = "bua-mcp"
 version = "0.1.0"
 dependencies = [
  "bua-core",
+ "bua-sandbox",
  "serde",
  "serde_json",
 ]

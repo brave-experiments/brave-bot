@@ -92,7 +92,12 @@ impl Sandbox for LandlockSandbox {
         }
     }
 
-    fn spawn(&self, mut command: Command, policy: &SandboxPolicy) -> Result<Child, SandboxError> {
+    fn command(
+        &self,
+        program: &str,
+        args: &[String],
+        policy: &SandboxPolicy,
+    ) -> Result<Command, SandboxError> {
         if !policy.is_meaningful() {
             return Err(SandboxError::PolicyTooPermissive);
         }
@@ -107,6 +112,9 @@ impl Sandbox for LandlockSandbox {
                     .into(),
             });
         }
+
+        let mut command = Command::new(program);
+        command.args(args);
 
         let readable: Vec<_> = policy.readable.clone();
         let writable: Vec<_> = policy.writable.clone();
@@ -157,7 +165,7 @@ impl Sandbox for LandlockSandbox {
             });
         }
 
-        command.spawn().map_err(SandboxError::SpawnFailed)
+        Ok(command)
     }
 }
 
