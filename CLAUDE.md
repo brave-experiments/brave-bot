@@ -23,11 +23,21 @@ The driver is the Rust code here. The planner is the model. Neither receives unt
 Never weaken this statement. If an implementation cannot satisfy it, the implementation is
 wrong — do not restate the rule to match the code.
 
-`Labelled<T>` enforces the mechanical half of this at compile time: no `Deref`, `PartialEq`,
-or `Display`, and no infallible accessor. Reading the value requires a `Declassification`
-witness only the policy layer can mint. **A `declassify` call is a claim that no decision
-follows.** Releasing content to a filesystem write, an HTTP body, or a human's screen is
-fine. Using it to choose whether an effect happens is not.
+`Labelled<T>` enforces the mechanical half at compile time: no `Deref`, `PartialEq`, or
+`Display`, and no infallible accessor. Reading requires a `Declassification` witness only the
+policy layer can mint.
+
+**A witness is not permission to inspect.** Minting one does not make reading untrusted content
+acceptable; it records that bytes moved somewhere they were already allowed to go — into a
+filesystem write, an HTTP body, a human's screen. The three legitimate destinations have gates
+of their own:
+
+- `Policy::present` — decides whether the planner sees content or a reference.
+- `Policy::render_in_place` — reshapes content for presentation without exposing it.
+- `Policy::read_trusted_content` — hands over bytes only when they are trusted, and **refuses**
+  otherwise.
+
+If you are calling `declassify` outside those, you are almost certainly adding a violation.
 
 Watch for this in review. The subtle violations look like safety features:
 
@@ -37,6 +47,12 @@ let text = contents.declassify(&proof);
 if text.matches(old).count() > 1 {
     return "error: ambiguous";
 }
+```
+
+```rust
+// ALSO WRONG: relocating the same branch into bua-core does not fix it.
+// And "it is only for a message to the model" does not either — that is R1.
+messages.push(Message::user(format!("Contents:\n{}", text)));
 ```
 
 ## Trusted content may be examined; untrusted content may not

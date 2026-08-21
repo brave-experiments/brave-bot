@@ -44,14 +44,44 @@ Actions declare a role per field:
   Derived only from trusted input, never from fetched content.
 - **content** — the payload. May be untrusted, and usually is.
 
-That asymmetry is the whole mechanism. Fetched or model-generated text is quarantined in
-write-once slots and can be carried into an action as content, but it can never become
-routing — so it cannot redirect anything.
+That asymmetry is half the mechanism: untrusted text can be carried into an action as content
+but can never become routing, so it cannot redirect anything. The other half is that it never
+reaches a component that decides — see R1 and R2 below.
+
+## The rules
+
+Each rule names the role it constrains, and each is enforced by a gate that refuses — not by a
+check a caller could forget to make.
+
+**R1 — Nothing untrusted in the planner's context.** Untrusted content is never placed in a
+message to the model. It is quarantined in a write-once slot, and the planner is given a
+*reference*: origin, line count, byte count, label. The planner acts on content it cannot read
+by naming that reference, and the kernel resolves it when the effect fires.
+
+**R2 — Nothing untrusted in the driver's context.** The Rust code may carry a `Labelled<T>` and
+hand it to an effect, but cannot read one: no `Deref`, `PartialEq`, or `Display`, and no
+infallible accessor. Asking for untrusted bytes returns a refusal naming this rule, not a
+value. Text is reshaped for presentation inside the kernel, so no tool holds what it formats.
+
+**R3 — Decisions may be made only from trusted content.** Comparing text is a decision. On
+trusted content that is fine — a vouched-for path holds nothing an attacker wrote — and on
+untrusted content it is refused. This is why `edit_file` needs a trusted file: locating a
+passage means comparing.
+
+**R4 — Routing must be `(T,pub)`.** Where an effect goes — a path, a URL, a recipient — is
+derived only from trusted input; untrusted routing is treated as an injection attempt. The one
+relaxation: the model may propose a *read* path, because a read changes nothing and is confined
+to the workspace.
+
+**R5 — Labels only ever degrade.** Integrity may go trusted → untrusted, never the reverse. No
+operation anywhere raises a value's integrity.
+
+**R6 — Losing trust needs a human.** A write that would make a trusted path untrusted is shown
+to the user first, and their approval mints a single-use endorsement bound to that exact path.
+It cannot be replayed or redirected.
 
 ## Design
 
-- **Untrusted content is carryable, not inspectable.** The type system prevents branching on
-  untrusted values without an explicit, audited declassification step.
 - **One network egress path.** A single chokepoint, revalidated on every redirect hop, so a
   permitted host cannot redirect into a denied one.
 - **Untrusted work runs in a real sandbox** — OS-level confinement, not an environment
@@ -89,13 +119,15 @@ The model can read files, list them, and search their contents. Each splits into
 
 | Tool | Routing | Result |
 |---|---|---|
-| `read_file` | path, offset, limit | contents, untrusted |
-| `list_files` | directory, glob | filenames, untrusted |
-| `search` | pattern, directory, include glob | matches, untrusted |
+| `read_file` | path, offset, limit | contents if trusted, else a reference |
+| `list_files` | directory, glob | filenames if trusted, else a reference |
+| `search` | pattern, directory, include glob | matches if trusted, else a reference |
 | `write_file` | path — approval when trust would be lost | — |
 | `edit_file` | path — approval when trust would be lost | — |
 
-Filenames are untrusted too — a file can be named to read like an instruction.
+Filenames are content too — a file can be named to read like an instruction — so an untrusted
+listing is quarantined exactly as file contents are. A listing or search that touches several
+files is trusted only if every one of them is.
 
 Globs and paging exist to keep results small: a large file comes back a page at a time, and
 a listing or search can be narrowed to `*.rs` rather than returning a whole tree. A glob is
