@@ -1,4 +1,5 @@
-//! Configuration read from the environment, populated by direnv.
+//! Configuration read from the environment, populated by direnv, falling back to
+//! whatever was baked in at build time.
 //!
 //! The signing key is wrapped in [`Secret`] so it cannot be printed. That matters
 //! more than usual here: this is a public repository, and the natural debugging
@@ -10,11 +11,12 @@ use std::fmt;
 
 /// Environment variable names, kept together so the set is auditable at a glance.
 pub mod env_var {
-    pub const SIGNING_KEY: &str = "SERVICES_KEY_AICHAT";
-    pub const KEY_ID: &str = "BRAVE_SERVICES_KEY_ID";
-    pub const ENDPOINT: &str = "BRAVE_AI_CHAT_ENDPOINT";
-    pub const MODEL: &str = "MODEL";
+    include!("env_var.rs");
 }
+
+mod obfuscate;
+
+include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 
 /// The server treats an unrecognised model as `automatic`, so that is also our
 /// default rather than pinning a name that may silently stop existing.
@@ -67,7 +69,7 @@ impl fmt::Display for ConfigError {
         match self {
             Self::Missing(name) => write!(
                 f,
-                "{name} is not set; copy .envrc.example to .envrc and run `direnv allow`"
+                "{name} is not set and was not built in; copy .envrc.example to .envrc and run `direnv allow`"
             ),
             Self::Empty(name) => write!(f, "{name} is set but empty"),
             Self::InvalidEndpoint { value } => write!(
@@ -94,10 +96,38 @@ pub struct Config {
     pub model: String,
 }
 
+/// A value captured when this binary was built, or `None` if the build had none.
+///
+/// The masking is undone here rather than at startup so a credential is materialised
+/// only for the variable actually being read.
+fn built_in(name: &str) -> Option<String> {
+    let (_, masked) = BAKED.iter().find(|(baked, _)| *baked == name)?;
+    String::from_utf8(obfuscate::mask(masked)).ok()
+}
+
+/// Pick between what the environment says and what the build baked in.
+fn resolve(
+    name: &str,
+    from_env: Option<String>,
+    baked: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    match from_env {
+        Some(value) if !value.trim().is_empty() => Some(value),
+        // A placeholder .envrc leaves a variable blank, which is not a request to
+        // override, so a built-in value still applies. With none, the blank is handed
+        // on so the error reports it as empty rather than missing.
+        blank => baked(name).or(blank),
+    }
+}
+
 impl Config {
-    /// Read configuration from the process environment.
+    /// Read configuration from the process environment, falling back to the values
+    /// built into this binary.
+    ///
+    /// The environment wins, so a developer can point a released binary at a local
+    /// backend without rebuilding it.
     pub fn from_env() -> Result<Self, ConfigError> {
-        Self::from_lookup(|key| env::var(key).ok())
+        Self::from_lookup(|key| resolve(key, env::var(key).ok(), built_in))
     }
 
     /// Read configuration from an arbitrary lookup, so tests need not mutate global
@@ -272,6 +302,69 @@ mod tests {
         assert_eq!(format!("{secret:?}"), "Secret(<redacted>)");
         assert_eq!(format!("{secret}"), "<redacted>");
         assert!(!format!("{secret:?}").contains("live-credential"));
+    }
+
+    /// An explicit variable must win, so a released binary can be pointed at a local
+    /// backend without rebuilding it.
+    #[test]
+    fn the_environment_overrides_a_built_in_value() {
+        let chosen = resolve(
+            env_var::ENDPOINT,
+            Some("http://127.0.0.1:8000".into()),
+            |_| Some("https://baked.invalid".into()),
+        );
+        assert_eq!(chosen.as_deref(), Some("http://127.0.0.1:8000"));
+    }
+
+    /// The point of baking values in: a binary started outside the source tree has no
+    /// direnv and must still be configured.
+    #[test]
+    fn a_built_in_value_applies_when_the_environment_is_silent() {
+        let chosen = resolve(env_var::ENDPOINT, None, |_| {
+            Some("https://baked.invalid".into())
+        });
+        assert_eq!(chosen.as_deref(), Some("https://baked.invalid"));
+    }
+
+    /// A blank variable is a placeholder, not an instruction to discard the built-in
+    /// value, so it must not shadow one.
+    #[test]
+    fn a_blank_variable_does_not_shadow_a_built_in_value() {
+        let chosen = resolve(env_var::ENDPOINT, Some("   ".into()), |_| {
+            Some("https://baked.invalid".into())
+        });
+        assert_eq!(chosen.as_deref(), Some("https://baked.invalid"));
+    }
+
+    /// With nothing baked in, a blank must still be reported as empty rather than
+    /// missing, since the two suggest different fixes.
+    #[test]
+    fn a_blank_variable_survives_when_nothing_was_built_in() {
+        let err = Config::from_lookup(|k| match k {
+            env_var::SIGNING_KEY => resolve(k, Some(String::new()), |_| None),
+            other => complete_env(other),
+        })
+        .unwrap_err();
+        assert_eq!(err, ConfigError::Empty(env_var::SIGNING_KEY));
+    }
+
+    /// Masking is what keeps a baked credential out of `strings` output, and it is
+    /// only usable at all if it round-trips.
+    #[test]
+    fn masking_round_trips_and_does_not_leave_the_value_readable() {
+        let secret = "live-credential-abc123";
+        let masked = obfuscate::mask(secret.as_bytes());
+        assert_ne!(masked, secret.as_bytes());
+        assert_eq!(obfuscate::mask(&masked), secret.as_bytes());
+    }
+
+    /// Two values sharing a prefix must not produce a shared masked prefix, or the
+    /// masking would advertise the relationship.
+    #[test]
+    fn values_with_a_shared_prefix_do_not_share_a_masked_prefix() {
+        let one = obfuscate::mask(b"prefix-aaaa");
+        let two = obfuscate::mask(b"prefix-bbbbbb");
+        assert_ne!(one[0], two[0]);
     }
 
     /// Debug-printing the whole config is the obvious debugging reflex, so it must
