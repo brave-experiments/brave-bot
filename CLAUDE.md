@@ -5,17 +5,32 @@ can be carried and written, but it can never decide what happens.
 
 ## The rule that overrides everything
 
-**The driver and the planner never take untrusted content into their context.**
+**Untrusted content never influences a decision.**
 
-The driver is the Rust code in this repository. The planner is the model. Neither may *see*
-untrusted bytes in a way that lets those bytes influence a decision.
+The driver is the Rust code in this repository. The planner is the model. The guarantee is
+different for each, and conflating them leads to writing code that looks safe and is not.
 
-- The driver may **carry** untrusted content (`Labelled<String>`), **hand it to** an effect
-  (a write, a request body), and **release it for display** to a human.
-- The driver may **not branch** on untrusted content: no `if`, `match`, comparison, or early
-  return whose condition is derived from untrusted bytes.
-- The planner may be *shown* untrusted content as data, but must never be the thing that
-  decides an effect from it — that is what the gates are for.
+**The driver is never influenced, structurally.**
+
+- It may **carry** untrusted content (`Labelled<String>`), **hand it to** an effect (a write,
+  a request body), and **release it for display** to a human.
+- It may **not branch** on untrusted content: no `if`, `match`, comparison, or early return
+  whose condition is derived from untrusted bytes.
+
+**The planner may be influenced in what it says, never in what happens.** A coding agent has
+to read files, and reading is being influenced — that cannot be designed away. What is
+designed away is the path from influence to effect:
+
+- Untrusted text can never become **routing**. It cannot choose a path, a URL, or a recipient.
+- The model may propose a *read* path, because a read changes nothing and is confined to the
+  workspace. It may never propose an effect's destination.
+- Every irreversible effect needs a human endorsement bound to an exact value.
+- The turn carries a provenance **watermark**: once it observes untrusted data, everything it
+  produces afterwards is untrusted, because the model's output is a function of what it read.
+  A trusted read later does not restore it.
+
+So: do not write code that assumes the model was not influenced. Write code that makes the
+influence unable to reach an effect.
 
 If a decision must be made from untrusted content, it belongs **behind a policy gate** in
 `bua-core`, which owns the verdict and emits it as an audited event. The driver then acts on
