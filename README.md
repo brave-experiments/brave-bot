@@ -104,38 +104,66 @@ In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, 
 toggles the audit trail. Add `--trace` to a one-shot run for the same thing:
 which gate checked what, the label every value carried, and what was released.
 
+Reading a file in a trusted directory — the content reaches the model:
+
 ```
 ok      precommit: routing fields ["task"] fixed before any observation
 ok      promote: read_file.path proposed by the model, confined and non-destructive
 ok      file_read.path [routing] (T,pub)
+observe file_read produced (T,priv)
+ok      trust: notes.md read as trusted, from a trusted path
+ok      render: read_file: content reshaped for presentation, still (T,priv)
+ok      present: tool_result: notes.md is (T,priv), so the planner may read it
+```
+
+The same read where nothing is vouched for — the content is quarantined instead:
+
+```
 observe file_read produced (U,priv)
-ok      release: read_file.contents content released after the action gate
+ok      trust: notes.md read as untrusted
+slot    ref:0 at (U,priv)
+ok      present: tool_result: notes.md is (U,priv), quarantined as ref:0; the planner
+        sees a reference only
 ```
 
 ### Tools
 
-The model can read files, list them, and search their contents. Each splits into a
-**routing** part the gate requires to be trusted and a **content** part that may not be:
+Five tools. Every argument is either **routing**, which decides what the tool touches and must
+be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 
-| Tool | Routing | Result |
-|---|---|---|
-| `read_file` | path, offset, limit | contents if trusted, else a reference |
-| `list_files` | directory, glob | filenames if trusted, else a reference |
-| `search` | pattern, directory, include glob | matches if trusted, else a reference |
-| `write_file` | path — approval when trust would be lost | — |
-| `edit_file` | path — approval when trust would be lost | — |
+| Tool | Routing arguments | Content arguments | Result |
+|---|---|---|---|
+| `read_file` | `path`, `offset`, `limit` | — | the lines, or a reference |
+| `list_files` | `directory`, `pattern` | — | the paths, or a reference |
+| `search` | `pattern`, `directory`, `include` | — | matching lines, or a reference |
+| `write_file` | `path` | `contents` | confirmation |
+| `edit_file` | `path`, `replace_all` | `old_text`, `new_text` | confirmation |
+
+Reads return the content itself when it is trusted and a reference when it is not — R1. Writes
+are silent or shown according to the trust table below — R6.
+
+`read_file` pages: it caps at 500 lines and 2000 characters per line, reports the range it
+returned, and gives the offset to continue from. A file that is not text is reported as binary
+rather than as a decoding error.
+
+`list_files` and `search` take a glob (`*.rs`, `src/**/*.rs`; `*` and `?` do not cross `/`,
+`**` does, brace groups are unsupported) and skip version-control and build directories. Both
+cap their output and **say so when they do** — silence there would let the model conclude a file
+does not exist when the answer was merely cut off.
+
+`search` matches a literal substring, not a regular expression: a backtracking pattern arriving
+through a turn would be a denial-of-service vector. The glob matcher is hand-written and
+non-backtracking for the same reason.
+
+`edit_file` replaces an exact passage and refuses rather than guessing when that passage is
+missing or occurs more than once — a guess would change bytes nobody reviewed. It also refuses
+if the file changed since it was read, and it requires a **trusted** file, because locating a
+passage means comparing text — R3. Use `write_file` for an untrusted file: nothing is located,
+and the body is shown in full.
 
 Filenames are content too — a file can be named to read like an instruction — so an untrusted
 listing is quarantined exactly as file contents are. A listing or search that touches several
 files is trusted only if every one of them is.
-
-Globs and paging exist to keep results small: a large file comes back a page at a time, and
-a listing or search can be narrowed to `*.rs` rather than returning a whole tree. A glob is
-*routing* — it decides what gets looked at — so an untrusted one is refused like any other
-address. Every result is capped, and a capped result says so: silence there would let a
-model conclude a file does not exist when the answer was merely cut off. Search matches
-literal text rather than a regular expression, since a backtracking pattern arriving through
-a turn would be a denial-of-service vector.
 
 The model may choose *which* file to read next, because a read cannot change anything and
 is confined to the workspace. Every such choice is recorded as a promotion, so an audit
