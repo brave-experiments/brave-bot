@@ -226,13 +226,22 @@ fn list_files<S: Sink>(
     };
 
     match workspace.list(policy, &directory) {
-        Ok(files) => {
+        Ok(listing) => {
             let proof = policy.authorise_content_release("list_files", "paths");
-            let files = files.declassify(&proof);
-            if files.is_empty() {
+            let listing = listing.declassify(&proof);
+            if listing.files.is_empty() {
                 "(no files)".to_string()
+            } else if listing.truncated {
+                // Said plainly, because a model given a silently capped listing will treat
+                // it as the whole tree and conclude a file does not exist.
+                format!(
+                    "{}\n\n(this listing stopped at {} files and is incomplete; \
+                     list a subdirectory to see more)",
+                    listing.files.join("\n"),
+                    listing.files.len()
+                )
             } else {
-                files.join("\n")
+                listing.files.join("\n")
             }
         }
         Err(e) => format!("error: {e}"),
@@ -393,17 +402,29 @@ fn search<S: Sink>(policy: &mut Policy<'_, S>, workspace: &Workspace, arguments:
     };
 
     match workspace.grep(policy, &pattern, &directory) {
-        Ok(matches) => {
+        Ok(found) => {
             let proof = policy.authorise_content_release("search", "matches");
-            let matches = matches.declassify(&proof);
-            if matches.is_empty() {
+            let found = found.declassify(&proof);
+            if found.matches.is_empty() {
                 "(no matches)".to_string()
             } else {
-                matches
+                let rendered = found
+                    .matches
                     .iter()
                     .map(|m| format!("{}:{}: {}", m.path, m.line, m.text))
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n");
+                if found.truncated {
+                    // Without this a model that gets exactly the cap concludes it has
+                    // every occurrence, which is how a rename misses call sites.
+                    format!(
+                        "{rendered}\n\n(this search stopped at {} matches and is \
+                         incomplete; narrow the pattern or search a subdirectory)",
+                        found.matches.len()
+                    )
+                } else {
+                    rendered
+                }
             }
         }
         Err(e) => format!("error: {e}"),

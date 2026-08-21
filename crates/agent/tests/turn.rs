@@ -991,3 +991,74 @@ fn an_edit_cannot_escape_the_workspace() {
     );
     assert!(!scratch.path.parent().unwrap().join("escaped.txt").exists());
 }
+
+/// The notice has to reach the model, not just exist in the workspace layer: a capped
+/// search the model believes is complete is how a rename misses call sites.
+#[test]
+fn a_truncated_search_tells_the_model_it_is_incomplete() {
+    let scratch = Scratch::new("search-truncated");
+    let body: String = (0..300).map(|_| "needle\n").collect();
+    std::fs::write(scratch.path.join("a.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"needle","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("find needle");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    // The second request carries the tool result the model was given.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("incomplete"),
+        "the model was not told the search was capped: {second}"
+    );
+}
+
+/// And the ordinary case must stay quiet, or the model learns to ignore the notice.
+#[test]
+fn a_complete_search_makes_no_truncation_claim() {
+    let scratch = Scratch::new("search-complete");
+    std::fs::write(scratch.path.join("a.txt"), "needle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"needle","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("find needle");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::RefuseWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("incomplete"),
+        "a complete search claimed to be truncated: {second}"
+    );
+}

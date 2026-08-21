@@ -638,3 +638,158 @@ fn a_stale_write_does_not_consume_the_endorsement() {
         .expect("the endorsement survived a staleness refusal");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
 }
+
+/// Silent truncation is the bug: a model shown exactly the cap with no notice concludes it
+/// has seen the whole tree, and decides a file does not exist.
+#[test]
+fn a_listing_past_the_cap_reports_truncation() {
+    let scratch = Scratch::new("list-truncated");
+    // One more than the cap, so the overflow is unambiguous.
+    for n in 0..2_001 {
+        std::fs::write(scratch.path.join(format!("f{n:05}.txt")), "x").unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert!(listing.truncated, "the cap was reached but not reported");
+    assert_eq!(listing.files.len(), 2_000, "the cap was not applied");
+}
+
+/// The ordinary case must not claim truncation, or the notice becomes noise the model
+/// learns to ignore.
+#[test]
+fn a_listing_within_the_cap_reports_no_truncation() {
+    let scratch = Scratch::new("list-complete");
+    for n in 0..10 {
+        std::fs::write(scratch.path.join(format!("f{n}.txt")), "x").unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()))
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert!(!listing.truncated);
+    assert_eq!(listing.files.len(), 10);
+}
+
+/// A search that hits its cap must say so: otherwise a rename based on it misses call
+/// sites that were never shown.
+#[test]
+fn a_search_past_the_cap_reports_truncation() {
+    let scratch = Scratch::new("grep-truncated");
+    let body: String = (0..300).map(|_| "needle\n").collect();
+    std::fs::write(scratch.path.join("a.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert!(found.truncated, "the cap was reached but not reported");
+    assert_eq!(found.matches.len(), 200, "the cap was not applied");
+}
+
+#[test]
+fn a_search_within_the_cap_reports_no_truncation() {
+    let scratch = Scratch::new("grep-complete");
+    std::fs::write(scratch.path.join("a.txt"), "needle\nother\nneedle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert!(!found.truncated);
+    assert_eq!(found.matches.len(), 2);
+}
+
+/// A long matching line is capped, and the cap must not split a multi-byte character —
+/// `String::truncate` would panic and take the turn down with it.
+#[test]
+fn a_long_match_line_is_truncated_without_panicking() {
+    let scratch = Scratch::new("grep-wide");
+    // "é" is two bytes and the prefix is an odd length, so the 500-byte cap lands in the
+    // middle of a character. A plain `String::truncate` panics here.
+    let mut line = String::from("needle!");
+    line.push_str(&"é".repeat(400));
+    std::fs::write(scratch.path.join("a.txt"), &line).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+        )
+        .expect("grep must not panic on multi-byte text");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert_eq!(found.matches.len(), 1);
+    assert!(found.matches[0].text.len() <= 500);
+}

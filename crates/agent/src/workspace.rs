@@ -314,6 +314,22 @@ const MAX_ENTRIES: usize = 2_000;
 const MAX_MATCHES: usize = 200;
 const MAX_MATCH_LINE: usize = 500;
 
+/// Shorten a string to at most `limit` bytes without splitting a character.
+///
+/// `String::truncate` panics if the index is not a character boundary, so a matching line
+/// containing multi-byte text could otherwise bring down the turn. Truncating to the
+/// nearest boundary at or below the limit keeps the cap a cap.
+fn truncate_on_char_boundary(text: &mut String, limit: usize) {
+    if text.len() <= limit {
+        return;
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+}
+
 /// One grep hit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
@@ -323,6 +339,26 @@ pub struct Match {
     pub line: usize,
     /// The matching line, truncated to [`MAX_MATCH_LINE`].
     pub text: String,
+}
+
+/// The result of a directory listing.
+///
+/// Carries whether a cap was reached, because a model shown exactly [`MAX_ENTRIES`] paths
+/// with no notice will reason as though it saw the whole tree. Silent truncation is worse
+/// than a short answer: it looks like completeness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub files: Vec<String>,
+    /// Whether files were left out because a cap was reached.
+    pub truncated: bool,
+}
+
+/// The result of a content search. Reports truncation for the same reason as [`Listing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Matches {
+    pub matches: Vec<Match>,
+    /// Whether matches were left out because a cap was reached.
+    pub truncated: bool,
 }
 
 impl Workspace {
@@ -335,7 +371,7 @@ impl Workspace {
         &self,
         policy: &mut Policy<'_, S>,
         directory: &Labelled<String>,
-    ) -> Result<Labelled<Vec<String>>, WorkspaceError> {
+    ) -> Result<Labelled<Listing>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_list", "directory", Role::Routing, directory)?;
 
@@ -353,9 +389,20 @@ impl Workspace {
         let mut found = Vec::new();
         self.walk(&root, &mut found)?;
         found.sort();
+
+        // `walk` collects one entry past the cap so reaching it is detectable. Which
+        // entries survive is down to traversal order, so a truncated listing is a sample
+        // of the tree rather than its alphabetical head — hence saying so matters.
+        let truncated = found.len() > MAX_ENTRIES;
         found.truncate(MAX_ENTRIES);
 
-        Ok(Labelled::new(found, label))
+        Ok(Labelled::new(
+            Listing {
+                files: found,
+                truncated,
+            },
+            label,
+        ))
     }
 
     /// Search file contents for a literal substring.
@@ -369,7 +416,7 @@ impl Workspace {
         policy: &mut Policy<'_, S>,
         pattern: &Labelled<String>,
         directory: &Labelled<String>,
-    ) -> Result<Labelled<Vec<Match>>, WorkspaceError> {
+    ) -> Result<Labelled<Matches>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_grep", "pattern", Role::Routing, pattern)?;
         policy.before_action("file_grep", "directory", Role::Routing, directory)?;
@@ -403,9 +450,11 @@ impl Workspace {
         self.walk(&root, &mut paths)?;
         paths.sort();
 
+        // Collected one past the cap for the same reason as `walk`: reaching the limit has
+        // to be distinguishable from happening to have exactly that many matches.
         let mut matches = Vec::new();
         for path in paths {
-            if matches.len() >= MAX_MATCHES {
+            if matches.len() > MAX_MATCHES {
                 break;
             }
             let absolute = self.root.join(&path);
@@ -415,12 +464,12 @@ impl Workspace {
                 continue;
             };
             for (index, line) in contents.lines().enumerate() {
-                if matches.len() >= MAX_MATCHES {
+                if matches.len() > MAX_MATCHES {
                     break;
                 }
                 if line.contains(&needle) {
                     let mut text = line.to_string();
-                    text.truncate(MAX_MATCH_LINE);
+                    truncate_on_char_boundary(&mut text, MAX_MATCH_LINE);
                     matches.push(Match {
                         path: path.clone(),
                         line: index + 1,
@@ -430,7 +479,10 @@ impl Workspace {
             }
         }
 
-        Ok(Labelled::new(matches, label))
+        let truncated = matches.len() > MAX_MATCHES;
+        matches.truncate(MAX_MATCHES);
+
+        Ok(Labelled::new(Matches { matches, truncated }, label))
     }
 
     /// Collect workspace-relative paths of regular files beneath `directory`.
@@ -438,6 +490,10 @@ impl Workspace {
     /// Symlinks are not followed: a link pointing outside the workspace would otherwise
     /// pull external files into a listing, which is the same escape `resolve` rejects
     /// for a named path.
+    ///
+    /// Stops once one entry *past* [`MAX_ENTRIES`] is collected. The extra entry is what
+    /// lets the caller distinguish a tree that exactly fills the cap from one that
+    /// overflows it, so truncation can be reported rather than guessed at.
     fn walk(&self, directory: &Path, out: &mut Vec<String>) -> Result<(), WorkspaceError> {
         let entries = std::fs::read_dir(directory).map_err(|e| WorkspaceError::Io {
             path: self.relative_display(directory),
@@ -445,7 +501,7 @@ impl Workspace {
         })?;
 
         for entry in entries.flatten() {
-            if out.len() >= MAX_ENTRIES {
+            if out.len() > MAX_ENTRIES {
                 return Ok(());
             }
             let path = entry.path();
