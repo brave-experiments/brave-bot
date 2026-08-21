@@ -11,9 +11,15 @@ ARG TARGET
 WORKDIR /src
 COPY . .
 
+# Configuration is baked into the binary, so the build needs it. It arrives as a
+# BuildKit secret rather than a build argument, which would be recorded in the image
+# metadata alongside the signing key.
+#
 # Rust's own strip can corrupt some targets in zigbuild flows, so symbols are kept
 # here and removed during packaging instead.
-RUN rustup target add "$TARGET" \
+RUN --mount=type=secret,id=bua_env,target=/run/secrets/bua_env \
+    rustup target add "$TARGET" \
+    && if [ -f /run/secrets/bua_env ]; then . /run/secrets/bua_env; fi \
     && cargo zigbuild --release --locked --target "$TARGET" \
        --config profile.release.strip=false
 

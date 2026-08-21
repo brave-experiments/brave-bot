@@ -258,10 +258,14 @@ direnv allow
 `.envrc` is gitignored and must never be committed, because it holds a signing key.
 
 The build captures whatever is set at build time, so a binary works in any directory rather
-than needing direnv wherever it is started. The environment still wins when set, which is how
-a released binary is pointed at a local backend without rebuilding it. Baked values are masked
-so `strings` on the binary does not print them; that is obfuscation and not encryption, so a
-binary built with a live key should be treated as holding one.
+than needing direnv wherever it is started. A build with nothing set fails, rather than
+producing a binary that only works in the tree it came from; to build one deliberately, set
+`BUA_ALLOW_UNCONFIGURED_BUILD=1` and supply the variables at run time.
+
+The environment still wins when set, which is how a released binary is pointed at a local
+backend without rebuilding it. Baked values are masked so `strings` on the binary does not
+print them; that is obfuscation and not encryption, so a binary built with a live key should
+be treated as holding one.
 
 ## Credit
 

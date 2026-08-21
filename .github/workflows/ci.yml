@@ -17,6 +17,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # No credentials here, and none needed: these jobs compile and test rather than
+  # producing a binary anyone runs against the backend.
+  BUA_ALLOW_UNCONFIGURED_BUILD: "1"
 
 jobs:
   check:
@@ -103,11 +106,27 @@ jobs:
 
       # Same Dockerfile the Makefile uses, so a local build and a CI build produce
       # the same artifact rather than diverging through a separate host toolchain.
+      #
+      # Configuration reaches the build as a BuildKit secret. Secrets absent from a
+      # fork's repository come through blank, which the workflow-level
+      # BUA_ALLOW_UNCONFIGURED_BUILD then covers.
       - name: Build ${{ matrix.target }}
+        env:
+          SERVICES_KEY_AICHAT: ${{ secrets.SERVICES_KEY_AICHAT }}
+          BRAVE_SERVICES_KEY_ID: ${{ secrets.BRAVE_SERVICES_KEY_ID }}
+          BRAVE_AI_CHAT_ENDPOINT: ${{ secrets.BRAVE_AI_CHAT_ENDPOINT }}
         run: |
-          docker build -f Dockerfile.cross \
+          env_file="$(mktemp)"
+          trap 'rm -f "$env_file"' EXIT
+          for name in SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
+                      BUA_ALLOW_UNCONFIGURED_BUILD; do
+            eval "value=\$$name"
+            if [ -n "$value" ]; then printf 'export %s=%s\n' "$name" "$value" >> "$env_file"; fi
+          done
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.cross \
             -t bua-${{ matrix.name }} \
-            --build-arg TARGET=${{ matrix.target }} .
+            --build-arg TARGET=${{ matrix.target }} \
+            --secret id=bua_env,src="$env_file" .
 
       - name: Extract binary
         run: |

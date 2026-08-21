@@ -10,3 +10,10 @@ pub const MODEL: &str = "MODEL";
 
 /// Every name a build may bake in, in the order `doctor` reports them.
 pub const ALL: [&str; 4] = [SIGNING_KEY, KEY_ID, ENDPOINT, MODEL];
+
+/// Names a build must have. MODEL is absent because it has a default.
+pub const REQUIRED: [&str; 3] = [SIGNING_KEY, KEY_ID, ENDPOINT];
+
+/// Set to `1` to build without configuration, producing a binary that must be given
+/// the variables at run time.
+pub const ALLOW_UNCONFIGURED_BUILD: &str = "BUA_ALLOW_UNCONFIGURED_BUILD";

@@ -1,6 +1,10 @@
 BINARY = bua
 VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)
 
+# Forwarded into the cross-build container, which does not inherit the host environment.
+BUILD_ENV = SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT MODEL \
+            BUA_ALLOW_UNCONFIGURED_BUILD
+
 .PHONY: help
 help:
 	@echo "bua $(VERSION)"
@@ -117,8 +121,19 @@ clean:
 	cargo clean
 	rm -rf dist
 
+# Configuration reaches the build as a BuildKit secret rather than a build argument,
+# which would record the signing key in the image metadata. The temporary file is
+# mode 600 and removed even if the build fails.
 define cross-build
-	docker build -f Dockerfile.cross -t $(BINARY)-$(1) --build-arg TARGET=$(2) .
+	set -e; \
+	env_file="$$(mktemp)"; trap 'rm -f "$$env_file"' EXIT INT TERM; \
+	for name in $(BUILD_ENV); do \
+		eval "value=\$$$$name"; \
+		if [ -n "$$value" ]; then printf 'export %s=%s\n' "$$name" "$$value" >> "$$env_file"; fi; \
+	done; \
+	DOCKER_BUILDKIT=1 docker build -f Dockerfile.cross -t $(BINARY)-$(1) \
+		--build-arg TARGET=$(2) \
+		--secret id=bua_env,src="$$env_file" .
 	$(call extract,$(BINARY)-$(1),$(1))
 endef
 
