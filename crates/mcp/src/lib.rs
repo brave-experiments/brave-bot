@@ -15,9 +15,11 @@
 //! needs to label parts of a call separately — a file path as routing, its contents as
 //! content — and an opaque MCP call would erase that distinction.
 
+pub mod http;
 pub mod protocol;
 pub mod stdio;
 
+pub use http::HttpServer;
 pub use protocol::{ToolDescriptor, ToolResult};
 pub use stdio::StdioServer;
 
