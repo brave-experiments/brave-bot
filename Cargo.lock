@@ -184,6 +184,7 @@ dependencies = [
  "bua-net",
  "bua-sandbox",
  "ratatui",
+ "unicode-width",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::state::{Session, Speaker, Status};
+use crate::wrap;
 
 /// Marks a turn boundary in the transcript.
 const TURN_MARKER: &str = "⏺";
@@ -29,12 +30,16 @@ fn dim() -> Style {
 
 /// Draw the whole interface.
 pub fn draw(frame: &mut Frame, session: &Session) {
+    // The input's height depends on how far the text wraps, so it is measured before the layout
+    // rather than fixed: a fixed height is what made typing past the edge disappear.
+    let input_height = input_height(session, frame.area().width, frame.area().height);
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // transcript
-            Constraint::Length(3), // input
-            Constraint::Length(1), // hint line
+            Constraint::Min(1),               // transcript
+            Constraint::Length(input_height), // input
+            Constraint::Length(1),            // hint line
         ])
         .split(frame.area());
 
@@ -172,6 +177,34 @@ fn trail_line(event: &Event) -> Line<'static> {
     }
 }
 
+/// Columns available for input text inside the box.
+///
+/// Two for the borders and two for the `> ` prompt, so a wrap computed against this matches what
+/// the terminal will actually show.
+fn input_text_width(total: u16) -> usize {
+    (total as usize).saturating_sub(4).max(1)
+}
+
+/// Rows the input box needs, borders included.
+///
+/// Grows with the text up to [`wrap::MAX_ROWS`], and never takes so much of a short terminal that
+/// the transcript disappears.
+fn input_height(session: &Session, width: u16, height: u16) -> u16 {
+    // While a turn runs the box holds the one-line indicator instead of the input.
+    if session.status == Status::Working {
+        return 3;
+    }
+
+    let rows = wrap::wrap(&session.input, input_text_width(width))
+        .rows
+        .len()
+        .min(wrap::MAX_ROWS);
+
+    // Leave at least one line of transcript and the hint line, whatever the text does.
+    let ceiling = (height as usize).saturating_sub(2).max(3);
+    (rows + 2).min(ceiling) as u16
+}
+
 fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     let working = session.status == Status::Working;
 
@@ -192,26 +225,48 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
             None => Line::from(Span::styled("  waiting for the model…", dim())),
         }
     } else {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(Color::Cyan)),
-            Span::raw(session.input.clone()),
-            Span::styled("▌", Style::default().fg(Color::Cyan)),
-        ])
+        Line::from(Span::raw(""))
+    };
+
+    // Wrapping is computed here rather than left to `Paragraph`, because the cursor has to be
+    // placed after the last character and only an explicit wrap knows where that is.
+    let lines: Vec<Line> = if working {
+        vec![body]
+    } else {
+        let wrapped = wrap::wrap(&session.input, input_text_width(area.width));
+        let visible = (area.height as usize).saturating_sub(2).max(1);
+        let (first, rows) = wrapped.window(visible);
+
+        rows.iter()
+            .enumerate()
+            .map(|(offset, row)| {
+                let index = first + offset;
+                // Only the first row carries the prompt; continuations are indented to line up
+                // beneath it.
+                let lead = if index == 0 { "> " } else { "  " };
+                let mut spans = vec![
+                    Span::styled(lead, Style::default().fg(Color::Cyan)),
+                    Span::raw(row.clone()),
+                ];
+                if index == wrapped.cursor_row {
+                    spans.push(Span::styled("▌", Style::default().fg(Color::Cyan)));
+                }
+                Line::from(spans)
+            })
+            .collect()
     };
 
     frame.render_widget(
-        Paragraph::new(body)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(if working {
-                        dim()
-                    } else {
-                        Style::default().fg(Color::Cyan)
-                    }),
-            )
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if working {
+                    dim()
+                } else {
+                    Style::default().fg(Color::Cyan)
+                }),
+        ),
         area,
     );
 }
@@ -449,5 +504,103 @@ mod tests {
             rendered(&session).contains("reply number 39"),
             "scrolling back down did not return to the latest reply"
         );
+    }
+    /// Render at a chosen size, since wrapping depends on width.
+    fn rendered_at(session: &Session, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, session))
+            .expect("draw succeeds");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn typed(text: &str) -> Session {
+        let mut session = Session::new("test");
+        for c in text.chars() {
+            session.type_char(c);
+        }
+        session
+    }
+
+    /// The bug: text past the right edge used to be clipped, cursor included, which looked like
+    /// the program had stopped taking keys.
+    #[test]
+    fn typing_past_the_edge_stays_visible() {
+        let text = format!("{}TAIL", "abcdefghij ".repeat(9));
+        let output = rendered_at(&typed(&text), 50, 14);
+
+        assert!(
+            output.contains("TAIL"),
+            "the end of the input was clipped: {output}"
+        );
+        assert!(output.contains('▌'), "the cursor was clipped: {output}");
+    }
+
+    /// The box grows with the text rather than staying one line.
+    #[test]
+    fn the_input_box_grows_with_the_text() {
+        let short = input_height(&typed("hi"), 50, 24);
+        let long = input_height(&typed(&"word ".repeat(30)), 50, 24);
+        assert!(
+            long > short,
+            "the box did not grow: {short} then {long} rows"
+        );
+    }
+
+    /// But not without limit, or a long paste would push the transcript off screen.
+    #[test]
+    fn the_input_box_stops_growing_at_the_cap() {
+        let huge = input_height(&typed(&"word ".repeat(500)), 50, 40);
+        assert_eq!(huge as usize, wrap::MAX_ROWS + 2, "the cap was not applied");
+    }
+
+    /// Past the cap the view follows the cursor, so typing at the end stays visible.
+    #[test]
+    fn a_very_long_input_scrolls_to_the_cursor() {
+        let text = format!("{}TAIL", "word ".repeat(90));
+        let output = rendered_at(&typed(&text), 40, 20);
+        assert!(
+            output.contains("TAIL"),
+            "the cursor's row scrolled away: {output}"
+        );
+        assert!(output.contains('▌'));
+    }
+
+    /// A short terminal must still show some transcript and the hint line.
+    #[test]
+    fn the_input_leaves_room_on_a_short_terminal() {
+        let session = typed(&"word ".repeat(200));
+        let height = 8;
+        let used = input_height(&session, 40, height);
+        assert!(
+            used < height - 1,
+            "the input took {used} of {height} rows, leaving nothing for the transcript"
+        );
+    }
+
+    /// Only the first row carries the prompt; continuations align beneath it.
+    #[test]
+    fn continuation_rows_are_indented_not_prompted() {
+        let output = rendered_at(&typed(&"abcdefghij ".repeat(6)), 40, 14);
+        assert_eq!(
+            output.matches("> ").count(),
+            1,
+            "more than one prompt marker was drawn: {output}"
+        );
+    }
+
+    /// While a turn runs the box holds the indicator, so it stays one line regardless of what
+    /// was typed before.
+    #[test]
+    fn a_working_box_does_not_grow() {
+        let mut session = typed(&"word ".repeat(50));
+        session.submit();
+        assert_eq!(input_height(&session, 50, 24), 3);
     }
 }

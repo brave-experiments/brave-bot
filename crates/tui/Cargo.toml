@@ -14,3 +14,4 @@ bua-core = { path = "../core" }
 bua-net = { path = "../net" }
 bua-sandbox = { path = "../sandbox" }
 ratatui = { workspace = true }
+unicode-width = { workspace = true }
