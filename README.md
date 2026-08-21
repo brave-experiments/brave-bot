@@ -79,14 +79,23 @@ The model can read files, list them, and search their contents. Each splits into
 | `read_file` | path | contents, untrusted |
 | `list_files` | directory | filenames, untrusted |
 | `search` | pattern, directory | matches, untrusted |
+| `write_file` | path — **needs your approval** | — |
 
 Filenames are untrusted too — a file can be named to read like an instruction.
 
-The set is deliberately read-only. A write or command destination chosen by the model
-would be routing derived from whatever it just read, which is the attack this prevents.
-The model may propose *which* file to read next, because that operation cannot change
-anything and is confined to the workspace; every such choice is recorded as a promotion so
-an audit separates the model's decisions from yours.
+The model may choose *which* file to read next, because a read cannot change anything and
+is confined to the workspace. Every such choice is recorded as a promotion, so an audit
+separates the model's decisions from yours.
+
+A write is different: the wrong file destroys work rather than wasting a step. So the model
+never gets to decide one. You are shown the path, whether it overwrites, and the body, and
+your approval is what mints a single-use endorsement bound to that exact path — an
+approval cannot be replayed or redirected. Where nobody can be asked, such as a one-shot
+`bua "..."` run, writes are refused rather than applied unseen.
+
+Command execution is absent, and not by oversight. Unlike a write, a shell command has no
+separable routing field to endorse: the string is destination and payload at once, so there
+is nothing meaningful to approve.
 
 ## Building
 
