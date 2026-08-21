@@ -1,0 +1,297 @@
+//! Session state, kept separate from rendering so it can be tested without a terminal.
+//!
+//! A session is a sequence of independent turns. It holds transcript and input state for
+//! display; it does **not** hold a policy. Each turn constructs its own, which is what
+//! stops routing from one turn leaking into the next as untrusted content accumulates.
+
+use bua_core::event::Event;
+
+/// Who produced a transcript entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Speaker {
+    /// The user's prompt. Trusted input.
+    User,
+    /// The assistant's reply. Untrusted model output, shown but never acted on.
+    Assistant,
+    /// A note from the program itself: an error, a refusal, a status.
+    System,
+}
+
+/// One entry in the transcript.
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub speaker: Speaker,
+    pub text: String,
+    /// Gate events recorded while producing this entry, shown when the trail is visible.
+    pub trail: Vec<Event>,
+}
+
+impl Entry {
+    pub fn user(text: impl Into<String>) -> Self {
+        Self {
+            speaker: Speaker::User,
+            text: text.into(),
+            trail: Vec::new(),
+        }
+    }
+
+    pub fn assistant(text: impl Into<String>, trail: Vec<Event>) -> Self {
+        Self {
+            speaker: Speaker::Assistant,
+            text: text.into(),
+            trail,
+        }
+    }
+
+    pub fn system(text: impl Into<String>) -> Self {
+        Self {
+            speaker: Speaker::System,
+            text: text.into(),
+            trail: Vec::new(),
+        }
+    }
+}
+
+/// What the session is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// Waiting for input.
+    Idle,
+    /// A turn is in flight. Input is refused so a second turn cannot start mid-flight and
+    /// share the first one's state.
+    Working,
+    /// The user asked to leave.
+    Quitting,
+}
+
+/// Everything the interface needs to draw itself.
+#[derive(Debug)]
+pub struct Session {
+    pub transcript: Vec<Entry>,
+    pub input: String,
+    pub status: Status,
+    /// Whether the audit trail is shown alongside replies.
+    pub show_trail: bool,
+    /// Scroll offset from the bottom, in lines.
+    pub scroll: u16,
+    /// Confinement in force, reported so the user knows what they have.
+    pub confinement: String,
+}
+
+impl Session {
+    pub fn new(confinement: impl Into<String>) -> Self {
+        Self {
+            transcript: Vec::new(),
+            input: String::new(),
+            status: Status::Idle,
+            show_trail: false,
+            scroll: 0,
+            confinement: confinement.into(),
+        }
+    }
+
+    /// Accept a typed character. Ignored while a turn is running, so input cannot be
+    /// interleaved with a turn in flight.
+    pub fn type_char(&mut self, c: char) {
+        if self.status == Status::Idle {
+            self.input.push(c);
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.status == Status::Idle {
+            self.input.pop();
+        }
+    }
+
+    /// Take the current input as a prompt, if there is one.
+    ///
+    /// Clears the field and records the prompt in the transcript, so the display reflects
+    /// the submission even before a reply arrives.
+    pub fn submit(&mut self) -> Option<String> {
+        if self.status != Status::Idle {
+            return None;
+        }
+        let prompt = self.input.trim().to_string();
+        if prompt.is_empty() {
+            return None;
+        }
+        self.input.clear();
+        self.transcript.push(Entry::user(prompt.clone()));
+        self.status = Status::Working;
+        self.scroll = 0;
+        Some(prompt)
+    }
+
+    /// Record a completed turn.
+    pub fn complete(&mut self, reply: impl Into<String>, trail: Vec<Event>) {
+        self.transcript.push(Entry::assistant(reply, trail));
+        self.status = Status::Idle;
+        self.scroll = 0;
+    }
+
+    /// Record a failure. The turn is over either way, so the session returns to idle.
+    pub fn fail(&mut self, message: impl Into<String>) {
+        self.transcript.push(Entry::system(message));
+        self.status = Status::Idle;
+        self.scroll = 0;
+    }
+
+    pub fn note(&mut self, message: impl Into<String>) {
+        self.transcript.push(Entry::system(message));
+    }
+
+    pub fn toggle_trail(&mut self) {
+        self.show_trail = !self.show_trail;
+    }
+
+    pub fn quit(&mut self) {
+        self.status = Status::Quitting;
+    }
+
+    pub fn is_quitting(&self) -> bool {
+        self.status == Status::Quitting
+    }
+
+    pub fn scroll_up(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_add(lines);
+    }
+
+    pub fn scroll_down(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_sub(lines);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bua_core::label::Label;
+
+    fn session() -> Session {
+        Session::new("kernel-enforced")
+    }
+
+    #[test]
+    fn typing_accumulates_input() {
+        let mut s = session();
+        s.type_char('h');
+        s.type_char('i');
+        assert_eq!(s.input, "hi");
+        s.backspace();
+        assert_eq!(s.input, "h");
+    }
+
+    #[test]
+    fn submitting_returns_the_prompt_and_records_it() {
+        let mut s = session();
+        for c in "explain this".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.submit().as_deref(), Some("explain this"));
+        assert!(s.input.is_empty());
+        assert_eq!(s.transcript.len(), 1);
+        assert_eq!(s.transcript[0].speaker, Speaker::User);
+        assert_eq!(s.status, Status::Working);
+    }
+
+    #[test]
+    fn empty_input_does_not_submit() {
+        let mut s = session();
+        assert!(s.submit().is_none());
+        s.type_char(' ');
+        assert!(s.submit().is_none());
+        assert_eq!(s.status, Status::Idle);
+    }
+
+    /// A second turn must not start while one is in flight, since each turn owns its own
+    /// policy and interleaving them would blur that boundary.
+    #[test]
+    fn input_is_refused_while_a_turn_is_running() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit();
+        assert_eq!(s.status, Status::Working);
+
+        s.type_char('x');
+        assert!(s.input.is_empty(), "typing was accepted mid-turn");
+        assert!(s.submit().is_none(), "a second turn was allowed to start");
+    }
+
+    #[test]
+    fn completing_a_turn_returns_to_idle() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.complete("the reply", Vec::new());
+
+        assert_eq!(s.status, Status::Idle);
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.transcript[1].speaker, Speaker::Assistant);
+    }
+
+    #[test]
+    fn a_failure_also_returns_to_idle() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.fail("something went wrong");
+
+        assert_eq!(s.status, Status::Idle);
+        assert_eq!(s.transcript[1].speaker, Speaker::System);
+    }
+
+    #[test]
+    fn a_completed_turn_keeps_its_trail() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.complete(
+            "reply",
+            vec![Event::Observed {
+                capability: bua_core::capability::Capability::FileRead,
+                label: Label::untrusted_private(),
+            }],
+        );
+        assert_eq!(s.transcript[1].trail.len(), 1);
+    }
+
+    #[test]
+    fn the_trail_can_be_toggled() {
+        let mut s = session();
+        assert!(!s.show_trail);
+        s.toggle_trail();
+        assert!(s.show_trail);
+        s.toggle_trail();
+        assert!(!s.show_trail);
+    }
+
+    #[test]
+    fn scrolling_does_not_underflow() {
+        let mut s = session();
+        s.scroll_down(5);
+        assert_eq!(s.scroll, 0);
+        s.scroll_up(3);
+        assert_eq!(s.scroll, 3);
+        s.scroll_down(10);
+        assert_eq!(s.scroll, 0);
+    }
+
+    #[test]
+    fn submitting_resets_the_scroll_position() {
+        let mut s = session();
+        s.scroll_up(10);
+        s.type_char('a');
+        s.submit();
+        assert_eq!(s.scroll, 0, "a new turn should return to the latest output");
+    }
+
+    #[test]
+    fn quitting_is_observable() {
+        let mut s = session();
+        assert!(!s.is_quitting());
+        s.quit();
+        assert!(s.is_quitting());
+    }
+}

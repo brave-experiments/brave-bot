@@ -1,0 +1,16 @@
+[package]
+name = "bua-tui"
+description = "Interactive terminal interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bua-agent = { path = "../agent" }
+bua-config = { path = "../config" }
+bua-core = { path = "../core" }
+bua-net = { path = "../net" }
+bua-sandbox = { path = "../sandbox" }
+ratatui = { workspace = true }

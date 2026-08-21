@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent", "crates/aichat", "crates/cli", "crates/config", "crates/core", "crates/mcp", "crates/net", "crates/sandbox", "crates/signing"]
+members = ["crates/agent", "crates/tui", "crates/aichat", "crates/cli", "crates/config", "crates/core", "crates/mcp", "crates/net", "crates/sandbox", "crates/signing"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ hmac = "0.12"
 landlock = "0.4"
 libc = "0.2"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
