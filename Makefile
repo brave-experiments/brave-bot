@@ -89,7 +89,7 @@ all-platforms: darwin-arm64 darwin-amd64 linux-amd64 linux-arm64 windows-amd64 w
 #
 # rust-objcopy is LLVM-based and handles Mach-O, ELF, and PE alike, so one tool covers
 # every target; the per-target GNU strip binaries are not all present in the image.
-RUST_LIB_DIR = /usr/local/rustup/toolchains/1.85.0-x86_64-unknown-linux-gnu/lib
+RUST_LIB_DIR = /usr/local/rustup/toolchains/1.93.0-x86_64-unknown-linux-gnu/lib
 STRIP_TOOL = $(RUST_LIB_DIR)/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy
 .PHONY: strip
 strip:
@@ -97,7 +97,7 @@ strip:
 		case "$$f" in *.sha256|*SHA256SUMS) continue;; esac; \
 		docker run --rm -v "$(PWD)/dist:/dist" \
 			-e LD_LIBRARY_PATH=$(RUST_LIB_DIR) \
-			ghcr.io/rust-cross/cargo-zigbuild:0.20.0 \
+			ghcr.io/rust-cross/cargo-zigbuild:0.23.0 \
 			$(STRIP_TOOL) --strip-all "/dist/$$(basename $$f)"; \
 	done
 	@echo "stripped:"

@@ -18,7 +18,7 @@ use landlock::{
     path_beneath_rules,
 };
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command};
+use std::process::Command;
 
 /// The Landlock ABI this backend targets. ABI v1 is the widest supported set, so
 /// confinement works on any kernel from 5.13 onwards rather than only the newest.
@@ -212,7 +212,7 @@ mod tests {
             return;
         };
         let err = sandbox
-            .spawn(Command::new("/bin/true"), &SandboxPolicy::strict())
+            .command("/bin/true", &[], &SandboxPolicy::strict())
             .expect_err("must refuse rather than under-enforce");
         assert!(matches!(err, SandboxError::SetupFailed { .. }));
     }
@@ -224,7 +224,7 @@ mod tests {
             .allow_subprocesses()
             .allow_write("/");
         let err = LandlockSandbox
-            .spawn(Command::new("/bin/true"), &policy)
+            .command("/bin/true", &[], &policy)
             .expect_err("must refuse a policy that confines nothing");
         assert!(matches!(err, SandboxError::PolicyTooPermissive));
     }
@@ -241,9 +241,13 @@ mod tests {
             .allow_read("/lib64")
             .allow_read("/bin");
 
-        let mut command = Command::new("/bin/true");
-        command.stdout(Stdio::null()).stderr(Stdio::null());
-        let mut child = sandbox.spawn(command, &policy).expect("should spawn");
+        let mut child = sandbox
+            .command("/bin/true", &[], &policy)
+            .expect("command builds")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
         assert!(child.wait().expect("should wait").success());
     }
 
@@ -263,13 +267,13 @@ mod tests {
         let target = std::path::Path::new("/tmp/bua-landlock-must-not-exist");
         let _ = std::fs::remove_file(target);
 
-        let mut command = Command::new("/usr/bin/touch");
-        command
-            .arg(target)
+        let mut child = sandbox
+            .command("/usr/bin/touch", &[target.display().to_string()], &policy)
+            .expect("command builds")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let mut child = sandbox.spawn(command, &policy).expect("should spawn");
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
         let status = child.wait().expect("should wait");
         assert!(!status.success(), "write should have been denied");
         assert!(!target.exists(), "file was created despite confinement");

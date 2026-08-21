@@ -39,10 +39,10 @@ fn serve(responses: Vec<String>) -> (String, mpsc::Receiver<String>) {
                 if header == "\r\n" || header == "\n" {
                     break;
                 }
-                if let Some((name, value)) = header.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("content-length") {
-                        content_length = value.trim().parse().unwrap_or(0);
-                    }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
                 }
             }
             let mut body = vec![0u8; content_length];
@@ -268,10 +268,10 @@ fn a_redirecting_server_is_revalidated() {
                 if header == "\r\n" || header == "\n" {
                     break;
                 }
-                if let Some((name, value)) = header.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("content-length") {
-                        length = value.trim().parse().unwrap_or(0);
-                    }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap_or(0);
                 }
             }
             let mut body = vec![0u8; length];

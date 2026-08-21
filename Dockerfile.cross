@@ -5,7 +5,7 @@
 # output reproducible rather than dependent on whatever toolchain the host has.
 ARG TARGET=aarch64-apple-darwin
 
-FROM ghcr.io/rust-cross/cargo-zigbuild:0.20.0 AS builder
+FROM ghcr.io/rust-cross/cargo-zigbuild:0.23.0 AS builder
 ARG TARGET
 
 WORKDIR /src
