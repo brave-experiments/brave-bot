@@ -7,9 +7,15 @@
 //!
 //! Writing is present but gated differently. A write destination chosen by the model is
 //! routing derived from whatever it just read, so it is never promoted on its own: the
-//! user is shown the path and body and must approve, and that approval mints a single-use
+//! user is shown the change and must approve, and that approval mints a single-use
 //! endorsement bound to the exact path. A refusal, or a context where nobody can be asked,
 //! means no write.
+//!
+//! `edit_file` exists because that approval has to be readable. A whole-file body cannot be
+//! reviewed on a terminal, so an edit names a passage instead and the user approves a diff.
+//! Locating the passage is an ordinary confined read; only the write that follows needs the
+//! endorsement. Where the passage is ambiguous the edit is refused rather than guessed,
+//! since a guess would mutate bytes that were never shown to anyone.
 
 use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use bua_aichat::protocol::{Tool, ToolCall};

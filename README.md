@@ -80,6 +80,7 @@ The model can read files, list them, and search their contents. Each splits into
 | `list_files` | directory | filenames, untrusted |
 | `search` | pattern, directory | matches, untrusted |
 | `write_file` | path — **needs your approval** | — |
+| `edit_file` | path — **needs your approval** | — |
 
 Filenames are untrusted too — a file can be named to read like an instruction.
 
@@ -88,10 +89,17 @@ is confined to the workspace. Every such choice is recorded as a promotion, so a
 separates the model's decisions from yours.
 
 A write is different: the wrong file destroys work rather than wasting a step. So the model
-never gets to decide one. You are shown the path, whether it overwrites, and the body, and
-your approval is what mints a single-use endorsement bound to that exact path — an
-approval cannot be replayed or redirected. Where nobody can be asked, such as a one-shot
-`bua "..."` run, writes are refused rather than applied unseen.
+never gets to decide one. You are shown the change, and your approval is what mints a
+single-use endorsement bound to that exact path — an approval cannot be replayed or
+redirected. Where nobody can be asked, such as a one-shot `bua "..."` run, writes are
+refused rather than applied unseen.
+
+That approval has to be legible to be worth anything, which is why `edit_file` exists.
+Reviewing a whole file body on a terminal is not review, so an edit names the exact passage
+to replace and you approve a diff of it. If the passage is missing or occurs more than
+once, the edit is refused instead of guessed — a guess would change bytes you were never
+shown. Edits are also refused if the file changed after the model read it, since the diff
+you approved would no longer describe what happens.
 
 Command execution is absent, and not by oversight. Unlike a write, a shell command has no
 separable routing field to endorse: the string is destination and payload at once, so there
