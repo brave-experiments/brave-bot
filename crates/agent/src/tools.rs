@@ -355,47 +355,36 @@ fn write_file<S: Sink, C: Confirmer>(
         return "error: 'contents' is required and must be a string".to_string();
     };
 
-    // The path is routing, so reading it to name a destination is not a content decision.
+    // Reading the proposed values to show a person is not a decision the agent makes on
+    // the model's behalf, so it does not need a gate — but it must not be fed back into
+    // the flow except through the approval below.
     let proposed_path = path.clone().into_parts_for_decoding().0;
+    let proposed_body = contents.clone().into_parts_for_decoding().0;
 
-    // The body's integrity is the turn's, not this value's own label: model output is a
-    // function of everything the turn has observed. A turn that has read only vouched-for
-    // files produces trusted text; one that has seen the web does not.
-    let body = policy.attribute_to_turn("write_file", &contents);
-    let body_label = body.label();
+    let existing = workspace.peek_for_review(&proposed_path);
+    let request = WriteRequest {
+        intent: if existing.is_some() {
+            Intent::Overwrite
+        } else {
+            Intent::Create
+        },
+        existing,
+        path: proposed_path.clone(),
+        contents: proposed_body,
+    };
 
-    if policy.write_needs_approval(&proposed_path, body_label) {
-        let existing = workspace.peek_for_review(&proposed_path);
-        let request = WriteRequest {
-            intent: if existing.is_some() {
-                Intent::Overwrite
-            } else {
-                Intent::Create
-            },
-            existing,
-            path: proposed_path.clone(),
-            contents: {
-                let proof = policy.authorise_display_release("proposed write");
-                body.clone().declassify(&proof)
-            },
-        };
-
-        if confirmer.confirm_write(&request) == Decision::Reject {
-            return format!(
-                "refused: the user did not approve writing {proposed_path}. Do not retry \
-                 the same write; ask what they would prefer."
-            );
-        }
+    if confirmer.confirm_write(&request) == Decision::Reject {
+        return format!(
+            "refused: the user did not approve writing {proposed_path}. Do not retry \
+             the same write; ask what they would prefer."
+        );
     }
 
     // The approval is what makes the path trusted, and it is bound to this exact value.
     policy.issue_grant("file_write", "path", proposed_path.clone());
 
-    match workspace.write_endorsed(policy, &path, &body) {
-        Ok(_) => {
-            policy.reconcile_after_write(&proposed_path, body_label);
-            format!("wrote {proposed_path}")
-        }
+    match workspace.write_endorsed(policy, &path, &contents) {
+        Ok(_) => format!("wrote {proposed_path}"),
         Err(e) => format!("error: {e}"),
     }
 }
@@ -438,69 +427,48 @@ fn edit_file<S: Sink, C: Confirmer>(
         Err(denial) => return format!("refused: {denial}"),
     };
 
-    // Stays labelled. The bytes are never read here: locating the passage is the policy's
-    // decision, because presence and uniqueness are properties of untrusted content.
     let current = match workspace.read(policy, &path) {
-        Ok(contents) => contents,
+        Ok(contents) => {
+            let proof = policy.authorise_content_release("edit_file", "contents");
+            contents.declassify(&proof)
+        }
         Err(e) => return format!("error: {e}"),
     };
 
-    // The passage and its replacement are the model's words, so their integrity is the turn's
-    // rather than the blanket untrusted every argument arrives with. A turn that has read only
-    // vouched-for files is proposing text derived from trusted input; without this the splice
-    // result would always be untrusted and a vouched-for workspace would still prompt.
-    let old_text = policy.attribute_to_turn("edit_file", &old_text);
-    let new_text = policy.attribute_to_turn("edit_file", &new_text);
+    let (old_text, _) = old_text.into_parts_for_decoding();
+    let (new_text, _) = new_text.into_parts_for_decoding();
 
-    let spliced =
-        match policy.splice_content("edit_file", &current, &old_text, &new_text, replace_all) {
-            Ok(spliced) => spliced,
-            // The refusal explains itself to the model without revealing where or how often the
-            // passage appeared beyond the count it needs to recover.
-            Err(denial) => return format!("refused: {denial}"),
-        };
+    let replaced = match crate::replace::replace(&current, &old_text, &new_text, replace_all) {
+        Ok(r) => r,
+        Err(e) => return format!("error: {e}"),
+    };
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
-    let result_label = spliced.contents.label();
+    let request = WriteRequest {
+        path: proposed_path.clone(),
+        contents: replaced.contents.clone(),
+        existing: Some(current.clone()),
+        intent: Intent::Edit,
+    };
 
-    // Whether to ask is decided from provenance, never from the bytes.
-    if policy.write_needs_approval(&proposed_path, result_label) {
-        let request = WriteRequest {
-            path: proposed_path.clone(),
-            // Released for display only: showing a person their own files is what the
-            // approval is for, and a display release cannot feed an effect.
-            contents: {
-                let proof = policy.authorise_display_release("proposed edit");
-                spliced.contents.clone().declassify(&proof)
-            },
-            existing: {
-                let proof = policy.authorise_display_release("file being edited");
-                Some(current.clone().declassify(&proof))
-            },
-            intent: Intent::Edit,
-        };
-
-        if confirmer.confirm_write(&request) == Decision::Reject {
-            return format!(
-                "refused: the user did not approve editing {proposed_path}. Do not retry the \
-                 same edit; ask what they would prefer."
-            );
-        }
+    if confirmer.confirm_write(&request) == Decision::Reject {
+        return format!(
+            "refused: the user did not approve editing {proposed_path}. Do not retry the \
+             same edit; ask what they would prefer."
+        );
     }
 
     policy.issue_grant("file_write", "path", proposed_path.clone());
 
-    let occurrences = spliced.occurrences;
-    // Writing workspace content back into the same workspace releases nothing the user does
-    // not already have. Integrity is untouched, so the trust reconciliation below still sees
-    // whether these bytes were trusted.
-    let body = policy.declassify_for_workspace_write("edit_file", &spliced.contents);
+    let body = Labelled::new(
+        replaced.contents,
+        bua_core::label::Label::untrusted_public(),
+    );
     match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
-        Ok(_) => {
-            // The file now holds what was written, so its recorded trust must say so.
-            policy.reconcile_after_write(&proposed_path, result_label);
-            format!("edited {proposed_path}: {occurrences} replacement(s)")
-        }
+        Ok(_) => format!(
+            "edited {proposed_path}: {} replacement(s)",
+            replaced.occurrences
+        ),
         Err(e) => format!("error: {e}"),
     }
 }

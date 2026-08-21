@@ -137,10 +137,9 @@ impl Workspace {
 
     /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.
     ///
-    /// The contents are private — they are the user's data — and their integrity comes from
-    /// the trust store: trusted if the user vouched for this path, untrusted otherwise. A
-    /// file that received untrusted bytes earlier is recorded as untrusted, so a round trip
-    /// through the filesystem cannot launder anything.
+    /// The contents come back labelled untrusted-private: a workspace file may contain
+    /// anything, including text fetched from the network earlier, and it is the user's
+    /// data.
     ///
     /// Deliberately uncapped, because the callers that need it need all of it: an edit
     /// replaces text in the whole file and compares against it to detect a concurrent
@@ -164,7 +163,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
-        let label = policy.observe_path(Capability::FileRead, &relative)?;
+        let label = policy.observe(Capability::FileRead)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
             path: relative.clone(),
@@ -211,7 +210,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
-        let label = policy.observe_path(Capability::FileRead, &relative)?;
+        let label = policy.observe(Capability::FileRead)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
             path: relative.clone(),
@@ -270,26 +269,18 @@ impl Workspace {
     /// changed in between — another process, the user's editor — the approved diff no
     /// longer describes what would happen, so the write is refused rather than applied to
     /// text nobody reviewed.
-    ///
-    /// The comparison happens in the policy rather than here: both sides are untrusted file
-    /// content, and deciding from them in this crate would be a branch on untrusted data.
-    /// What comes back is a bool, which is not.
     pub fn write_endorsed_if_unchanged<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
         path: &Labelled<String>,
         contents: &Labelled<String>,
-        expected: &Labelled<String>,
+        expected: &str,
     ) -> Result<PathBuf, WorkspaceError> {
         // Checked before the gates so a stale edit is reported as staleness rather than
         // consuming the single-use endorsement.
         let relative = self.peek_relative(path)?;
-        let current = Labelled::new(
-            self.peek_for_review(&relative).unwrap_or_default(),
-            conservative_read_label(),
-        );
-
-        if !policy.contents_unchanged("file_write", &current, expected) {
+        let current = self.peek_for_review(&relative).unwrap_or_default();
+        if current != expected {
             return Err(WorkspaceError::Stale { path: relative });
         }
 
@@ -399,12 +390,9 @@ impl Workspace {
     }
 }
 
-/// The most conservative label workspace content can carry.
-///
-/// A read's actual integrity depends on the trust store, so this is a floor rather than the
-/// answer: used where content is wrapped only to be compared or discarded, and where treating
-/// it as untrusted can only be safe.
-pub fn conservative_read_label() -> Label {
+/// The label a workspace read produces, exposed for callers that need to reason about
+/// it without performing a read.
+pub fn read_label() -> Label {
     Label::untrusted_private()
 }
 

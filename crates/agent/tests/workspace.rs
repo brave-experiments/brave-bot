@@ -38,11 +38,6 @@ fn all_file_capabilities() -> CapabilitySet {
     CapabilitySet::from_iter([Capability::FileRead, Capability::FileWrite])
 }
 
-/// File content as it arrives from a read: untrusted and private.
-fn untrusted(text: &str) -> Labelled<String> {
-    Labelled::new(text.to_string(), Label::untrusted_private())
-}
-
 #[test]
 fn a_trusted_path_can_be_read() {
     let scratch = Scratch::new("read");
@@ -577,7 +572,7 @@ fn an_endorsed_write_is_refused_when_the_file_changed() {
     policy.issue_grant("file_write", "path", "a.txt".to_string());
 
     let error = workspace
-        .write_endorsed_if_unchanged(&mut policy, &path, &body, &untrusted("as read\n"))
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "as read\n")
         .expect_err("a stale edit must be refused");
 
     assert!(
@@ -613,7 +608,7 @@ fn an_endorsed_write_proceeds_when_the_file_is_unchanged() {
     policy.issue_grant("file_write", "path", "a.txt".to_string());
 
     workspace
-        .write_endorsed_if_unchanged(&mut policy, &path, &body, &untrusted("as read\n"))
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "as read\n")
         .expect("an unchanged file may be edited");
 
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
@@ -643,12 +638,12 @@ fn a_stale_write_does_not_consume_the_endorsement() {
 
     std::fs::write(&file, "changed\n").unwrap();
     workspace
-        .write_endorsed_if_unchanged(&mut policy, &path, &body, &untrusted("as read\n"))
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "as read\n")
         .expect_err("stale");
 
     // The same endorsement still authorises a write against what is now on disk.
     workspace
-        .write_endorsed_if_unchanged(&mut policy, &path, &body, &untrusted("changed\n"))
+        .write_endorsed_if_unchanged(&mut policy, &path, &body, "changed\n")
         .expect("the endorsement survived a staleness refusal");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
 }
