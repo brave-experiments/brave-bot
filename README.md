@@ -146,11 +146,10 @@ The security approach here — enforcing information-flow labels at every bounda
 separating routing from content so untrusted text cannot redirect an action — comes from
 research by **Ali Shahin Shamsabadi**, Senior Privacy Researcher at Brave.
 
-It was developed and demonstrated in **SafeHouse**, his research project, which showed
-that indirect prompt injection can be made structurally impossible rather than merely
+It was developed and demonstrated in
+[**SafeHouse**](https://github.com/brave-experiments/safehouse), his research project, which
+showed that indirect prompt injection can be made structurally impossible rather than merely
 unlikely. This repository reimplements that model for a coding agent; the design is his.
-
-(SafeHouse is currently a private repository, so it is not linked here.)
 
 ## License
 
