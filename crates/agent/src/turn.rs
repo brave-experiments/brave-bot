@@ -13,7 +13,7 @@
 //! each turn, resuming a conversation that outlives it.
 
 use bua_aichat::AichatClient;
-use bua_aichat::protocol::{ChatRequest, Message};
+use bua_aichat::protocol::{ChatRequest, Message, ToolCall};
 use bua_config::Config;
 use bua_core::cancel::Cancel;
 use bua_core::capability::{Capability, CapabilitySet};
@@ -431,30 +431,24 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // that cannot see what it did does it again. It did: three whole rewrites of one file
         // in a single turn, each undoing the last.
         //
-        // Labelled from the context that produced it, exactly as a write body is. The
-        // transport labels a reply pessimistically because it knows nothing of where it came
-        // from; the kernel tracked what entered the context and does. Where that context has
-        // met something untrusted, the planner's own words are quarantined like anything else
-        // and it is told which tools it called and nothing more. Still a plain string in a
-        // plain message, so nothing here can be mistaken for a system instruction.
+        // The calls go in the API's own field rather than written out in the text. Described
+        // in prose they become an example of what an assistant turn looks like, and the model
+        // wrote the next one as prose too: a call spelled out in the transcript, and nothing
+        // run. A field is not an example of anything.
+        //
+        // What it said is labelled from the context that produced it, exactly as a write body
+        // is. The transport labels a reply pessimistically because it knows nothing of where it
+        // came from; the kernel tracked what entered the context and does. Where that context
+        // has met something untrusted the words are quarantined like anything else, and the
+        // calls go with them: an argument is as much the model's output as a sentence is.
         let requested: Vec<String> = completion
             .calls
             .iter()
             .map(|c| c.function.name.clone())
             .collect();
-        let account = {
-            let (spoken, _) = completion.content.clone().into_parts_for_decoding();
-            let mut account = spoken;
-            for call in &completion.calls {
-                // Appended unconditionally, separator and all: whether there is anything
-                // before it is a question about the text, and the driver does not ask those.
-                account.push_str(&format!(
-                    "\n\n(you called {} with {})",
-                    call.function.name,
-                    call.function.arguments.as_deref().unwrap_or("{}")
-                ));
-            }
-            policy.label_model_output("chat", account)
+        let spoken = {
+            let (text, _) = completion.content.clone().into_parts_for_decoding();
+            policy.label_model_output("chat", text)
         };
         let slot = conversation.next_reference();
         let presented = policy
@@ -462,18 +456,29 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 "assistant",
                 slot,
                 "your own last turn",
-                &account,
+                &spoken,
                 conversation.quarantine(),
             )
             .map_err(|d| TurnError::Precommit(d.to_string()))?;
-        conversation.push(Message::assistant(match &presented {
-            Presentation::Visible(text) => text.clone(),
-            Presentation::Quarantined(reference) => format!(
+
+        // A call with no id cannot be answered by id, so the whole round falls back to prose
+        // rather than sending calls nothing can be matched to.
+        let replayed: Option<Vec<_>> = match &presented {
+            Presentation::Visible(_) => completion.calls.iter().map(ToolCall::as_request).collect(),
+            Presentation::Quarantined(_) => None,
+        };
+
+        conversation.push(match (&presented, &replayed) {
+            (Presentation::Visible(text), Some(calls)) => {
+                Message::assistant_calling(text.clone(), calls.clone())
+            }
+            (Presentation::Visible(text), None) => Message::assistant(text.clone()),
+            (Presentation::Quarantined(reference), _) => Message::assistant(format!(
                 "(you called: {}. What you said is not shown back to you. {})",
                 requested.join(", "),
                 reference.describe()
-            ),
-        }));
+            )),
+        });
 
         for call in &completion.calls {
             // Checked per call, because a tool may write. Stopping here means the remaining
@@ -506,7 +511,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 )
                 .map_err(|d| TurnError::Precommit(d.to_string()))?;
 
-            conversation.push(Message::user(match &presented {
+            let body = match &presented {
                 Presentation::Visible(text) => {
                     format!("Result of {}:\n\n{text}", output.tool)
                 }
@@ -515,7 +520,15 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     output.tool,
                     reference.describe()
                 ),
-            }));
+            };
+
+            // A result answers the call it belongs to by id where the round replayed calls at
+            // all. Where it did not, the result is a plain message, as everything here was
+            // before: a conversation may hold both shapes, so long as no call goes unanswered.
+            conversation.push(match call.id.as_deref().filter(|_| replayed.is_some()) {
+                Some(id) => Message::tool_result(id, body),
+                None => Message::user(body),
+            });
         }
     };
 

@@ -2843,17 +2843,50 @@ fn a_round_shows_the_model_what_it_asked_for() {
     let _first = received.recv().expect("a first request");
     let second = received.recv().expect("a second request");
 
+    let body: serde_json::Value = serde_json::from_str(&second).expect("a json request");
+    let messages = body["messages"].as_array().expect("messages");
+
+    let assistant = messages
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("the assistant's own turn was dropped");
+    assert_eq!(assistant["content"], "I'll create the page first.");
+
+    // The call goes in the field the API reads, not written out in the text. Spelled out in
+    // prose it becomes an example of what an assistant turn looks like, and the model writes
+    // the next one as prose too: a call in the transcript, and nothing run.
+    let calls = assistant["tool_calls"]
+        .as_array()
+        .expect("the call was not replayed in the API's own field");
+    assert_eq!(calls[0]["function"]["name"], "write_file");
+    let arguments = calls[0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments");
     assert!(
-        second.contains("I'll create the page first."),
-        "the model's own account of what it was doing was dropped: {second}"
+        arguments.contains("index.html") && arguments.contains("the whole game"),
+        "the model was not shown what it wrote: {arguments}"
     );
     assert!(
-        second.contains("index.html"),
-        "the model was not shown which file it wrote: {second}"
+        !assistant["content"]
+            .as_str()
+            .expect("content")
+            .contains("write_file"),
+        "the call was written out in the text as well: {assistant}"
     );
+
+    // And the result answers that call by its id, rather than arriving as something the user
+    // said, which is a result that can be read as an instruction from them.
+    let result = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the result did not answer the call");
+    assert_eq!(result["tool_call_id"], calls[0]["id"]);
     assert!(
-        second.contains("the whole game"),
-        "the model was not shown what it wrote: {second}"
+        result["content"]
+            .as_str()
+            .expect("content")
+            .contains("wrote index.html"),
+        "the result said nothing about what happened: {result}"
     );
 }
 
@@ -2899,4 +2932,60 @@ fn a_round_is_not_read_back_once_the_session_has_met_untrusted_content() {
         second.contains("read_file"),
         "the model was not even told what it had called: {second}"
     );
+}
+
+/// The exact request the server is sent, so the shape can be read rather than inferred. A
+/// malformed one is refused whole, and the two rules that matter are that an assistant turn
+/// carrying calls is followed by a result for each, and that each result names its call.
+#[test]
+fn a_round_is_sent_in_the_shape_the_api_defines() {
+    let scratch = Scratch::new("round-shape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        two_tool_requests(
+            ("read_file", r#"{"path":"a.txt"}"#),
+            ("list_files", r#"{"directory":"."}"#),
+        ),
+        reply_with("done"),
+    ]);
+    std::fs::write(scratch.path.join("a.txt"), "contents\n").unwrap();
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look around"),
+        &mut bua_agent::RefuseWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("a first request");
+    let second: serde_json::Value =
+        serde_json::from_str(&received.recv().expect("a second request")).expect("json");
+    let messages = second["messages"].as_array().expect("messages");
+
+    let position = messages
+        .iter()
+        .position(|m| m["tool_calls"].is_array())
+        .expect("no assistant turn carried calls");
+    let ids: Vec<&str> = messages[position]["tool_calls"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(|call| call["id"].as_str().expect("every call has an id"))
+        .collect();
+    assert_eq!(ids.len(), 2, "both calls of the round must be replayed");
+
+    // Every call answered, in order, immediately after the turn that asked for them.
+    for (offset, id) in ids.iter().enumerate() {
+        let answer = &messages[position + 1 + offset];
+        assert_eq!(answer["role"], "tool");
+        assert_eq!(answer["tool_call_id"], *id);
+    }
 }

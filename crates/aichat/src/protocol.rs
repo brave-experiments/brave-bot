@@ -12,35 +12,89 @@ pub enum Role {
     System,
     User,
     Assistant,
+    /// The result of a call the assistant asked for.
+    ///
+    /// Distinct from a user message on purpose: a result that arrives as something the user
+    /// said is a result that can be read as an instruction from them.
+    Tool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
+    /// Calls this assistant turn asked for, in the API's own field.
+    ///
+    /// Tool calls belong here rather than written out in `content`. Described in prose they
+    /// become an example of what an assistant turn looks like, and a model with such an example
+    /// in front of it writes the next one as prose too, which is a call that never runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// Which call a [`Role::Tool`] message answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::System,
-            content: content.into(),
-        }
+        Self::plain(Role::System, content)
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::User,
-            content: content.into(),
-        }
+        Self::plain(Role::User, content)
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
+        Self::plain(Role::Assistant, content)
+    }
+
+    /// An assistant turn that asked for calls, with the calls in the field the API reads.
+    pub fn assistant_calling(content: impl Into<String>, calls: Vec<ToolCallRequest>) -> Self {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            tool_calls: Some(calls),
+            tool_call_id: None,
         }
     }
+
+    /// The result of one call, answering it by id.
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
+        }
+    }
+
+    fn plain(role: Role, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+}
+
+/// A call being sent back to the model as part of the conversation.
+///
+/// Separate from [`ToolCall`], which is the shape one arrives in: what arrives may be missing
+/// its arguments, and what is sent may not.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ToolCallRequest {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub function: ToolCallRequestFunction,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ToolCallRequestFunction {
+    pub name: String,
+    /// A JSON object, as a string, which is how the API carries it in both directions.
+    pub arguments: String,
 }
 
 /// A tool the model may call, in OpenAI's function-tool shape.
@@ -146,6 +200,25 @@ pub struct ToolCallFunction {
 }
 
 impl ToolCall {
+    /// The same call, in the shape it is sent back in.
+    ///
+    /// `None` where the server gave the call no id. An id is what a result is matched to, so a
+    /// call without one cannot be replayed as a call at all.
+    pub fn as_request(&self) -> Option<ToolCallRequest> {
+        Some(ToolCallRequest {
+            id: self.id.clone()?,
+            kind: "function",
+            function: ToolCallRequestFunction {
+                name: self.function.name.clone(),
+                arguments: self
+                    .function
+                    .arguments
+                    .clone()
+                    .unwrap_or_else(|| "{}".to_string()),
+            },
+        })
+    }
+
     /// Parse the arguments.
     ///
     /// Parsing changes representation, not trust: the values remain model-supplied and

@@ -21,6 +21,8 @@
 //!   an earlier turn would have. See [`bua_core::policy::Policy::resuming`].
 
 use bua_aichat::protocol::Message;
+#[cfg(test)]
+use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
 use bua_core::label::Integrity;
 use bua_core::slot::{SlotId, SlotStore};
 
@@ -75,11 +77,44 @@ impl Conversation {
     }
 
     /// The whole exchange with the system prompt in front, as one request's messages.
+    ///
+    /// Any call left unanswered is answered here, saying it did not run. A turn can end between
+    /// a call and its result, by cancellation or by failure, and a round that announced a call
+    /// nothing ever answered is a malformed request: the next turn would be refused by the
+    /// server rather than merely missing something. Filling the gap keeps the record of what
+    /// was attempted, which is the reason the conversation survives a failed turn at all.
     pub fn with_system(&self, system: &str) -> Vec<Message> {
         let mut messages = Vec::with_capacity(self.messages.len() + 1);
         messages.push(Message::system(system));
-        messages.extend(self.messages.iter().cloned());
+
+        for (index, message) in self.messages.iter().enumerate() {
+            messages.push(message.clone());
+
+            let Some(calls) = &message.tool_calls else {
+                continue;
+            };
+            for call in calls {
+                if !self.answered(index, &call.id) {
+                    messages.push(Message::tool_result(
+                        call.id.clone(),
+                        "(this call did not run: the turn ended first)",
+                    ));
+                }
+            }
+        }
+
         messages
+    }
+
+    /// Whether the round beginning at `index` answered the call with this id.
+    ///
+    /// Only the run of results immediately after it counts, since that is where the answers to
+    /// a round belong and where a server looks for them.
+    fn answered(&self, index: usize, id: &str) -> bool {
+        self.messages[index + 1..]
+            .iter()
+            .take_while(|message| message.tool_call_id.is_some())
+            .any(|message| message.tool_call_id.as_deref() == Some(id))
     }
 
     /// What the conversation has met, for the turn resuming it.
@@ -156,6 +191,57 @@ mod tests {
         let first = conversation.next_reference();
         let second = conversation.next_reference();
         assert_ne!(first, second);
+    }
+
+    /// A turn can be cancelled between a call and its result. The round still belongs in the
+    /// record, but a call nothing answers makes the whole next request malformed, so the gap is
+    /// filled rather than left for a server to refuse.
+    #[test]
+    fn a_call_nothing_answered_is_answered_before_it_is_sent() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::assistant_calling(
+            "writing it now",
+            vec![ToolCallRequest {
+                id: "call-1".to_string(),
+                kind: "function",
+                function: ToolCallRequestFunction {
+                    name: "write_file".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }],
+        ));
+
+        let sent = conversation.with_system("be careful");
+        let answer = sent.last().expect("a message");
+        assert_eq!(answer.tool_call_id.as_deref(), Some("call-1"));
+        assert!(answer.content.contains("did not run"));
+    }
+
+    /// And a call that was answered is not answered twice, which would read as the tool having
+    /// run and then not run.
+    #[test]
+    fn a_call_that_was_answered_is_left_alone() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::assistant_calling(
+            "writing it now",
+            vec![ToolCallRequest {
+                id: "call-1".to_string(),
+                kind: "function",
+                function: ToolCallRequestFunction {
+                    name: "write_file".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }],
+        ));
+        conversation.push(Message::tool_result("call-1", "wrote index.html"));
+
+        let sent = conversation.with_system("be careful");
+        let answers: Vec<_> = sent
+            .iter()
+            .filter(|m| m.tool_call_id.as_deref() == Some("call-1"))
+            .collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].content, "wrote index.html");
     }
 
     #[test]
