@@ -10,6 +10,10 @@
 //! permitted host could redirect to a denied one and the gate would only ever have
 //! seen the first URL.
 //!
+//! Timeouts bound each phase of a request separately rather than the call as a whole, so a
+//! reply that takes a long time to write is not confused with a connection that has died. See
+//! [`Timeouts`].
+//!
 //! Responses are size-capped and content-type filtered. That is resource hygiene, not
 //! content inspection: the bytes are never parsed to decide anything, they are handed
 //! back for the caller to label.
@@ -27,7 +31,45 @@ pub const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 /// Redirect hops followed before giving up.
 pub const MAX_REDIRECTS: usize = 5;
 
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long each part of a request may take.
+///
+/// Deliberately not one end-to-end bound. A single global timeout counts the time the model
+/// spends writing its reply, so a long answer is indistinguishable from a stalled connection and
+/// is cut off for being long. Split up, the two questions can be asked separately: a reply is
+/// allowed to take a while, and a connection that has stopped delivering it is not.
+#[derive(Debug, Clone, Copy)]
+pub struct Timeouts {
+    /// Resolving the host name.
+    pub resolve: Duration,
+    /// Opening the socket, including the TLS handshake.
+    pub connect: Duration,
+    /// Sending the request and its body.
+    pub send: Duration,
+    /// The whole reply, from the request going out to the last byte of the body.
+    ///
+    /// Generous, because this is where a model thinking and then writing a long answer spends
+    /// its time, and none of that is a fault. It is also the only bound on the wait before the
+    /// reply starts, since nothing has arrived yet for a gap to be measured between.
+    pub reply: Duration,
+    /// The longest gap between two pieces of a reply that is still arriving.
+    ///
+    /// This is the one that catches a dead connection, which is what a closed laptop lid leaves
+    /// behind: the socket is gone and nothing on it says so, so a read would otherwise wait for
+    /// bytes that are never coming.
+    pub idle: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            resolve: Duration::from_secs(15),
+            connect: Duration::from_secs(30),
+            send: Duration::from_secs(60),
+            reply: Duration::from_secs(600),
+            idle: Duration::from_secs(120),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum EgressError {
@@ -203,11 +245,27 @@ impl Default for Egress {
 
 impl Egress {
     pub fn new() -> Self {
+        Self::with_timeouts(Timeouts::default())
+    }
+
+    /// As [`Egress::new`], with different bounds on how long a request may take.
+    ///
+    /// Exists so the bounds can be exercised in a test at a scale a test can wait for. Nothing in
+    /// the product changes them: the defaults are the product's.
+    pub fn with_timeouts(timeouts: Timeouts) -> Self {
         let config = ureq::Agent::config_builder()
             // Redirects are handled here so each hop can be revalidated; letting the
             // client follow them silently would defeat the gate.
             .max_redirects(0)
-            .timeout_global(Some(TIMEOUT))
+            .timeout_resolve(Some(timeouts.resolve))
+            .timeout_connect(Some(timeouts.connect))
+            .timeout_send_request(Some(timeouts.send))
+            .timeout_send_body(Some(timeouts.send))
+            // ureq keeps checking this one while the body arrives, so it bounds the whole
+            // reply rather than only its headers.
+            .timeout_recv_response(Some(timeouts.reply))
+            // Recomputed on every read, which is what makes it a gap rather than a total.
+            .timeout_recv_body(Some(timeouts.idle))
             .build();
         Self {
             agent: config.into(),

@@ -8,10 +8,11 @@ use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::{Event, RecordingSink};
 use bua_core::label::Label;
 use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_net::{Egress, Request};
+use bua_net::{Egress, EgressError, Request, Timeouts};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
+use std::time::Duration;
 
 /// A single-shot server that replies with a canned sequence, one response per
 /// connection, then stops.
@@ -246,5 +247,188 @@ fn non_http_schemes_never_reach_the_network() {
             }
         )),
         "a non-http url should not reach the network gate"
+    );
+}
+
+/// A server that sends its headers at once and then writes the body a piece at a time.
+///
+/// This is what a model streaming a long answer looks like on the wire, and what a single
+/// end-to-end timeout could not tell apart from a stalled connection.
+fn serve_trickled(pieces: Vec<&'static str>, gap: Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("addr").port();
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            line.clear();
+        }
+
+        let length: usize = pieces.iter().map(|p| p.len()).sum();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.flush();
+
+        for piece in pieces {
+            thread::sleep(gap);
+            let _ = stream.write_all(piece.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    format!("http://127.0.0.1:{port}")
+}
+
+/// A server that accepts the connection and then says nothing at all.
+fn serve_silence() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("addr").port();
+
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        // Held open, unanswered, past anything the test waits for: dropping it would itself be
+        // an answer of a kind, and the point is a connection that says nothing at all.
+        thread::sleep(Duration::from_secs(60));
+        drop(stream);
+    });
+
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The bug a closed laptop lid exposed. A reply that is still being written takes longer than
+/// any one phase of the request allows, and cutting it off for that is cutting off a working
+/// request for working slowly.
+#[test]
+fn a_reply_still_arriving_is_not_cut_off_for_taking_longer_than_it_took_to_start() {
+    let base = serve_trickled(
+        vec!["one ", "two ", "three ", "four ", "five"],
+        Duration::from_millis(120),
+    );
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy begins");
+
+    // The reply takes several times longer than the longest gap allowed within it, which is
+    // precisely what a single end-to-end bound cannot express.
+    let egress = Egress::with_timeouts(Timeouts {
+        idle: Duration::from_millis(400),
+        reply: Duration::from_secs(10),
+        ..Timeouts::default()
+    });
+
+    let response = egress
+        .fetch(&mut policy, Request::get(&base), Label::untrusted_public())
+        .expect("a slowly written body still arrives");
+
+    assert_eq!(response.status, 200);
+    assert!(!response.truncated);
+    let (body, _) = response.body.into_parts_for_decoding();
+    assert_eq!(String::from_utf8_lossy(&body), "one two three four five");
+}
+
+/// The other half of the same property: a request that is getting nowhere still ends.
+#[test]
+fn a_reply_that_never_comes_gives_up() {
+    let base = serve_silence();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy begins");
+
+    let egress = Egress::with_timeouts(Timeouts {
+        reply: Duration::from_millis(300),
+        ..Timeouts::default()
+    });
+
+    let error = egress
+        .fetch(&mut policy, Request::get(&base), Label::untrusted_public())
+        .expect_err("a server that never answers is not waited on forever");
+
+    assert!(
+        matches!(error, EgressError::Transport { .. }),
+        "expected a transport failure, got {error:?}"
+    );
+}
+
+/// A server that starts a reply and then stops, without closing the connection.
+///
+/// The shape of a machine that went to sleep mid-request: the bytes stop, and nothing at either
+/// end says the connection is over.
+fn serve_stalled_body() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("addr").port();
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            line.clear();
+        }
+
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(b"the beginning of an answer");
+        let _ = stream.flush();
+        thread::sleep(Duration::from_secs(60));
+    });
+
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The gap bound is what makes a dead connection detectable at all, and it has to be measured
+/// between pieces rather than from the start, or it would be the end-to-end bound again.
+#[test]
+fn a_reply_that_stops_arriving_is_given_up_on() {
+    let base = serve_stalled_body();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy begins");
+
+    let egress = Egress::with_timeouts(Timeouts {
+        idle: Duration::from_millis(300),
+        reply: Duration::from_secs(30),
+        ..Timeouts::default()
+    });
+
+    let mut stream = egress
+        .fetch_streaming(&mut policy, Request::get(&base), Label::untrusted_public())
+        .expect("the reply starts arriving");
+
+    let error = loop {
+        match stream.next_chunk() {
+            Ok(Some(_)) => continue,
+            Ok(None) => panic!("the body should not have ended cleanly"),
+            Err(error) => break error,
+        }
+    };
+
+    assert!(
+        matches!(error, EgressError::Transport { .. }),
+        "expected a transport failure, got {error:?}"
     );
 }
