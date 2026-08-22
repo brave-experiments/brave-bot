@@ -13,7 +13,7 @@ use bua_agent::diff::Change;
 use bua_agent::report::Activity;
 use bua_core::event::{Event, Role};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
@@ -164,6 +164,12 @@ pub fn draw(frame: &mut Frame, session: &Session) {
     draw_transcript(frame, areas[0], session);
     draw_input(frame, areas[1], session);
     draw_hint(frame, areas[2], session);
+
+    // Last, over everything: the selection is of the screen rather than of any one widget, and
+    // the user swept it over whatever happened to be there.
+    if let Some(selection) = &session.selection {
+        crate::select::highlight(frame.buffer_mut(), selection);
+    }
 }
 
 /// Build the transcript as lines, so height is known before rendering.
@@ -426,13 +432,37 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  scroll to look back  ·  ctrl-c exit  ·  confinement {}",
+                "  {trail}  ·  drag to copy  ·  scroll to look back  ·  ctrl-c exit  ·  \
+                 confinement {}",
                 session.confinement
             ),
             dim(),
         ))),
         area,
     );
+
+    // A copy is silent otherwise, and a clipboard that may or may not have taken something is
+    // worse than no clipboard: the user pastes to find out. Right-aligned, out of the way of the
+    // hints, where the answer to "did that work" belongs.
+    if let Some(characters) = session.copied {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{} to clipboard  ", tally(characters, "char", "chars")),
+                Style::default().fg(Color::Cyan),
+            )))
+            .alignment(Alignment::Right),
+            area,
+        );
+    }
+}
+
+/// A count with the right noun, so a line does not read "1 chars".
+fn tally(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +585,43 @@ mod tests {
     }
 
     /// Confinement belongs on screen at all times, not only in doctor.
+    /// A copy is otherwise silent, and a clipboard that may or may not have taken something is
+    /// worse than none: the user pastes somewhere to find out whether it worked.
+    #[test]
+    fn a_copy_says_how_much_it_took() {
+        let mut session = Session::new("kernel-enforced");
+        session.copied = Some(106);
+        assert!(
+            rendered(&session).contains("106 chars to clipboard"),
+            "the copy was not reported"
+        );
+    }
+
+    #[test]
+    fn a_copy_of_one_character_reads_naturally() {
+        let mut session = Session::new("kernel-enforced");
+        session.copied = Some(1);
+        assert!(rendered(&session).contains("1 char to clipboard"));
+    }
+
+    /// The highlight is painted over the finished frame, so what is drawn under it keeps its own
+    /// colours and only the background says what is selected.
+    #[test]
+    fn a_selection_is_drawn_over_whatever_it_covers() {
+        let mut session = Session::new("kernel-enforced");
+        session.begin_selection(0, 0);
+        session.extend_selection(0, 5);
+
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, &session))
+            .expect("draw succeeds");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((0, 0)).expect("cell").bg, Color::Blue);
+        assert_ne!(buffer.cell((6, 0)).expect("cell").bg, Color::Blue);
+    }
+
     #[test]
     fn the_hint_line_reports_confinement() {
         let session = Session::new("kernel-enforced");

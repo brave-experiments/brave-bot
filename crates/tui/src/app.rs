@@ -21,7 +21,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as TermEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    Event as TermEvent, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -33,6 +33,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::render;
+use crate::select;
 use crate::state::{Session, Status};
 
 /// How long to wait for a key before redrawing. Short enough that a status change appears
@@ -51,6 +52,8 @@ pub enum Action {
     Submit(String),
     /// Stop the turn in flight.
     Cancel,
+    /// Take what the selection covers, which needs the screen as it was last drawn.
+    Copy,
     Quit,
 }
 
@@ -154,6 +157,10 @@ pub fn handle_paste(session: &mut Session, text: &str) -> Action {
 /// Interpret a mouse event.
 ///
 /// The wheel is what most people reach for first, so it scrolls without any modifier.
+///
+/// Dragging selects. Capturing the mouse for the wheel is what took the terminal's own selection
+/// away, so the drag that would have highlighted a line arrives here instead, and answering it
+/// is the only way a user gets to copy anything.
 pub fn handle_mouse(session: &mut Session, mouse: MouseEvent) -> Action {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
@@ -164,8 +171,58 @@ pub fn handle_mouse(session: &mut Session, mouse: MouseEvent) -> Action {
             session.scroll_down(3);
             Action::Redraw
         }
+        MouseEventKind::Down(MouseButton::Left) => {
+            session.begin_selection(mouse.row, mouse.column);
+            Action::Redraw
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            session.extend_selection(mouse.row, mouse.column);
+            Action::Redraw
+        }
+        MouseEventKind::Up(MouseButton::Left) => Action::Copy,
         _ => Action::None,
     }
+}
+
+/// Take what the selection covers and put it on the clipboard.
+///
+/// What the user swept over is what they saw: wrapped, scrolled and trimmed exactly as it was
+/// drawn. So it is read back off a frame rather than out of the transcript, which would have to
+/// be laid out a second time to say what any of it looked like.
+///
+/// Drawn again to get one. A finished draw resets the buffer the next one will be built in, so
+/// the frame that drew the screen is the only place the screen can be read from.
+///
+/// A click that swept over nothing just puts the selection away.
+fn copy_selection(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+) -> io::Result<()> {
+    let Some(selection) = session.selection else {
+        return Ok(());
+    };
+    if selection.is_empty() {
+        session.clear_selection();
+        return Ok(());
+    }
+
+    let text = {
+        let completed = terminal
+            .draw(|frame| render::draw(frame, session))
+            .map_err(io::Error::other)?;
+        select::text(completed.buffer, &selection)
+    };
+
+    // Nothing but the padding between widgets, which is not something to put on a clipboard and
+    // not something to claim to have copied either.
+    if text.is_empty() {
+        return Ok(());
+    }
+
+    if crate::clipboard::copy(&text) {
+        session.note_copied(text.chars().count());
+    }
+    Ok(())
 }
 
 /// Run the interface until the user leaves.
@@ -248,6 +305,7 @@ fn event_loop(
 
         match action {
             Action::Quit => return Ok(()),
+            Action::Copy => copy_selection(terminal, &mut session)?,
             Action::Submit(prompt) => {
                 // Both are threaded through: a turn that writes untrusted data into a trusted
                 // path records that, and the next turn must honour it, and a turn that has been
@@ -335,14 +393,22 @@ fn run_turn_animated(
             .draw(|frame| render::draw(frame, session))
             .map_err(io::Error::other)?;
 
-        // Keys are polled here rather than in the outer loop, which is blocked for the duration
-        // of the turn. Without this the interface would take no input at all while working.
-        if event::poll(Duration::ZERO)?
-            && let TermEvent::Key(key) = event::read()?
-            && wants_cancel(key)
-        {
-            cancel.cancel();
-            session.note("cancelling…");
+        // Input is polled here rather than in the outer loop, which is blocked for the duration
+        // of the turn. Without this the interface would take none at all while working, and a
+        // long turn is exactly when someone wants to copy what has appeared so far.
+        if event::poll(Duration::ZERO)? {
+            match event::read()? {
+                TermEvent::Key(key) if wants_cancel(key) => {
+                    cancel.cancel();
+                    session.note("cancelling…");
+                }
+                TermEvent::Mouse(mouse) => {
+                    if handle_mouse(session, mouse) == Action::Copy {
+                        copy_selection(terminal, session)?;
+                    }
+                }
+                _ => {}
+            }
         }
 
         match from_worker.recv_timeout(FRAME) {
@@ -447,6 +513,71 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn drag(kind: MouseEventKind, row: u16, column: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Capturing the mouse for the wheel took the terminal's own selection away, so a drag has
+    /// to select here or a user cannot copy a line of their own transcript at all.
+    #[test]
+    fn dragging_selects_and_releasing_asks_for_the_copy() {
+        let mut session = Session::new("none");
+
+        assert_eq!(
+            handle_mouse(
+                &mut session,
+                drag(MouseEventKind::Down(MouseButton::Left), 3, 4)
+            ),
+            Action::Redraw
+        );
+        assert_eq!(
+            handle_mouse(
+                &mut session,
+                drag(MouseEventKind::Drag(MouseButton::Left), 3, 20)
+            ),
+            Action::Redraw
+        );
+        assert_eq!(
+            handle_mouse(
+                &mut session,
+                drag(MouseEventKind::Up(MouseButton::Left), 3, 20)
+            ),
+            Action::Copy
+        );
+
+        let selection = session.selection.expect("nothing was selected");
+        assert!(!selection.is_empty());
+        assert!(
+            selection.covers(3, 10),
+            "the sweep did not cover its middle"
+        );
+    }
+
+    /// Selecting has nothing to do with the turn: what is on the screen is already there, and a
+    /// long turn is exactly when someone wants to copy part of it.
+    #[test]
+    fn selecting_works_while_a_turn_is_running() {
+        let mut session = Session::new("none");
+        session.type_char('x');
+        session.submit();
+        assert_eq!(session.status, Status::Working);
+
+        handle_mouse(
+            &mut session,
+            drag(MouseEventKind::Down(MouseButton::Left), 1, 0),
+        );
+        handle_mouse(
+            &mut session,
+            drag(MouseEventKind::Drag(MouseButton::Left), 1, 5),
+        );
+        assert!(session.selection.is_some());
     }
 
     /// The bug this exists for: a prompt copied from somewhere else usually ends in a newline,

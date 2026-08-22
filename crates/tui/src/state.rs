@@ -122,6 +122,13 @@ pub struct Session {
     pub tokens: u64,
     /// Prompts already sent, for recall with the arrow keys.
     pub history: crate::history::History,
+    /// What the mouse is sweeping over, or what it last swept over.
+    ///
+    /// Kept after the button comes up, so a user can see what they copied rather than watching
+    /// it vanish at the moment it is taken.
+    pub selection: Option<crate::select::Selection>,
+    /// How much the last copy took, until the next thing happens.
+    pub copied: Option<usize>,
     /// Tokens the model has written during the turn in flight.
     ///
     /// Reset when a turn starts, since it measures the reply being written now. The session total
@@ -169,6 +176,8 @@ impl Session {
             turns: 0,
             tokens: 0,
             history: crate::history::History::new(),
+            selection: None,
+            copied: None,
             written: 0,
             todos: Vec::new(),
             phase: None,
@@ -299,6 +308,33 @@ impl Session {
             self.history.leave();
             self.input.push(c);
         }
+    }
+
+    /// Begin sweeping a selection where the button went down.
+    ///
+    /// Allowed while a turn runs: reading and copying what is already on the screen changes
+    /// nothing about the turn, and a long turn is exactly when someone wants to.
+    pub fn begin_selection(&mut self, row: u16, column: u16) {
+        self.selection = Some(crate::select::Selection::started_at(row, column));
+        self.copied = None;
+    }
+
+    /// Follow the pointer with the loose end of the selection.
+    pub fn extend_selection(&mut self, row: u16, column: u16) {
+        if let Some(selection) = &mut self.selection {
+            selection.extend_to(row, column);
+        }
+    }
+
+    /// Forget the selection, after a click that swept over nothing.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+        self.copied = None;
+    }
+
+    /// Record what a copy took, for the line that reports it.
+    pub fn note_copied(&mut self, characters: usize) {
+        self.copied = Some(characters);
     }
 
     /// Insert pasted text into the input.

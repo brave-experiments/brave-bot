@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Already in the tree for the credential protocol; here it encodes the clipboard escape
+# sequence, which is base64 by specification.
+base64 = { workspace = true }
 bua-agent = { path = "../agent" }
 bua-config = { path = "../config" }
 bua-core = { path = "../core" }

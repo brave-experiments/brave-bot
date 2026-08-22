@@ -374,6 +374,7 @@ dependencies = [
 name = "bua-tui"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bua-agent",
  "bua-config",
  "bua-core",

@@ -5,12 +5,14 @@
 //! conversation history can never become routing for a later one.
 
 pub mod app;
+pub mod clipboard;
 pub mod confirm;
 pub mod history;
 pub mod indicator;
 pub mod markdown;
 pub mod remote_confirm;
 pub mod render;
+pub mod select;
 pub mod state;
 pub mod store;
 pub mod trust_prompt;
