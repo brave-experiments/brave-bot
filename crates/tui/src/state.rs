@@ -310,6 +310,26 @@ impl Session {
         }
     }
 
+    /// Fill the transcript from a conversation resumed off disk.
+    ///
+    /// What the model can see is what the user is shown, which is the honest thing to draw: a
+    /// resumed session that displayed more than it had would invite the user to refer to
+    /// something the model has no record of.
+    pub fn replay(&mut self, conversation: &bua_agent::Conversation, title: &str) {
+        use bua_agent::conversation::Said;
+
+        self.note(format!("resumed session: {title}"));
+        for said in conversation.recounted() {
+            match said {
+                Said::User(text) => {
+                    self.turns += 1;
+                    self.transcript.push(Entry::user(text));
+                }
+                Said::Assistant(text) => self.transcript.push(Entry::assistant(text, Vec::new())),
+            }
+        }
+    }
+
     /// Begin sweeping a selection where the button went down.
     ///
     /// Allowed while a turn runs: reading and copying what is already on the screen changes

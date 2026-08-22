@@ -285,6 +285,7 @@ dependencies = [
  "bua-core",
  "bua-net",
  "bua-skus",
+ "serde",
  "serde_json",
 ]
 
@@ -376,11 +377,14 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bua-agent",
+ "bua-aichat",
  "bua-config",
  "bua-core",
  "bua-net",
  "bua-sandbox",
  "ratatui",
+ "serde",
+ "serde_json",
  "unicode-width",
 ]
 

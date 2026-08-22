@@ -229,8 +229,25 @@ fn copy_selection(
     Ok(())
 }
 
+/// What a session begins with.
+#[derive(Debug, Default)]
+pub enum Start {
+    /// A new session, with nothing behind it.
+    #[default]
+    Fresh,
+    /// Ask which of this directory's sessions to pick up, if there are any.
+    Choose,
+    /// A session read back off disk, continuing where it left off.
+    Resuming(Box<crate::sessions::Record>),
+}
+
 /// Run the interface until the user leaves.
-pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::Result<()> {
+pub fn run(
+    config: &Config,
+    workspace: &Workspace,
+    confinement: String,
+    start: Start,
+) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     // Mouse capture is what makes the wheel scroll the transcript. It costs the
@@ -255,7 +272,17 @@ pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::R
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let result = event_loop(&mut terminal, config, workspace, confinement);
+    // Asked before the session begins, so what it starts with is settled before anything is
+    // drawn for it. Choosing nothing is an ordinary session rather than an error.
+    let start = match start {
+        Start::Choose => match crate::resume::choose(&mut terminal, workspace.root()) {
+            Some(record) => Start::Resuming(Box::new(record)),
+            None => Start::Fresh,
+        },
+        chosen => chosen,
+    };
+
+    let result = event_loop(&mut terminal, config, workspace, confinement, start);
 
     // Restore the terminal even if the loop failed: leaving a user in raw mode on an
     // alternate screen is worse than the original error.
@@ -278,13 +305,29 @@ fn event_loop(
     config: &Config,
     workspace: &Workspace,
     confinement: String,
+    start: Start,
 ) -> io::Result<()> {
     // The one place persistence is turned on: history in ~/.bua outlives the session.
     let mut session = Session::new(confinement).with_stored_history();
 
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
-    // than with nothing, so the user can say "try that again" and be understood.
-    let mut conversation = Conversation::new();
+    // than with nothing, so the user can say "try that again" and be understood. A resumed
+    // session begins with an exchange that outlived the process it happened in.
+    let (mut conversation, mut stored) = match start {
+        // Already answered before the loop was entered: the picker runs once, in `run`.
+        Start::Fresh | Start::Choose => (
+            Conversation::new(),
+            crate::sessions::Handle::begin(workspace.root()),
+        ),
+        Start::Resuming(record) => {
+            let handle = crate::sessions::Handle::resuming(workspace.root(), &record);
+            let conversation = Conversation::restored(record.conversation.clone());
+            // Shown before anything else, because a session that silently continues something
+            // the user cannot see is one they will contradict without meaning to.
+            session.replay(&conversation, &record.title);
+            (conversation, handle)
+        }
+    };
 
     // Asked once, before any turn: the answer decides whether ordinary work in this directory
     // is interrupted for every write. Nothing is trusted unless the user says so.
@@ -338,7 +381,8 @@ fn event_loop(
                 // Both are threaded through: a turn that writes untrusted data into a trusted
                 // path records that, and the next turn must honour it, and a turn that has been
                 // had is a turn the next one can be asked about.
-                (conversation, trust) = run_turn_animated(
+                let events;
+                (conversation, trust, events) = run_turn_animated(
                     terminal,
                     &mut session,
                     config,
@@ -347,6 +391,12 @@ fn event_loop(
                     conversation,
                     trust,
                 )?;
+
+                // Written after each turn rather than at the end, because the end may never
+                // come: the session worth resuming is the one whose machine slept and never
+                // woke. Best-effort, like everything else under ~/.bua.
+                stored.save(&conversation.snapshot(), session.turns, &prompt);
+                stored.append_audit(session.turns, &events);
             }
             // Only reachable while a turn runs, which is handled inside `run_turn_animated`.
             Action::Cancel | Action::None | Action::Redraw => {}
@@ -371,7 +421,7 @@ fn run_turn_animated(
     prompt: &str,
     conversation: Conversation,
     trust: TrustStore,
-) -> io::Result<(Conversation, TrustStore)> {
+) -> io::Result<(Conversation, TrustStore, Vec<bua_core::event::Event>)> {
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
@@ -480,12 +530,18 @@ fn run_turn_animated(
 
     // A cancelled turn returns the prompt for editing instead of recording a failure: the user
     // stopped it deliberately, so there is nothing to report.
+    let events = sink.events().to_vec();
+
     if matches!(outcome, Err(turn::TurnError::Cancelled)) {
         session.restore(prompt);
-        return Ok((conversation, fallback));
+        return Ok((conversation, fallback, events));
     }
 
-    Ok((conversation, fold_outcome(session, outcome, sink, fallback)))
+    Ok((
+        conversation,
+        fold_outcome(session, outcome, sink, fallback),
+        events,
+    ))
 }
 
 /// Whether a key press asks for the turn in flight to stop.

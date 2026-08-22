@@ -20,11 +20,12 @@
 //! - the **integrity** the conversation has met, so a later turn cannot label output better than
 //!   an earlier turn would have. See [`bua_core::policy::Policy::resuming`].
 
-use bua_aichat::protocol::Message;
+use bua_aichat::protocol::{Message, Role};
 #[cfg(test)]
 use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
 use bua_core::label::Integrity;
 use bua_core::slot::{SlotId, SlotStore};
+use serde::{Deserialize, Serialize};
 
 /// The record a session carries from one turn to the next.
 ///
@@ -154,6 +155,121 @@ impl Conversation {
     }
 }
 
+/// One thing said, for an interface showing a conversation it did not watch happen.
+///
+/// Only the two halves of the exchange a person would recognise. A tool result is left out: it
+/// was written for the planner, and a transcript of a resumed session is for the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Said {
+    /// What the user asked.
+    User(String),
+    /// What the model answered, where the kernel let it be seen at all.
+    Assistant(String),
+}
+
+/// A conversation written down, for a session that outlives the process.
+///
+/// Two of the four things a conversation carries, and deliberately so.
+///
+/// The **messages** are safe to write anywhere: every one of them has already been past the
+/// present gate, so a stored conversation holds no untrusted bytes. The **integrity** goes with
+/// them because it is what a resumed turn must inherit, and dropping it would let a resumed
+/// session call trusted what the original would not have.
+///
+/// The **quarantine** is not stored. Untrusted content would then be sitting in a file, to be
+/// read back and relabelled from what that file says, and a label that survives a round trip
+/// through an editable file is not a label. A resumed conversation therefore holds references
+/// that no longer name anything, which costs nothing today and is the honest failure: a name
+/// with nothing behind it, rather than bytes with a label nobody checked.
+///
+/// The **reference counter** goes with them so a resumed session cannot hand out a name an
+/// earlier message already used.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The exchange, oldest first, without the system prompt.
+    pub messages: Vec<Message>,
+    /// What the conversation had met: `trusted`, or anything else.
+    ///
+    /// A word rather than a flag, so a person reading the file can see what it says, and an
+    /// unreadable value means untrusted rather than a parse error. Everything unrecognised
+    /// degrades in the safe direction, which is the only direction this may degrade in.
+    pub context: String,
+    /// How many references had been handed out.
+    #[serde(default)]
+    pub references: usize,
+}
+
+/// The word for an integrity, as it is written down.
+const TRUSTED: &str = "trusted";
+const UNTRUSTED: &str = "untrusted";
+
+impl Conversation {
+    /// The conversation as it can be written down.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            messages: self.messages.clone(),
+            context: match self.context {
+                Integrity::Trusted => TRUSTED.to_string(),
+                Integrity::Untrusted => UNTRUSTED.to_string(),
+            },
+            references: self.references,
+        }
+    }
+
+    /// A conversation read back from one.
+    ///
+    /// The quarantine starts empty, since a snapshot has none: see [`Snapshot`]. Anything but
+    /// the word for trusted is read as untrusted, so a truncated, hand-edited or
+    /// newer-than-this-build file resumes with less trust rather than more.
+    pub fn restored(snapshot: Snapshot) -> Self {
+        Self {
+            messages: snapshot.messages,
+            quarantine: SlotStore::new(),
+            references: snapshot.references,
+            context: if snapshot.context == TRUSTED {
+                Integrity::Trusted
+            } else {
+                Integrity::Untrusted
+            },
+        }
+    }
+
+    /// The exchange, for an interface that wants to show what was said.
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// The exchange as a person would read it back.
+    ///
+    /// Prompts and answers. A round's own account of itself is left out along with the results,
+    /// since between them they are the working, and a transcript being shown to whoever resumed
+    /// the session is not the place for it.
+    ///
+    /// A result sent in the API's own shape is a message of its own and is simply skipped. One
+    /// sent as prose, which is what an untrusted context falls back to, is recognised by the
+    /// prefix this crate put on it: examining it decides only how a line is drawn, and the text
+    /// being examined has already been past the present gate.
+    pub fn recounted(&self) -> Vec<Said> {
+        self.messages
+            .iter()
+            .filter_map(|message| match message.role {
+                Role::User if message.content.starts_with(TOOL_RESULT_PREFIX) => None,
+                Role::User => Some(Said::User(message.content.clone())),
+                Role::Assistant if message.tool_calls.is_some() => None,
+                Role::Assistant if message.content.trim().is_empty() => None,
+                Role::Assistant => Some(Said::Assistant(message.content.clone())),
+                Role::System | Role::Tool => None,
+            })
+            .collect()
+    }
+}
+
+/// How a tool result is introduced when it is sent as prose rather than in the API's own shape.
+///
+/// Public because an interface replaying a conversation has to tell one from a prompt, and a
+/// literal repeated in two crates is a literal that will disagree with itself.
+pub const TOOL_RESULT_PREFIX: &str = "Result of ";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,7 +319,7 @@ mod tests {
             "writing it now",
             vec![ToolCallRequest {
                 id: "call-1".to_string(),
-                kind: "function",
+                kind: "function".to_string(),
                 function: ToolCallRequestFunction {
                     name: "write_file".to_string(),
                     arguments: "{}".to_string(),
@@ -226,7 +342,7 @@ mod tests {
             "writing it now",
             vec![ToolCallRequest {
                 id: "call-1".to_string(),
-                kind: "function",
+                kind: "function".to_string(),
                 function: ToolCallRequestFunction {
                     name: "write_file".to_string(),
                     arguments: "{}".to_string(),
@@ -242,6 +358,59 @@ mod tests {
             .collect();
         assert_eq!(answers.len(), 1);
         assert_eq!(answers[0].content, "wrote index.html");
+    }
+
+    /// A session that outlives the process has to come back as what it was, integrity included.
+    #[test]
+    fn a_conversation_survives_being_written_down() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("what is 2 + 2?"));
+        conversation.push(Message::assistant("four"));
+        let _ = conversation.next_reference();
+
+        let restored = Conversation::restored(conversation.snapshot());
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.messages()[0].content, "what is 2 + 2?");
+        assert_eq!(restored.context(), Integrity::Trusted);
+        // The counter continues rather than starting over, or a resumed session would hand out
+        // a name an earlier message already used.
+        assert_eq!(
+            Conversation::restored(conversation.snapshot()).next_reference(),
+            conversation.next_reference()
+        );
+    }
+
+    /// Integrity is the one thing here that must never come back better than it went in, and a
+    /// file is the easiest place to make that mistake.
+    #[test]
+    fn an_untrusted_conversation_does_not_come_back_trusted() {
+        let mut conversation = Conversation::new();
+        conversation.observed(Integrity::Untrusted);
+
+        let snapshot = conversation.snapshot();
+        assert_eq!(snapshot.context, "untrusted");
+        assert_eq!(
+            Conversation::restored(snapshot).context(),
+            Integrity::Untrusted
+        );
+    }
+
+    /// Whatever a file says that this build does not recognise, the answer is untrusted. A
+    /// truncated write, a hand edit, or a newer build's word all land in the safe direction.
+    #[test]
+    fn an_unreadable_integrity_is_read_as_untrusted() {
+        for word in ["", "TRUSTED", "yes", "somewhat", "trusted-ish"] {
+            let restored = Conversation::restored(Snapshot {
+                messages: Vec::new(),
+                context: word.to_string(),
+                references: 0,
+            });
+            assert_eq!(
+                restored.context(),
+                Integrity::Untrusted,
+                "{word:?} was read as trusted"
+            );
+        }
     }
 
     #[test]

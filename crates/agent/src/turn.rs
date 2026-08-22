@@ -26,7 +26,7 @@ use bua_net::Egress;
 use std::fmt;
 
 use crate::confirm::Confirmer;
-use crate::conversation::Conversation;
+use crate::conversation::{Conversation, TOOL_RESULT_PREFIX};
 use crate::report::{IgnoreReports, Phase, Reporter};
 use crate::tools;
 use crate::workspace::{Workspace, WorkspaceError};
@@ -513,10 +513,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
             let body = match &presented {
                 Presentation::Visible(text) => {
-                    format!("Result of {}:\n\n{text}", output.tool)
+                    format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
                 }
                 Presentation::Quarantined(reference) => format!(
-                    "Result of {} could not be shown to you.\n\n{}",
+                    "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}",
                     output.tool,
                     reference.describe()
                 ),

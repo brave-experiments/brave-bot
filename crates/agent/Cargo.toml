@@ -13,5 +13,6 @@ bua-config = { path = "../config" }
 bua-core = { path = "../core" }
 bua-net = { path = "../net" }
 bua-skus = { path = "../skus" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 

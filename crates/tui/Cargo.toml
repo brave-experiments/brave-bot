@@ -17,4 +17,10 @@ bua-core = { path = "../core" }
 bua-net = { path = "../net" }
 bua-sandbox = { path = "../sandbox" }
 ratatui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 unicode-width = { workspace = true }
+
+[dev-dependencies]
+# The tests read the conversation back out of a record, which needs its message type.
+bua-aichat = { path = "../aichat" }

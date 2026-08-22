@@ -19,7 +19,7 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
@@ -28,10 +28,10 @@ pub struct Message {
     /// Tool calls belong here rather than written out in `content`. Described in prose they
     /// become an example of what an assistant turn looks like, and a model with such an example
     /// in front of it writes the next one as prose too, which is a call that never runs.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallRequest>>,
     /// Which call a [`Role::Tool`] message answers.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
 
@@ -82,15 +82,21 @@ impl Message {
 ///
 /// Separate from [`ToolCall`], which is the shape one arrives in: what arrives may be missing
 /// its arguments, and what is sent may not.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCallRequest {
     pub id: String,
-    #[serde(rename = "type")]
-    pub kind: &'static str,
+    /// Always "function", which is the only kind the API defines. Owned rather than borrowed so
+    /// a stored conversation can be read back into one of these.
+    #[serde(rename = "type", default = "function_kind")]
+    pub kind: String,
     pub function: ToolCallRequestFunction,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+fn function_kind() -> String {
+    "function".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCallRequestFunction {
     pub name: String,
     /// A JSON object, as a string, which is how the API carries it in both directions.
@@ -207,7 +213,7 @@ impl ToolCall {
     pub fn as_request(&self) -> Option<ToolCallRequest> {
         Some(ToolCallRequest {
             id: self.id.clone()?,
-            kind: "function",
+            kind: function_kind(),
             function: ToolCallRequestFunction {
                 name: self.function.name.clone(),
                 arguments: self

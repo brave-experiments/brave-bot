@@ -25,7 +25,12 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // With no arguments the interactive session is the natural default.
-        None => interactive(),
+        None => interactive(bua_tui::app::Start::Fresh),
+        // Picking up where a session left off, chosen from a list or named outright.
+        Some("--resume" | "-r") => match args.get(1) {
+            Some(id) => resume_named(id),
+            None => interactive(bua_tui::app::Start::Choose),
+        },
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
@@ -44,6 +49,7 @@ fn print_help() {
     println!("Usage:");
     println!("  bua                               Start an interactive session");
     println!("  bua \"<task>\" [--file <path>]...   Run a single task");
+    println!("  bua --resume [id]                 Pick up a session in this directory");
     println!("  bua doctor                        Check configuration and confinement");
     println!("  bua import-leo-creds [channel]    Import a Leo Premium subscription");
     println!();
@@ -202,7 +208,22 @@ fn print_trace(sink: &RecordingSink) {
 }
 
 /// Start an interactive session.
-fn interactive() -> ExitCode {
+/// Resume a session by the id the picker shows, without showing the picker.
+fn resume_named(id: &str) -> ExitCode {
+    let Ok(directory) = std::env::current_dir() else {
+        eprintln!("cannot tell which directory this is");
+        return ExitCode::FAILURE;
+    };
+    match bua_tui::sessions::load(&directory, id) {
+        Some(record) => interactive(bua_tui::app::Start::Resuming(Box::new(record))),
+        None => {
+            eprintln!("no session {id} in this directory");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn interactive(start: bua_tui::app::Start) -> ExitCode {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
@@ -226,7 +247,7 @@ fn interactive() -> ExitCode {
         Err(_) => "none".to_string(),
     };
 
-    match bua_tui::app::run(&config, &workspace, confinement) {
+    match bua_tui::app::run(&config, &workspace, confinement, start) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("interface error: {err}");
