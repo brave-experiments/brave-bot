@@ -61,3 +61,71 @@ you approved would no longer describe what happens.
 a decision. On untrusted content it would let file contents decide whether an effect happens.
 So an untrusted file is refused rather than edited blind; trust the path, or replace the whole
 file with `write_file`, where nothing is located and the body is shown to you in full.
+
+## Running programs
+
+`run` takes a **pipeline of stages**, each a program name and a list of arguments. There is no
+command string anywhere, and no shell:
+
+```
+run { pipeline: [
+  { program: "git", args: ["log", "--oneline", "-50"] },
+  { program: "sed", args: ["-n", "1,10p"] }
+]}
+```
+
+This is what makes command execution admissible when a shell is not. A shell string is destination
+and payload at once, so there is nothing in it a person could approve on its own, and a parser that
+tried to work out what it means would be racing a shell it does not control. An argument list has
+no such problem: `; rm -rf /` in an argument is one argument and stays one, because nothing ever
+splits it. What you approve is what runs, verbatim.
+
+The consequence is that pipes, redirection, `&&`, globbing and `$(...)` are all unavailable. Each
+of those is a destination you never saw. Compose stages instead, which is why `run` takes a
+pipeline rather than a single program: narrowing output is a stage, not a pipe character.
+
+### No list of permitted programs
+
+There is nothing to configure and no allowlist to maintain. `sed`, `awk`, `head`, `jq`, `rg`, `gh`,
+anything installed, all work without being named anywhere.
+
+What bounds a stage is not its name but the confinement it runs under, and the operating system
+enforces that. Each stage declares whether it needs to write or to reach the network, and that
+declaration selects a sandbox profile that permits nothing else. A stage that claimed to be
+read-only and then tried to write does not get a silent write; it gets a denied one. So a
+misdeclaration fails rather than escaping, and no list of trustworthy programs is required.
+
+### What goes in and what comes out
+
+| | Label | Gate |
+|---|---|---|
+| Program and arguments | must be `(T,pub)` | promoted when confined, endorsed by you for an effect |
+| Standard input | may be untrusted | asks you when private |
+| Output | always untrusted, always private | quarantined, per R1 |
+
+Arguments are **routing**: they decide what happens. So they may not be derived from untrusted
+bytes, which is the injection this design exists to prevent.
+
+Standard input is **content**: it is carried into the process, never consulted. So untrusted data
+*can* be fed to a command line. The model names a quarantined reference and the kernel supplies the
+bytes, meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bua` itself
+ever reading it. This is the point of the split: both trusted and untrusted data reach real command
+line tools, and only the routing part has to be trustworthy.
+
+Output is **always** untrusted and private. Every stage, no exceptions, nothing to configure. A
+program can emit anything, including bytes an earlier stage read out of a file an attacker wrote, so
+that is the only label that holds without knowing what ran. The model therefore gets a reference
+rather than the text, and cannot read what it just ran. Whether some narrower class of output could
+ever be trusted is an open question rather than a settled one, tracked as an issue.
+
+### Private input asks, even when nothing changes
+
+Integrity and confidentiality gate differently. Untrusted input is fine, because carrying bytes
+decides nothing. Private input is not, because handing it to a subprocess releases it somewhere the
+policy no longer governs.
+
+So a pipeline fed private content asks for your approval even when every stage is confined and
+nothing is being written. It would be easy to reason that a stage with no network and no writes
+could not leak anything, and that reasoning is exactly what this design declines to rely on: the
+process had the bytes, and you decide instead. Trusted-but-private asks too. Vouching for what a
+file contains is not the same as consenting to send it somewhere.

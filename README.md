@@ -49,9 +49,24 @@ there is nobody to ask, so writes are refused rather than applied unseen.
 lines rather than a whole file. If that passage is missing or ambiguous, or the file changed
 since it was read, the edit is refused instead of guessed.
 
-**There is no shell.** Command execution is absent deliberately, not yet-to-come: a command
-string is its own destination and payload at once, so there is nothing separable for you to
-approve. [Why this matters](docs/design.md#why-some-things-are-absent).
+**It runs programs, but there is no shell.** You can ask for `git commit`, `gh api`, `sed`, `awk`,
+or anything else installed, and stages compose the way a pipeline does. What you cannot get is a
+shell: `run` takes a program and a list of arguments, never a command string, so there are no pipes,
+no `&&`, and no `$(...)`. That is what makes it approvable. A command string is its own destination
+and payload at once, with nothing separable for you to see, while an argument list is something you
+can read and have executed verbatim. Nothing is escaped or re-parsed, so `; rm -rf /` inside an
+argument is just an argument.
+
+**Programs are confined, not vetted.** There is no list of allowed programs to maintain. Each stage
+runs under a sandbox permitting only what it declared it needs, so a program that asked for
+read-only access and then tries to write is denied by the operating system rather than trusted not
+to. Writing or reaching the network needs your approval first.
+
+**Command output is never trusted.** Whatever a program prints is treated as untrusted and private,
+always, since it could contain anything a file or a website put there. That includes making it
+unreadable to the model, which is a real limitation and a deliberate one.
+[Why this matters](docs/design.md#why-some-things-are-absent), and
+[the full model](docs/tools.md#running-programs).
 
 ## Trusted directories
 

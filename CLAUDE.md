@@ -133,10 +133,34 @@ untrusted, or reading it back would launder it. Always the exact path, never the
 
 ## Absent by design
 
-Command execution is not missing, it is excluded: a shell string is destination and payload
-at once, so there is no separable routing field a person could endorse. `apply_patch` is
-excluded for the same reason. Before adding a tool, ask what its routing field is and whether
-a human could approve that field alone.
+A **shell** is excluded: a shell string is destination and payload at once, so there is no
+separable routing field a person could endorse, and a parser that tried to recover one would be
+racing a shell it does not control. `apply_patch` is excluded for the same reason. Before adding a
+tool, ask what its routing field is and whether a human could approve that field alone.
+
+Running a **program** is not excluded, because it passes that test. `run` takes a list of argv
+stages, never a command string, so an argument containing a metacharacter is one argument and stays
+one: there is no parser to defeat and what a person approves is what executes. This is the
+distinction to hold onto. It is not that command execution turned out to be acceptable after all,
+it is that the exclusion was about shell strings and an argv vector is not one.
+
+The rules `run` lives under, none of which may be relaxed to make something work:
+
+- argv is routing, so it must be `(T,pub)`: promoted when the stage is confined, endorsed by a
+  person when it is an effect. Untrusted text never becomes an argument.
+- stdin is content, so it may be untrusted. This is what lets untrusted data reach a command line
+  without the planner or the driver reading it.
+- Output is **always** `(U,priv)`. Every stage, no exceptions, no declaration that changes it.
+- Private input asks, even when the pipeline changes nothing, because a subprocess is somewhere the
+  policy stops governing.
+- Programs are not enumerated. Confinement bounds a stage, not its name, so a stage that
+  misdeclares its reach fails rather than escaping. Do not add an allowlist and treat it as the
+  safety property.
+
+`run` also contains the only place the driver branches on a model-supplied value: the declared
+reach selects which gate applies. That is admissible **only** because the branch is monotone in the
+safe direction, since declaring less asks for less privilege and the OS holds the stage to it. Do
+not generalise from this to branching on content anywhere else.
 
 ## Conventions
 

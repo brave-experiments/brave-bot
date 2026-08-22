@@ -112,12 +112,29 @@ ok      present: tool_result: notes.md is (U,priv), quarantined as ref:0; the pl
 
 ## Why some things are absent
 
-Command execution is absent, and not by oversight. Unlike a write, a shell command has no
-separable routing field to endorse: the string is destination and payload at once, so there
-is nothing meaningful to approve. `apply_patch` is excluded for the same reason.
+A shell is absent, and not by oversight. Unlike a write, a shell command has no separable routing
+field to endorse: the string is destination and payload at once, so there is nothing meaningful to
+approve. `apply_patch` is excluded for the same reason.
 
 Before adding a tool, ask what its routing field is and whether a human could approve that
 field alone.
+
+Running a program passes that test, which is why `run` exists while a shell does not. It takes a
+list of argv stages, so the routing field is the argument vector: a person can read it, approve it,
+and have it executed exactly as shown. Nothing re-parses it afterwards, so a metacharacter inside an
+argument is data rather than syntax.
+
+The distinction is worth stating precisely, because it is easy to read the change as the exclusion
+being softened. It was not. The exclusion was about shell strings, and an argv vector is not a shell
+string. What a shell would have decided, where one argument ends and the next begins, is decided
+here by the caller and shown to the user, so the thing that made a command unapprovable is gone
+rather than tolerated.
+
+Three properties keep it that way, and they are in [tools.md](tools.md) in full. Output is always
+untrusted and private, so nothing a program prints can steer anything. Programs are bounded by
+kernel-enforced confinement rather than by an allowlist, so a program that misdeclares what it needs
+is denied rather than trusted. And private input asks for approval even when nothing is being
+written, because a subprocess is somewhere this policy stops governing.
 
 ## Layering
 
