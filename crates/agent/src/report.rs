@@ -86,6 +86,38 @@ impl Activity {
     }
 }
 
+/// What the turn is waiting on.
+///
+/// The driver's own words, chosen from the round number and nothing else. A wait that says what
+/// it is a wait for is the difference between a slow turn and an apparently stuck one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// The first call to the model. It has the task and nothing else, so what it is doing is
+    /// working out what to do.
+    Planning,
+    /// A later call, with tool results in hand.
+    Thinking,
+}
+
+impl Phase {
+    /// Which phase a round is, counting rounds already taken.
+    pub fn of_round(rounds_taken: usize) -> Self {
+        if rounds_taken == 0 {
+            Self::Planning
+        } else {
+            Self::Thinking
+        }
+    }
+
+    /// The word to show, as a verb someone can read beside a spinner.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Planning => "Planning",
+            Self::Thinking => "Thinking",
+        }
+    }
+}
+
 /// Something that can be told about progress.
 ///
 /// A trait so a turn does not depend on a terminal: the interactive session draws, a one-shot run
@@ -99,6 +131,24 @@ pub trait Reporter {
     /// A count and nothing else. The reply is untrusted model output, so passing the text here
     /// would put untrusted content in the driver's hands; how much was written is not content.
     fn output_tokens(&mut self, _written: u64) {}
+
+    /// The turn is waiting on the model again.
+    ///
+    /// Sent before each request, so the wait before the first tool call says what it is: the
+    /// model working out a plan, which is the longest silence in a turn and used to be the
+    /// least explained.
+    fn phase(&mut self, _phase: Phase) {}
+
+    /// The model said something on its way to calling more tools.
+    ///
+    /// Released model output, so it is shown rather than acted on, exactly like the final
+    /// reply. This text used to be discarded: a turn that explained each step as it went had
+    /// every one of those explanations thrown away, and the user saw a spinner instead.
+    ///
+    /// Sent whether or not there is anything in it. Deciding that from the text would be the
+    /// driver taking a decision from untrusted bytes, and an empty line is the interface's to
+    /// leave undrawn.
+    fn narration(&mut self, _text: String) {}
 
     /// A tool call has begun.
     ///
@@ -137,6 +187,10 @@ pub struct RecordingReporter {
     pub started: Vec<Activity>,
     /// Every tool call announced as finished, in order.
     pub finished: Vec<Activity>,
+    /// Every phase the turn entered, in order.
+    pub phases: Vec<Phase>,
+    /// Everything the model said between tool calls, in order.
+    pub narration: Vec<String>,
 }
 
 impl Reporter for RecordingReporter {
@@ -146,6 +200,14 @@ impl Reporter for RecordingReporter {
 
     fn output_tokens(&mut self, written: u64) {
         self.written.push(written);
+    }
+
+    fn phase(&mut self, phase: Phase) {
+        self.phases.push(phase);
+    }
+
+    fn narration(&mut self, text: String) {
+        self.narration.push(text);
     }
 
     fn tool_started(&mut self, activity: Activity) {
@@ -199,6 +261,16 @@ mod tests {
         let refused = Activity::running("Update", "a.rs").failed("refused: not approved");
         assert!(refused.failed);
         assert!(!Activity::running("Update", "a.rs").done("+1 -0").failed);
+    }
+
+    /// The first wait is the one that needs explaining: the model has the task and nothing
+    /// else, and there is no tool call yet to show for it.
+    #[test]
+    fn the_first_round_is_planning_and_the_rest_are_not() {
+        assert_eq!(Phase::of_round(0), Phase::Planning);
+        assert_eq!(Phase::of_round(1), Phase::Thinking);
+        assert_eq!(Phase::of_round(9), Phase::Thinking);
+        assert_ne!(Phase::Planning.word(), Phase::Thinking.word());
     }
 
     #[test]

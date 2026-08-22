@@ -23,7 +23,7 @@ use bua_net::Egress;
 use std::fmt;
 
 use crate::confirm::Confirmer;
-use crate::report::{IgnoreReports, Reporter};
+use crate::report::{IgnoreReports, Phase, Reporter};
 use crate::tools;
 use crate::workspace::{Workspace, WorkspaceError};
 
@@ -338,6 +338,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             return Err(TurnError::Cancelled);
         }
 
+        // Said before the request goes out, so the longest silence in a turn is explained
+        // while it happens rather than accounted for afterwards.
+        reporter.phase(Phase::of_round(steps));
+
         let request = ChatRequest::new(&config.model, messages.clone()).with_tools(offered.clone());
 
         // Streamed so the interface can show the reply growing. Each round's count restarts at
@@ -354,6 +358,15 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         }
 
         steps += 1;
+
+        // What the model said on the way to these calls. It used to be dropped on the floor,
+        // which is why a turn that narrated every step showed none of it. Released to a screen
+        // and nowhere else, exactly as the final reply is.
+        //
+        // Sent whether or not it is empty: whether there is anything to draw is a question
+        // about the text, and the driver does not get to ask questions about untrusted text.
+        let proof = policy.authorise_display_release("what the model said between calls");
+        reporter.narration(completion.content.clone().declassify(&proof));
 
         // The assistant's tool request is replayed so the conversation stays coherent,
         // then each result is appended as a user message. A dedicated tool role would be

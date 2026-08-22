@@ -459,6 +459,15 @@ fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
     (format!("http://127.0.0.1:{port}"), receiver)
 }
 
+/// A round where the model says something on its way to calling a tool, which is the shape
+/// that carries an explanation the user should see.
+fn tool_request_saying(content: &str, tool: &str, arguments: &str) -> String {
+    let escaped = arguments.replace('"', "\\\"");
+    format!(
+        r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","content":"{content}","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"{tool}","arguments":"{escaped}"}}}}]}}}}]}}"#
+    )
+}
+
 fn tool_request(tool: &str, arguments: &str) -> String {
     let escaped = arguments.replace('"', "\\\"");
     format!(
@@ -939,6 +948,86 @@ fn trusting_the_workspace() -> bua_core::trust::TrustStore {
     let mut trust = bua_core::trust::TrustStore::new();
     trust.trust(".");
     trust
+}
+
+/// The model's own account of what it is doing is the best progress report there is, and it
+/// used to be thrown away: only the final reply survived, so a turn that explained each step
+/// showed none of those explanations.
+#[test]
+fn what_the_model_says_between_tool_calls_reaches_the_interface() {
+    let scratch = Scratch::new("narration");
+    std::fs::write(scratch.path.join("a.txt"), "body").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let saying = tool_request_saying(
+        "Let me look at a.txt first.",
+        "read_file",
+        r#"{"path":"a.txt"}"#,
+    );
+    let (endpoint, _received) = serve_sequence(vec![saying, reply_with("it says body")]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("what is in a.txt?"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        reporter.narration,
+        vec!["Let me look at a.txt first.".to_string()],
+        "the model's account of its own work did not reach the interface"
+    );
+}
+
+/// The first wait is the long one, and the least self-explanatory: no tool has been called
+/// yet, so without this the user is watching a spinner with nothing beside it.
+#[test]
+fn the_first_wait_is_reported_as_planning() {
+    let scratch = Scratch::new("phases");
+    std::fs::write(scratch.path.join("a.txt"), "body").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read a.txt"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        reporter.phases,
+        vec![
+            bua_agent::report::Phase::Planning,
+            bua_agent::report::Phase::Thinking
+        ],
+        "every round reported the same word"
+    );
 }
 
 /// The interface has to be told what the turn is doing while it does it. A call is announced
