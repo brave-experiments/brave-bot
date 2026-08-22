@@ -12,7 +12,7 @@ use bua_aichat::{Subscription, SubscriptionCredential};
 use bua_skus::{Channel, DeviceError, Registration, StoreError};
 
 /// How a new batch is obtained, as a function so a test can supply one without a network.
-type Register = fn(&str, &str) -> Result<Registration, DeviceError>;
+type Register = fn(bua_skus::Environment, &str, &str) -> Result<Registration, DeviceError>;
 
 /// Spends credentials from the keychain, one per request.
 ///
@@ -58,7 +58,7 @@ impl ImportedSubscription {
             remaining: None,
             // Refusing rather than reaching the network, so a test that unexpectedly triggers a
             // refill fails loudly instead of making a live request.
-            register: |_, _| {
+            register: |_, _, _| {
                 Err(DeviceError::Transport {
                     detail: "no network in tests".to_string(),
                 })
@@ -126,8 +126,12 @@ impl ImportedSubscription {
         self.refilled = true;
 
         let order_id = self.wallet.order_id().to_string();
-        let registration =
-            (self.register)(&order_id, &(self.new_request_id)()).map_err(|e| e.to_string())?;
+        let registration = (self.register)(
+            self.wallet.environment(),
+            &order_id,
+            &(self.new_request_id)(),
+        )
+        .map_err(|e| e.to_string())?;
 
         self.wallet.refill(registration.into());
 
@@ -139,8 +143,12 @@ impl ImportedSubscription {
 }
 
 /// Register against the real service.
-fn default_register(order_id: &str, request_id: &str) -> Result<Registration, DeviceError> {
-    bua_skus::device::register(bua_skus::PAYMENT_BASE_URL, order_id, request_id)
+fn default_register(
+    environment: bua_skus::Environment,
+    order_id: &str,
+    request_id: &str,
+) -> Result<Registration, DeviceError> {
+    bua_skus::device::register(environment, order_id, request_id)
 }
 
 /// The current time, in the fixed-width UTC form the stored windows use.
@@ -224,6 +232,7 @@ mod tests {
     fn batch() -> bua_skus::StoredCredentials {
         bua_skus::StoredCredentials {
             order_id: "order".to_string(),
+            environment: bua_skus::Environment::Production,
             item_id: "item".to_string(),
             issuer: "brave.com?sku=brave-leo-premium".to_string(),
             credentials: vec![bua_skus::store::Credential {
@@ -248,7 +257,7 @@ mod tests {
         expired.credentials[0].valid_to = "2020-01-02T00:00:00".to_string();
 
         let mut subscription = ImportedSubscription::detached(expired);
-        subscription.register = |_, _| Ok(fresh_registration());
+        subscription.register = |_, _, _| Ok(fresh_registration());
 
         let credential = subscription
             .next_credential()
@@ -264,7 +273,7 @@ mod tests {
         spent.credentials[0].spent = true;
 
         let mut subscription = ImportedSubscription::detached(spent);
-        subscription.register = |_, _| Ok(fresh_registration());
+        subscription.register = |_, _, _| Ok(fresh_registration());
 
         assert!(subscription.next_credential().is_ok());
     }
@@ -277,7 +286,7 @@ mod tests {
         expired.credentials.clear();
 
         let mut subscription = ImportedSubscription::detached(expired);
-        subscription.register = |order_id, request_id| {
+        subscription.register = |_, order_id, request_id| {
             assert_eq!(order_id, "order", "refilled against the wrong order");
             assert!(!request_id.is_empty(), "a refill needs a request id");
             Ok(fresh_registration())
@@ -294,7 +303,7 @@ mod tests {
         empty.credentials.clear();
 
         let mut subscription = ImportedSubscription::detached(empty);
-        subscription.register = |_, _| {
+        subscription.register = |_, _, _| {
             Err(DeviceError::Transport {
                 detail: "the service is unreachable".to_string(),
             })
@@ -316,7 +325,7 @@ mod tests {
         empty.credentials.clear();
 
         let mut subscription = ImportedSubscription::detached(empty);
-        subscription.register = |_, _| Ok(fresh_registration());
+        subscription.register = |_, _, _| Ok(fresh_registration());
         subscription.next_credential().expect("refilled");
 
         // Detached, so the flush cannot have written to a keychain; what matters is that the new
@@ -328,6 +337,7 @@ mod tests {
     fn fresh_registration() -> bua_skus::Registration {
         bua_skus::Registration {
             order_id: "order".to_string(),
+            environment: bua_skus::Environment::Production,
             item_id: "item".to_string(),
             issuer: "brave.com?sku=brave-leo-premium".to_string(),
             credentials: vec![bua_skus::device::SignedCredential {
@@ -347,7 +357,7 @@ mod tests {
         let mut empty = batch();
         empty.credentials.clear();
         let mut subscription = ImportedSubscription::detached(empty);
-        subscription.register = |_, _| {
+        subscription.register = |_, _, _| {
             Err(DeviceError::Transport {
                 detail: "the service is unreachable".to_string(),
             })

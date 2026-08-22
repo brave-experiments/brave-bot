@@ -66,6 +66,8 @@ const MAX_CREDENTIALS: usize = 10_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registration {
     pub order_id: String,
+    /// The service that signed this batch.
+    pub environment: crate::Environment,
     pub item_id: String,
     /// The `merchant?sku=` string a presentation signs over.
     pub issuer: String,
@@ -149,10 +151,12 @@ struct OrderDetails {
 /// existing device's batch, which is why the caller supplies it explicitly rather than having one
 /// generated somewhere less visible.
 pub fn register(
-    base_url: &str,
+    environment: crate::Environment,
     order_id: &str,
     request_id: &str,
 ) -> Result<Registration, DeviceError> {
+    let base_url = environment.payment_url();
+
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
         .build();
@@ -248,6 +252,7 @@ pub fn register(
 
     Ok(Registration {
         order_id: order_id.to_string(),
+        environment,
         item_id: details.item_id,
         issuer,
         credentials,

@@ -68,6 +68,11 @@ impl std::error::Error for StoreError {}
 pub struct StoredCredentials {
     /// The order the batch belongs to, so a re-import can refresh in place.
     pub order_id: String,
+    /// Which service issued this batch, so a refill goes back to the same one.
+    ///
+    /// Stored rather than recomputed because the browser it was imported from may be gone by then,
+    /// and a credential minted against the wrong environment cannot be used.
+    pub environment: crate::Environment,
     /// The item the credentials are for.
     pub item_id: String,
     /// `merchant?sku=` string the presentation signs over.
@@ -130,6 +135,7 @@ impl From<Registration> for StoredCredentials {
     fn from(value: Registration) -> Self {
         Self {
             order_id: value.order_id,
+            environment: value.environment,
             item_id: value.item_id,
             issuer: value.issuer,
             credentials: value
@@ -271,6 +277,11 @@ impl Wallet {
         &self.batch.order_id
     }
 
+    /// Which service issued this batch, so a refill returns to the same one.
+    pub fn environment(&self) -> crate::Environment {
+        self.batch.environment
+    }
+
     /// Replace the batch with a freshly issued one, keeping the same destination.
     ///
     /// Marked dirty so the new batch is written even though nothing has been spent from it yet:
@@ -332,6 +343,7 @@ fn encode(credentials: &StoredCredentials) -> String {
     serde_json::json!({
         "version": 1,
         "order_id": credentials.order_id,
+        "environment": credentials.environment.as_str(),
         "item_id": credentials.item_id,
         "issuer": credentials.issuer,
         "credentials": credentials
@@ -411,6 +423,13 @@ fn decode(raw: &str) -> Result<StoredCredentials, StoreError> {
 
     Ok(StoredCredentials {
         order_id: field("order_id")?,
+        // Entries written before this was recorded were all production, which was the only
+        // environment reachable then.
+        environment: value
+            .get("environment")
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::Environment::of_name)
+            .unwrap_or(crate::Environment::Production),
         item_id: field("item_id")?,
         issuer: field("issuer")?,
         credentials,
@@ -424,6 +443,7 @@ mod tests {
     fn batch() -> StoredCredentials {
         StoredCredentials {
             order_id: "aaaaaaaa-1111-4222-8333-444444444444".to_string(),
+            environment: crate::Environment::Production,
             item_id: "b7114ccc-b3a5-4951-9a5d-8b7a28731111".to_string(),
             issuer: "brave.com?sku=brave-leo-premium".to_string(),
             credentials: vec![
@@ -562,6 +582,18 @@ mod tests {
     fn a_window_does_not_include_its_own_end() {
         let batch = batch();
         assert_eq!(batch.next_usable("2026-08-23T00:00:00"), Some(1));
+    }
+
+    /// The environment must survive a round trip, since a refill uses it to pick the service and
+    /// the browser it came from may be gone by then.
+    #[test]
+    fn the_environment_survives_a_round_trip() {
+        let mut staging = batch();
+        staging.environment = crate::Environment::Staging;
+        assert_eq!(
+            decode(&encode(&staging)).unwrap().environment,
+            crate::Environment::Staging
+        );
     }
 
     /// An interrupted write can leave the entry present but empty. Reported as absent, since the

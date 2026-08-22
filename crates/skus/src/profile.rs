@@ -177,8 +177,17 @@ impl std::fmt::Display for ProfileError {
 
 impl std::error::Error for ProfileError {}
 
-/// Find the order id of the Leo subscription in a local install.
-pub fn find_leo_order(channel: Channel) -> Result<String, ProfileError> {
+/// A Leo subscription found in a local install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeoOrder {
+    pub order_id: String,
+    /// Taken from the order's own location, so credentials are minted against the service that
+    /// issued the subscription rather than whichever one happened to be compiled in.
+    pub environment: crate::Environment,
+}
+
+/// Find the Leo subscription in a local install.
+pub fn find_leo_order(channel: Channel) -> Result<LeoOrder, ProfileError> {
     let files = channel.state_files();
     if files.is_empty() {
         return Err(ProfileError::UnsupportedPlatform);
@@ -227,11 +236,11 @@ enum OrderLookupError {
     },
 }
 
-/// Extract the Leo order id from the text of a Chromium preferences file.
+/// Extract the Leo order from the text of a Chromium preferences file.
 ///
 /// Separate from the filesystem so the parsing is testable against fixtures rather than against
 /// whatever happens to be installed.
-fn leo_order_in_preferences(text: &str) -> Result<String, OrderLookupError> {
+fn leo_order_in_preferences(text: &str) -> Result<LeoOrder, OrderLookupError> {
     let root: serde_json::Value =
         serde_json::from_str(text).map_err(|e| OrderLookupError::Malformed {
             detail: format!("not valid JSON: {e}"),
@@ -281,7 +290,12 @@ fn leo_order_in_preferences(text: &str) -> Result<String, OrderLookupError> {
                 // Checked before use because it becomes part of a request path. A value that is
                 // not a plain uuid is refused rather than sent, so nothing in this file can
                 // steer the request somewhere else.
-                Some(id) if is_uuid(id) => return Ok(id.to_string()),
+                Some(id) if is_uuid(id) => {
+                    return Ok(LeoOrder {
+                        order_id: id.to_string(),
+                        environment: leo_environment(order).ok_or(OrderLookupError::Absent)?,
+                    });
+                }
                 Some(_) => {
                     outcome = outcome.or(Some(OrderLookupError::Malformed {
                         detail: "the order id is not a uuid".to_string(),
@@ -303,6 +317,17 @@ fn leo_order_in_preferences(text: &str) -> Result<String, OrderLookupError> {
 ///
 /// Matched on `location` and on any item's `sku`, since the same store holds VPN and Search
 /// Premium orders and either field alone has been enough to identify a product at some point.
+/// The environment an order belongs to, from its location.
+///
+/// An order identified only by its sku has no location to read, and production is the only
+/// environment a real purchase can be in, so that is the reading for one.
+fn leo_environment(order: &serde_json::Value) -> Option<crate::Environment> {
+    match order.get("location").and_then(serde_json::Value::as_str) {
+        Some(location) => crate::Environment::of_location(location),
+        None => Some(crate::Environment::Production),
+    }
+}
+
 fn is_leo_order(order: &serde_json::Value) -> bool {
     if order
         .get("location")
@@ -407,7 +432,7 @@ mod tests {
     fn finds_the_order_id_of_a_paid_leo_subscription() {
         let id = "aaaaaaaa-1111-4222-8333-444444444444";
         let text = preferences_with(leo_order(id, "paid"));
-        assert_eq!(leo_order_in_preferences(&text).unwrap(), id);
+        assert_eq!(leo_order_in_preferences(&text).unwrap().order_id, id);
     }
 
     /// The pref holds JSON inside JSON. A reader that parsed only the outer layer would find the
@@ -419,7 +444,7 @@ mod tests {
         // The orders really are nested inside a string, not an object.
         let root: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert!(root["skus"]["state"]["skus:production"].is_string());
-        assert_eq!(leo_order_in_preferences(&text).unwrap(), id);
+        assert_eq!(leo_order_in_preferences(&text).unwrap().order_id, id);
     }
 
     /// VPN and Search Premium subscriptions live in the same store, so the Leo order has to be
@@ -452,7 +477,51 @@ mod tests {
                 }
             }
         }));
-        assert_eq!(leo_order_in_preferences(&text).unwrap(), leo);
+        assert_eq!(leo_order_in_preferences(&text).unwrap().order_id, leo);
+    }
+
+    /// The environment comes from the order itself, because credentials only verify against the
+    /// service that issued them. Choosing it, or compiling one in, would mint a batch that cannot
+    /// be used and report success.
+    #[test]
+    fn the_environment_is_taken_from_the_orders_location() {
+        let id = "11111111-2222-4333-8444-555555555555";
+        for (location, expected) in [
+            ("leo.brave.com", crate::Environment::Production),
+            ("leo.bravesoftware.com", crate::Environment::Staging),
+            ("leo.brave.software", crate::Environment::Development),
+        ] {
+            let text = preferences_with(serde_json::json!({
+                "orders": {
+                    id: {
+                        "id": id,
+                        "status": "paid",
+                        "location": location,
+                        "items": [{ "sku": "brave-leo-premium" }]
+                    }
+                }
+            }));
+            let order = leo_order_in_preferences(&text).unwrap();
+            assert_eq!(order.environment, expected, "wrong env for {location}");
+        }
+    }
+
+    /// Each environment has its own credential service, so the wrong one would be asked to sign a
+    /// batch for an order it has never heard of.
+    #[test]
+    fn each_environment_has_its_own_payment_service() {
+        assert_eq!(
+            crate::Environment::Production.payment_url(),
+            "https://payment.rewards.brave.com"
+        );
+        assert_eq!(
+            crate::Environment::Staging.payment_url(),
+            "https://payment.rewards.bravesoftware.com"
+        );
+        assert_ne!(
+            crate::Environment::Staging.payment_url(),
+            crate::Environment::Development.payment_url()
+        );
     }
 
     /// A developer build holds staging orders, whose location is on bravesoftware.com. Matching only
@@ -470,7 +539,7 @@ mod tests {
                 }
             }
         }));
-        assert_eq!(leo_order_in_preferences(&text).unwrap(), id);
+        assert_eq!(leo_order_in_preferences(&text).unwrap().order_id, id);
     }
 
     /// Another staging product in the same store must still not be mistaken for Leo.
@@ -583,7 +652,7 @@ mod tests {
             "skus": { "state": { "skus:staging": leo_order(id, "paid").to_string() } }
         })
         .to_string();
-        assert_eq!(leo_order_in_preferences(&text).unwrap(), id);
+        assert_eq!(leo_order_in_preferences(&text).unwrap().order_id, id);
     }
 
     /// The browser's own signed credentials are in the same file and must not be what this
@@ -602,6 +671,6 @@ mod tests {
         });
         let text = preferences_with(inner);
         // Only the order id comes back out, so the stored credential cannot leak through it.
-        assert_eq!(leo_order_in_preferences(&text).unwrap(), id);
+        assert_eq!(leo_order_in_preferences(&text).unwrap().order_id, id);
     }
 }

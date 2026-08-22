@@ -40,15 +40,17 @@ pub mod profile;
 pub mod store;
 
 pub use device::{DeviceError, Registration};
-pub use profile::{Channel, ProfileError, find_leo_order};
+pub use profile::{Channel, LeoOrder, ProfileError, find_leo_order};
 pub use store::{StoreError, StoredCredentials};
 
-/// Where the credential endpoints live.
+/// Where the credential endpoints live, per environment.
 ///
-/// A constant rather than configuration: this is Brave's production payment service, the only
-/// place a production subscription can be verified, and making it settable would turn a fixed
-/// destination into one an environment could redirect.
-pub const PAYMENT_BASE_URL: &str = "https://payment.rewards.brave.com";
+/// Fixed destinations rather than configuration: an environment variable here would let something
+/// outside redirect where a subscription is verified. Which one applies is decided by the order's
+/// own location, so it follows the subscription rather than being chosen.
+pub const PRODUCTION_PAYMENT_URL: &str = "https://payment.rewards.brave.com";
+pub const STAGING_PAYMENT_URL: &str = "https://payment.rewards.bravesoftware.com";
+pub const DEVELOPMENT_PAYMENT_URL: &str = "https://payment.rewards.brave.software";
 
 /// The SKU a Leo Premium subscription is sold under.
 pub const LEO_SKU: &str = "brave-leo-premium";
@@ -64,6 +66,56 @@ pub const LEO_LOCATIONS: [&str; 3] = [
     "leo.bravesoftware.com",
     "leo.brave.software",
 ];
+
+/// Which deployment a subscription belongs to.
+///
+/// Derived from the order's own location, never chosen: a credential only verifies against the
+/// environment that issued it, so guessing would produce a batch that cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Production,
+    Staging,
+    Development,
+}
+
+impl Environment {
+    /// The environment an order's `location` implies.
+    pub fn of_location(location: &str) -> Option<Self> {
+        match location {
+            "leo.brave.com" => Some(Self::Production),
+            "leo.bravesoftware.com" => Some(Self::Staging),
+            "leo.brave.software" => Some(Self::Development),
+            _ => None,
+        }
+    }
+
+    /// Where this environment's credential endpoints live.
+    pub fn payment_url(self) -> &'static str {
+        match self {
+            Self::Production => PRODUCTION_PAYMENT_URL,
+            Self::Staging => STAGING_PAYMENT_URL,
+            Self::Development => DEVELOPMENT_PAYMENT_URL,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Staging => "staging",
+            Self::Development => "development",
+        }
+    }
+
+    /// The inverse of [`Environment::as_str`], for reading a stored batch back.
+    pub fn of_name(name: &str) -> Option<Self> {
+        match name {
+            "production" => Some(Self::Production),
+            "staging" => Some(Self::Staging),
+            "development" => Some(Self::Development),
+            _ => None,
+        }
+    }
+}
 
 /// The cookie the aichat backend reads a subscription credential from.
 pub const CREDENTIAL_COOKIE_NAME: &str = "__Secure-sku#brave-leo-premium";

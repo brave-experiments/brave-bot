@@ -295,15 +295,19 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         channel.as_str()
     );
 
-    let order_id = match bua_skus::find_leo_order(channel) {
-        Ok(order_id) => order_id,
+    let order = match bua_skus::find_leo_order(channel) {
+        Ok(order) => order,
         Err(err) => {
             eprintln!("{err}");
             return ExitCode::FAILURE;
         }
     };
 
-    println!("found subscription {order_id}");
+    println!(
+        "found a {} subscription: {}",
+        order.environment.as_str(),
+        order.order_id
+    );
     println!("registering this install as a new device");
 
     // A fresh request id is what makes this a new device rather than a claim on an existing
@@ -311,7 +315,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     let request_id = bua_skus::new_request_id();
 
     let registration =
-        match bua_skus::device::register(bua_skus::PAYMENT_BASE_URL, &order_id, &request_id) {
+        match bua_skus::device::register(order.environment, &order.order_id, &request_id) {
             Ok(registration) => registration,
             Err(err) => {
                 eprintln!("{err}");
