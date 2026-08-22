@@ -29,6 +29,7 @@ bua                                  # interactive session
 bua "what does src/main.rs do?"      # one-shot
 bua "explain this" --file notes.md   # with named context
 bua doctor                           # check configuration and confinement
+bua import-leo-creds                 # use a Leo Premium subscription
 ```
 
 In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, Ctrl-T
@@ -91,6 +92,38 @@ rules are in [docs/trust.md](docs/trust.md).
 Configuration is built into the released binary, so there is nothing to set up. `bua doctor`
 reports what it will use. To point it at a different backend, see
 [docs/development.md](docs/development.md#configuration).
+
+## Leo Premium
+
+If you subscribe to Leo Premium in Brave, you can use it here:
+
+```
+bua import-leo-creds            # from Brave (stable)
+bua import-leo-creds nightly    # or beta, or development
+```
+
+Premium requests are then used automatically, and `bua doctor` reports how much is left.
+`--forget` discards what was imported.
+
+This **registers as an additional device** rather than borrowing the browser's credentials. Only
+the subscription's order id is read from the browser; the credentials themselves are generated
+here and signed by Brave, exactly as a second browser on another machine would. The browser keeps
+its own, and nothing it holds is spent.
+
+The credentials are single-use and arrive in batches covering a few days. When a batch runs out
+or expires, a replacement is obtained automatically, so this is normally a one-time step. They
+are kept in the system keychain, not in a file, so importing and the first request of a session
+may ask for your password.
+
+Requirements and limits:
+
+- **macOS and Linux.** Windows is not supported.
+- The build must know the premium host. Without it premium is unavailable, and a credential is
+  never sent to the non-premium host, since it does not belong there.
+- A credential only works against the deployment that issued it, so import from the Brave channel
+  matching the environment the binary is configured for. Mismatching them returns 401.
+- Sign in to Leo in that Brave install first: a subscription that is not in the profile cannot be
+  imported.
 
 ## Other links
 
