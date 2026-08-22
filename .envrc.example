@@ -4,57 +4,69 @@
 #
 # .envrc itself is gitignored — never commit real key material.
 
-# Brave services HMAC signing key for the aichat backend.
-# This is a signing key, not a bearer token: it is used to HMAC-SHA256 the
-# request body digest and is never transmitted.
-# Matched pair with BRAVE_SERVICES_KEY_ID below — the server derives its copy
-# of this key from a master seed plus that id, so the two must correspond.
-export SERVICES_KEY_AICHAT="replace-me"
-
-# keyId sent in the Authorization header.
-export BRAVE_SERVICES_KEY_ID="replace-me"
-
-# Base URL of the aichat backend. The client appends the API path
-# (v1/chat/completions), matching brave-core's GetEndpointUrl().
+# ---------------------------------------------------------------------------
+# Which environment to use. This is the only line to change day to day.
 #
-# Host is "<prefix>.<services-domain>" where the domains come from brave-core's
-# brave_domains buildflags:
-#   prod     ai-chat.bsg.brave.com
-#   staging  ai-chat.bsg.bravesoftware.com
-#   dev      ai-chat.bsg.brave.software     (VPN only; does not resolve otherwise)
+# Three things have to agree, which is why they are set together rather than
+# one at a time:
 #
-# A services key is issued for one environment. Using it against another returns
-# 401 with error 40101, "Invalid services key" — the signature is well-formed, the
-# credential simply is not accepted there.
+#   - the services key, issued for exactly one environment. Used against
+#     another it returns 401 error 40101, "Invalid services key": the
+#     signature is well formed, the credential simply is not accepted there.
+#   - the aichat hosts, free and premium.
+#   - the Leo subscription, since a credential only verifies against the
+#     service that issued it. A mismatch returns 401 error 40104.
 #
-# The premium tier uses the ai-chat-premium.bsg prefix and additionally requires a
-# SKU (subscription) credential; without one it returns 401 error 40104.
-export BRAVE_AI_CHAT_ENDPOINT="https://ai-chat.bsg.brave.software"
+# Override for one command without editing this file:
+#
+#   BUA_ENV=prod direnv exec . bua doctor
+# ---------------------------------------------------------------------------
+export BUA_ENV="${BUA_ENV:-dev}"
 
-# Point this at a locally running backend for development, e.g.
+# --- dev -------------------------------------------------------------------
+# Hosts resolve on the VPN only; off-VPN the names do not resolve at all.
+# Import the matching subscription with:  bua import-leo-creds development
+DEV_SERVICES_KEY="replace-me"
+DEV_KEY_ID="replace-me"
+DEV_ENDPOINT="https://ai-chat.bsg.brave.software"
+DEV_PREMIUM_ENDPOINT="https://ai-chat-premium.bsg.brave.software"
+
+# --- prod ------------------------------------------------------------------
+# Import the matching subscription with:  bua import-leo-creds stable
+PROD_SERVICES_KEY="replace-me"
+PROD_KEY_ID="replace-me"
+PROD_ENDPOINT="https://ai-chat.bsg.brave.com"
+PROD_PREMIUM_ENDPOINT="https://ai-chat-premium.bsg.brave.com"
+
+# ---------------------------------------------------------------------------
+# Selection. An unrecognised BUA_ENV fails here rather than silently leaving
+# the variables unset, which would surface later as a confusing 401.
+# ---------------------------------------------------------------------------
+case "$BUA_ENV" in
+  dev)
+    export SERVICES_KEY_AICHAT="$DEV_SERVICES_KEY"
+    export BRAVE_SERVICES_KEY_ID="$DEV_KEY_ID"
+    export BRAVE_AI_CHAT_ENDPOINT="$DEV_ENDPOINT"
+    export BRAVE_AI_CHAT_PREMIUM_ENDPOINT="$DEV_PREMIUM_ENDPOINT"
+    ;;
+  prod)
+    export SERVICES_KEY_AICHAT="$PROD_SERVICES_KEY"
+    export BRAVE_SERVICES_KEY_ID="$PROD_KEY_ID"
+    export BRAVE_AI_CHAT_ENDPOINT="$PROD_ENDPOINT"
+    export BRAVE_AI_CHAT_PREMIUM_ENDPOINT="$PROD_PREMIUM_ENDPOINT"
+    ;;
+  *)
+    echo "BUA_ENV must be 'dev' or 'prod', got '$BUA_ENV'" >&2
+    return 1 2>/dev/null || exit 1
+    ;;
+esac
+
+# Point the free endpoint at a locally running backend instead, e.g.
 # export BRAVE_AI_CHAT_ENDPOINT="http://127.0.0.1:8000"
-
-# Host for the premium tier, used once a Leo Premium subscription has been imported
-# with `bua import-leo-creds`. Same environments, with the ai-chat-premium prefix:
-#   prod     ai-chat-premium.bsg.brave.com
-#   staging  ai-chat-premium.bsg.bravesoftware.com
-#   dev      ai-chat-premium.bsg.brave.software     (VPN only)
 #
-# Optional. Without it premium is unavailable and every request goes to the endpoint
-# above; a subscription credential is never sent to the free host, since it does not
-# belong there.
-#
-# This must match the environment the subscription was created in, because a credential
-# only verifies against its own environment's issuer. So pick the pair together:
-#
-#   dev/staging key  ->  ai-chat-premium.bsg.brave.software
-#                        bua import-leo-creds development
-#   production key   ->  ai-chat-premium.bsg.brave.com
-#                        bua import-leo-creds stable
-#
-# Mismatching them returns 401: error 40101 for a key from the wrong environment, and
-# 40104 for a credential from one.
-export BRAVE_AI_CHAT_PREMIUM_ENDPOINT="https://ai-chat-premium.bsg.brave.software"
+# The premium endpoint is optional. Without it premium is unavailable and every
+# request goes to the free endpoint; a subscription credential is never sent
+# there, since it does not belong to that host.
 
 # Model to request from POST /v1/chat/completions.
 # "automatic" lets the server triage per request and is the default.
