@@ -9,6 +9,8 @@
 //! rather than as boxed output, and only the input keeps a border, since that is the one
 //! place the cursor needs locating.
 
+use bua_agent::diff::Change;
+use bua_agent::report::Activity;
 use bua_core::event::{Event, Role};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -64,6 +66,83 @@ fn todo_lines(todos: &[bua_core::todo::Row]) -> Vec<Line<'static>> {
             ])
         })
         .collect()
+}
+
+/// How many diff lines a finished write shows before the rest is summarised away.
+///
+/// Enough to see what happened, not so much that a large edit pushes everything before it off
+/// the screen. The approval prompt showed the whole thing; this is the record afterwards.
+const MAX_DIFF_LINES: usize = 12;
+
+/// Draw one tool call: what it is, and what came of it.
+///
+/// The shape mirrors a turn's own: a marker, then the detail indented beneath it, so a call
+/// and its result read as one thing rather than two unrelated lines.
+fn activity_lines(activity: &Activity) -> Vec<Line<'static>> {
+    let head = if activity.is_running() {
+        // Hollow while it runs, filled when it is over, so the eye finds the live one.
+        Style::default().fg(Color::Yellow)
+    } else if activity.failed {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{TURN_MARKER} "), head),
+        Span::styled(
+            activity.line(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
+    if let Some(note) = &activity.note {
+        lines.push(Line::from(Span::styled(
+            format!("  {DETAIL_MARKER} {note}"),
+            if activity.failed {
+                Style::default().fg(Color::Red)
+            } else {
+                dim()
+            },
+        )));
+    }
+
+    lines.extend(diff_lines(&activity.changes));
+    lines
+}
+
+/// The hunks of a write, trimmed to what fits without burying the rest of the transcript.
+fn diff_lines(changes: &[Change]) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = changes
+        .iter()
+        .take(MAX_DIFF_LINES)
+        .map(|change| match change {
+            Change::Added(text) => Line::from(Span::styled(
+                format!("     + {text}"),
+                Style::default().fg(Color::Green),
+            )),
+            Change::Removed(text) => Line::from(Span::styled(
+                format!("     - {text}"),
+                Style::default().fg(Color::Red),
+            )),
+            Change::Kept(text) => Line::from(Span::styled(format!("       {text}"), dim())),
+            Change::Elided(count) => Line::from(Span::styled(
+                format!("     … {count} unchanged lines"),
+                dim(),
+            )),
+        })
+        .collect();
+
+    // Said rather than silently dropped: a diff that stops without saying so reads as the
+    // whole change, which is how a reviewer misses half of it.
+    if changes.len() > MAX_DIFF_LINES {
+        lines.push(Line::from(Span::styled(
+            format!("     … {} more diff lines", changes.len() - MAX_DIFF_LINES),
+            dim(),
+        )));
+    }
+
+    lines
 }
 
 /// Draw the whole interface.
@@ -138,6 +217,12 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                     )));
                 }
             }
+            // What the turn did, kept in the scrollback next to what it said about it.
+            Speaker::Tool => {
+                if let Some(activity) = &entry.activity {
+                    lines.extend(activity_lines(activity));
+                }
+            }
         }
 
         // The plan the turn worked to, kept next to what it produced.
@@ -148,7 +233,12 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                 lines.push(trail_line(event));
             }
         }
-        lines.push(Line::raw(""));
+
+        // Tool calls come in runs and read as one block, so they are not spaced apart. A turn
+        // that read six files would otherwise take twelve lines of blank.
+        if entry.speaker != Speaker::Tool {
+            lines.push(Line::raw(""));
+        }
     }
 
     lines
@@ -365,6 +455,94 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    mod progress {
+        use super::*;
+        use bua_agent::report::Activity;
+
+        fn working() -> Session {
+            let mut session = Session::new("kernel-enforced");
+            session.type_char('a');
+            session.submit();
+            session
+        }
+
+        /// A call has to be legible while it runs, or the transcript is still blank during the
+        /// part of a turn that takes the longest.
+        #[test]
+        fn a_call_in_flight_is_drawn() {
+            let mut session = working();
+            session.start_activity(Activity::running("Read", "src/main.rs"));
+            assert!(rendered(&session).contains("Read(src/main.rs)"));
+        }
+
+        #[test]
+        fn a_finished_call_shows_what_came_of_it() {
+            let mut session = working();
+            session.finish_activity(Activity::running("Search", "todo").done("4 matches"));
+
+            let output = rendered(&session);
+            assert!(output.contains("Search(todo)"));
+            assert!(output.contains("4 matches"), "the result was not shown");
+        }
+
+        /// The change is what a user most wants to see after a write, and the counts alone ask
+        /// them to take it on trust.
+        #[test]
+        fn a_write_shows_the_lines_that_changed() {
+            let mut session = working();
+            session.finish_activity(
+                Activity::running("Update", "a.rs")
+                    .done("added 1 line, removed 1 line")
+                    .with_changes(vec![
+                        Change::Removed("was here".into()),
+                        Change::Added("is here now".into()),
+                    ]),
+            );
+
+            let output = rendered(&session);
+            assert!(output.contains("added 1 line, removed 1 line"));
+            assert!(output.contains("is here now"), "the addition is missing");
+            assert!(output.contains("was here"), "the removal is missing");
+        }
+
+        /// A diff that stops without saying so reads as the whole change, which is how a
+        /// reviewer misses half of it.
+        #[test]
+        fn a_long_diff_says_how_much_it_left_out() {
+            let changes: Vec<Change> = (0..MAX_DIFF_LINES + 5)
+                .map(|n| Change::Added(format!("line {n}")))
+                .collect();
+            let lines = diff_lines(&changes);
+
+            assert_eq!(lines.len(), MAX_DIFF_LINES + 1);
+            let last = lines.last().expect("a line").to_string();
+            assert!(last.contains("5 more"), "the omission is silent: {last}");
+        }
+
+        /// A short diff is shown whole, with nothing appended to suggest otherwise.
+        #[test]
+        fn a_short_diff_is_shown_whole_with_no_note() {
+            let lines = diff_lines(&[Change::Added("only line".into())]);
+            assert_eq!(lines.len(), 1);
+        }
+
+        /// Tool lines come in runs and read as one block. Spacing them apart would double the
+        /// height of every turn that read more than a file or two.
+        #[test]
+        fn tool_lines_are_not_spaced_apart() {
+            let mut session = working();
+            for path in ["a.rs", "b.rs"] {
+                session.finish_activity(Activity::running("Read", path).done("1 line"));
+            }
+
+            let blanks = transcript_lines(&session)
+                .iter()
+                .filter(|line| line.to_string().trim().is_empty())
+                .count();
+            assert_eq!(blanks, 1, "the prompt's own blank line is the only one");
+        }
     }
 
     #[test]

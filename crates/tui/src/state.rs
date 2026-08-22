@@ -4,6 +4,7 @@
 //! display; it does **not** hold a policy. Each turn constructs its own, which is what
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
+use bua_agent::report::{Activity, Phase};
 use bua_core::event::Event;
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,8 @@ pub enum Speaker {
     Assistant,
     /// A note from the program itself: an error, a refusal, a status.
     System,
+    /// A tool call the turn made. Shown as it happens, and kept afterwards.
+    Tool,
 }
 
 /// One entry in the transcript.
@@ -30,6 +33,11 @@ pub struct Entry {
     /// Held on the entry rather than in one place so the scrollback shows what each turn did.
     /// A live list belongs to the turn in flight and goes here when that turn ends.
     pub todos: Vec<bua_core::todo::Row>,
+    /// The call this entry describes, for a [`Speaker::Tool`] entry.
+    ///
+    /// Carries the note and the hunks separately from `text` so the interface can style them
+    /// without parsing anything back out of a formatted line.
+    pub activity: Option<Activity>,
 }
 
 impl Entry {
@@ -39,6 +47,7 @@ impl Entry {
             text: text.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            activity: None,
         }
     }
 
@@ -48,6 +57,7 @@ impl Entry {
             text: text.into(),
             trail,
             todos: Vec::new(),
+            activity: None,
         }
     }
 
@@ -57,6 +67,21 @@ impl Entry {
             text: text.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            activity: None,
+        }
+    }
+
+    /// One tool call, as it stands.
+    ///
+    /// Made while the call is still running and replaced when it finishes, which is what puts
+    /// a slow call on the screen while it is slow rather than only once it is over.
+    pub fn tool(activity: Activity) -> Self {
+        Self {
+            speaker: Speaker::Tool,
+            text: activity.line(),
+            trail: Vec::new(),
+            todos: Vec::new(),
+            activity: Some(activity),
         }
     }
 
@@ -108,6 +133,17 @@ pub struct Session {
     /// them decides nothing and needs no label. Cleared when a turn starts, so one turn's plan
     /// never appears beneath another's work.
     pub todos: Vec<bua_core::todo::Row>,
+    /// What the turn in flight is waiting on, when it is waiting on the model.
+    ///
+    /// Cleared between turns. `None` before the first request goes out, which is the only
+    /// moment the generic word is all there is to say.
+    pub phase: Option<Phase>,
+    /// The tool call in flight, if one is.
+    ///
+    /// Also in the transcript, where it stays. Kept here as well because the indicator needs
+    /// to name it, and scanning back through the transcript for the tail would be a worse way
+    /// to answer a question the session already knows the answer to.
+    pub running: Option<Activity>,
     /// Whether history is written to disk.
     ///
     /// Off by default so constructing a session does no I/O: a test would otherwise read and
@@ -135,6 +171,8 @@ impl Session {
             history: crate::history::History::new(),
             written: 0,
             todos: Vec::new(),
+            phase: None,
+            running: None,
             persist: false,
             started: None,
         }
@@ -159,11 +197,30 @@ impl Session {
         self.started.map(|t| t.elapsed()).unwrap_or_default()
     }
 
+    /// What the indicator should call what is happening, most specific first.
+    ///
+    /// A call in flight is the most immediate answer, then the task the model says it is on,
+    /// then the phase it is waiting in. `None` only before the first request goes out, when
+    /// there is genuinely nothing to say yet and the turn's own word is all there is.
+    fn what_is_happening(&self) -> Option<String> {
+        if let Some(running) = &self.running {
+            return Some(running.line());
+        }
+        if let Some(row) = self
+            .todos
+            .iter()
+            .find(|row| row.status == bua_core::todo::Status::Active)
+        {
+            return Some(row.content.clone());
+        }
+        self.phase.map(|phase| phase.word().to_string())
+    }
+
     /// The indicator to show, or `None` when no turn is running.
     ///
-    /// The task in progress names it when there is one, so the line reads as what the model is
-    /// actually doing rather than a generic word. Falls back to the generic word when nothing is
-    /// marked active, which is every turn that does not keep a list.
+    /// Named after whatever is most specific about the moment, so the line answers the question
+    /// a waiting user actually has. Falls back to the turn's own word only before anything has
+    /// happened at all.
     pub fn indicator(&self) -> Option<crate::indicator::Indicator> {
         (self.status == Status::Working).then(|| {
             let base = crate::indicator::Indicator::new(
@@ -172,12 +229,8 @@ impl Session {
                 self.tokens,
             );
             let base = base.writing(self.written);
-            match self
-                .todos
-                .iter()
-                .find(|row| row.status == bua_core::todo::Status::Active)
-            {
-                Some(row) => base.labelled(row.content.clone()),
+            match self.what_is_happening() {
+                Some(what) => base.labelled(what),
                 None => base,
             }
         })
@@ -191,6 +244,50 @@ impl Session {
     /// Record how much the model has written so far in the turn in flight.
     pub fn set_written(&mut self, written: u64) {
         self.written = written;
+    }
+
+    /// Record what the turn is waiting on.
+    pub fn set_phase(&mut self, phase: Phase) {
+        self.phase = Some(phase);
+    }
+
+    /// Record what the model said on its way to the next tool call.
+    ///
+    /// Empty text is dropped here rather than by the turn, which cannot look at it to decide.
+    /// This side may: the text has been released, and a blank line in a transcript is a
+    /// presentation question.
+    pub fn narrate(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.transcript.push(Entry::assistant(text, Vec::new()));
+    }
+
+    /// Show a tool call that has begun.
+    pub fn start_activity(&mut self, activity: Activity) {
+        self.running = Some(activity.clone());
+        self.transcript.push(Entry::tool(activity));
+    }
+
+    /// Replace the call in flight with how it turned out.
+    ///
+    /// Matched by position, not by name: only one call runs at a time, so the running entry at
+    /// the end of the transcript is necessarily the one that just finished. A finish with no
+    /// start before it is appended rather than dropped, since losing the record of a call that
+    /// happened is worse than an unpaired line.
+    pub fn finish_activity(&mut self, activity: Activity) {
+        self.running = None;
+        match self.transcript.last_mut() {
+            Some(entry) if entry.speaker == Speaker::Tool && Self::still_running(entry) => {
+                *entry = Entry::tool(activity);
+            }
+            _ => self.transcript.push(Entry::tool(activity)),
+        }
+    }
+
+    fn still_running(entry: &Entry) -> bool {
+        entry.activity.as_ref().is_some_and(Activity::is_running)
     }
 
     /// Accept a typed character. Ignored while a turn is running, so input cannot be
@@ -218,6 +315,23 @@ impl Session {
     pub fn restore(&mut self, prompt: impl Into<String>) {
         self.status = Status::Idle;
         self.started = None;
+        self.phase = None;
+        self.running = None;
+        self.scroll = 0;
+
+        // Nothing was recorded after the prompt, so there is nothing to have second thoughts
+        // about: the turn can be un-sent whole.
+        if !matches!(self.transcript.last(), Some(entry) if entry.speaker == Speaker::User) {
+            // Otherwise the turn visibly did things, some of which touched the workspace.
+            // Putting the prompt back would offer to redo work that is on the screen, and
+            // removing what happened would hide it, so both stay and the stop is recorded.
+            let todos = std::mem::take(&mut self.todos);
+            self.transcript
+                .push(Entry::system("stopped").with_todos(todos));
+            return;
+        }
+
+        self.transcript.pop();
         // Popped because the text is going back into the box: offering it from history as well
         // would present the same line from two places. Rewritten rather than appended, since the
         // stored copy has to go too.
@@ -226,15 +340,9 @@ impl Session {
             crate::store::save_history(self.history.entries());
         }
         self.input = prompt.into();
-        // The submitted prompt is still in the transcript, so it is removed: the turn produced
-        // nothing, and leaving it would read as a question that went unanswered.
-        if matches!(self.transcript.last(), Some(entry) if entry.speaker == Speaker::User) {
-            self.transcript.pop();
-        }
         // Discarded rather than kept: the prompt is going back into the box as though it had never
         // been sent, so a plan for a turn that is being un-sent has nothing to describe.
         self.todos.clear();
-        self.scroll = 0;
     }
 
     /// Discard whatever has been typed.
@@ -293,6 +401,8 @@ impl Session {
         // though the new turn had it outstanding.
         self.todos.clear();
         self.written = 0;
+        self.phase = None;
+        self.running = None;
         self.started = Some(Instant::now());
         Some(prompt)
     }
@@ -307,6 +417,8 @@ impl Session {
         self.status = Status::Idle;
         self.scroll = 0;
         self.started = None;
+        self.phase = None;
+        self.running = None;
         // Accumulated across the session: the figure answers "what has this cost me", which is
         // about the session rather than the last turn.
         self.tokens += tokens;
@@ -323,6 +435,8 @@ impl Session {
         self.status = Status::Idle;
         self.scroll = 0;
         self.started = None;
+        self.phase = None;
+        self.running = None;
     }
 
     pub fn note(&mut self, message: impl Into<String>) {
@@ -844,6 +958,210 @@ mod tests {
             s.complete("second", Vec::new(), 500);
 
             assert_eq!(s.tokens, 1_500);
+        }
+    }
+
+    mod progress {
+        use super::*;
+        use bua_agent::report::{Activity, Phase};
+
+        fn working() -> Session {
+            let mut s = session();
+            s.type_char('a');
+            s.submit();
+            s
+        }
+
+        /// The whole point: a call is on screen while it runs, not only once it is over.
+        #[test]
+        fn a_call_appears_before_it_finishes() {
+            let mut s = working();
+            s.start_activity(Activity::running("Read", "src/main.rs"));
+
+            let entry = s.transcript.last().expect("an entry");
+            assert_eq!(entry.speaker, Speaker::Tool);
+            assert_eq!(entry.text, "Read(src/main.rs)");
+            assert!(
+                entry.activity.as_ref().expect("an activity").is_running(),
+                "the call was recorded as already over"
+            );
+        }
+
+        /// Finishing replaces the running line rather than adding a second one, or every call
+        /// would appear twice.
+        #[test]
+        fn finishing_replaces_the_line_rather_than_adding_one() {
+            let mut s = working();
+            s.start_activity(Activity::running("Read", "src/main.rs"));
+            s.finish_activity(Activity::running("Read", "src/main.rs").done("12 lines"));
+
+            let tools: Vec<&Entry> = s
+                .transcript
+                .iter()
+                .filter(|e| e.speaker == Speaker::Tool)
+                .collect();
+            assert_eq!(tools.len(), 1, "the call was recorded twice");
+            assert_eq!(
+                tools[0]
+                    .activity
+                    .as_ref()
+                    .expect("an activity")
+                    .note
+                    .as_deref(),
+                Some("12 lines")
+            );
+        }
+
+        /// Several calls in a row each keep their own line.
+        #[test]
+        fn each_call_keeps_its_own_line() {
+            let mut s = working();
+            for path in ["a.rs", "b.rs", "c.rs"] {
+                s.start_activity(Activity::running("Read", path));
+                s.finish_activity(Activity::running("Read", path).done("1 line"));
+            }
+            assert_eq!(
+                s.transcript
+                    .iter()
+                    .filter(|e| e.speaker == Speaker::Tool)
+                    .count(),
+                3
+            );
+        }
+
+        /// A finish with nothing running is still recorded. Losing the record of a call that
+        /// happened is worse than an unpaired line.
+        #[test]
+        fn a_finish_without_a_start_is_still_recorded() {
+            let mut s = working();
+            s.finish_activity(Activity::running("Write", "a.rs").done("3 lines"));
+            assert_eq!(
+                s.transcript.last().expect("an entry").speaker,
+                Speaker::Tool
+            );
+        }
+
+        /// The model's account of its own work is the best progress report there is.
+        #[test]
+        fn narration_lands_in_the_transcript_as_the_assistant() {
+            let mut s = working();
+            s.narrate("Let me look at the config first.");
+
+            let entry = s.transcript.last().expect("an entry");
+            assert_eq!(entry.speaker, Speaker::Assistant);
+            assert_eq!(entry.text, "Let me look at the config first.");
+        }
+
+        /// A round with no prose still reports, so the blank has to be dropped here: an empty
+        /// entry would draw as a gap the user cannot account for.
+        #[test]
+        fn empty_narration_is_not_drawn() {
+            let mut s = working();
+            let before = s.transcript.len();
+            s.narrate("");
+            s.narrate("   \n  ");
+            assert_eq!(s.transcript.len(), before);
+        }
+
+        /// The indicator names the call in flight, which is the most specific thing true at
+        /// that moment.
+        #[test]
+        fn a_running_call_names_the_indicator() {
+            let mut s = working();
+            s.set_phase(Phase::Thinking);
+            s.start_activity(Activity::running("Search", "MAX_STEPS"));
+            assert_eq!(s.indicator().expect("working").verb, "Search(MAX_STEPS)");
+        }
+
+        /// And gives the name back when it ends, rather than leaving a finished call on the
+        /// line as though it were still going.
+        #[test]
+        fn a_finished_call_stops_naming_the_indicator() {
+            let mut s = working();
+            s.set_phase(Phase::Thinking);
+            s.start_activity(Activity::running("Search", "MAX_STEPS"));
+            s.finish_activity(Activity::running("Search", "MAX_STEPS").done("2 matches"));
+            assert_eq!(s.indicator().expect("working").verb, "Thinking");
+        }
+
+        /// The first wait is the long one and has no call to show for it, so the phase word is
+        /// what stops it reading as a hang.
+        #[test]
+        fn the_phase_names_the_indicator_when_nothing_else_can() {
+            let mut s = working();
+            let generic = s.indicator().expect("working").verb.to_string();
+            s.set_phase(Phase::Planning);
+            assert_eq!(s.indicator().expect("working").verb, "Planning");
+            assert_ne!(generic, "Planning");
+        }
+
+        /// A task the model marked in progress beats the phase word: it says what the work is,
+        /// not merely what the turn is waiting on.
+        #[test]
+        fn an_active_task_beats_the_phase_word() {
+            let mut s = working();
+            s.set_phase(Phase::Thinking);
+            s.set_todos(bua_core::todo::rows(&bua_core::todo::List::new(vec![
+                bua_core::todo::Item::new("Add prompt history", bua_core::todo::Status::Active),
+            ])));
+            assert_eq!(s.indicator().expect("working").verb, "Add prompt history");
+        }
+
+        /// One turn's calls must not appear under the next one's prompt.
+        #[test]
+        fn a_new_turn_starts_with_nothing_in_flight() {
+            let mut s = working();
+            s.set_phase(Phase::Thinking);
+            s.start_activity(Activity::running("Read", "a.rs"));
+            s.complete("done", Vec::new(), 0);
+            assert!(s.running.is_none());
+            assert!(s.phase.is_none());
+
+            s.type_char('b');
+            s.submit();
+            assert!(s.indicator().expect("working").verb != "Read(a.rs)");
+        }
+
+        /// A cancelled turn that already did things keeps them. The prompt stays put too:
+        /// offering it back would invite redoing work that is on the screen, and some of it
+        /// touched the workspace.
+        #[test]
+        fn cancelling_after_work_keeps_the_record_rather_than_un_sending_it() {
+            let mut s = session();
+            for c in "do the thing".chars() {
+                s.type_char(c);
+            }
+            let prompt = s.submit().expect("submitted");
+            s.start_activity(Activity::running("Write", "a.rs"));
+            s.finish_activity(Activity::running("Write", "a.rs").done("3 lines"));
+
+            s.restore(prompt);
+
+            assert!(s.input.is_empty(), "the prompt was offered back");
+            assert!(
+                s.transcript.iter().any(|e| e.speaker == Speaker::User),
+                "the prompt was removed even though work had happened"
+            );
+            assert!(
+                s.transcript.iter().any(|e| e.speaker == Speaker::Tool),
+                "the record of the write was thrown away"
+            );
+            assert_eq!(s.status, Status::Idle);
+        }
+
+        /// With nothing done, cancelling still un-sends the whole thing, which is what makes
+        /// Escape usable as a change of mind.
+        #[test]
+        fn cancelling_before_anything_happens_still_un_sends_the_prompt() {
+            let mut s = session();
+            for c in "never mind".chars() {
+                s.type_char(c);
+            }
+            let prompt = s.submit().expect("submitted");
+            s.restore(prompt);
+
+            assert_eq!(s.input, "never mind");
+            assert!(s.transcript.is_empty());
         }
     }
 

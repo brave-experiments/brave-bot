@@ -15,7 +15,7 @@
 //!   let the display outrank the work.
 
 use bua_agent::confirm::{Confirmer, Decision, WriteRequest};
-use bua_agent::report::Reporter;
+use bua_agent::report::{Activity, Phase, Reporter};
 use bua_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -28,6 +28,14 @@ pub enum ToMain {
     Todos(Vec<Row>),
     /// The model has written this many output tokens so far. No reply.
     Written(u64),
+    /// The turn is waiting on the model again. No reply.
+    Phase(Phase),
+    /// The model said something between tool calls. No reply.
+    Narration(String),
+    /// A tool call has begun. No reply.
+    Started(Activity),
+    /// The tool call last announced has finished. No reply.
+    Finished(Activity),
 }
 
 /// The worker's end for questions: sends a write, waits for the answer.
@@ -78,6 +86,22 @@ impl Reporter for RemoteReporter {
 
     fn output_tokens(&mut self, written: u64) {
         let _ = self.outbound.send(ToMain::Written(written));
+    }
+
+    fn phase(&mut self, phase: Phase) {
+        let _ = self.outbound.send(ToMain::Phase(phase));
+    }
+
+    fn narration(&mut self, text: String) {
+        let _ = self.outbound.send(ToMain::Narration(text));
+    }
+
+    fn tool_started(&mut self, activity: Activity) {
+        let _ = self.outbound.send(ToMain::Started(activity));
+    }
+
+    fn tool_finished(&mut self, activity: Activity) {
+        let _ = self.outbound.send(ToMain::Finished(activity));
     }
 }
 
@@ -200,6 +224,10 @@ mod tests {
 
         let mut reporter = RemoteReporter::new(outbound);
         reporter.todos(rows(&List::new(vec![Item::new("step", Status::Done)])));
+        reporter.phase(Phase::Thinking);
+        reporter.narration("nobody is listening".into());
+        reporter.tool_started(Activity::running("Read", "a.rs"));
+        reporter.tool_finished(Activity::running("Read", "a.rs").done("1 line"));
     }
 
     /// Both handles share one channel, and a write still gets its answer with reports interleaved.
@@ -217,6 +245,10 @@ mod tests {
                 match message {
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),
+                    ToMain::Phase(_) => seen.push("phase"),
+                    ToMain::Narration(_) => seen.push("narration"),
+                    ToMain::Started(_) => seen.push("started"),
+                    ToMain::Finished(_) => seen.push("finished"),
                     ToMain::Write(_) => {
                         seen.push("write");
                         answer_tx.send(Decision::Approve).expect("answered");
@@ -229,10 +261,22 @@ mod tests {
 
         reporter.todos(rows(&List::new(vec![Item::new("step", Status::Active)])));
         reporter.output_tokens(42);
+        reporter.phase(Phase::Planning);
+        reporter.narration("about to write".into());
+        reporter.tool_started(Activity::running("Write", "notes.md"));
+        reporter.tool_finished(Activity::running("Write", "notes.md").done("1 line"));
         assert_eq!(confirmer.confirm_write(&request()), Decision::Approve);
         assert_eq!(
             responder.join().expect("finished"),
-            vec!["todos", "written", "write"]
+            vec![
+                "todos",
+                "written",
+                "phase",
+                "narration",
+                "started",
+                "finished",
+                "write"
+            ]
         );
     }
 

@@ -311,9 +311,18 @@ fn run_turn_animated(
                 // answer and the loop below will collect its result.
                 let _ = answer_tx.send(decision);
             }
-            // No reply: the list is recorded and the next redraw, one iteration away, shows it.
+            // No reply: each of these is recorded and the next redraw, one iteration away,
+            // shows it. That is what makes a long turn legible while it runs.
             Ok(crate::remote_confirm::ToMain::Todos(rows)) => session.set_todos(rows),
             Ok(crate::remote_confirm::ToMain::Written(written)) => session.set_written(written),
+            Ok(crate::remote_confirm::ToMain::Phase(phase)) => session.set_phase(phase),
+            Ok(crate::remote_confirm::ToMain::Narration(text)) => session.narrate(text),
+            Ok(crate::remote_confirm::ToMain::Started(activity)) => {
+                session.start_activity(activity)
+            }
+            Ok(crate::remote_confirm::ToMain::Finished(activity)) => {
+                session.finish_activity(activity)
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // The worker dropped its senders, so the turn is over.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
