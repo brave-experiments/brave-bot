@@ -40,9 +40,16 @@ use crate::state::{Session, Status};
 /// promptly, long enough not to spin.
 const POLL: Duration = Duration::from_millis(100);
 
-/// Turns off the mouse mode that reports motion with no button held, leaving the one that
-/// reports motion during a drag. Sent after [`EnableMouseCapture`], which asks for both.
-const TRACK_MOTION_ONLY_WHILE_DRAGGING: &str = "\x1b[?1003l";
+/// Asks for motion reported only while a button is held.
+///
+/// Sent after [`EnableMouseCapture`], which asks for all three tracking modes at once, including
+/// the one that reports a pointer merely crossing the window. Turning that one off is the whole
+/// intent, but terminals disagree about what the three modes are: some keep a flag per mode and
+/// use the highest one set, others keep a single state that the last request wins. Sending the
+/// two that are wanted again, after the one that is not, lands both kinds in the same place.
+/// Without that, a terminal of the second kind reads it as "no tracking at all" and the wheel
+/// goes back to scrolling the window behind the session.
+const TRACK_MOTION_ONLY_WHILE_DRAGGING: &str = "\x1b[?1003l\x1b[?1000h\x1b[?1002h";
 
 /// How often to redraw while a turn runs. Matches the spinner's own frame time so the animation
 /// advances by one glyph per redraw rather than skipping.
@@ -643,6 +650,25 @@ mod tests {
         assert!(
             selection.covers(3, 10),
             "the sweep did not cover its middle"
+        );
+    }
+
+    /// The sequence has to leave a terminal that keeps one tracking state in the mode that
+    /// reports drags, or the wheel stops reaching the session and scrolls the window behind it
+    /// instead. What is asked for last is what such a terminal ends up in.
+    #[test]
+    fn the_mouse_request_ends_in_the_mode_that_reports_a_drag() {
+        assert!(
+            TRACK_MOTION_ONLY_WHILE_DRAGGING.ends_with("\x1b[?1002h"),
+            "a terminal with one tracking state would be left without drags"
+        );
+        assert!(
+            TRACK_MOTION_ONLY_WHILE_DRAGGING.starts_with("\x1b[?1003l"),
+            "all-motion reporting was never turned off"
+        );
+        assert!(
+            TRACK_MOTION_ONLY_WHILE_DRAGGING.contains("\x1b[?1000h"),
+            "button reporting, which carries the wheel, was not asked for again"
         );
     }
 
