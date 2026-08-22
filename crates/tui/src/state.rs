@@ -301,6 +301,25 @@ impl Session {
         }
     }
 
+    /// Insert pasted text into the input.
+    ///
+    /// Kept apart from typing because a paste is one act, not a stream of keys. Pasted text
+    /// routinely ends in a newline, and a terminal that delivers a paste as keystrokes turns
+    /// that into Enter: a prompt copied from somewhere else used to send itself before its
+    /// author had read it back. Nothing here submits.
+    ///
+    /// Line endings are normalised so text copied from anywhere lands as the same thing. The
+    /// newlines are kept rather than flattened, since a pasted paragraph was written with them
+    /// and the box draws them.
+    pub fn paste(&mut self, text: &str) {
+        if self.status != Status::Idle {
+            return;
+        }
+        self.history.leave();
+        self.input
+            .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+    }
+
     pub fn backspace(&mut self) {
         if self.status == Status::Idle {
             self.history.leave();
@@ -481,6 +500,38 @@ mod tests {
         assert_eq!(s.input, "hi");
         s.backspace();
         assert_eq!(s.input, "h");
+    }
+
+    /// A pasted paragraph keeps its lines: it was written with them, and the box draws them.
+    /// Line endings from anywhere land as the same thing, so text copied out of a document
+    /// written on Windows does not arrive with the returns still in it.
+    #[test]
+    fn a_paste_keeps_its_lines_however_they_were_written() {
+        let mut s = session();
+        s.paste("first\r\nsecond\rthird\nfourth");
+        assert_eq!(s.input, "first\nsecond\nthird\nfourth");
+    }
+
+    /// A paste lands where typing does, so half a typed line plus a paste is one prompt.
+    #[test]
+    fn a_paste_joins_what_was_already_typed() {
+        let mut s = session();
+        s.type_char('>');
+        s.paste(" pasted");
+        assert_eq!(s.input, "> pasted");
+    }
+
+    /// Pasting mid-turn is refused for the same reason typing is: the turn in flight owns the
+    /// session, and there is no second one to start.
+    #[test]
+    fn a_paste_is_refused_while_a_turn_is_running() {
+        let mut s = session();
+        s.type_char('x');
+        s.submit();
+        assert_eq!(s.status, Status::Working);
+
+        s.paste("more");
+        assert!(s.input.is_empty(), "a paste was accepted mid-turn");
     }
 
     #[test]

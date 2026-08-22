@@ -20,8 +20,8 @@ use bua_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent,
-    KeyModifiers, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as TermEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -141,6 +141,16 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     }
 }
 
+/// Interpret a paste.
+///
+/// A paste is one act rather than a run of keys, which is the whole point of asking the
+/// terminal for it separately: the text lands in the box and the user decides when to send it.
+/// It never submits, whatever it ends with.
+pub fn handle_paste(session: &mut Session, text: &str) -> Action {
+    session.paste(text);
+    Action::Redraw
+}
+
 /// Interpret a mouse event.
 ///
 /// The wheel is what most people reach for first, so it scrolls without any modifier.
@@ -164,7 +174,16 @@ pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::R
     let mut stdout = io::stdout();
     // Mouse capture is what makes the wheel scroll the transcript. It costs the
     // terminal's own text selection, so it is disabled again on the way out.
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    //
+    // Bracketed paste is what keeps a pasted prompt from sending itself. Without it the
+    // terminal delivers a paste as ordinary keystrokes, and the newline most clipboards carry
+    // at the end arrives as Enter.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(&mut terminal, config, workspace, confinement);
@@ -174,6 +193,7 @@ pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::R
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
@@ -222,6 +242,7 @@ fn event_loop(
         let action = match event::read()? {
             TermEvent::Key(key) => handle_key(&mut session, key),
             TermEvent::Mouse(mouse) => handle_mouse(&mut session, mouse),
+            TermEvent::Paste(text) => handle_paste(&mut session, &text),
             _ => Action::None,
         };
 
@@ -426,6 +447,32 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// The bug this exists for: a prompt copied from somewhere else usually ends in a newline,
+    /// and a paste delivered as keystrokes turns that into Enter. It used to send itself before
+    /// its author had read it back.
+    #[test]
+    fn a_paste_that_ends_in_a_newline_does_not_send_it() {
+        let mut session = Session::new("none");
+        let action = handle_paste(&mut session, "write me a game\n");
+
+        assert_eq!(action, Action::Redraw);
+        assert_eq!(session.input, "write me a game\n");
+        assert_eq!(session.status, Status::Idle, "the paste started a turn");
+        assert!(session.transcript.is_empty(), "the paste sent something");
+    }
+
+    /// And it is still one prompt afterwards: Enter sends what was pasted, once.
+    #[test]
+    fn a_pasted_prompt_is_sent_when_the_user_says_so() {
+        let mut session = Session::new("none");
+        handle_paste(&mut session, "write me a game\n");
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("write me a game".to_string())
+        );
     }
 
     #[test]
