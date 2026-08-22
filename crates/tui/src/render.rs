@@ -133,11 +133,12 @@ fn diff_lines(changes: &[Change]) -> Vec<Line<'static>> {
         })
         .collect();
 
-    // Said rather than silently dropped: a diff that stops without saying so reads as the
-    // whole change, which is how a reviewer misses half of it.
+    // Said rather than silently dropped: a change that stops without saying so reads as the
+    // whole change, which is how a reviewer misses half of it. Worded for both kinds of write,
+    // since a new file's lines were never a diff of anything.
     if changes.len() > MAX_DIFF_LINES {
         lines.push(Line::from(Span::styled(
-            format!("     … {} more diff lines", changes.len() - MAX_DIFF_LINES),
+            format!("     … {} more lines", changes.len() - MAX_DIFF_LINES),
             dim(),
         )));
     }

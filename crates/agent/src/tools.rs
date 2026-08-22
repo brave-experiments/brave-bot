@@ -317,15 +317,27 @@ const DIFF_CONTEXT: usize = 3;
 /// Both sides are strings already released to a screen, so this reasons about no labels, the
 /// same footing [`crate::diff`] has always been on.
 ///
-/// A new file gets its size and no hunks. Every line of it would be an addition, which fills
-/// the screen with the body the user is about to open anyway and buries the lines that follow.
+/// A new file says it is new and shows what it now holds. It used to show a line count and
+/// nothing else, on the grounds that every line of it is an addition and the body would fill the
+/// screen. The display trims what it draws, so it does not; and in a directory the user has
+/// vouched for a create is never reviewed either, so that count was the only thing they were
+/// ever going to be told about a file that had just appeared in their workspace.
 fn change_report(
     intent: Intent,
     existing: Option<&str>,
     written: &str,
 ) -> (String, Vec<crate::diff::Change>) {
     if intent == Intent::Create {
-        return (tally(written.lines().count(), "line", "lines"), Vec::new());
+        return (
+            format!(
+                "new file, {}",
+                tally(written.lines().count(), "line", "lines")
+            ),
+            written
+                .lines()
+                .map(|line| crate::diff::Change::Added(line.to_string()))
+                .collect(),
+        );
     }
 
     let diff = Diff::compute(existing.unwrap_or(""), written);
@@ -1039,13 +1051,29 @@ mod tests {
             assert_eq!(tally(2, "match", "matches"), "2 matches");
         }
 
-        /// A new file is reported by its size. Every line of it is an addition, so a hunk view
-        /// would be the whole body, which buries everything after it.
+        /// A file appearing in someone's workspace should say so and show what is in it. Told
+        /// only that three lines were written, the user has no idea what was created, and in a
+        /// directory they have vouched for nothing else will tell them either.
         #[test]
-        fn a_new_file_is_reported_by_size_with_no_hunks() {
+        fn a_new_file_says_it_is_new_and_shows_what_it_holds() {
             let (note, changes) = change_report(Intent::Create, None, "one\ntwo\nthree\n");
-            assert_eq!(note, "3 lines");
-            assert!(changes.is_empty(), "a new file was shown as a diff");
+            assert_eq!(note, "new file, 3 lines");
+            assert_eq!(
+                changes,
+                vec![
+                    crate::diff::Change::Added("one".to_string()),
+                    crate::diff::Change::Added("two".to_string()),
+                    crate::diff::Change::Added("three".to_string()),
+                ]
+            );
+        }
+
+        /// An overwrite is not a create, and the two have to be distinguishable at a glance:
+        /// one is a file that did not exist a moment ago.
+        #[test]
+        fn an_overwrite_is_reported_as_a_change_rather_than_as_a_new_file() {
+            let (note, _) = change_report(Intent::Overwrite, Some("old\n"), "new\n");
+            assert_eq!(note, "added 1 line, removed 1 line");
         }
 
         /// An edit is reported by what it changed, and carries the hunks so the user can see
