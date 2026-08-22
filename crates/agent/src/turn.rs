@@ -60,12 +60,6 @@ each one finishes so the user can watch progress. Send the whole list every time
 finished tasks in it marked completed, and keep exactly one task in_progress while work \
 remains on it. Do not use it for a single step or a question.";
 
-/// Tool-calling rounds allowed before the turn stops.
-///
-/// A bound is required: a model can otherwise loop indefinitely, and each round costs a
-/// request. Reaching it is reported rather than hidden.
-const MAX_STEPS: usize = 8;
-
 #[derive(Debug)]
 pub enum TurnError {
     /// The user asked for the turn to stop.
@@ -76,8 +70,6 @@ pub enum TurnError {
     Workspace(WorkspaceError),
     /// The model call failed or was refused.
     Chat(bua_aichat::ChatError),
-    /// The model kept calling tools past the limit.
-    StepLimit(usize),
 }
 
 impl fmt::Display for TurnError {
@@ -87,11 +79,6 @@ impl fmt::Display for TurnError {
             Self::Precommit(detail) => write!(f, "{detail}"),
             Self::Workspace(e) => write!(f, "{e}"),
             Self::Chat(e) => write!(f, "{e}"),
-            Self::StepLimit(limit) => write!(
-                f,
-                "the model was still calling tools after {limit} rounds; stopping rather \
-                 than returning a partial answer"
-            ),
         }
     }
 }
@@ -367,11 +354,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         }
 
         steps += 1;
-        if steps > MAX_STEPS {
-            // Reported as an error rather than silently returning a partial answer,
-            // which would look like a considered reply.
-            return Err(TurnError::StepLimit(MAX_STEPS));
-        }
 
         // The assistant's tool request is replayed so the conversation stays coherent,
         // then each result is appended as a user message. A dedicated tool role would be

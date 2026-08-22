@@ -466,6 +466,43 @@ fn tool_request(tool: &str, arguments: &str) -> String {
     )
 }
 
+/// A long piece of work is not a failure. The turn used to stop after a fixed number of
+/// tool rounds and discard everything it had done, which turned a slow job into an error
+/// message; the user's own cancel is what ends a turn early now.
+#[test]
+fn a_turn_is_not_cut_off_after_a_fixed_number_of_rounds() {
+    let scratch = Scratch::new("no-round-limit");
+    std::fs::write(scratch.path.join("target.txt"), "the file body").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Comfortably past any bound short enough to be worth having.
+    const ROUNDS: usize = 20;
+    let mut replies: Vec<String> = (0..ROUNDS)
+        .map(|_| tool_request("read_file", r#"{"path":"target.txt"}"#))
+        .collect();
+    replies.push(reply_with("finally, an answer"));
+
+    let (endpoint, _received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("keep going");
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("a long turn still finishes");
+
+    assert_eq!(outcome.steps, ROUNDS);
+    assert_eq!(outcome.reply_for_display(), "finally, an answer");
+}
+
 /// The model asks to read a file, gets the contents, then answers.
 #[test]
 fn the_model_can_call_a_tool_and_then_answer() {
@@ -582,38 +619,6 @@ fn a_model_cannot_escape_the_workspace() {
     assert!(
         !second.contains("root:"),
         "content from outside the workspace reached the model"
-    );
-}
-
-/// A model that never stops calling tools must be bounded rather than looping forever.
-#[test]
-fn a_runaway_tool_loop_is_bounded() {
-    let scratch = Scratch::new("runaway");
-    std::fs::write(scratch.path.join("a.txt"), "x").unwrap();
-    let workspace = Workspace::new(&scratch.path).expect("workspace");
-
-    // More tool requests than the limit allows.
-    let replies: Vec<String> = (0..20)
-        .map(|_| tool_request("read_file", r#"{"path":"a.txt"}"#))
-        .collect();
-    let (endpoint, _received) = serve_sequence(replies);
-    let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
-    let mut sink = RecordingSink::new();
-
-    let task = Task::new("loop forever");
-    let error = turn::run(
-        &config,
-        &egress,
-        &workspace,
-        &task,
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut sink,
-    )
-    .expect_err("the loop must be bounded");
-    assert!(
-        error.to_string().contains("still calling tools"),
-        "got: {error}"
     );
 }
 
