@@ -1,9 +1,13 @@
 //! Command-line entry point.
 
+mod progress;
+
 use bua_agent::Workspace;
 use bua_agent::turn::{self, Task};
 use bua_config::Config;
+use bua_core::cancel::Cancel;
 use bua_core::event::{Event, RecordingSink, Role};
+use bua_core::trust::TrustStore;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -126,13 +130,20 @@ fn run_task(args: &[String]) -> ExitCode {
     // silently applied.
     let mut confirmer = bua_agent::RefuseWrites;
 
-    match turn::run(
+    // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes
+    // the command pipeable. Without it a long turn prints nothing until it is over.
+    let mut reporter = progress::Progress::new(std::io::stderr());
+
+    match turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
+        &mut reporter,
         &mut sink,
+        TrustStore::new(),
+        &Cancel::new(),
     ) {
         Ok(outcome) => {
             // The reply is untrusted model output. Printing it is safe, since the
