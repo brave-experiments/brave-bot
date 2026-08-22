@@ -258,6 +258,20 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         &self.trust
     }
 
+    /// Begin with the context an earlier turn ended with.
+    ///
+    /// A session is several turns over one conversation, and the model's output is a function of
+    /// everything its context has held, not only of what this turn has read so far. A turn that
+    /// resumes a conversation therefore inherits what that conversation had already met, or the
+    /// second turn would label as trusted what the first would not have.
+    ///
+    /// One way, like every other move on this value: it goes through [`Policy::absorb`], which
+    /// cannot raise the integrity of a context. Passing [`Integrity::Trusted`] changes nothing.
+    pub fn resuming(mut self, context: Integrity) -> Self {
+        self.absorb(context);
+        self
+    }
+
     /// The integrity of everything the model's context contains.
     pub fn context_integrity(&self) -> Integrity {
         self.context
@@ -1564,6 +1578,44 @@ mod tests {
 
     /// Context integrity must not recover, or a trusted read after an untrusted one would
     /// launder the whole turn.
+    /// A later turn of a session inherits what the conversation has already met. Starting each
+    /// turn afresh would let a second turn call trusted what the first had stopped calling
+    /// trusted, which is laundering with a turn boundary in the middle of it.
+    #[test]
+    fn a_resumed_context_keeps_what_the_conversation_already_met() {
+        let mut sink = RecordingSink::new();
+        let policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .resuming(Integrity::Untrusted);
+        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+    }
+
+    /// The move only ever goes one way, so resuming a trusted conversation from an untrusted turn
+    /// is not a way back up.
+    #[test]
+    fn resuming_cannot_raise_the_integrity_of_a_context() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+        policy
+            .observe_path(Capability::FileRead, "somewhere/nobody/vouched/for")
+            .expect("the read is observed");
+        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+
+        let policy = policy.resuming(Integrity::Trusted);
+        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+    }
+
     #[test]
     fn context_integrity_never_recovers() {
         let mut sink = RecordingSink::new();

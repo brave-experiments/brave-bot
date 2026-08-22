@@ -7,6 +7,10 @@
 //! A persistent session is N sequential turns, each beginning afresh. It is never one
 //! long-lived policy: `Policy::finish` consumes the policy, so a later turn cannot
 //! inherit routing that has drifted as untrusted content accumulated.
+//!
+//! What a session does carry between turns is the [`Conversation`]: the exchange so far, the
+//! quarantine the references in it name, and the integrity that exchange has met. A new policy
+//! each turn, resuming a conversation that outlives it.
 
 use bua_aichat::AichatClient;
 use bua_aichat::protocol::{ChatRequest, Message};
@@ -16,13 +20,13 @@ use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::Sink;
 use bua_core::policy::{Policy, ReleasePlan, Routing};
 use bua_core::reference::Presentation;
-use bua_core::slot::{SlotId, SlotStore};
 use bua_core::trust::TrustStore;
 use bua_core::value::Labelled;
 use bua_net::Egress;
 use std::fmt;
 
 use crate::confirm::Confirmer;
+use crate::conversation::Conversation;
 use crate::report::{IgnoreReports, Phase, Reporter};
 use crate::tools;
 use crate::workspace::{Workspace, WorkspaceError};
@@ -181,6 +185,38 @@ pub fn run<S: Sink, C: Confirmer>(
     )
 }
 
+/// Run one turn, continuing a conversation.
+///
+/// The conversation is borrowed rather than returned because a turn that fails has still had
+/// one: what it asked, what it read, and what it was told are the very things the next turn
+/// needs in order to be told "try that again".
+#[allow(clippy::too_many_arguments)]
+pub fn resume<S: Sink, C: Confirmer, R: Reporter>(
+    config: &Config,
+    egress: &Egress,
+    workspace: &Workspace,
+    task: &Task,
+    conversation: &mut Conversation,
+    confirmer: &mut C,
+    reporter: &mut R,
+    sink: &mut S,
+    trust: TrustStore,
+    cancel: &Cancel,
+) -> Result<Outcome, TurnError> {
+    run_inner(
+        config,
+        egress,
+        workspace,
+        task,
+        conversation,
+        confirmer,
+        reporter,
+        sink,
+        trust,
+        cancel,
+    )
+}
+
 /// As [`run_with_trust`], with a token the caller can use to stop the turn and a reporter to tell
 /// about progress.
 ///
@@ -200,7 +236,16 @@ pub fn run_cancellable<S: Sink, C: Confirmer, R: Reporter>(
     cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
     run_inner(
-        config, egress, workspace, task, confirmer, reporter, sink, trust, cancel,
+        config,
+        egress,
+        workspace,
+        task,
+        &mut Conversation::new(),
+        confirmer,
+        reporter,
+        sink,
+        trust,
+        cancel,
     )
 }
 
@@ -223,6 +268,7 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
         egress,
         workspace,
         task,
+        &mut Conversation::new(),
         confirmer,
         &mut IgnoreReports,
         sink,
@@ -237,6 +283,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     egress: &Egress,
     workspace: &Workspace,
     task: &Task,
+    conversation: &mut Conversation,
     confirmer: &mut C,
     reporter: &mut R,
     sink: &mut S,
@@ -258,23 +305,15 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         Capability::FileWrite,
     ]);
 
+    // The conversation's integrity is inherited, never reset. A fresh policy is not a fresh
+    // context: this turn's model output is a function of everything the exchange has held.
     let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)
         .map_err(|d| TurnError::Precommit(d.to_string()))?
-        .with_trust(trust);
-
-    // Quarantine for this turn. Untrusted content lands here and the planner is told only its
-    // shape, so nothing an attacker wrote reaches the model's context.
-    let mut slots = SlotStore::new();
-    // Names for quarantined content. Trusted metadata: a counter, never derived from content.
-    //
-    // One sequence for everything a turn quarantines, context files and tool results alike. Two
-    // counters both starting at zero collided the moment a turn did both, because a slot is
-    // write-once and the second claim on a name is refused.
-    let mut next_reference = 0usize;
+        .with_trust(trust)
+        .resuming(conversation.context());
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
     // construction and the read gate can only pass for files the user named.
-    let mut messages = vec![Message::system(SYSTEM_PROMPT)];
 
     for index in 0..task.files.len() {
         let key = format!("file_{index}");
@@ -285,20 +324,22 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             .to_string();
 
         let contents = workspace.read(&mut policy, &Labelled::trusted(path.clone()))?;
+        // Recorded here rather than at the end of the turn: a turn that fails after this still
+        // read it, and the conversation the next turn resumes has to know.
+        conversation.observed(policy.context_integrity());
 
         // The kernel decides whether the model may see this, from the label alone. A file from
         // a trusted path is shown; anything else is quarantined and the model gets only a
         // reference. Nothing here can override that, which is the point, since a "this is
         // data, not instructions" wrapper is exactly the mitigation this design refuses to
         // rely on.
-        let slot = SlotId::new(format!("ref:{next_reference}"));
-        next_reference += 1;
+        let slot = conversation.next_reference();
 
         let presented = policy
-            .present("chat", slot, &path, &contents, &mut slots)
+            .present("chat", slot, &path, &contents, conversation.quarantine())
             .map_err(|d| TurnError::Precommit(d.to_string()))?;
 
-        messages.push(Message::user(match &presented {
+        conversation.push(Message::user(match &presented {
             Presentation::Visible(body) => format!("Contents of {path}:\n\n{body}"),
             Presentation::Quarantined(reference) => {
                 format!(
@@ -309,7 +350,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         }));
     }
 
-    messages.push(Message::user(task.prompt.clone()));
+    conversation.push(Message::user(task.prompt.clone()));
 
     // Premium is used when a subscription has been imported and this build knows the premium
     // host, and is silently skipped otherwise. Discovery happens per turn so an import mid-session
@@ -343,7 +384,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let round = Phase::of_round(steps);
         reporter.phase(round);
 
-        let request = ChatRequest::new(&config.model, messages.clone()).with_tools(offered.clone());
+        let request = ChatRequest::new(&config.model, conversation.with_system(SYSTEM_PROMPT))
+            .with_tools(offered.clone());
 
         // Streamed so the interface can show the reply growing. Each round's count restarts at
         // zero, so earlier rounds are added back: the figure is for the turn, not the round.
@@ -392,7 +434,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             .iter()
             .map(|c| c.function.name.clone())
             .collect();
-        messages.push(Message::assistant(format!(
+        conversation.push(Message::assistant(format!(
             "(requesting tools: {})",
             requested.join(", ")
         )));
@@ -405,11 +447,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             }
 
             let output = tools::dispatch(&mut policy, workspace, confirmer, reporter, call);
+            // As with a context file: what the turn has seen belongs to the conversation the
+            // moment it sees it, not once the turn happens to end well.
+            conversation.observed(policy.context_integrity());
 
             // The same gate as file context. A tool result the kernel judges untrusted is
             // quarantined and the planner is told its shape; only trusted results are shown.
-            let slot = SlotId::new(format!("ref:{next_reference}"));
-            next_reference += 1;
+            let slot = conversation.next_reference();
             let origin = if output.origin.is_empty() {
                 output.tool.clone()
             } else {
@@ -417,10 +461,16 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             };
 
             let presented = policy
-                .present("tool_result", slot, &origin, &output.text, &mut slots)
+                .present(
+                    "tool_result",
+                    slot,
+                    &origin,
+                    &output.text,
+                    conversation.quarantine(),
+                )
                 .map_err(|d| TurnError::Precommit(d.to_string()))?;
 
-            messages.push(Message::user(match &presented {
+            conversation.push(Message::user(match &presented {
                 Presentation::Visible(text) => {
                     format!("Result of {}:\n\n{text}", output.tool)
                 }
@@ -437,6 +487,29 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // shown rather than leaving the release invisible.
     let proof = policy.authorise_display_release("assistant reply");
     let display = completion.content.clone().declassify(&proof);
+
+    // The reply joins the conversation through the same gate as everything else, and is
+    // quarantined for the same reason a fetched page is: it arrived over the network, so the
+    // label it carries is the one the transport gave it. What the next turn's planner reads is
+    // that it answered and how much it said, which is what makes "try that again" mean
+    // something without any of its own words being read back to it as instructions.
+    let slot = conversation.next_reference();
+    let presented = policy
+        .present(
+            "reply",
+            slot,
+            "your previous reply",
+            &completion.content,
+            conversation.quarantine(),
+        )
+        .map_err(|d| TurnError::Precommit(d.to_string()))?;
+    conversation.push(Message::assistant(match &presented {
+        Presentation::Visible(text) => text.clone(),
+        Presentation::Quarantined(reference) => {
+            format!("(you answered. {})", reference.describe())
+        }
+    }));
+    conversation.observed(policy.context_integrity());
 
     // Taken before `finish` consumes the policy, since a write may have changed the map.
     let trust = policy.trust().clone();

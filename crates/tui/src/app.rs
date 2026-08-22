@@ -2,13 +2,15 @@
 //!
 //! Runs turns one at a time. Each turn builds its own policy inside `turn::run`, so
 //! nothing about the interface can extend a policy's life beyond the turn that created
-//! it: the session only accumulates text for display.
+//! it. What does outlive a turn is the conversation, which is how a follow-up like "try that
+//! again" has anything to refer to.
 //!
 //! Turns run synchronously: the interface shows "working" and stops accepting input until
 //! the reply arrives. That is honest about what is happening, and it keeps two turns from
 //! ever being in flight together.
 
 use bua_agent::Workspace;
+use bua_agent::conversation::Conversation;
 use bua_agent::turn::{self, Task};
 use bua_config::Config;
 use bua_core::cancel::Cancel;
@@ -191,6 +193,10 @@ fn event_loop(
     // The one place persistence is turned on: history in ~/.bua outlives the session.
     let mut session = Session::new(confinement).with_stored_history();
 
+    // Outlives every turn, which is the point: a turn begins with the exchange so far rather
+    // than with nothing, so the user can say "try that again" and be understood.
+    let mut conversation = Conversation::new();
+
     // Asked once, before any turn: the answer decides whether ordinary work in this directory
     // is interrupted for every write. Nothing is trusted unless the user says so.
     let mut trust = crate::trust_prompt::ask(terminal, workspace.root());
@@ -222,10 +228,18 @@ fn event_loop(
         match action {
             Action::Quit => return Ok(()),
             Action::Submit(prompt) => {
-                // The map is threaded through: a turn that writes untrusted data into a
-                // trusted path records that, and the next turn must honour it.
-                trust =
-                    run_turn_animated(terminal, &mut session, config, workspace, &prompt, trust)?;
+                // Both are threaded through: a turn that writes untrusted data into a trusted
+                // path records that, and the next turn must honour it, and a turn that has been
+                // had is a turn the next one can be asked about.
+                (conversation, trust) = run_turn_animated(
+                    terminal,
+                    &mut session,
+                    config,
+                    workspace,
+                    &prompt,
+                    conversation,
+                    trust,
+                )?;
             }
             // Only reachable while a turn runs, which is handled inside `run_turn_animated`.
             Action::Cancel | Action::None | Action::Redraw => {}
@@ -248,8 +262,9 @@ fn run_turn_animated(
     config: &Config,
     workspace: &Workspace,
     prompt: &str,
+    conversation: Conversation,
     trust: TrustStore,
-) -> io::Result<TrustStore> {
+) -> io::Result<(Conversation, TrustStore)> {
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
@@ -274,18 +289,23 @@ fn run_turn_animated(
         let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main.clone());
         let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(to_main, answer_rx);
         let egress = Egress::new();
-        let outcome = turn::run_cancellable(
+        // Owned by the worker for the duration and handed back afterwards, whether the turn
+        // succeeded or not. A failed turn is still part of the conversation, and the next one
+        // is usually about it.
+        let mut conversation = conversation;
+        let outcome = turn::resume(
             &worker_config,
             &egress,
             &worker_workspace,
             &task,
+            &mut conversation,
             &mut confirmer,
             &mut reporter,
             &mut sink,
             trust,
             &worker_cancel,
         );
-        (outcome, sink)
+        (outcome, conversation, sink)
     });
 
     // Redraw until the turn finishes, answering approvals and watching for a cancel on the way.
@@ -329,12 +349,14 @@ fn run_turn_animated(
         }
     }
 
-    let (outcome, sink) = worker.join().unwrap_or_else(|_| {
-        // A panicked turn is reported rather than propagated: the session survives.
+    let (outcome, conversation, sink) = worker.join().unwrap_or_else(|_| {
+        // A panicked turn is reported rather than propagated: the session survives. The
+        // conversation does not, since the thread that held it is gone.
         (
             Err(turn::TurnError::Precommit(
                 "the turn ended unexpectedly".to_string(),
             )),
+            Conversation::new(),
             RecordingSink::new(),
         )
     });
@@ -343,10 +365,10 @@ fn run_turn_animated(
     // stopped it deliberately, so there is nothing to report.
     if matches!(outcome, Err(turn::TurnError::Cancelled)) {
         session.restore(prompt);
-        return Ok(fallback);
+        return Ok((conversation, fallback));
     }
 
-    Ok(fold_outcome(session, outcome, sink, fallback))
+    Ok((conversation, fold_outcome(session, outcome, sink, fallback)))
 }
 
 /// Whether a key press asks for the turn in flight to stop.

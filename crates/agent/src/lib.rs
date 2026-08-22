@@ -5,6 +5,7 @@
 //! by the content it processes.
 
 pub mod confirm;
+pub mod conversation;
 pub mod diff;
 pub mod glob;
 pub mod replace;
@@ -15,6 +16,7 @@ pub mod turn;
 pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RefuseWrites, WriteRequest};
+pub use conversation::Conversation;
 pub use report::{Activity, IgnoreReports, Reporter};
 pub use subscription::ImportedSubscription;
 pub use turn::{Outcome, Task, TurnError};
