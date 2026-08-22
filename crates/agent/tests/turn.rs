@@ -413,12 +413,27 @@ fn a_missing_file_fails_the_turn() {
 
 /// Serve a sequence of replies, one per request, so a multi-step loop can be driven.
 fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
+    serve_sequence_losing_the_first(0, replies)
+}
+
+/// As [`serve_sequence`], with the first `dropped` connections hung up on unanswered.
+///
+/// What a connection that died looks like from the client's side: the request went out and
+/// nothing came back.
+fn serve_sequence_losing_the_first(
+    dropped: usize,
+    replies: Vec<String>,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let (sender, receiver) = mpsc::channel();
 
+    let attempts: Vec<Option<String>> = std::iter::repeat_n(None, dropped)
+        .chain(replies.into_iter().map(Some))
+        .collect();
+
     thread::spawn(move || {
-        for reply in replies {
+        for reply in attempts {
             let Ok((mut stream, _)) = listener.accept() else {
                 break;
             };
@@ -445,6 +460,11 @@ fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
             let mut body = vec![0u8; content_length];
             let _ = reader.read_exact(&mut body);
             let _ = sender.send(String::from_utf8_lossy(&body).to_string());
+
+            let Some(reply) = reply else {
+                drop(stream);
+                continue;
+            };
 
             let frames = as_sse(&reply);
             let response = format!(
@@ -2471,4 +2491,43 @@ fn a_context_file_and_a_tool_result_get_distinct_slots() {
     .expect("a turn that quarantines a file and then a tool result must still run");
 
     assert_eq!(outcome.reply_for_display(), "read them both");
+}
+
+/// The whole point of the retry, seen from where it matters. A connection that died mid-request
+/// used to end the turn, and the work it had done went with it; now the turn carries on.
+#[test]
+fn a_turn_survives_a_connection_that_died_mid_request() {
+    let scratch = Scratch::new("dropped-connection");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) =
+        serve_sequence_losing_the_first(1, vec![reply_with("the answer, eventually")]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("what is 2 + 2?"),
+        &mut bua_agent::RefuseWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn survives the lost connection");
+
+    assert_eq!(outcome.reply_for_display(), "the answer, eventually");
+
+    // And the wait is explained rather than looking like the model thinking for longer.
+    assert!(
+        reporter
+            .phases
+            .contains(&bua_agent::report::Phase::Reconnecting),
+        "the pause was not explained: {:?}",
+        reporter.phases
+    );
 }

@@ -97,6 +97,11 @@ pub enum Phase {
     Planning,
     /// A later call, with tool results in hand.
     Thinking,
+    /// The request failed in transit and is being sent again.
+    ///
+    /// Worth its own word because the pause looks like the others and is not one: nothing is
+    /// being worked out, and what the model had written has been thrown away.
+    Reconnecting,
 }
 
 impl Phase {
@@ -114,6 +119,7 @@ impl Phase {
         match self {
             Self::Planning => "Planning",
             Self::Thinking => "Thinking",
+            Self::Reconnecting => "Reconnecting",
         }
     }
 }

@@ -82,7 +82,15 @@ pub enum EgressError {
     /// The URL could not be parsed, or was not http(s).
     InvalidUrl { url: String, detail: String },
     /// Transport failure.
-    Transport { url: String, detail: String },
+    Transport {
+        url: String,
+        detail: String,
+        /// Whether sending the same request again could get past it.
+        ///
+        /// Decided from what the transport reported, never from anything a server sent: a
+        /// timeout, a reset, or a name that did not resolve are facts about the connection.
+        transient: bool,
+    },
     /// The server returned a non-success status.
     Status { url: String, status: u16 },
 }
@@ -98,11 +106,37 @@ impl fmt::Display for EgressError {
                 write!(f, "{url} returned a redirect with no location")
             }
             Self::InvalidUrl { url, detail } => write!(f, "invalid url {url}: {detail}"),
-            Self::Transport { url, detail } => write!(f, "request to {url} failed: {detail}"),
+            Self::Transport { url, detail, .. } => {
+                write!(f, "request to {url} failed: {detail}")
+            }
             Self::Status { url, status } => write!(f, "{url} returned HTTP {status}"),
         }
     }
 }
+
+impl EgressError {
+    /// Whether sending the same request again is worth doing.
+    ///
+    /// A connection that died and an overloaded server are both temporary, and a request that
+    /// never arrived has changed nothing, so sending it again is the same request rather than a
+    /// second one. Everything else is a decision that will be made the same way twice.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Transport { transient, .. } => *transient,
+            Self::Status { status, .. } => RETRYABLE_STATUSES.contains(status),
+            Self::Denied(_)
+            | Self::TooManyRedirects { .. }
+            | Self::MissingLocation { .. }
+            | Self::InvalidUrl { .. } => false,
+        }
+    }
+}
+
+/// Statuses a server uses to say "not now" rather than "no".
+///
+/// 408 and 504 are timeouts, 429 is a rate limit, and 500, 502 and 503 are a server that is
+/// unwell rather than a request that is wrong.
+const RETRYABLE_STATUSES: [u16; 6] = [408, 429, 500, 502, 503, 504];
 
 impl std::error::Error for EgressError {}
 
@@ -166,6 +200,7 @@ impl Streamed<'_> {
             Err(e) => Err(EgressError::Transport {
                 url: self.final_url.clone(),
                 detail: e.to_string(),
+                transient: is_transient_io(&e),
             }),
         }
     }
@@ -287,6 +322,7 @@ impl Egress {
         let (body, truncated) = read_capped(reader).map_err(|e| EgressError::Transport {
             url: url.clone(),
             detail: e.to_string(),
+            transient: is_transient_io(&e),
         })?;
 
         Ok(Response {
@@ -404,6 +440,7 @@ impl Egress {
                 return Err(EgressError::Transport {
                     url: url.to_string(),
                     detail: e.to_string(),
+                    transient: is_transient_call(&e),
                 });
             }
         };
@@ -426,6 +463,34 @@ impl Egress {
             Box::new(response.into_body().into_reader()),
         ))
     }
+}
+
+/// Whether a failure to send or to read the reply is worth another attempt.
+///
+/// Everything here is the connection giving out: a timeout, a socket that went away, a name
+/// that did not resolve because the machine's network was not up yet. A protocol error or a
+/// malformed URL is the request being wrong, and sending it again would be wrong again.
+fn is_transient_call(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => true,
+        ureq::Error::Io(e) => is_transient_io(e),
+        _ => false,
+    }
+}
+
+fn is_transient_io(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(
+        error.kind(),
+        TimedOut
+            | Interrupted
+            | UnexpectedEof
+            | ConnectionReset
+            | ConnectionAborted
+            | BrokenPipe
+            | NotConnected
+            | WouldBlock
+    )
 }
 
 fn is_redirect(status: u16) -> bool {
@@ -504,6 +569,52 @@ fn read_capped(mut reader: Box<dyn std::io::Read>) -> Result<(Vec<u8>, bool), st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The classification a retry rests on. Getting it wrong in one direction repeats a request
+    /// that will fail identically, and in the other abandons one that would have worked.
+    #[test]
+    fn a_connection_that_gave_out_is_worth_another_attempt_and_a_refusal_is_not() {
+        let dead = EgressError::Transport {
+            url: "https://example.com".into(),
+            detail: "timeout".into(),
+            transient: true,
+        };
+        assert!(dead.is_transient());
+
+        let wrong = EgressError::Transport {
+            url: "https://example.com".into(),
+            detail: "malformed http".into(),
+            transient: false,
+        };
+        assert!(!wrong.is_transient());
+
+        assert!(
+            !EgressError::InvalidUrl {
+                url: "gopher://example.com".into(),
+                detail: "scheme".into(),
+            }
+            .is_transient()
+        );
+    }
+
+    /// A server saying "not now" is temporary; a server saying "no" is not.
+    #[test]
+    fn only_the_statuses_that_mean_not_now_are_worth_another_attempt() {
+        let at = |status| {
+            EgressError::Status {
+                url: "https://example.com".into(),
+                status,
+            }
+            .is_transient()
+        };
+
+        assert!(at(429));
+        assert!(at(503));
+        assert!(at(504));
+        assert!(!at(400));
+        assert!(!at(401));
+        assert!(!at(404));
+    }
 
     #[test]
     fn only_http_schemes_are_permitted() {

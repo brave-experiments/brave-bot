@@ -150,6 +150,91 @@ fn serve_stream(frames: Vec<String>) -> (String, mpsc::Receiver<Captured>) {
     (format!("http://127.0.0.1:{port}"), receiver)
 }
 
+/// What the server does with one connection.
+enum Attempt {
+    /// Read the request and hang up without answering, the way a connection that died looks.
+    Dropped,
+    /// Answer with a status and nothing else.
+    Status(u16),
+    /// Answer properly, with these SSE frames.
+    Frames(Vec<String>),
+}
+
+/// Serve one behaviour per connection, in order, recording what each request carried.
+///
+/// A retry is a second connection, so a server that behaves differently on each is the only way
+/// to tell one apart from a client that gave up.
+fn serve_attempts(attempts: Vec<Attempt>) -> (String, mpsc::Receiver<Captured>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        for attempt in attempts {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                break;
+            }
+
+            let mut headers = Vec::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let name = name.trim().to_string();
+                    let value = value.trim().to_string();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.parse().unwrap_or(0);
+                    }
+                    headers.push((name, value));
+                }
+            }
+
+            let mut body = vec![0u8; content_length];
+            let _ = reader.read_exact(&mut body);
+
+            let _ = sender.send(Captured {
+                request_line: request_line.trim().to_string(),
+                headers,
+                body: String::from_utf8_lossy(&body).to_string(),
+            });
+
+            match attempt {
+                Attempt::Dropped => drop(stream),
+                Attempt::Status(status) => {
+                    let _ = stream.write_all(
+                        format!("HTTP/1.1 {status} Nope\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .as_bytes(),
+                    );
+                    let _ = stream.flush();
+                }
+                Attempt::Frames(frames) => {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                    );
+                    for frame in frames {
+                        let _ = stream.write_all(frame.as_bytes());
+                        let _ = stream.flush();
+                    }
+                }
+            }
+        }
+    });
+
+    (format!("http://127.0.0.1:{port}"), receiver)
+}
+
 /// One `data:` frame carrying a chunk.
 fn frame(payload: &str) -> String {
     format!("data: {payload}\n\n")
@@ -647,4 +732,129 @@ fn without_a_premium_host_no_credential_is_attached() {
     assert_eq!(captured.header("cookie"), None);
     // The credential must not have been spent either, since it was never usable here.
     assert_eq!(subscription.remaining, 5);
+}
+
+/// The failure that started this: a machine sleeps, the connection it had is gone, and the reply
+/// that would have arrived never does. Nothing about the request has changed, so it is sent
+/// again rather than handed back to the user as an error they have to act on.
+#[test]
+fn a_request_that_died_in_transit_is_sent_again() {
+    let (endpoint, received) = serve_attempts(vec![
+        Attempt::Dropped,
+        Attempt::Frames(vec![
+            frame(r#"{"model":"served-model","choices":[{"delta":{"content":"hello"}}]}"#),
+            frame("[DONE]"),
+        ]),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let mut client = AichatClient::new(&config, &egress);
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let mut attempts = Vec::new();
+    let completion = client
+        .complete_streaming(&mut policy, &request, |progress| {
+            attempts.push(progress.attempt);
+        })
+        .expect("the second attempt succeeds");
+
+    assert_eq!(completion.model, "served-model");
+
+    let first = received.recv().expect("a first request");
+    let second = received.recv().expect("a second request");
+    assert_eq!(
+        first.body, second.body,
+        "the retry must be the same request, not a different one"
+    );
+
+    assert!(
+        attempts.contains(&2),
+        "the caller was not told the reply had started over: {attempts:?}"
+    );
+}
+
+/// A request that was answered was not a transport failure, and asking again would be asking a
+/// server that already said no.
+#[test]
+fn a_request_the_server_refused_is_not_sent_again() {
+    let (endpoint, received) = serve_attempts(vec![
+        Attempt::Status(400),
+        Attempt::Frames(vec![frame("[DONE]")]),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let mut client = AichatClient::new(&config, &egress);
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    client
+        .complete_streaming(&mut policy, &request, |_| {})
+        .expect_err("a refused request stays refused");
+
+    received.recv().expect("a first request");
+    assert!(
+        received
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "the request was sent a second time"
+    );
+}
+
+/// Every attempt is a request in its own right, so the gate has to see each one. Retrying past a
+/// refusal would be a way to send something the policy had already stopped.
+#[test]
+fn a_retry_goes_through_the_gate_again() {
+    let (endpoint, _received) = serve_attempts(vec![
+        Attempt::Dropped,
+        Attempt::Frames(vec![
+            frame(r#"{"model":"served-model","choices":[{"delta":{"content":"hi"}}]}"#),
+            frame("[DONE]"),
+        ]),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let mut client = AichatClient::new(&config, &egress);
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    client
+        .complete_streaming(&mut policy, &request, |_| {})
+        .expect("the second attempt succeeds");
+
+    let checks = sink
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                bua_core::event::Event::GatePassed {
+                    gate: "network",
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(checks, 2, "each attempt must be checked on its own");
 }

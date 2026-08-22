@@ -19,6 +19,7 @@ use bua_core::value::Labelled;
 use bua_net::{Egress, EgressError, Request};
 use protocol::{ChatChunk, ChatRequest, ChatResponse, STREAM_DONE, SseDecoder, StreamAccumulator};
 use std::fmt;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum ChatError {
@@ -166,6 +167,24 @@ impl<'a> AichatClient<'a> {
         policy: &mut Policy<'_, S>,
         request: &ChatRequest,
     ) -> Result<Completion, ChatError> {
+        let mut attempt = 1;
+        loop {
+            match self.complete_once(policy, request) {
+                Err(error) if worth_another_attempt(attempt, &error) => {
+                    std::thread::sleep(backoff(attempt));
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// One attempt at [`AichatClient::complete`].
+    fn complete_once<S: Sink>(
+        &mut self,
+        policy: &mut Policy<'_, S>,
+        request: &ChatRequest,
+    ) -> Result<Completion, ChatError> {
         let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
 
         let headers =
@@ -231,7 +250,39 @@ impl<'a> AichatClient<'a> {
         mut progress: impl FnMut(Progress),
     ) -> Result<Completion, ChatError> {
         let request = request.clone().streamed();
-        let body = serde_json::to_vec(&request).map_err(|e| ChatError::Encode(e.to_string()))?;
+        let mut attempt = 1;
+        loop {
+            match self.stream_once(policy, &request, attempt, &mut progress) {
+                Err(error) if worth_another_attempt(attempt, &error) => {
+                    attempt += 1;
+                    // Announced before the wait rather than after it, so the pause is explained
+                    // while it is happening. Nothing of the abandoned attempt survives: the reply
+                    // starts again from nothing, and the count says so.
+                    progress(Progress {
+                        output_tokens: 0,
+                        counted_by_server: false,
+                        attempt,
+                    });
+                    std::thread::sleep(backoff(attempt - 1));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// One attempt at [`AichatClient::complete_streaming`].
+    ///
+    /// A failed attempt leaves nothing behind. The reply is reassembled from the frames of one
+    /// stream, so a stream that stopped halfway cannot be continued by a second one: what it had
+    /// written is dropped and the request is sent again whole.
+    fn stream_once<S: Sink>(
+        &mut self,
+        policy: &mut Policy<'_, S>,
+        request: &ChatRequest,
+        attempt: u32,
+        progress: &mut impl FnMut(Progress),
+    ) -> Result<Completion, ChatError> {
+        let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
 
         let headers =
             bua_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
@@ -281,6 +332,7 @@ impl<'a> AichatClient<'a> {
             progress(Progress {
                 output_tokens: accumulated.output_tokens(),
                 counted_by_server: accumulated.usage_is_reported(),
+                attempt,
             });
         }
 
@@ -313,4 +365,32 @@ pub struct Progress {
     /// Worth knowing at the point of display: an estimate presented as a billed figure would be
     /// the kind of number that looks like data and is not.
     pub counted_by_server: bool,
+    /// Which attempt this is, counting from one.
+    ///
+    /// Above one, an earlier attempt failed in transit and this one restarted the reply. The
+    /// count goes back to zero with it, so a display that only ever saw the number climb would
+    /// otherwise show it falling for no stated reason.
+    pub attempt: u32,
+}
+
+/// How many times one request is sent before its failure is the caller's.
+///
+/// Three because the failure this exists for is a connection that died while nobody was
+/// looking, and a machine coming back from sleep needs a moment before its network works.
+const ATTEMPTS: u32 = 3;
+
+/// How long to wait after the first failure. Doubled for each attempt after that.
+const BACKOFF: Duration = Duration::from_secs(1);
+
+/// Whether a failed attempt should be repeated.
+///
+/// Only transport failures qualify, and only from the layer that knows what happened to the
+/// connection. A reply that arrived and would not decode is not a connection problem, and
+/// asking for it again would produce the same thing.
+fn worth_another_attempt(attempt: u32, error: &ChatError) -> bool {
+    attempt < ATTEMPTS && matches!(error, ChatError::Egress(e) if e.is_transient())
+}
+
+fn backoff(failures: u32) -> Duration {
+    BACKOFF * 2u32.pow(failures - 1)
 }

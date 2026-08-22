@@ -340,14 +340,29 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
         // Said before the request goes out, so the longest silence in a turn is explained
         // while it happens rather than accounted for afterwards.
-        reporter.phase(Phase::of_round(steps));
+        let round = Phase::of_round(steps);
+        reporter.phase(round);
 
         let request = ChatRequest::new(&config.model, messages.clone()).with_tools(offered.clone());
 
         // Streamed so the interface can show the reply growing. Each round's count restarts at
         // zero, so earlier rounds are added back: the figure is for the turn, not the round.
         let written_before = output_tokens;
+        // A request that failed in transit is sent again by the client, which the person waiting
+        // should be told: the count is about to fall back to where the round started, and a
+        // number going backwards with no explanation reads as a bug. Decided from the attempt
+        // number and the count, both of the driver's own making.
+        let mut showing = round;
         let completion = client.complete_streaming(&mut policy, &request, |progress| {
+            let phase = if progress.attempt > 1 && progress.output_tokens == 0 {
+                Phase::Reconnecting
+            } else {
+                round
+            };
+            if phase != showing {
+                showing = phase;
+                reporter.phase(phase);
+            }
             reporter.output_tokens(written_before + progress.output_tokens);
         })?;
         tokens += completion.usage.total();
