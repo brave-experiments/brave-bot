@@ -18,7 +18,8 @@
 //! since a guess would mutate bytes that were never shown to anyone.
 
 use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
-use crate::report::Reporter;
+use crate::diff::Diff;
+use crate::report::{Activity, Reporter};
 use bua_aichat::protocol::{Tool, ToolCall};
 use bua_core::event::Sink;
 use bua_core::policy::Policy;
@@ -210,6 +211,132 @@ pub struct Output {
     pub origin: String,
 }
 
+/// What one tool produced, before dispatch wraps it up.
+///
+/// Two audiences, kept apart. `text` goes to the planner and stays labelled, because the kernel
+/// decides whether the planner may see it. `note` and `changes` go to a screen and are already
+/// released, because a person is allowed to read what a planner is not.
+struct Produced {
+    text: Labelled<String>,
+    origin: String,
+    /// What to tell the person watching. A few words, never the result itself.
+    note: String,
+    failed: bool,
+    /// The change a write made, for showing under the line it belongs to.
+    changes: Vec<crate::diff::Change>,
+}
+
+impl Produced {
+    /// A result the person watching is told about in the driver's own summary of it.
+    fn new(text: Labelled<String>, origin: impl Into<String>, note: impl Into<String>) -> Self {
+        Self {
+            text,
+            origin: origin.into(),
+            note: note.into(),
+            failed: false,
+            changes: Vec::new(),
+        }
+    }
+
+    fn with_changes(mut self, changes: Vec<crate::diff::Change>) -> Self {
+        self.changes = changes;
+        self
+    }
+}
+
+/// The driver's word for what a tool does.
+///
+/// Chosen from the tool's name, which dispatch already matches on, so this decides nothing new.
+/// A literal rather than the raw name because the line is read by a person: "Read(src/main.rs)"
+/// says what happened and "read_file" says what was typed.
+fn verb_for(tool: &str) -> &'static str {
+    match tool {
+        "read_file" => "Read",
+        "list_files" => "List",
+        "search" => "Search",
+        "write_file" => "Write",
+        "edit_file" => "Update",
+        "todo_write" => "Plan",
+        _ => "Tool",
+    }
+}
+
+/// What a call is about, for the line shown while it runs.
+///
+/// Which argument names the target depends on the tool, so the key is chosen from the tool's
+/// own name. The value is the model's word for it, released to a screen and nowhere else: it
+/// goes on a line a person reads and is never compared, matched, or routed anywhere.
+fn target_of<S: Sink>(policy: &mut Policy<'_, S>, tool: &str, arguments: &Value) -> String {
+    let key = match tool {
+        "read_file" | "write_file" | "edit_file" => "path",
+        "list_files" => "directory",
+        "search" => "pattern",
+        _ => return String::new(),
+    };
+
+    match argument(arguments, key) {
+        Some(value) => {
+            let proof = policy.authorise_display_release("what a tool is working on");
+            value.declassify(&proof)
+        }
+        None => String::new(),
+    }
+}
+
+/// Shape a count out of a labelled result and release it to the person watching.
+///
+/// The reshape happens inside the kernel and only the shaped line comes out, so the driver
+/// counts nothing it is not allowed to hold. A screen is one of the destinations a display
+/// release exists for, and a count cannot feed an effect.
+fn note_for<S: Sink, T: Clone>(
+    policy: &mut Policy<'_, S>,
+    tool: &'static str,
+    content: &Labelled<T>,
+    shape: impl FnOnce(T) -> String,
+) -> String {
+    let shaped = policy.render_in_place(tool, content, shape);
+    let proof = policy.authorise_display_release("what a tool produced");
+    shaped.declassify(&proof)
+}
+
+/// A count with the right noun, so a line does not read "1 lines".
+fn tally(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// Unchanged lines kept around each run of changes, so a hunk can be read in context.
+const DIFF_CONTEXT: usize = 3;
+
+/// What a write did, for the person watching: a line saying how much changed, and the hunks
+/// themselves where showing them is worth the room.
+///
+/// Both sides are strings already released to a screen, so this reasons about no labels, the
+/// same footing [`crate::diff`] has always been on.
+///
+/// A new file gets its size and no hunks. Every line of it would be an addition, which fills
+/// the screen with the body the user is about to open anyway and buries the lines that follow.
+fn change_report(
+    intent: Intent,
+    existing: Option<&str>,
+    written: &str,
+) -> (String, Vec<crate::diff::Change>) {
+    if intent == Intent::Create {
+        return (tally(written.lines().count(), "line", "lines"), Vec::new());
+    }
+
+    let diff = Diff::compute(existing.unwrap_or(""), written);
+    let note = format!(
+        "added {}, removed {}",
+        tally(diff.added(), "line", "lines"),
+        tally(diff.removed(), "line", "lines")
+    );
+    (note, diff.condensed(DIFF_CONTEXT))
+}
+
 /// Run one tool call the model asked for.
 ///
 /// Errors are returned as text rather than failing the turn: a model that asked for a
@@ -223,43 +350,72 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     call: &ToolCall,
 ) -> Output {
     let name = call.function.name.clone();
+    let verb = verb_for(&name);
+
     let arguments = match call.arguments() {
         Ok(value) => value,
         Err(e) => {
+            let produced = problem(format!("error: the arguments were not valid JSON: {e}"));
+            // Announced and closed in one breath, because there was never a call to watch.
+            reporter.tool_started(Activity::running(verb, ""));
+            reporter.tool_finished(Activity::running(verb, "").failed(produced.note.clone()));
             return Output {
                 call_id: call.id.clone(),
                 tool: name,
-                text: Labelled::trusted(format!("error: the arguments were not valid JSON: {e}")),
-                origin: String::new(),
+                text: produced.text,
+                origin: produced.origin,
             };
         }
     };
 
-    let (text, origin) = match name.as_str() {
+    // Announced before the call runs, so a slow one is visible while it is slow. This is the
+    // difference between a turn that looks stuck and one that is plainly working.
+    let target = target_of(policy, &name, &arguments);
+    reporter.tool_started(Activity::running(verb, target.clone()));
+
+    let produced = match name.as_str() {
         "read_file" => read_file(policy, workspace, &arguments),
         "list_files" => list_files(policy, workspace, &arguments),
         "search" => search(policy, workspace, &arguments),
         "write_file" => write_file(policy, workspace, confirmer, &arguments),
         "edit_file" => edit_file(policy, workspace, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, &arguments),
-        other => (
-            Labelled::trusted(format!("error: no such tool '{other}'")),
-            String::new(),
-        ),
+        other => problem(format!("error: no such tool '{other}'")),
     };
+
+    let finished = Activity::running(verb, target).with_changes(produced.changes);
+    reporter.tool_finished(if produced.failed {
+        finished.failed(produced.note)
+    } else {
+        finished.done(produced.note)
+    });
 
     Output {
         call_id: call.id.clone(),
         tool: name,
-        text,
-        origin,
+        text: produced.text,
+        origin: produced.origin,
     }
 }
 
-/// A tool's own words: an error, a refusal, a confirmation. The driver wrote them, so they are
-/// trusted. Distinct from workspace content, which never is unless the trust map says so.
-fn own_words(text: impl Into<String>) -> (Labelled<String>, String) {
-    (Labelled::trusted(text.into()), String::new())
+/// A tool's own words about something that did not happen: an error, or a refusal. The driver
+/// wrote them, so they are trusted, and they double as the line the person watching sees.
+///
+/// Distinct from workspace content, which is never trusted unless the trust map says so.
+fn problem(text: impl Into<String>) -> Produced {
+    let text = text.into();
+    Produced {
+        text: Labelled::trusted(text.clone()),
+        origin: String::new(),
+        note: text,
+        failed: true,
+        changes: Vec::new(),
+    }
+}
+
+/// A tool's own words about something that did happen, with what to show for it.
+fn confirmed(text: impl Into<String>, note: impl Into<String>) -> Produced {
+    Produced::new(Labelled::trusted(text.into()), "", note)
 }
 
 /// Extract a string argument the model supplied, labelled untrusted because it is.
@@ -275,14 +431,14 @@ fn read_file<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     arguments: &Value,
-) -> (Labelled<String>, String) {
+) -> Produced {
     let Some(proposed) = argument(arguments, "path") else {
-        return own_words("error: 'path' is required and must be a string");
+        return problem("error: 'path' is required and must be a string");
     };
 
     let path = match policy.promote_confined_read("read_file", "path", &proposed) {
         Ok(p) => p,
-        Err(denial) => return own_words(format!("refused: {denial}")),
+        Err(denial) => return problem(format!("refused: {denial}")),
     };
 
     // A model that omits these gets the head of the file, which is the useful default.
@@ -303,10 +459,13 @@ fn read_file<S: Sink>(
         Ok(page) => {
             // Reshaped inside the kernel, so the driver never holds the text. Only
             // `Policy::present` decides whether the planner sees what comes out.
+            let note = note_for(policy, "read_file", &page, |p| {
+                tally(p.lines.len(), "line", "lines")
+            });
             let rendered = policy.render_in_place("read_file", &page, |p| render_page(&p));
-            (rendered, proposed_path)
+            Produced::new(rendered, proposed_path, note)
         }
-        Err(e) => own_words(format!("error: {e}")),
+        Err(e) => problem(format!("error: {e}")),
     }
 }
 
@@ -355,14 +514,14 @@ fn list_files<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     arguments: &Value,
-) -> (Labelled<String>, String) {
+) -> Produced {
     let proposed = argument(arguments, "directory").unwrap_or_else(|| {
         Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
     });
 
     let directory = match policy.promote_confined_read("list_files", "directory", &proposed) {
         Ok(d) => d,
-        Err(denial) => return own_words(format!("refused: {denial}")),
+        Err(denial) => return problem(format!("refused: {denial}")),
     };
 
     // A filter only narrows a confined, non-destructive read, so it is promotable on the
@@ -370,7 +529,7 @@ fn list_files<S: Sink>(
     let pattern = match argument(arguments, "pattern") {
         Some(proposed) => match policy.promote_confined_read("list_files", "pattern", &proposed) {
             Ok(p) => Some(p),
-            Err(denial) => return own_words(format!("refused: {denial}")),
+            Err(denial) => return problem(format!("refused: {denial}")),
         },
         None => None,
     };
@@ -379,6 +538,9 @@ fn list_files<S: Sink>(
 
     match workspace.list(policy, &directory, pattern.as_ref()) {
         Ok(listing) => {
+            let note = note_for(policy, "list_files", &listing, |listing| {
+                tally(listing.files.len(), "file", "files")
+            });
             let rendered = policy.render_in_place("list_files", &listing, |listing| {
                 if listing.files.is_empty() {
                     "(no files)".to_string()
@@ -395,9 +557,9 @@ fn list_files<S: Sink>(
                     listing.files.join("\n")
                 }
             });
-            (rendered, proposed_dir)
+            Produced::new(rendered, proposed_dir, note)
         }
-        Err(e) => own_words(format!("error: {e}")),
+        Err(e) => problem(format!("error: {e}")),
     }
 }
 
@@ -411,12 +573,12 @@ fn write_file<S: Sink, C: Confirmer>(
     workspace: &Workspace,
     confirmer: &mut C,
     arguments: &Value,
-) -> (Labelled<String>, String) {
+) -> Produced {
     let Some(path) = argument(arguments, "path") else {
-        return own_words("error: 'path' is required and must be a string");
+        return problem("error: 'path' is required and must be a string");
     };
     let Some(contents) = argument(arguments, "contents") else {
-        return own_words("error: 'contents' is required and must be a string");
+        return problem("error: 'contents' is required and must be a string");
     };
 
     // The path is routing, so naming a destination from it is not a content decision.
@@ -428,26 +590,30 @@ fn write_file<S: Sink, C: Confirmer>(
     let body = policy.label_model_output("write_file", raw_body);
     let body_label = body.label();
 
+    // Released for display only, and released whether or not anyone is asked: the reviewer sees
+    // it before approving, and the same text is what the finished line reports having written.
+    // A display release cannot feed an effect.
+    let shown = {
+        let proof = policy.authorise_display_release("proposed write");
+        body.clone().declassify(&proof)
+    };
+    let existing = workspace.peek_for_review(&proposed_path);
+    let intent = if existing.is_some() {
+        Intent::Overwrite
+    } else {
+        Intent::Create
+    };
+
     if policy.write_needs_approval(&proposed_path, body_label) {
-        let existing = workspace.peek_for_review(&proposed_path);
         let request = WriteRequest {
-            intent: if existing.is_some() {
-                Intent::Overwrite
-            } else {
-                Intent::Create
-            },
-            existing,
+            intent,
+            existing: existing.clone(),
             path: proposed_path.clone(),
-            // Released for display only. Showing a person what is about to happen is the
-            // point of asking, and a display release cannot feed an effect.
-            contents: {
-                let proof = policy.authorise_display_release("proposed write");
-                body.clone().declassify(&proof)
-            },
+            contents: shown.clone(),
         };
 
         if confirmer.confirm_write(&request) == Decision::Reject {
-            return own_words(format!(
+            return problem(format!(
                 "refused: the user did not approve writing {proposed_path}. Do not retry \
                  the same write; ask what they would prefer."
             ));
@@ -461,9 +627,10 @@ fn write_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             // The file now holds this data, so the map must say what the path means.
             policy.reconcile_after_write(&proposed_path, body_label);
-            own_words(format!("wrote {proposed_path}"))
+            let (note, changes) = change_report(intent, existing.as_deref(), &shown);
+            confirmed(format!("wrote {proposed_path}"), note).with_changes(changes)
         }
-        Err(e) => own_words(format!("error: {e}")),
+        Err(e) => problem(format!("error: {e}")),
     }
 }
 
@@ -481,15 +648,15 @@ fn edit_file<S: Sink, C: Confirmer>(
     workspace: &Workspace,
     confirmer: &mut C,
     arguments: &Value,
-) -> (Labelled<String>, String) {
+) -> Produced {
     let Some(proposed) = argument(arguments, "path") else {
-        return own_words("error: 'path' is required and must be a string");
+        return problem("error: 'path' is required and must be a string");
     };
     let Some(old_text) = argument(arguments, "old_text") else {
-        return own_words("error: 'old_text' is required and must be a string");
+        return problem("error: 'old_text' is required and must be a string");
     };
     let Some(new_text) = argument(arguments, "new_text") else {
-        return own_words("error: 'new_text' is required and must be a string");
+        return problem("error: 'new_text' is required and must be a string");
     };
     // Absent or non-boolean means the strict single-match behaviour, which is the safe
     // reading of an ambiguous argument.
@@ -502,12 +669,12 @@ fn edit_file<S: Sink, C: Confirmer>(
     // promoted here exactly as it is for read_file. The write below is what needs a person.
     let path = match policy.promote_confined_read("edit_file", "path", &proposed) {
         Ok(p) => p,
-        Err(denial) => return own_words(format!("refused: {denial}")),
+        Err(denial) => return problem(format!("refused: {denial}")),
     };
 
     let source = match workspace.read(policy, &path) {
         Ok(contents) => contents,
-        Err(e) => return own_words(format!("error: {e}")),
+        Err(e) => return problem(format!("error: {e}")),
     };
 
     // Locating the passage means comparing text, which is a decision. It is only permissible
@@ -520,7 +687,7 @@ fn edit_file<S: Sink, C: Confirmer>(
     // this comparison is safe to make.
     let current = match policy.read_trusted_content("edit_file", &source) {
         Ok(text) => text,
-        Err(denial) => return own_words(format!("refused: {denial}")),
+        Err(denial) => return problem(format!("refused: {denial}")),
     };
 
     let (old_text, _) = old_text.into_parts_for_decoding();
@@ -528,7 +695,7 @@ fn edit_file<S: Sink, C: Confirmer>(
 
     let replaced = match crate::replace::replace(&current, &old_text, &new_text, replace_all) {
         Ok(r) => r,
-        Err(e) => return own_words(format!("error: {e}")),
+        Err(e) => return problem(format!("error: {e}")),
     };
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
@@ -538,19 +705,21 @@ fn edit_file<S: Sink, C: Confirmer>(
     let body = policy.label_model_output("edit_file", replaced.contents);
     let body_label = body.label();
 
+    let shown = {
+        let proof = policy.authorise_display_release("proposed edit");
+        body.clone().declassify(&proof)
+    };
+
     if policy.write_needs_approval(&proposed_path, body_label) {
         let request = WriteRequest {
             path: proposed_path.clone(),
-            contents: {
-                let proof = policy.authorise_display_release("proposed edit");
-                body.clone().declassify(&proof)
-            },
+            contents: shown.clone(),
             existing: Some(current.clone()),
             intent: Intent::Edit,
         };
 
         if confirmer.confirm_write(&request) == Decision::Reject {
-            return own_words(format!(
+            return problem(format!(
                 "refused: the user did not approve editing {proposed_path}. Do not retry the \
                  same edit; ask what they would prefer."
             ));
@@ -563,11 +732,14 @@ fn edit_file<S: Sink, C: Confirmer>(
     match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
-            own_words(format!(
-                "edited {proposed_path}: {occurrences} replacement(s)"
-            ))
+            let (note, changes) = change_report(Intent::Edit, Some(&current), &shown);
+            confirmed(
+                format!("edited {proposed_path}: {occurrences} replacement(s)"),
+                note,
+            )
+            .with_changes(changes)
         }
-        Err(e) => own_words(format!("error: {e}")),
+        Err(e) => problem(format!("error: {e}")),
     }
 }
 
@@ -584,9 +756,9 @@ fn todo_write<S: Sink, R: Reporter>(
     policy: &mut Policy<'_, S>,
     reporter: &mut R,
     arguments: &Value,
-) -> (Labelled<String>, String) {
+) -> Produced {
     let Some(todos) = arguments.get("todos").and_then(Value::as_array) else {
-        return own_words("error: 'todos' is required and must be an array");
+        return problem("error: 'todos' is required and must be an array");
     };
 
     // Parsing is not a decision about what happens: every entry becomes an item, and an
@@ -606,7 +778,7 @@ fn todo_write<S: Sink, R: Reporter>(
         .collect();
 
     if items.len() != todos.len() {
-        return own_words(
+        return problem(
             "error: every todo needs a 'content' string; the list was not changed. Send the \
              whole list again.",
         );
@@ -641,16 +813,20 @@ fn todo_write<S: Sink, R: Reporter>(
         format!("{} of {} done\n{lines}", list.done(), list.len())
     });
 
-    (summary, String::new())
+    let note = note_for(policy, "todo_write", &list, |list| {
+        format!("{} of {} done", list.done(), list.len())
+    });
+
+    Produced::new(summary, "", note)
 }
 
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     arguments: &Value,
-) -> (Labelled<String>, String) {
+) -> Produced {
     let Some(pattern) = argument(arguments, "pattern") else {
-        return own_words("error: 'pattern' is required and must be a string");
+        return problem("error: 'pattern' is required and must be a string");
     };
     let proposed_dir = argument(arguments, "directory").unwrap_or_else(|| {
         Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
@@ -658,17 +834,17 @@ fn search<S: Sink>(
 
     let pattern = match policy.promote_confined_read("search", "pattern", &pattern) {
         Ok(p) => p,
-        Err(denial) => return own_words(format!("refused: {denial}")),
+        Err(denial) => return problem(format!("refused: {denial}")),
     };
     let directory = match policy.promote_confined_read("search", "directory", &proposed_dir) {
         Ok(d) => d,
-        Err(denial) => return own_words(format!("refused: {denial}")),
+        Err(denial) => return problem(format!("refused: {denial}")),
     };
 
     let include = match argument(arguments, "include") {
         Some(proposed) => match policy.promote_confined_read("search", "include", &proposed) {
             Ok(p) => Some(p),
-            Err(denial) => return own_words(format!("refused: {denial}")),
+            Err(denial) => return problem(format!("refused: {denial}")),
         },
         None => None,
     };
@@ -677,6 +853,9 @@ fn search<S: Sink>(
 
     match workspace.grep(policy, &pattern, &directory, include.as_ref()) {
         Ok(found) => {
+            let note = note_for(policy, "search", &found, |found| {
+                tally(found.matches.len(), "match", "matches")
+            });
             let rendered = policy.render_in_place("search", &found, |found| {
                 if found.matches.is_empty() {
                     return "(no matches)".to_string();
@@ -699,9 +878,9 @@ fn search<S: Sink>(
                     lines
                 }
             });
-            (rendered, proposed_where)
+            Produced::new(rendered, proposed_where, note)
         }
-        Err(e) => own_words(format!("error: {e}")),
+        Err(e) => problem(format!("error: {e}")),
     }
 }
 
@@ -836,6 +1015,61 @@ mod tests {
         );
     }
 
+    mod activity {
+        use super::*;
+
+        /// Every tool the model is offered needs a word of its own. Without this a new tool
+        /// shows up in the transcript as the fallback, which tells the user nothing.
+        #[test]
+        fn every_offered_tool_has_its_own_verb() {
+            for tool in available() {
+                let name = &tool.function.name;
+                assert_ne!(
+                    verb_for(name),
+                    verb_for("something nobody wrote"),
+                    "{name} has no verb of its own"
+                );
+            }
+        }
+
+        #[test]
+        fn counts_read_naturally_in_both_numbers() {
+            assert_eq!(tally(0, "line", "lines"), "0 lines");
+            assert_eq!(tally(1, "line", "lines"), "1 line");
+            assert_eq!(tally(2, "match", "matches"), "2 matches");
+        }
+
+        /// A new file is reported by its size. Every line of it is an addition, so a hunk view
+        /// would be the whole body, which buries everything after it.
+        #[test]
+        fn a_new_file_is_reported_by_size_with_no_hunks() {
+            let (note, changes) = change_report(Intent::Create, None, "one\ntwo\nthree\n");
+            assert_eq!(note, "3 lines");
+            assert!(changes.is_empty(), "a new file was shown as a diff");
+        }
+
+        /// An edit is reported by what it changed, and carries the hunks so the user can see
+        /// the change rather than take the counts on trust.
+        #[test]
+        fn an_edit_is_reported_by_what_it_changed() {
+            let (note, changes) =
+                change_report(Intent::Edit, Some("keep\nold\n"), "keep\nnew\nextra\n");
+            assert_eq!(note, "added 2 lines, removed 1 line");
+            assert!(
+                changes.contains(&crate::diff::Change::Added("new".to_string())),
+                "the hunks do not show the change: {changes:?}"
+            );
+        }
+
+        /// A write that changes nothing must say so rather than reporting a size, which would
+        /// read as though the whole file had been rewritten.
+        #[test]
+        fn an_edit_that_changes_nothing_says_nothing_changed() {
+            let (note, _) = change_report(Intent::Edit, Some("same\n"), "same\n");
+            assert_eq!(note, "added 0 lines, removed 0 lines");
+        }
+    }
+
     mod todos {
         use super::*;
         use crate::report::RecordingReporter;
@@ -862,10 +1096,14 @@ mod tests {
             )
             .expect("policy");
             let mut reporter = RecordingReporter::default();
-            let (text, origin) = todo_write(&mut policy, &mut reporter, &arguments);
+            let produced = todo_write(&mut policy, &mut reporter, &arguments);
             // A task list has no destination, so there is nothing for an origin to name.
-            assert!(origin.is_empty(), "a task list named an origin: {origin}");
-            (reporter, text)
+            assert!(
+                produced.origin.is_empty(),
+                "a task list named an origin: {}",
+                produced.origin
+            );
+            (reporter, produced.text)
         }
 
         /// Read what the model was told, through the display gate rather than by minting a
@@ -941,11 +1179,12 @@ mod tests {
             assert_eq!(policy.context_integrity(), Integrity::Untrusted);
 
             let mut reporter = RecordingReporter::default();
-            let (text, _) = todo_write(
+            let text = todo_write(
                 &mut policy,
                 &mut reporter,
                 &list(&[("after reading something untrusted", "pending")]),
-            );
+            )
+            .text;
 
             assert_eq!(
                 text.label().integrity,

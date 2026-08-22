@@ -9,7 +9,82 @@
 //! but a task list nobody is drawing is merely unseen, and failing the turn over it would let the
 //! display outrank the work.
 
+use crate::diff::Change;
 use bua_core::todo::Row;
+
+/// One thing the turn did, shaped for the person watching.
+///
+/// Every string in here has already been through the display gate, exactly as
+/// [`crate::confirm::WriteRequest`] has, so nothing downstream reasons about labels. The
+/// release is what the gate exists for: a screen is one of the three destinations untrusted
+/// content is allowed to reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Activity {
+    /// What is being done, in the driver's own word.
+    ///
+    /// A literal chosen by the dispatch table rather than anything the model wrote, so a call
+    /// cannot describe itself as something gentler than it is.
+    pub verb: &'static str,
+    /// What is being acted on, as the model named it. Empty where there is nothing to name.
+    pub target: String,
+    /// What came of it, in a few words. `None` while the call is still running, which is what
+    /// makes an unfinished line distinguishable from one that finished with nothing to say.
+    pub note: Option<String>,
+    /// Whether the call was refused or failed, so the line can be coloured as such.
+    ///
+    /// Set by the driver from which branch it took, never read back out of the note: the note
+    /// is prose, and matching on prose is how a message that merely mentions a refusal becomes
+    /// one.
+    pub failed: bool,
+    /// The change a write made, for showing beneath the line. Empty for everything else.
+    pub changes: Vec<Change>,
+}
+
+impl Activity {
+    /// A call that has begun and has not finished.
+    pub fn running(verb: &'static str, target: impl Into<String>) -> Self {
+        Self {
+            verb,
+            target: target.into(),
+            note: None,
+            failed: false,
+            changes: Vec::new(),
+        }
+    }
+
+    /// The same call, finished, with what came of it.
+    pub fn done(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    /// The same call, refused or failed, with why.
+    pub fn failed(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self.failed = true;
+        self
+    }
+
+    /// Attach the change a write made.
+    pub fn with_changes(mut self, changes: Vec<Change>) -> Self {
+        self.changes = changes;
+        self
+    }
+
+    /// Whether this line is still waiting on the call it describes.
+    pub fn is_running(&self) -> bool {
+        self.note.is_none()
+    }
+
+    /// The line as one string, for a display with nowhere to put the parts separately.
+    pub fn line(&self) -> String {
+        if self.target.is_empty() {
+            self.verb.to_string()
+        } else {
+            format!("{}({})", self.verb, self.target)
+        }
+    }
+}
 
 /// Something that can be told about progress.
 ///
@@ -24,6 +99,19 @@ pub trait Reporter {
     /// A count and nothing else. The reply is untrusted model output, so passing the text here
     /// would put untrusted content in the driver's hands; how much was written is not content.
     fn output_tokens(&mut self, _written: u64) {}
+
+    /// A tool call has begun.
+    ///
+    /// Sent before the call runs, so a slow one is visible while it is slow rather than only
+    /// once it is over. That is the whole point: a turn that reads twenty files used to show
+    /// nothing at all until it finished.
+    fn tool_started(&mut self, _activity: Activity) {}
+
+    /// The call [`Reporter::tool_started`] last announced has finished.
+    ///
+    /// Paired by position rather than by an identifier because dispatch runs one call at a
+    /// time: there is never a second call in flight for this to be ambiguous between.
+    fn tool_finished(&mut self, _activity: Activity) {}
 }
 
 /// Discards every report.
@@ -45,6 +133,10 @@ pub struct RecordingReporter {
     pub updates: Vec<Vec<Row>>,
     /// Every output-token count reported, in order.
     pub written: Vec<u64>,
+    /// Every tool call announced as starting, in order.
+    pub started: Vec<Activity>,
+    /// Every tool call announced as finished, in order.
+    pub finished: Vec<Activity>,
 }
 
 impl Reporter for RecordingReporter {
@@ -54,6 +146,14 @@ impl Reporter for RecordingReporter {
 
     fn output_tokens(&mut self, written: u64) {
         self.written.push(written);
+    }
+
+    fn tool_started(&mut self, activity: Activity) {
+        self.started.push(activity);
+    }
+
+    fn tool_finished(&mut self, activity: Activity) {
+        self.finished.push(activity);
     }
 }
 
@@ -78,5 +178,41 @@ mod tests {
     #[test]
     fn ignoring_reports_is_infallible() {
         IgnoreReports.todos(rows(&List::new(vec![Item::new("x", Status::Active)])));
+        IgnoreReports.tool_started(Activity::running("Read", "src/main.rs"));
+        IgnoreReports.tool_finished(Activity::running("Read", "src/main.rs").done("12 lines"));
+    }
+
+    /// The distinction the display draws everything else from: a line with no note is a call
+    /// still in flight, and one with a note is over.
+    #[test]
+    fn an_activity_is_running_until_it_has_a_note() {
+        let started = Activity::running("Read", "src/main.rs");
+        assert!(started.is_running());
+        assert!(!started.clone().done("12 lines").is_running());
+        assert!(!started.failed("refused").is_running());
+    }
+
+    /// A refusal has to be distinguishable from a success without reading the note, or the
+    /// interface would be matching on prose to decide what colour to draw.
+    #[test]
+    fn a_refusal_is_marked_as_one_rather_than_described_as_one() {
+        let refused = Activity::running("Update", "a.rs").failed("refused: not approved");
+        assert!(refused.failed);
+        assert!(!Activity::running("Update", "a.rs").done("+1 -0").failed);
+    }
+
+    #[test]
+    fn a_line_names_what_was_acted_on() {
+        assert_eq!(
+            Activity::running("Read", "src/main.rs").line(),
+            "Read(src/main.rs)"
+        );
+    }
+
+    /// Some work has nothing to name, and an empty pair of brackets reads as a bug rather than
+    /// as an absent target.
+    #[test]
+    fn a_line_with_nothing_to_name_is_the_verb_alone() {
+        assert_eq!(Activity::running("Plan", "").line(), "Plan");
     }
 }

@@ -622,6 +622,72 @@ fn a_model_cannot_escape_the_workspace() {
     );
 }
 
+/// Cancellation is what stops a model that never stops calling tools. There is no round
+/// limit any more, so this is the whole of the answer: the token is checked before every
+/// request and before every tool call, and setting it ends the turn at the next one.
+#[test]
+fn a_runaway_tool_loop_stops_when_it_is_cancelled() {
+    /// Lets a fixed number of tool calls through, then asks the turn to stop.
+    ///
+    /// Standing in for the user pressing Escape, at a point the test can pin down exactly.
+    struct CancelAfter {
+        seen: usize,
+        limit: usize,
+        cancel: bua_core::cancel::Cancel,
+    }
+
+    impl bua_agent::report::Reporter for CancelAfter {
+        fn todos(&mut self, _rows: Vec<bua_core::todo::Row>) {}
+
+        fn tool_started(&mut self, _activity: bua_agent::report::Activity) {
+            self.seen += 1;
+            if self.seen >= self.limit {
+                self.cancel.cancel();
+            }
+        }
+    }
+
+    let scratch = Scratch::new("runaway");
+    std::fs::write(scratch.path.join("a.txt"), "x").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Far more rounds than the turn will be allowed to take.
+    let replies: Vec<String> = (0..20)
+        .map(|_| tool_request("read_file", r#"{"path":"a.txt"}"#))
+        .collect();
+    let (endpoint, _received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let cancel = bua_core::cancel::Cancel::new();
+    let mut reporter = CancelAfter {
+        seen: 0,
+        limit: 3,
+        cancel: cancel.clone(),
+    };
+
+    let task = Task::new("loop forever");
+    let error = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &cancel,
+    )
+    .expect_err("a cancelled turn does not produce an answer");
+
+    assert!(error.to_string().contains("cancelled"), "got: {error}");
+    assert_eq!(
+        reporter.seen, 3,
+        "the turn kept calling tools after the stop"
+    );
+}
+
 /// An unknown tool is reported back as text rather than failing the turn.
 #[test]
 fn an_unknown_tool_is_reported_to_the_model() {
@@ -873,6 +939,125 @@ fn trusting_the_workspace() -> bua_core::trust::TrustStore {
     let mut trust = bua_core::trust::TrustStore::new();
     trust.trust(".");
     trust
+}
+
+/// The interface has to be told what the turn is doing while it does it. A call is announced
+/// before it runs, so a slow one is visible while it is slow, and again when it finishes.
+#[test]
+fn each_tool_call_is_announced_before_it_runs_and_summarised_after() {
+    let scratch = Scratch::new("announced");
+    std::fs::write(scratch.path.join("target.txt"), "one\ntwo\nthree\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"target.txt"}"#),
+        reply_with("three lines"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read it"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let started = reporter.started.first().expect("the call was announced");
+    assert_eq!(started.line(), "Read(target.txt)");
+    assert!(started.is_running(), "a call was announced as already over");
+
+    let finished = reporter.finished.first().expect("the call was summarised");
+    assert_eq!(finished.note.as_deref(), Some("3 lines"));
+    assert!(!finished.failed);
+}
+
+/// A refused call has to read as a refusal, or the transcript shows work that never happened.
+#[test]
+fn a_refused_call_is_reported_as_one() {
+    let scratch = Scratch::new("announced-refusal");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"../outside.txt"}"#),
+        reply_with("could not read it"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read outside"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let finished = reporter.finished.first().expect("the call was summarised");
+    assert!(finished.failed, "a refusal was reported as a success");
+}
+
+/// A write is the change a user most wants to see, so the summary says how much moved and
+/// carries the hunks that show it.
+#[test]
+fn an_approved_edit_reports_what_changed() {
+    let scratch = Scratch::new("edit-reported");
+    std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("edit a.txt"),
+        &mut RecordingConfirmer::approving(),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let finished = reporter.finished.first().expect("the edit was summarised");
+    assert_eq!(finished.line(), "Update(a.txt)");
+    assert_eq!(
+        finished.note.as_deref(),
+        Some("added 1 line, removed 1 line")
+    );
+    assert!(
+        finished
+            .changes
+            .contains(&bua_agent::diff::Change::Added("new".to_string())),
+        "the change was reported without the lines that changed: {:?}",
+        finished.changes
+    );
 }
 
 /// An approved edit replaces only the passage it named, leaving the rest of the file alone.

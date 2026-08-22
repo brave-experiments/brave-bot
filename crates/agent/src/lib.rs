@@ -15,7 +15,7 @@ pub mod turn;
 pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RefuseWrites, WriteRequest};
-pub use report::{IgnoreReports, Reporter};
+pub use report::{Activity, IgnoreReports, Reporter};
 pub use subscription::ImportedSubscription;
 pub use turn::{Outcome, Task, TurnError};
 pub use workspace::{Workspace, WorkspaceError};
