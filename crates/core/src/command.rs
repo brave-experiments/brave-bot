@@ -43,8 +43,6 @@
 //! here, since carrying bytes decides nothing. Private is about confidentiality, and handing the
 //! user's data to a program releases it somewhere this policy no longer governs.
 
-use std::fmt;
-
 /// One program in a pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stage {

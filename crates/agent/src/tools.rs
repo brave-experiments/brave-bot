@@ -841,7 +841,7 @@ mod tests {
         use crate::report::RecordingReporter;
         use bua_core::capability::{Capability, CapabilitySet};
         use bua_core::event::RecordingSink;
-        use bua_core::label::{Integrity, Label};
+        use bua_core::label::Integrity;
         use bua_core::policy::{ReleasePlan, Routing};
 
         fn routing() -> Routing {
