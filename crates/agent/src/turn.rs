@@ -425,19 +425,55 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let proof = policy.authorise_display_release("what the model said between calls");
         reporter.narration(completion.content.clone().declassify(&proof));
 
-        // The assistant's tool request is replayed so the conversation stays coherent,
-        // then each result is appended as a user message. A dedicated tool role would be
-        // more faithful to the API, but this keeps every message a plain string, which
-        // means no tool result can ever be mistaken for a system instruction.
+        // The planner's own turn goes back into the conversation: what it said, and the calls
+        // it made with the arguments it chose. Replaying the tool names alone left a round
+        // reading as "you called write_file" with no record of what was written, and a model
+        // that cannot see what it did does it again. It did: three whole rewrites of one file
+        // in a single turn, each undoing the last.
+        //
+        // Labelled from the context that produced it, exactly as a write body is. The
+        // transport labels a reply pessimistically because it knows nothing of where it came
+        // from; the kernel tracked what entered the context and does. Where that context has
+        // met something untrusted, the planner's own words are quarantined like anything else
+        // and it is told which tools it called and nothing more. Still a plain string in a
+        // plain message, so nothing here can be mistaken for a system instruction.
         let requested: Vec<String> = completion
             .calls
             .iter()
             .map(|c| c.function.name.clone())
             .collect();
-        conversation.push(Message::assistant(format!(
-            "(requesting tools: {})",
-            requested.join(", ")
-        )));
+        let account = {
+            let (spoken, _) = completion.content.clone().into_parts_for_decoding();
+            let mut account = spoken;
+            for call in &completion.calls {
+                // Appended unconditionally, separator and all: whether there is anything
+                // before it is a question about the text, and the driver does not ask those.
+                account.push_str(&format!(
+                    "\n\n(you called {} with {})",
+                    call.function.name,
+                    call.function.arguments.as_deref().unwrap_or("{}")
+                ));
+            }
+            policy.label_model_output("chat", account)
+        };
+        let slot = conversation.next_reference();
+        let presented = policy
+            .present(
+                "assistant",
+                slot,
+                "your own last turn",
+                &account,
+                conversation.quarantine(),
+            )
+            .map_err(|d| TurnError::Precommit(d.to_string()))?;
+        conversation.push(Message::assistant(match &presented {
+            Presentation::Visible(text) => text.clone(),
+            Presentation::Quarantined(reference) => format!(
+                "(you called: {}. What you said is not shown back to you. {})",
+                requested.join(", "),
+                reference.describe()
+            ),
+        }));
 
         for call in &completion.calls {
             // Checked per call, because a tool may write. Stopping here means the remaining
@@ -488,18 +524,21 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     let proof = policy.authorise_display_release("assistant reply");
     let display = completion.content.clone().declassify(&proof);
 
-    // The reply joins the conversation through the same gate as everything else, and is
-    // quarantined for the same reason a fetched page is: it arrived over the network, so the
-    // label it carries is the one the transport gave it. What the next turn's planner reads is
-    // that it answered and how much it said, which is what makes "try that again" mean
-    // something without any of its own words being read back to it as instructions.
+    // The answer joins the conversation the same way a round's account of itself does, and by
+    // the same reasoning: it is what this model said, labelled from the context it said it in.
+    // A session that has met nothing untrusted can be asked "shorter, please" and know what to
+    // shorten; one that has met something untrusted is told that it answered and no more.
+    let answer = {
+        let (spoken, _) = completion.content.clone().into_parts_for_decoding();
+        policy.label_model_output("chat", spoken)
+    };
     let slot = conversation.next_reference();
     let presented = policy
         .present(
             "reply",
             slot,
-            "your previous reply",
-            &completion.content,
+            "your previous answer",
+            &answer,
             conversation.quarantine(),
         )
         .map_err(|d| TurnError::Precommit(d.to_string()))?;
