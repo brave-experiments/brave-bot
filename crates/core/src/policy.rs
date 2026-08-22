@@ -383,6 +383,55 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Labelled::new(value, label)
     }
 
+    /// Label the output of a program, from what it is and what went into it.
+    ///
+    /// Two cases, and which one applies is decided here rather than by the caller.
+    ///
+    /// An **opaque** program gets `(U,priv)`. Nothing can establish what it did, so nothing better
+    /// than the pessimistic label holds. This is the default and covers everything not in
+    /// [`crate::pure::FILTERS`].
+    ///
+    /// A **side-effect-free filter** passes its input's label through. `wc -l` reading stdin cannot
+    /// do anything but count what it was given, so its output is a function of its input and carries
+    /// the input's label. With no input at all, as with `pwd`, the output is a function of state the
+    /// user established and is trusted.
+    ///
+    /// **This is not an upgrade.** It is the first label the output ever receives, assigned from
+    /// provenance the kernel tracked, exactly as [`Policy::label_model_output`] is. Nothing
+    /// relabels: an untrusted input yields an untrusted result, and there is no argument or
+    /// declaration that makes a filter's output better than what it consumed.
+    ///
+    /// Eligibility is judged from `(program, args)`, which are trusted by the time they reach here,
+    /// since argv is routing and has either been promoted or endorsed. So this is a comparison on
+    /// trusted data, which R3 permits. It is nonetheless the most consequential such comparison in
+    /// the kernel, because a gap in the table means untrusted bytes labelled trusted.
+    pub fn label_command_output(
+        &mut self,
+        program: &str,
+        args: &[String],
+        stdin: Option<Label>,
+    ) -> Label {
+        if !crate::pure::is_pure_filter(program, args) {
+            let label = Label::untrusted_private();
+            self.allow(
+                "provenance",
+                format!("{program}: output labelled {label}, since what it did is unknown"),
+            );
+            return label;
+        }
+
+        // A filter with no input produces a function of nothing an attacker influenced.
+        let label = stdin.unwrap_or_else(Label::trusted_public);
+        self.allow(
+            "provenance",
+            format!(
+                "{program}: output labelled {label}, carried through a filter that only transforms \
+                 its input"
+            ),
+        );
+        label
+    }
+
     /// Transform content without exposing it, keeping its label.
     ///
     /// A tool often needs to reshape what it read, joining lines or adding a truncation notice, before
@@ -1601,6 +1650,150 @@ mod tests {
                 .expect("trusted content may be examined"),
             "fn main() {}"
         );
+    }
+
+    mod command_output {
+        use super::*;
+
+        fn policy_with<'s>(sink: &'s mut RecordingSink) -> Policy<'s, RecordingSink> {
+            Policy::begin(
+                routing_with("task", "run something"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                sink,
+            )
+            .expect("policy")
+        }
+
+        fn args(list: &[&str]) -> Vec<String> {
+            list.iter().map(|a| a.to_string()).collect()
+        }
+
+        /// An unrecognised program tells us nothing, so its output gets the pessimistic label
+        /// whatever was fed in.
+        #[test]
+        fn an_opaque_program_always_yields_untrusted_private_output() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_with(&mut sink);
+
+            for stdin in [
+                None,
+                Some(Label::trusted_public()),
+                Some(Label::trusted_private()),
+            ] {
+                assert_eq!(
+                    policy.label_command_output("git", &args(&["log"]), stdin),
+                    Label::untrusted_private(),
+                    "git log output was not pessimistically labelled"
+                );
+            }
+        }
+
+        /// The point of the feature: a filter's output is a function of its input, so a trusted input
+        /// yields a readable result.
+        #[test]
+        fn a_filter_passes_a_trusted_label_through() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_with(&mut sink);
+
+            assert_eq!(
+                policy.label_command_output("wc", &args(&["-l"]), Some(Label::trusted_private())),
+                Label::trusted_private()
+            );
+        }
+
+        /// And the direction that matters more: a filter never improves what it consumed.
+        #[test]
+        fn a_filter_passes_an_untrusted_label_through_unchanged() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_with(&mut sink);
+
+            for label in [Label::untrusted_public(), Label::untrusted_private()] {
+                assert_eq!(
+                    policy.label_command_output("wc", &args(&["-l"]), Some(label)),
+                    label,
+                    "a filter upgraded its input's label"
+                );
+            }
+        }
+
+        /// A filter taking no input produces a function of nothing an attacker influenced, which is
+        /// what makes `pwd` useful.
+        #[test]
+        fn a_filter_with_no_input_yields_trusted_output() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_with(&mut sink);
+
+            assert_eq!(
+                policy.label_command_output("pwd", &args(&[]), None),
+                Label::trusted_public()
+            );
+        }
+
+        /// The interpreters must not get pass-through, since they can write files and run commands
+        /// from an argument. This is the case a mistake would be worst.
+        #[test]
+        fn interpreters_get_no_pass_through_even_on_trusted_input() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_with(&mut sink);
+
+            for program in ["sed", "awk", "bash"] {
+                assert_eq!(
+                    policy.label_command_output(
+                        program,
+                        &args(&["x"]),
+                        Some(Label::trusted_public())
+                    ),
+                    Label::untrusted_private(),
+                    "{program} was granted label pass-through"
+                );
+            }
+        }
+
+        /// An argument that makes an eligible program read a file disqualifies the call, because the
+        /// label would then describe stdin while the data came from disk.
+        #[test]
+        fn an_eligible_program_reading_a_file_gets_no_pass_through() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_with(&mut sink);
+
+            assert_eq!(
+                policy.label_command_output(
+                    "grep",
+                    &args(&["-r", "secret"]),
+                    Some(Label::trusted_public())
+                ),
+                Label::untrusted_private(),
+                "grep recursing the filesystem was granted pass-through"
+            );
+            assert_eq!(
+                policy.label_command_output(
+                    "head",
+                    &args(&["-1", "/etc/hosts"]),
+                    Some(Label::trusted_public())
+                ),
+                Label::untrusted_private()
+            );
+        }
+
+        /// Every labelling decision is recorded, so an audit shows which outputs were trusted and
+        /// why rather than leaving the choice invisible.
+        #[test]
+        fn the_labelling_decision_is_recorded() {
+            let mut sink = RecordingSink::new();
+            {
+                let mut policy = policy_with(&mut sink);
+                policy.label_command_output("wc", &args(&["-l"]), Some(Label::trusted_public()));
+            }
+            assert!(
+                sink.events().iter().any(|e| matches!(
+                    e,
+                    Event::GatePassed { gate, detail }
+                        if *gate == "provenance" && detail.contains("wc")
+                )),
+                "the labelling was not recorded"
+            );
+        }
     }
 
     /// Reshaping content for presentation keeps its label, so the result still has to pass the
