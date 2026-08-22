@@ -57,14 +57,17 @@ and payload at once, with nothing separable for you to see, while an argument li
 can read and have executed verbatim. Nothing is escaped or re-parsed, so `; rm -rf /` inside an
 argument is just an argument.
 
-**Programs are confined, not vetted.** There is no list of allowed programs to maintain. Each stage
-runs under a sandbox permitting only what it declared it needs, so a program that asked for
-read-only access and then tries to write is denied by the operating system rather than trusted not
-to. Writing or reaching the network needs your approval first.
+**You approve every command.** There is no list of allowed programs and no sandbox around them: they
+run with the access your own shell would give them, because `git push` needs your SSH keys and the
+set of tools you might ask for cannot be listed in advance. What protects you is that you see the
+exact argument list first and your approval covers only that one, so it cannot be reused for a
+different command.
 
 **Command output is never trusted.** Whatever a program prints is treated as untrusted and private,
-always, since it could contain anything a file or a website put there. That includes making it
-unreadable to the model, which is a real limitation and a deliberate one.
+always, since it could contain anything a file or a website put there. Untrusted data can still be
+piped *into* a tool, which is what lets `sed` and `awk` work on files nobody vouched for. But the
+model receives a description of the output rather than the text, so it cannot read what it just ran.
+That is a real limitation and a deliberate one.
 [Why this matters](docs/design.md#why-some-things-are-absent), and
 [the full model](docs/tools.md#running-programs).
 

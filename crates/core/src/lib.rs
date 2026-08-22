@@ -26,7 +26,7 @@ pub mod value;
 
 pub use cancel::Cancel;
 pub use capability::{Capability, CapabilitySet, CapabilityToken};
-pub use command::{Pipeline, Reach, Stage};
+pub use command::{Pipeline, Stage};
 pub use event::{Event, NullSink, Principle, RecordingSink, Role, Sink};
 pub use label::{Confidentiality, Integrity, Label, taint_all};
 pub use policy::{Denial, Policy, ReleasePlan, Routing};

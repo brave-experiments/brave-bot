@@ -146,21 +146,24 @@ it is that the exclusion was about shell strings and an argv vector is not one.
 
 The rules `run` lives under, none of which may be relaxed to make something work:
 
-- argv is routing, so it must be `(T,pub)`: promoted when the stage is confined, endorsed by a
-  person when it is an effect. Untrusted text never becomes an argument.
+- argv is routing, so it must be `(T,pub)` and endorsed by a person before anything runs. Untrusted
+  text never becomes an argument.
 - stdin is content, so it may be untrusted. This is what lets untrusted data reach a command line
   without the planner or the driver reading it.
-- Output is **always** `(U,priv)`. Every stage, no exceptions, no declaration that changes it.
-- Private input asks, even when the pipeline changes nothing, because a subprocess is somewhere the
-  policy stops governing.
-- Programs are not enumerated. Confinement bounds a stage, not its name, so a stage that
-  misdeclares its reach fails rather than escaping. Do not add an allowlist and treat it as the
-  safety property.
+- stdout and stderr are **always** `(U,priv)`. Every stage, no exceptions, nothing a caller or the
+  model can declare changes it. This is the property the whole tool rests on.
+- Private input asks, even though the labels would permit it, because handing the user's data to a
+  program releases it somewhere this policy stops governing.
+- Every run asks. There is no read-only category: nothing here can tell whether `foo --bar` writes,
+  and a stage declaring itself harmless only helps if the declaration is honest. Do not add one to
+  reduce prompting; remembered argv patterns are the direction, and an unprompted write is worse
+  than an unwanted prompt.
 
-`run` also contains the only place the driver branches on a model-supplied value: the declared
-reach selects which gate applies. That is admissible **only** because the branch is monotone in the
-safe direction, since declaring less asks for less privilege and the OS holds the stage to it. Do
-not generalise from this to branching on content anywhere else.
+Programs are **not** confined and **not** enumerated. They run with the access the user's shell
+would give them, because `git push` needs `~/.ssh` and the set of programs someone might ask for
+cannot be listed in advance. Do not add an allowlist and treat it as the safety property: what holds
+is the label on the output, not a belief about the binary. Whether to confine children is issue #4;
+whether output can ever be trusted is issue #3. Neither may be resolved by weakening the labels.
 
 ## Conventions
 

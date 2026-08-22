@@ -84,48 +84,47 @@ The consequence is that pipes, redirection, `&&`, globbing and `$(...)` are all 
 of those is a destination you never saw. Compose stages instead, which is why `run` takes a
 pipeline rather than a single program: narrowing output is a stage, not a pipe character.
 
-### No list of permitted programs
+### Programs are not restricted, output is
 
-There is nothing to configure and no allowlist to maintain. `sed`, `awk`, `head`, `jq`, `rg`, `gh`,
-anything installed, all work without being named anywhere.
+There is no allowlist and nothing to configure. `sed`, `awk`, `jq`, `rg`, `gh`, `npm`, anything
+installed, all work without being named anywhere. They also run with whatever access your own shell
+would give them: `bua` does not sandbox them.
 
-What bounds a stage is not its name but the confinement it runs under, and the operating system
-enforces that. Each stage declares whether it needs to write or to reach the network, and that
-declaration selects a sandbox profile that permits nothing else. A stage that claimed to be
-read-only and then tried to write does not get a silent write; it gets a denied one. So a
-misdeclaration fails rather than escaping, and no list of trustworthy programs is required.
-
-### What goes in and what comes out
+That is deliberate. `git push` needs `~/.ssh`, `npm install` reads `~/.npmrc` and writes
+`node_modules`, and the set of programs you might reasonably ask for cannot be listed in advance. A
+confinement profile narrow enough to be worth having would break ordinary tools, so instead of
+restricting what a program can touch, what is controlled is what its output can *do*.
 
 | | Label | Gate |
 |---|---|---|
-| Program and arguments | must be `(T,pub)` | promoted when confined, endorsed by you for an effect |
-| Standard input | may be untrusted | asks you when private |
-| Output | always untrusted, always private | quarantined, per R1 |
+| Program and arguments | must be `(T,pub)` | you approve the exact argv |
+| Standard input | may be untrusted | you approve when it is private |
+| Standard output and error | always untrusted, always private | quarantined, per R1 |
 
-Arguments are **routing**: they decide what happens. So they may not be derived from untrusted
-bytes, which is the injection this design exists to prevent.
+Arguments are **routing**: they decide what happens and where it lands, so they may not be derived
+from untrusted bytes. Your approval is what makes them trustworthy, and it is bound to that exact
+argv so it cannot be reused for a different one.
 
-Standard input is **content**: it is carried into the process, never consulted. So untrusted data
-*can* be fed to a command line. The model names a quarantined reference and the kernel supplies the
-bytes, meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bua` itself
-ever reading it. This is the point of the split: both trusted and untrusted data reach real command
-line tools, and only the routing part has to be trustworthy.
+Standard input is **content**: carried into the process, never consulted. So untrusted data *can* be
+fed to a command line. The model names a quarantined reference and the kernel supplies the bytes,
+meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bua` itself ever
+reading it. That is the point of the split: both trusted and untrusted data reach real tools, and
+only the routing part has to be trustworthy.
 
-Output is **always** untrusted and private. Every stage, no exceptions, nothing to configure. A
-program can emit anything, including bytes an earlier stage read out of a file an attacker wrote, so
-that is the only label that holds without knowing what ran. The model therefore gets a reference
-rather than the text, and cannot read what it just ran. Whether some narrower class of output could
-ever be trusted is an open question rather than a settled one, tracked as an issue.
+Output is **always** untrusted and private. Every stage, no exceptions, nothing that changes it. A
+program may print anything, including bytes an earlier stage read out of a file an attacker wrote, so
+that is the only label that holds without knowing what ran. The model therefore receives a reference
+rather than text and cannot read what it just ran, which is a real limitation. Whether some narrower
+class of output could ever be trusted is an open question rather than a settled one.
 
-### Private input asks, even when nothing changes
+### Every run asks
 
-Integrity and confidentiality gate differently. Untrusted input is fine, because carrying bytes
-decides nothing. Private input is not, because handing it to a subprocess releases it somewhere the
-policy no longer governs.
+There is no read-only category, because there is no way to establish one: `foo --bar` might write to
+disk and nothing here can tell. Letting a stage declare itself harmless would only help if the
+declaration were honest, and an unprompted write from a stage that claimed otherwise is worse than a
+prompt you did not want. So the answer to "does this change anything" is always "assume so".
 
-So a pipeline fed private content asks for your approval even when every stage is confined and
-nothing is being written. It would be easy to reason that a stage with no network and no writes
-could not leak anything, and that reasoning is exactly what this design declines to rely on: the
-process had the bytes, and you decide instead. Trusted-but-private asks too. Vouching for what a
-file contains is not the same as consenting to send it somewhere.
+Private input is a second and independent reason to ask. Untrusted input is fine, because carrying
+bytes decides nothing, but private input hands your data to a program, and that releases it somewhere
+this policy no longer governs. Trusted-but-private asks too: vouching for what a file contains is not
+the same as consenting to send it somewhere.

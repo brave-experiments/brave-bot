@@ -130,11 +130,12 @@ string. What a shell would have decided, where one argument ends and the next be
 here by the caller and shown to the user, so the thing that made a command unapprovable is gone
 rather than tolerated.
 
-Three properties keep it that way, and they are in [tools.md](tools.md) in full. Output is always
-untrusted and private, so nothing a program prints can steer anything. Programs are bounded by
-kernel-enforced confinement rather than by an allowlist, so a program that misdeclares what it needs
-is denied rather than trusted. And private input asks for approval even when nothing is being
-written, because a subprocess is somewhere this policy stops governing.
+What keeps it that way is the label on the output rather than any restriction on the program.
+Spawned programs are neither confined nor enumerated, since a profile narrow enough to be useful
+would break `git push` and `npm install`, and the set of tools a user might ask for is open. So
+stdout and stderr are always untrusted and private, which holds without knowing what ran, and every
+run is approved because nothing here can establish that a program is harmless. See
+[tools.md](tools.md) for the full model.
 
 ## Layering
 
