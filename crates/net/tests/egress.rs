@@ -432,3 +432,34 @@ fn a_reply_that_stops_arriving_is_given_up_on() {
         "expected a transport failure, got {error:?}"
     );
 }
+
+/// A buffered read has to tell the difference too. Silently handing back the part that arrived
+/// turns a dead connection into whatever those bytes happen to parse as, which for a JSON reply
+/// is a puzzling decoding error somewhere far from the cause.
+#[test]
+fn a_body_that_stops_partway_is_a_failure_rather_than_a_short_body() {
+    let base = serve_stalled_body();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy begins");
+
+    let egress = Egress::with_timeouts(Timeouts {
+        idle: Duration::from_millis(300),
+        reply: Duration::from_secs(30),
+        ..Timeouts::default()
+    });
+
+    let error = egress
+        .fetch(&mut policy, Request::get(&base), Label::untrusted_public())
+        .expect_err("half a body is not a body");
+
+    assert!(
+        matches!(error, EgressError::Transport { .. }),
+        "expected a transport failure, got {error:?}"
+    );
+}

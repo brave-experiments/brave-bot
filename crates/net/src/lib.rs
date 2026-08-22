@@ -284,7 +284,10 @@ impl Egress {
         label: Label,
     ) -> Result<Response, EgressError> {
         let (status, content_type, url, reader) = self.fetch_checked(policy, &request)?;
-        let (body, truncated) = read_capped(reader);
+        let (body, truncated) = read_capped(reader).map_err(|e| EgressError::Transport {
+            url: url.clone(),
+            detail: e.to_string(),
+        })?;
 
         Ok(Response {
             status,
@@ -481,17 +484,21 @@ fn resolve(base: &str, location: &str) -> Result<String, EgressError> {
 ///
 /// Truncation is size hygiene, not filtering: nothing is inspected, and the caller
 /// still receives the bytes labelled.
-fn read_capped(mut reader: Box<dyn std::io::Read>) -> (Vec<u8>, bool) {
+///
+/// A read that fails is an error rather than a short body. The two are indistinguishable once
+/// the bytes are handed back, and treating a cut-off reply as a complete one turns a transport
+/// failure into whatever the truncated bytes happen to parse as.
+fn read_capped(mut reader: Box<dyn std::io::Read>) -> Result<(Vec<u8>, bool), std::io::Error> {
     use std::io::Read;
     let mut buffer = Vec::new();
     let mut limited = reader.by_ref().take(MAX_RESPONSE_BYTES as u64 + 1);
-    let _ = limited.read_to_end(&mut buffer);
+    limited.read_to_end(&mut buffer)?;
 
     if buffer.len() > MAX_RESPONSE_BYTES {
         buffer.truncate(MAX_RESPONSE_BYTES);
-        return (buffer, true);
+        return Ok((buffer, true));
     }
-    (buffer, false)
+    Ok((buffer, false))
 }
 
 #[cfg(test)]
@@ -551,15 +558,31 @@ mod tests {
     #[test]
     fn bodies_are_capped() {
         let oversized = vec![b'x'; MAX_RESPONSE_BYTES + 100];
-        let (body, truncated) = read_capped(Box::new(std::io::Cursor::new(oversized)));
+        let (body, truncated) =
+            read_capped(Box::new(std::io::Cursor::new(oversized))).expect("the read succeeds");
         assert_eq!(body.len(), MAX_RESPONSE_BYTES);
         assert!(truncated);
     }
 
     #[test]
     fn small_bodies_are_not_reported_as_truncated() {
-        let (body, truncated) = read_capped(Box::new(std::io::Cursor::new(b"hello".to_vec())));
+        let (body, truncated) = read_capped(Box::new(std::io::Cursor::new(b"hello".to_vec())))
+            .expect("the read succeeds");
         assert_eq!(body, b"hello");
         assert!(!truncated);
+    }
+
+    /// The distinction that matters to a caller: a body that stopped early is not a short body,
+    /// and handing back what arrived would leave nothing to tell them apart by.
+    #[test]
+    fn a_failed_read_is_not_a_short_body() {
+        struct Interrupted;
+        impl std::io::Read for Interrupted {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "gone"))
+            }
+        }
+
+        assert!(read_capped(Box::new(Interrupted)).is_err());
     }
 }
