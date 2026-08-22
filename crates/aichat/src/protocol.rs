@@ -408,7 +408,12 @@ impl StreamAccumulator {
     /// Everything the stream produced, in the shape a one-shot response would have had.
     pub fn finish(self) -> (String, Option<String>, Vec<ToolCall>, Usage) {
         let calls = self.tool_calls();
-        (self.content, self.model, calls, self.usage.unwrap_or_default())
+        (
+            self.content,
+            self.model,
+            calls,
+            self.usage.unwrap_or_default(),
+        )
     }
 }
 

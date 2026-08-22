@@ -308,13 +308,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         next_reference += 1;
 
         let presented = policy
-            .present(
-                "chat",
-                slot,
-                &path,
-                &contents,
-                &mut slots,
-            )
+            .present("chat", slot, &path, &contents, &mut slots)
             .map_err(|d| TurnError::Precommit(d.to_string()))?;
 
         messages.push(Message::user(match &presented {

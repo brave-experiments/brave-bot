@@ -342,7 +342,9 @@ fn a_streamed_completion_arrives_in_pieces() {
         frame(r#"{"choices":[{"delta":{"content":"hello"}}]}"#),
         frame(r#"{"choices":[{"delta":{"content":" from"}}]}"#),
         frame(r#"{"choices":[{"delta":{"content":" the model"}}]}"#),
-        frame(r#"{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3}}"#),
+        frame(
+            r#"{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3}}"#,
+        ),
         frame("[DONE]"),
     ]);
     let config = config_for(&endpoint);
@@ -401,10 +403,18 @@ fn a_streamed_completion_arrives_in_pieces() {
 #[test]
 fn a_streamed_tool_call_is_reassembled() {
     let (endpoint, _received) = serve_stream(vec![
-        frame(r#"{"model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]}}]}"#),
-        frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#),
-        frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"a.rs\"}"}}]}}]}"#),
-        frame(r#"{"choices":[{"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8,"completion_tokens":5}}"#),
+        frame(
+            r#"{"model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]}}]}"#,
+        ),
+        frame(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#,
+        ),
+        frame(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"a.rs\"}"}}]}}]}"#,
+        ),
+        frame(
+            r#"{"choices":[{"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8,"completion_tokens":5}}"#,
+        ),
         frame("[DONE]"),
     ]);
     let config = config_for(&endpoint);
