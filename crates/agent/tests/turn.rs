@@ -2885,7 +2885,7 @@ fn a_round_shows_the_model_what_it_asked_for() {
         result["content"]
             .as_str()
             .expect("content")
-            .contains("wrote index.html"),
+            .contains("created index.html"),
         "the result said nothing about what happened: {result}"
     );
 }
@@ -2988,4 +2988,53 @@ fn a_round_is_sent_in_the_shape_the_api_defines() {
         assert_eq!(answer["role"], "tool");
         assert_eq!(answer["tool_call_id"], *id);
     }
+}
+
+/// A model that has just replaced somebody's file should not go on to say it created one. What
+/// it is told is what its own account of the turn repeats, so the two have to agree.
+#[test]
+fn the_model_is_told_when_a_write_replaced_something() {
+    let scratch = Scratch::new("write-over-existing");
+    std::fs::write(scratch.path.join("index.html"), "the file that was there\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"index.html","contents":"a whole new file"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("write the page"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("a first request");
+    let second = received.recv().expect("a second request");
+    assert!(
+        second.contains("which was already there"),
+        "the model was left thinking it had created the file: {second}"
+    );
+
+    // And the line the user reads says the same, with the age of what was lost.
+    let finished = reporter.finished.first().expect("the write was summarised");
+    let note = finished.note.as_deref().expect("a note");
+    assert!(
+        note.starts_with("replaced a file written "),
+        "the note does not say what was replaced or when it arrived: {note}"
+    );
 }

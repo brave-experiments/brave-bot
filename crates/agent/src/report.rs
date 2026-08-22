@@ -124,6 +124,29 @@ impl Phase {
     }
 }
 
+/// How long ago something happened, in the words a person says it in.
+///
+/// Lives here rather than in the interface because two things need it and a phrase written twice
+/// is a phrase that will disagree with itself: the list of sessions saying when one was last
+/// touched, and a write saying how old the file it replaced was.
+pub fn how_long_ago(age: std::time::Duration) -> String {
+    let seconds = age.as_secs();
+
+    let (count, unit) = match seconds {
+        0..=59 => return "just now".to_string(),
+        60..=3_599 => (seconds / 60, "minute"),
+        3_600..=86_399 => (seconds / 3_600, "hour"),
+        86_400..=2_591_999 => (seconds / 86_400, "day"),
+        _ => (seconds / 2_592_000, "month"),
+    };
+
+    if count == 1 {
+        format!("1 {unit} ago")
+    } else {
+        format!("{count} {unit}s ago")
+    }
+}
+
 /// Something that can be told about progress.
 ///
 /// A trait so a turn does not depend on a terminal: the interactive session draws, a one-shot run
@@ -277,6 +300,20 @@ mod tests {
         assert_eq!(Phase::of_round(1), Phase::Thinking);
         assert_eq!(Phase::of_round(9), Phase::Thinking);
         assert_ne!(Phase::Planning.word(), Phase::Thinking.word());
+    }
+
+    #[test]
+    fn ages_read_the_way_a_person_says_them() {
+        use std::time::Duration;
+        assert_eq!(how_long_ago(Duration::from_secs(3)), "just now");
+        assert_eq!(how_long_ago(Duration::from_secs(60)), "1 minute ago");
+        assert_eq!(how_long_ago(Duration::from_secs(13 * 60)), "13 minutes ago");
+        assert_eq!(how_long_ago(Duration::from_secs(2 * 3_600)), "2 hours ago");
+        assert_eq!(how_long_ago(Duration::from_secs(86_400)), "1 day ago");
+        assert_eq!(
+            how_long_ago(Duration::from_secs(40 * 86_400)),
+            "1 month ago"
+        );
     }
 
     #[test]

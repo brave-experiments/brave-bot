@@ -326,6 +326,7 @@ fn change_report(
     intent: Intent,
     existing: Option<&str>,
     written: &str,
+    replaced_age: Option<std::time::Duration>,
 ) -> (String, Vec<crate::diff::Change>) {
     if intent == Intent::Create {
         return (
@@ -347,12 +348,19 @@ fn change_report(
         tally(diff.removed(), "line", "lines")
     );
 
-    // An overwrite says so. A whole file was rewritten and the diff shows only what did not
-    // survive that, which reads as a small deliberate edit: someone who did not know the file
-    // was already there sees the agent adjusting a margin rather than replacing their work.
+    // An overwrite says so, and says how old what it replaced was. "Replaced the file" was not
+    // enough on its own: a user watching a session write a file for the first time reads it as
+    // this session's own work being rewritten, and asks why the agent never said it created
+    // anything. The answer is usually that the file was there before the session started, which
+    // is a thing the age says and the count of lines does not.
+    //
     // An edit needs no such word, since naming a passage to replace is what it is.
-    let note = match intent {
-        Intent::Overwrite => format!("replaced the file, {changed}"),
+    let note = match (intent, replaced_age) {
+        (Intent::Overwrite, Some(age)) => format!(
+            "replaced a file written {}, {changed}",
+            crate::report::how_long_ago(age)
+        ),
+        (Intent::Overwrite, None) => format!("replaced the file, {changed}"),
         _ => changed,
     };
     (note, diff.condensed(DIFF_CONTEXT))
@@ -619,6 +627,8 @@ fn write_file<S: Sink, C: Confirmer>(
         body.clone().declassify(&proof)
     };
     let existing = workspace.peek_for_review(&proposed_path);
+    // Read before the write, since afterwards the age is the age of this write.
+    let replaced_age = workspace.age_of(&proposed_path);
     let intent = if existing.is_some() {
         Intent::Overwrite
     } else {
@@ -648,8 +658,15 @@ fn write_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             // The file now holds this data, so the map must say what the path means.
             policy.reconcile_after_write(&proposed_path, body_label);
-            let (note, changes) = change_report(intent, existing.as_deref(), &shown);
-            confirmed(format!("wrote {proposed_path}"), note).with_changes(changes)
+            let (note, changes) = change_report(intent, existing.as_deref(), &shown, replaced_age);
+            // What the model is told, which is what its own account of the turn will repeat. It
+            // used to be told "wrote" either way, and would go on to say it had created a file
+            // it had in fact replaced, which is the opposite of what the user needed to hear.
+            let done = match intent {
+                Intent::Create => format!("created {proposed_path}"),
+                _ => format!("replaced {proposed_path}, which was already there"),
+            };
+            confirmed(done, note).with_changes(changes)
         }
         Err(e) => problem(format!("error: {e}")),
     }
@@ -753,7 +770,7 @@ fn edit_file<S: Sink, C: Confirmer>(
     match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
-            let (note, changes) = change_report(Intent::Edit, Some(&current), &shown);
+            let (note, changes) = change_report(Intent::Edit, Some(&current), &shown, None);
             confirmed(
                 format!("edited {proposed_path}: {occurrences} replacement(s)"),
                 note,
@@ -1065,7 +1082,7 @@ mod tests {
         /// directory they have vouched for nothing else will tell them either.
         #[test]
         fn a_new_file_says_it_is_new_and_shows_what_it_holds() {
-            let (note, changes) = change_report(Intent::Create, None, "one\ntwo\nthree\n");
+            let (note, changes) = change_report(Intent::Create, None, "one\ntwo\nthree\n", None);
             assert_eq!(note, "new file, 3 lines");
             assert_eq!(
                 changes,
@@ -1084,25 +1101,46 @@ mod tests {
         /// lines looks exactly like a two-line edit.
         #[test]
         fn an_overwrite_says_it_replaced_a_file_and_an_edit_does_not() {
-            let (overwritten, _) = change_report(Intent::Overwrite, Some("old\n"), "new\n");
+            let (overwritten, _) = change_report(Intent::Overwrite, Some("old\n"), "new\n", None);
             assert_eq!(
                 overwritten,
                 "replaced the file, added 1 line, removed 1 line"
             );
 
-            let (edited, _) = change_report(Intent::Edit, Some("old\n"), "new\n");
+            let (edited, _) = change_report(Intent::Edit, Some("old\n"), "new\n", None);
             assert_eq!(edited, "added 1 line, removed 1 line");
 
-            let (created, _) = change_report(Intent::Create, None, "new\n");
+            let (created, _) = change_report(Intent::Create, None, "new\n", None);
             assert_eq!(created, "new file, 1 line");
+        }
+
+        /// The line that was missing. A file being replaced for the first time in a session
+        /// looks like the session's own work being rewritten, and the user asks why nothing
+        /// ever said it was created. Its age is the answer: it was there before any of this.
+        #[test]
+        fn an_overwrite_says_how_old_the_file_it_replaced_was() {
+            let (note, _) = change_report(
+                Intent::Overwrite,
+                Some("old\n"),
+                "new\n",
+                Some(std::time::Duration::from_secs(12 * 60)),
+            );
+            assert_eq!(
+                note,
+                "replaced a file written 12 minutes ago, added 1 line, removed 1 line"
+            );
         }
 
         /// An edit is reported by what it changed, and carries the hunks so the user can see
         /// the change rather than take the counts on trust.
         #[test]
         fn an_edit_is_reported_by_what_it_changed() {
-            let (note, changes) =
-                change_report(Intent::Edit, Some("keep\nold\n"), "keep\nnew\nextra\n");
+            let (note, changes) = change_report(
+                Intent::Edit,
+                Some("keep\nold\n"),
+                "keep\nnew\nextra\n",
+                None,
+            );
             assert_eq!(note, "added 2 lines, removed 1 line");
             assert!(
                 changes.contains(&crate::diff::Change::Added("new".to_string())),
@@ -1114,7 +1152,7 @@ mod tests {
         /// read as though the whole file had been rewritten.
         #[test]
         fn an_edit_that_changes_nothing_says_nothing_changed() {
-            let (note, _) = change_report(Intent::Edit, Some("same\n"), "same\n");
+            let (note, _) = change_report(Intent::Edit, Some("same\n"), "same\n", None);
             assert_eq!(note, "added 0 lines, removed 0 lines");
         }
     }

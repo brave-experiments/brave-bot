@@ -262,6 +262,20 @@ impl Workspace {
         std::fs::read_to_string(resolved).ok()
     }
 
+    /// How long ago a workspace file was last written, for telling a reviewer what they are
+    /// about to lose.
+    ///
+    /// Outside the gates for the same reason as [`Workspace::peek_for_review`]: it is read on
+    /// the user's behalf for something shown to them, and never handed to the model. `None` when
+    /// there is no such file, or when the filesystem will not say.
+    pub fn age_of(&self, relative: &str) -> Option<std::time::Duration> {
+        let resolved = self.resolve(relative).ok()?;
+        let modified = std::fs::metadata(resolved).ok()?.modified().ok()?;
+        // A file from the future, which a clock change or a copied timestamp can produce, is
+        // reported as new rather than as an error.
+        Some(modified.elapsed().unwrap_or_default())
+    }
+
     /// Write an endorsed file, but only if it still holds `expected`.
     ///
     /// An edit is approved against contents that were read moments earlier. If the file

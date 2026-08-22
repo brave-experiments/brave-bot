@@ -302,23 +302,12 @@ pub fn title_from(prompt: &str) -> String {
 }
 
 /// How long ago, in the words a list uses.
+///
+/// The phrasing is the agent crate's, so a session last touched thirteen minutes ago and a file
+/// replaced thirteen minutes ago are described the same way.
 pub fn how_long_ago(then: u64) -> String {
-    let now = now();
-    let seconds = now.saturating_sub(then);
-
-    let (count, unit) = match seconds {
-        0..=59 => return "just now".to_string(),
-        60..=3_599 => (seconds / 60, "minute"),
-        3_600..=86_399 => (seconds / 3_600, "hour"),
-        86_400..=2_591_999 => (seconds / 86_400, "day"),
-        _ => (seconds / 2_592_000, "month"),
-    };
-
-    if count == 1 {
-        format!("1 {unit} ago")
-    } else {
-        format!("{count} {unit}s ago")
-    }
+    let seconds = now().saturating_sub(then);
+    bua_agent::report::how_long_ago(std::time::Duration::from_secs(seconds))
 }
 
 /// A size in the units a person reads.
@@ -402,15 +391,13 @@ mod tests {
         assert_eq!(title_from("   \n\n"), "untitled");
     }
 
+    /// The phrasing itself is tested where it lives; what matters here is that a stored time
+    /// becomes an age rather than being read as one.
     #[test]
-    fn ages_read_the_way_a_person_says_them() {
+    fn a_stored_time_becomes_an_age() {
         let now = now();
         assert_eq!(how_long_ago(now), "just now");
-        assert_eq!(how_long_ago(now - 60), "1 minute ago");
         assert_eq!(how_long_ago(now - 13 * 60), "13 minutes ago");
-        assert_eq!(how_long_ago(now - 2 * 3_600), "2 hours ago");
-        assert_eq!(how_long_ago(now - 86_400), "1 day ago");
-        assert_eq!(how_long_ago(now - 40 * 86_400), "1 month ago");
     }
 
     /// A clock that has gone backwards since the session was written must not produce an age in
