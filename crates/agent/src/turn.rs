@@ -329,8 +329,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // takes effect on the next one.
     let mut subscription = config
         .premium_endpoint
-        .as_ref()
-        .and_then(|_| crate::ImportedSubscription::discover());
+        .as_deref()
+        .and_then(crate::ImportedSubscription::discover);
 
     let mut client = AichatClient::new(config, egress);
     if let Some(subscription) = subscription.as_mut() {

@@ -68,13 +68,25 @@ impl ImportedSubscription {
         }
     }
 
-    /// The first channel with a usable batch, or `None` if nothing has been imported.
+    /// An imported batch usable against `endpoint`.
     ///
-    /// Stable is preferred, since that is what someone importing once is most likely to have.
-    /// Opening is the same read that checks for one, so this prompts at most once rather than
-    /// probing every channel first.
-    pub fn discover() -> Option<Self> {
-        Channel::ALL.into_iter().find_map(Self::new)
+    /// A credential only verifies against the issuer that signed it, so with both a production and
+    /// a non-production subscription imported, taking whichever came first would send the wrong one
+    /// and read as an invalid credential.
+    ///
+    /// The pairing is production or not, rather than an exact environment match. The aichat hosts and
+    /// the SKU service do not divide the world the same way: a staging subscription is verified by
+    /// the `brave.software` aichat host, confirmed against the live service, so requiring the names
+    /// to agree would reject a credential that works.
+    pub fn discover(endpoint: &str) -> Option<Self> {
+        let production = is_production_endpoint(endpoint)?;
+        Channel::ALL
+            .into_iter()
+            .filter_map(Self::new)
+            .find(|subscription| {
+                (subscription.wallet.environment() == bua_skus::Environment::Production)
+                    == production
+            })
     }
 
     /// How many credentials remained after the last one was spent.
@@ -139,6 +151,32 @@ impl ImportedSubscription {
         // survive the process not exiting cleanly.
         self.wallet.flush().map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+/// Whether an aichat endpoint is the production deployment.
+///
+/// Only that distinction is drawn, because it is the only one that matters for picking a credential:
+/// the non-production aichat hosts and the non-production SKU issuers do not correspond one to one,
+/// and a staging subscription is verified by the `brave.software` host in practice.
+///
+/// `None` for a host in neither camp, such as a local endpoint, so no credential is sent somewhere
+/// its issuer is unknown.
+fn is_production_endpoint(endpoint: &str) -> Option<bool> {
+    let host = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest)
+        .split('/')
+        .next()?;
+
+    // Checked before brave.com, since a careless suffix test would read brave.software as
+    // production and send a live credential to a development host.
+    if host.ends_with(".brave.software") || host.ends_with(".bravesoftware.com") {
+        Some(false)
+    } else if host.ends_with(".brave.com") {
+        Some(true)
+    } else {
+        None
     }
 }
 
@@ -245,6 +283,47 @@ mod tests {
                 rfc: true,
             }],
         }
+    }
+
+    /// The endpoint decides which imported batch is usable. Getting it wrong sends a production
+    /// credential to a non-production host, which reads as an invalid credential and looks like the
+    /// import failed.
+    #[test]
+    fn the_endpoint_decides_whether_a_production_credential_is_wanted() {
+        assert_eq!(
+            is_production_endpoint("https://ai-chat-premium.bsg.brave.com/v1/chat/completions"),
+            Some(true)
+        );
+        assert_eq!(
+            is_production_endpoint("https://ai-chat-premium.bsg.bravesoftware.com"),
+            Some(false)
+        );
+        assert_eq!(
+            is_production_endpoint("https://ai-chat-premium.bsg.brave.software"),
+            Some(false)
+        );
+    }
+
+    /// `brave.software` does not end with `brave.com`, but a suffix test written in the wrong order
+    /// would treat it as production and send a live credential to a development host.
+    #[test]
+    fn the_development_domain_is_not_read_as_production() {
+        assert_eq!(
+            is_production_endpoint("https://ai-chat.bsg.brave.software"),
+            Some(false)
+        );
+        assert_eq!(
+            is_production_endpoint("https://ai-chat.bsg.bravesoftware.com"),
+            Some(false)
+        );
+    }
+
+    /// A local endpoint is in neither camp, so no credential is sent to it rather than one being
+    /// released to a host whose issuer is unknown.
+    #[test]
+    fn a_local_endpoint_matches_no_environment() {
+        assert_eq!(is_production_endpoint("http://127.0.0.1:8000"), None);
+        assert_eq!(is_production_endpoint("https://example.invalid"), None);
     }
 
     /// A batch that stops working must be replaced automatically. The subscription is still paid
