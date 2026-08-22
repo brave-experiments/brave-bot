@@ -27,10 +27,10 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use std::io;
+use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::render;
 use crate::select;
@@ -39,6 +39,10 @@ use crate::state::{Session, Status};
 /// How long to wait for a key before redrawing. Short enough that a status change appears
 /// promptly, long enough not to spin.
 const POLL: Duration = Duration::from_millis(100);
+
+/// Turns off the mouse mode that reports motion with no button held, leaving the one that
+/// reports motion during a drag. Sent after [`EnableMouseCapture`], which asks for both.
+const TRACK_MOTION_ONLY_WHILE_DRAGGING: &str = "\x1b[?1003l";
 
 /// How often to redraw while a turn runs. Matches the spinner's own frame time so the animation
 /// advances by one glyph per redraw rather than skipping.
@@ -241,6 +245,14 @@ pub fn run(config: &Config, workspace: &Workspace, confinement: String) -> io::R
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+
+    // Mouse capture asks for motion reported whether or not a button is down, which is a stream
+    // of events for a pointer merely crossing the window and a redraw for each one. Only the
+    // drag matters here, so all-motion reporting goes back off: what stays on reports the
+    // buttons, the wheel, and motion while a button is held, which is the gesture being read.
+    write!(stdout, "{TRACK_MOTION_ONLY_WHILE_DRAGGING}")?;
+    stdout.flush()?;
+
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(&mut terminal, config, workspace, confinement);
@@ -283,10 +295,24 @@ fn event_loop(
         session.note(format!("trusting {}", workspace.root().display()));
     }
 
+    // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
+    // positions, and a frame for each costs more than the whole gesture is worth: with a long
+    // transcript the queue outruns the drawing and the highlight trails seconds behind the
+    // pointer. Coalescing a burst into one frame is what makes it keep up.
+    let mut needs_draw = true;
+    let mut drawn_at = Instant::now();
+
     loop {
-        terminal
-            .draw(|frame| render::draw(frame, &session))
-            .map_err(io::Error::other)?;
+        // Waiting for the burst to end, but not indefinitely: a drag that never pauses would
+        // otherwise show nothing until it stopped.
+        let waited_long_enough = drawn_at.elapsed() >= FRAME;
+        if needs_draw && (waited_long_enough || !event::poll(Duration::ZERO)?) {
+            terminal
+                .draw(|frame| render::draw(frame, &session))
+                .map_err(io::Error::other)?;
+            needs_draw = false;
+            drawn_at = Instant::now();
+        }
 
         if session.is_quitting() {
             return Ok(());
@@ -302,6 +328,8 @@ fn event_loop(
             TermEvent::Paste(text) => handle_paste(&mut session, &text),
             _ => Action::None,
         };
+
+        needs_draw |= !matches!(action, Action::None);
 
         match action {
             Action::Quit => return Ok(()),
@@ -396,7 +424,9 @@ fn run_turn_animated(
         // Input is polled here rather than in the outer loop, which is blocked for the duration
         // of the turn. Without this the interface would take none at all while working, and a
         // long turn is exactly when someone wants to copy what has appeared so far.
-        if event::poll(Duration::ZERO)? {
+        // Everything waiting, not one event per pass: this loop wakes at the frame rate, so a
+        // drag read one event at a time would take seconds to catch up with the pointer.
+        while event::poll(Duration::ZERO)? {
             match event::read()? {
                 TermEvent::Key(key) if wants_cancel(key) => {
                     cancel.cancel();
@@ -557,6 +587,25 @@ mod tests {
         assert!(
             selection.covers(3, 10),
             "the sweep did not cover its middle"
+        );
+    }
+
+    /// A pointer crossing the window is not input. Terminals report that motion by default, and
+    /// answering each report with a redraw is what made a drag crawl: the queue outran the
+    /// drawing and the highlight trailed behind the pointer.
+    #[test]
+    fn moving_the_pointer_without_a_button_asks_for_nothing() {
+        let mut session = Session::new("none");
+        session.begin_selection(2, 2);
+        session.extend_selection(2, 8);
+
+        let action = handle_mouse(&mut session, drag(MouseEventKind::Moved, 9, 40));
+
+        assert_eq!(action, Action::None, "a bare move asked for work");
+        let selection = session.selection.expect("the selection was disturbed");
+        assert!(
+            selection.covers(2, 4),
+            "the selection moved with the pointer"
         );
     }
 
