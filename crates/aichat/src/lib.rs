@@ -17,9 +17,7 @@ use bua_core::label::Label;
 use bua_core::policy::Policy;
 use bua_core::value::Labelled;
 use bua_net::{Egress, EgressError, Request};
-use protocol::{
-    ChatChunk, ChatRequest, ChatResponse, STREAM_DONE, SseDecoder, StreamAccumulator,
-};
+use protocol::{ChatChunk, ChatRequest, ChatResponse, STREAM_DONE, SseDecoder, StreamAccumulator};
 use std::fmt;
 
 #[derive(Debug)]

@@ -196,14 +196,22 @@ mod tests {
     /// Private content going into a program is a release to somewhere this policy stops governing.
     #[test]
     fn private_content_is_a_release() {
-        assert!(plain().with_stdin(Label::untrusted_private()).releases_private());
+        assert!(
+            plain()
+                .with_stdin(Label::untrusted_private())
+                .releases_private()
+        );
     }
 
     /// Integrity and confidentiality gate separately: vouching for what a file contains is not
     /// consenting to send it somewhere.
     #[test]
     fn trusted_private_content_is_still_a_release() {
-        assert!(plain().with_stdin(Label::trusted_private()).releases_private());
+        assert!(
+            plain()
+                .with_stdin(Label::trusted_private())
+                .releases_private()
+        );
     }
 
     /// Feeding nothing in releases nothing.

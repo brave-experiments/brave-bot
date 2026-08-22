@@ -2083,7 +2083,8 @@ fn output_tokens_are_reported_as_the_reply_arrives() {
     let scratch = Scratch::new("streamed-progress");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![reply_with_usage("a longer reply here", 100, 4)]);
+    let (endpoint, _received) =
+        serve_sequence(vec![reply_with_usage("a longer reply here", 100, 4)]);
     let config = config_for(&endpoint);
     let egress = bua_net::Egress::new();
     let mut sink = RecordingSink::new();
