@@ -108,7 +108,18 @@ pub const FILTERS: &[Filter] = &[
     // from stdin.
     Filter {
         program: "grep",
-        denied: &["-f", "--file"],
+        denied: &[
+            "-f",
+            "--file",
+            // Recursion ignores stdin entirely and walks the filesystem instead, so the output would
+            // be labelled from stdin while the data came from disk. Found by testing rather than by
+            // reading the option list, which is why the list is checked against the binary.
+            "-r",
+            "-R",
+            "--recursive",
+            "-d",
+            "--directories",
+        ],
         operands: 1,
     },
     // Operates on the string it is given rather than on a file of that name.
@@ -293,6 +304,28 @@ mod tests {
     fn grep_reading_a_pattern_file_does_not_qualify() {
         assert!(!is_pure_filter("grep", &args(&["-f", "patterns.txt"])));
         assert!(!is_pure_filter("grep", &args(&["--file=patterns.txt"])));
+    }
+
+    /// The hole adversarial testing found: `grep -r pattern` with no file operand does not read
+    /// stdin at all. It recurses the working directory, so the output would be labelled from stdin
+    /// while the data came from the filesystem.
+    #[test]
+    fn grep_recursing_the_filesystem_does_not_qualify() {
+        assert!(!is_pure_filter("grep", &args(&["-r", "secret"])));
+        assert!(!is_pure_filter("grep", &args(&["-R", "secret"])));
+        assert!(!is_pure_filter("grep", &args(&["--recursive", "secret"])));
+        // Bundled with another flag, it must still be caught.
+        assert!(!is_pure_filter("grep", &args(&["-ir", "secret"])));
+    }
+
+    /// Directory traversal flags are the same hazard: they name inputs the label cannot account for.
+    #[test]
+    fn grep_directory_traversal_flags_do_not_qualify() {
+        assert!(!is_pure_filter("grep", &args(&["-d", "recurse", "x"])));
+        assert!(!is_pure_filter(
+            "grep",
+            &args(&["--directories=recurse", "x"])
+        ));
     }
 
     /// A denied flag bundled with others must still be caught, or `-nf` would slip past a check that
