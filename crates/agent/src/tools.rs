@@ -341,11 +341,20 @@ fn change_report(
     }
 
     let diff = Diff::compute(existing.unwrap_or(""), written);
-    let note = format!(
+    let changed = format!(
         "added {}, removed {}",
         tally(diff.added(), "line", "lines"),
         tally(diff.removed(), "line", "lines")
     );
+
+    // An overwrite says so. A whole file was rewritten and the diff shows only what did not
+    // survive that, which reads as a small deliberate edit: someone who did not know the file
+    // was already there sees the agent adjusting a margin rather than replacing their work.
+    // An edit needs no such word, since naming a passage to replace is what it is.
+    let note = match intent {
+        Intent::Overwrite => format!("replaced the file, {changed}"),
+        _ => changed,
+    };
     (note, diff.condensed(DIFF_CONTEXT))
 }
 
@@ -1068,12 +1077,24 @@ mod tests {
             );
         }
 
-        /// An overwrite is not a create, and the two have to be distinguishable at a glance:
-        /// one is a file that did not exist a moment ago.
+        /// The three have to be distinguishable at a glance. A file that did not exist a
+        /// moment ago, a file that did and no longer holds what it held, and a passage
+        /// replaced inside one are different things to have done to somebody's workspace, and
+        /// a diff on its own does not tell them apart: a whole-file rewrite whose diff is two
+        /// lines looks exactly like a two-line edit.
         #[test]
-        fn an_overwrite_is_reported_as_a_change_rather_than_as_a_new_file() {
-            let (note, _) = change_report(Intent::Overwrite, Some("old\n"), "new\n");
-            assert_eq!(note, "added 1 line, removed 1 line");
+        fn an_overwrite_says_it_replaced_a_file_and_an_edit_does_not() {
+            let (overwritten, _) = change_report(Intent::Overwrite, Some("old\n"), "new\n");
+            assert_eq!(
+                overwritten,
+                "replaced the file, added 1 line, removed 1 line"
+            );
+
+            let (edited, _) = change_report(Intent::Edit, Some("old\n"), "new\n");
+            assert_eq!(edited, "added 1 line, removed 1 line");
+
+            let (created, _) = change_report(Intent::Create, None, "new\n");
+            assert_eq!(created, "new file, 1 line");
         }
 
         /// An edit is reported by what it changed, and carries the hunks so the user can see
