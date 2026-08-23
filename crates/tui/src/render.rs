@@ -225,11 +225,16 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                 }
             }
             // What the turn did, kept in the scrollback next to what it said about it.
-            Speaker::Tool => {
-                if let Some(activity) = &entry.activity {
-                    lines.extend(activity_lines(activity));
-                }
-            }
+            Speaker::Tool => match &entry.activity {
+                Some(activity) => lines.extend(activity_lines(activity)),
+                // A call read back out of a stored session, which records that it happened and
+                // not what came of it. Drawn without the coloured marker a live call earns,
+                // since green would claim an outcome the record does not have.
+                None => lines.push(Line::from(vec![
+                    Span::styled(format!("{TURN_MARKER} "), dim()),
+                    Span::styled(entry.text.clone(), dim()),
+                ])),
+            },
         }
 
         // The plan the turn worked to, kept next to what it produced.
@@ -696,6 +701,47 @@ mod tests {
             rendered(&session).contains("(U,priv)"),
             "the trail did not appear"
         );
+    }
+
+    /// A call read back off disk is drawn, where before it was dropped and a resumed transcript
+    /// said the model answered without saying it had read anything.
+    #[test]
+    fn a_recalled_call_is_shown() {
+        let mut session = Session::new("none");
+        session
+            .transcript
+            .push(crate::state::Entry::recalled_tool("Read(src/main.rs)"));
+
+        assert!(rendered(&session).contains("Read(src/main.rs)"));
+    }
+
+    /// And drawn without the marker a live call earns. Green says the call finished cleanly, and
+    /// nothing in the record says that: what it holds is that the call was made.
+    #[test]
+    fn a_recalled_call_does_not_claim_an_outcome() {
+        let mut session = Session::new("none");
+        session
+            .transcript
+            .push(crate::state::Entry::recalled_tool("Read(src/main.rs)"));
+        let recalled = marker_style(&session);
+
+        let mut session = Session::new("none");
+        session.start_activity(Activity::running("Read", "src/main.rs").done("12 lines"));
+        assert_ne!(
+            recalled,
+            marker_style(&session),
+            "a recalled call was drawn as one that finished cleanly"
+        );
+        assert_eq!(recalled, dim());
+    }
+
+    /// The style of the marker on the first drawn line.
+    fn marker_style(session: &Session) -> Style {
+        transcript_lines(session)
+            .first()
+            .and_then(|line| line.spans.first())
+            .map(|span| span.style)
+            .expect("something was drawn")
     }
 
     #[test]

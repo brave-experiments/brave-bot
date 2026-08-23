@@ -157,14 +157,20 @@ impl Conversation {
 
 /// One thing said, for an interface showing a conversation it did not watch happen.
 ///
-/// Only the two halves of the exchange a person would recognise. A tool result is left out: it
-/// was written for the planner, and a transcript of a resumed session is for the user.
+/// The exchange a person would recognise, and what the turn did between the two. A tool
+/// *result* is left out: it was written for the planner, and a transcript of a resumed session
+/// is for the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Said {
     /// What the user asked.
     User(String),
     /// What the model answered, where the kernel let it be seen at all.
     Assistant(String),
+    /// A call the turn made, in the words it was announced with while it ran.
+    ///
+    /// What came of it is not here. The record does not say, and inventing an outcome for a call
+    /// whose result nobody wrote down would be worse than admitting the line is all there is.
+    Tool(String),
 }
 
 /// A conversation written down, for a session that outlives the process.
@@ -272,21 +278,37 @@ impl Conversation {
     /// sent as prose, which is what an untrusted context falls back to, is recognised by the
     /// prefix this crate put on it: examining it decides only how a line is drawn, and the text
     /// being examined has already been past the present gate.
+    ///
+    /// The **calls** are reported as well, since what a turn did is most of what a person wants
+    /// back. Only that it happened and what it was about: a call's result is not recounted, so
+    /// resuming a session does not put a file's contents on the screen where the live session
+    /// showed a one-line summary.
     pub fn recounted(&self) -> Vec<Said> {
-        self.messages
-            .iter()
-            .filter_map(|message| match message.role {
-                Role::User if message.content.starts_with(TOOL_RESULT_PREFIX) => None,
+        let mut said = Vec::new();
+        for message in &self.messages {
+            match message.role {
+                Role::User if message.content.starts_with(TOOL_RESULT_PREFIX) => {}
                 // Addressed to the planner, not said by anyone. Drawn as a prompt it would look
                 // like something the user typed and never did.
-                Role::User if message.content.starts_with(RESUMED_PREFIX) => None,
-                Role::User => Some(Said::User(message.content.clone())),
-                Role::Assistant if message.tool_calls.is_some() => None,
-                Role::Assistant if message.content.trim().is_empty() => None,
-                Role::Assistant => Some(Said::Assistant(message.content.clone())),
-                Role::System | Role::Tool => None,
-            })
-            .collect()
+                Role::User if message.content.starts_with(RESUMED_PREFIX) => {}
+                Role::User => said.push(Said::User(message.content.clone())),
+                Role::Assistant => {
+                    // What the model said on its way to a call, which the live transcript shows
+                    // above the call it introduces.
+                    if !message.content.trim().is_empty() {
+                        said.push(Said::Assistant(message.content.clone()));
+                    }
+                    for call in message.tool_calls.iter().flatten() {
+                        said.push(Said::Tool(crate::tools::describe_stored_call(
+                            &call.function.name,
+                            &call.function.arguments,
+                        )));
+                    }
+                }
+                Role::System | Role::Tool => {}
+            }
+        }
+        said
     }
 }
 
@@ -356,6 +378,17 @@ mod tests {
         let first = conversation.next_reference();
         let second = conversation.next_reference();
         assert_ne!(first, second);
+    }
+
+    fn a_call(name: &str, arguments: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: "call-1".to_string(),
+            kind: "function".to_string(),
+            function: ToolCallRequestFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        }
     }
 
     /// A turn can be cancelled between a call and its result. The round still belongs in the
@@ -477,6 +510,87 @@ mod tests {
 
         let restored = Conversation::restored(conversation.snapshot());
         assert_eq!(restored.len(), 2, "a note appeared with nothing to say");
+    }
+
+    /// What a turn did is most of what a person resumes a session to see. Prose alone left a
+    /// transcript that said the model answered and never said it had read anything.
+    #[test]
+    fn a_recounted_turn_says_what_it_did_and_not_only_what_it_said() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("what is in main.rs?"));
+        conversation.push(Message::assistant_calling(
+            "let me look",
+            vec![a_call("read_file", r#"{"path":"src/main.rs"}"#)],
+        ));
+        conversation.push(Message::tool_result("call-1", "fn main() {}"));
+        conversation.push(Message::assistant("it is a hello world"));
+
+        assert_eq!(
+            conversation.recounted(),
+            vec![
+                Said::User("what is in main.rs?".to_string()),
+                Said::Assistant("let me look".to_string()),
+                Said::Tool("Read(src/main.rs)".to_string()),
+                Said::Assistant("it is a hello world".to_string()),
+            ]
+        );
+    }
+
+    /// The result stays out. A live session showed a one-line summary beside the call, and
+    /// putting the file's contents there instead would be a resume showing more than the session
+    /// it is resuming ever did.
+    #[test]
+    fn what_a_call_returned_is_not_recounted() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::assistant_calling(
+            String::new(),
+            vec![a_call("read_file", r#"{"path":"secrets.txt"}"#)],
+        ));
+        conversation.push(Message::tool_result("call-1", "the file's whole contents"));
+        // A result sent as prose, which is the fallback in an untrusted context.
+        conversation.push(Message::user(format!(
+            "{TOOL_RESULT_PREFIX}read_file: the file's whole contents"
+        )));
+
+        let recounted = conversation.recounted();
+        assert_eq!(recounted, vec![Said::Tool("Read(secrets.txt)".to_string())]);
+    }
+
+    /// A round with several calls is several lines, in the order they were asked for.
+    #[test]
+    fn every_call_in_a_round_is_recounted() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::assistant_calling(
+            String::new(),
+            vec![
+                a_call("search", r#"{"pattern":"MAX_STEPS"}"#),
+                a_call("list_files", r#"{"directory":"src"}"#),
+            ],
+        ));
+
+        assert_eq!(
+            conversation.recounted(),
+            vec![
+                Said::Tool("Search(MAX_STEPS)".to_string()),
+                Said::Tool("List(src)".to_string()),
+            ]
+        );
+    }
+
+    /// Arguments a turn ended before writing must not take the line with them. A call announced
+    /// and never completed is exactly what a killed session leaves behind.
+    #[test]
+    fn a_call_with_unreadable_arguments_is_still_recounted() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::assistant_calling(
+            String::new(),
+            vec![a_call("read_file", "{\"path\":")],
+        ));
+
+        assert_eq!(
+            conversation.recounted(),
+            vec![Said::Tool("Read".to_string())]
+        );
     }
 
     /// The note is for the planner. Drawn in a transcript it would read as a prompt the user

@@ -90,6 +90,22 @@ impl Entry {
         }
     }
 
+    /// One call read back out of a stored session.
+    ///
+    /// No [`Activity`], because a stored session records that the call happened and not what came
+    /// of it. Giving it one would mean choosing an outcome, and every choice available is a
+    /// claim the record does not support: `running` says it never finished, and `done` says it
+    /// succeeded. The line alone is what is known, and the interface draws it as such.
+    pub fn recalled_tool(line: impl Into<String>) -> Self {
+        Self {
+            speaker: Speaker::Tool,
+            text: line.into(),
+            trail: Vec::new(),
+            todos: Vec::new(),
+            activity: None,
+        }
+    }
+
     /// Attach the task list the turn finished with.
     pub fn with_todos(mut self, todos: Vec<bua_core::todo::Row>) -> Self {
         self.todos = todos;
@@ -376,6 +392,7 @@ impl Session {
                     self.transcript.push(Entry::user(text));
                 }
                 Said::Assistant(text) => self.transcript.push(Entry::assistant(text, Vec::new())),
+                Said::Tool(line) => self.transcript.push(Entry::recalled_tool(line)),
             }
             // An assistant entry before any prompt belongs to no turn, so there is nothing whose
             // trail it could be carrying.
@@ -1531,6 +1548,65 @@ mod tests {
                 .find(|entry| entry.text == "second reply")
                 .expect("the second reply");
             assert_eq!(second.todos, plan);
+        }
+
+        /// A transcript that says the model answered and never says it read anything is a poor
+        /// account of a turn that spent most of itself reading.
+        #[test]
+        fn a_resumed_transcript_shows_the_calls_the_turn_made() {
+            use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
+
+            let call = ToolCallRequest {
+                id: "call-1".to_string(),
+                kind: "function".to_string(),
+                function: ToolCallRequestFunction {
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+                },
+            };
+            let transcript = resumed(
+                vec![
+                    Message::user("what is in main.rs?"),
+                    Message::assistant_calling("let me look", vec![call]),
+                    Message::assistant("a hello world"),
+                ],
+                &BTreeMap::new(),
+            );
+
+            let call_line = transcript
+                .iter()
+                .find(|entry| entry.speaker == Speaker::Tool)
+                .expect("the call is in the transcript");
+            assert_eq!(call_line.text, "Read(src/main.rs)");
+            // No outcome is claimed, because the record does not say what came of it.
+            assert!(call_line.activity.is_none());
+        }
+
+        /// A turn's trail still lands on the last thing the turn said, and a call is a thing the
+        /// turn said. Anything else would put the trail above work it covers.
+        #[test]
+        fn a_trail_lands_after_the_calls_the_turn_made() {
+            use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
+
+            let call = ToolCallRequest {
+                id: "call-1".to_string(),
+                kind: "function".to_string(),
+                function: ToolCallRequestFunction {
+                    name: "search".to_string(),
+                    arguments: r#"{"pattern":"MAX_STEPS"}"#.to_string(),
+                },
+            };
+            let transcript = resumed(
+                vec![
+                    Message::user("find it"),
+                    Message::assistant_calling(String::new(), vec![call]),
+                ],
+                &trails(&[(1, "capability: search granted")]),
+            );
+
+            let last = transcript.last().expect("something was replayed");
+            assert_eq!(last.text, "Search(MAX_STEPS)");
+            assert_eq!(last.trail, vec![line("capability: search granted")]);
         }
 
         /// Starting the counter again at zero understated a resumed session by everything it had

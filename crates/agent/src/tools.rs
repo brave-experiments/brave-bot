@@ -336,6 +336,19 @@ fn verb_for(tool: &str) -> &'static str {
     }
 }
 
+/// Which argument names what a call is about.
+///
+/// Chosen from the tool's own name, which dispatch already matches on, so this decides nothing
+/// new. `None` for a tool with no single argument naming a target.
+fn target_key(tool: &str) -> Option<&'static str> {
+    match tool {
+        "read_file" | "write_file" | "edit_file" => Some("path"),
+        "list_files" => Some("directory"),
+        "search" => Some("pattern"),
+        _ => None,
+    }
+}
+
 /// What a call is about, for the line shown while it runs.
 ///
 /// Which argument names the target depends on the tool, so the key is chosen from the tool's
@@ -349,11 +362,8 @@ fn target_of<S: Sink>(policy: &mut Policy<'_, S>, tool: &str, arguments: &Value)
         return references_in(arguments).declassify(&proof);
     }
 
-    let key = match tool {
-        "read_file" | "write_file" | "edit_file" => "path",
-        "list_files" => "directory",
-        "search" => "pattern",
-        _ => return String::new(),
+    let Some(key) = target_key(tool) else {
+        return String::new();
     };
 
     match argument(arguments, key) {
@@ -363,6 +373,37 @@ fn target_of<S: Sink>(policy: &mut Policy<'_, S>, tool: &str, arguments: &Value)
         }
         None => String::new(),
     }
+}
+
+/// How a call reads in the transcript of a session read back off disk.
+///
+/// The same words a live call is announced with, from the same two functions, so a resumed
+/// transcript and a running one describe the same call the same way.
+///
+/// No policy, and none to be had: a stored conversation is plain messages, whose labels went
+/// when it was written down. Nothing here is being released that was not released already. The
+/// call is in the record because the planner was allowed to hold it, and this puts the same
+/// words on a screen that the person watching saw the first time round. It reaches a transcript
+/// line and nothing else.
+pub fn describe_stored_call(tool: &str, arguments: &str) -> String {
+    let parsed: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+
+    let target = if tool == "spawn_processor" {
+        let names: Vec<&str> = parsed
+            .get("reads")
+            .and_then(Value::as_array)
+            .map(|entries| entries.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        names.join(", ")
+    } else {
+        target_key(tool)
+            .and_then(|key| parsed.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    Activity::running(verb_for(tool), target).line()
 }
 
 /// Shape a count out of a labelled result and release it to the person watching.
