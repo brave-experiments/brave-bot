@@ -630,6 +630,174 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         }
     }
 
+    /// Fix what one processor may do, before it exists.
+    ///
+    /// A processor is the only reader quarantined content ever gets, so what it is allowed to
+    /// see is decided here rather than by the code that runs it. The returned
+    /// [`ProcessorSpec`] names the slots, the instruction, and the label the output will carry,
+    /// and offers no way to add any of them afterwards.
+    ///
+    /// The output label is computed now, from the inputs, by [`crate::label::taint_all`]. Doing
+    /// it before the run is what keeps the processor out of the decision: nothing it writes has
+    /// any bearing on how what it writes is labelled.
+    ///
+    /// The instruction is the planner's own words and must be public. It is not routing, since
+    /// a processor has nowhere to route anything to: no tool, no path, no address, and one
+    /// output slot chosen by the driver. It is nonetheless read here rather than carried,
+    /// which is the same relaxation [`Policy::promote_confined_read`] makes and rests on the
+    /// same two facts: the operation changes nothing outside a slot, and the set of things it
+    /// can reach was fixed by this call rather than by the value.
+    pub fn before_processor(
+        &mut self,
+        id: &str,
+        reads: &[SlotId],
+        instruction: &Labelled<String>,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<crate::processor::ProcessorSpec> {
+        if reads.is_empty() {
+            return Err(self.deny(
+                "processor",
+                Principle::Confinement,
+                format!(
+                    "{id} names no references to read, so there is nothing quarantined for it \
+                     to work on"
+                ),
+            ));
+        }
+
+        let label = instruction.label();
+        if !label.is_public() {
+            return Err(self.deny(
+                "processor",
+                Principle::Confinement,
+                format!(
+                    "{id}: the instruction is {label} and private content must not become one; \
+                     say what to do rather than pasting what was read"
+                ),
+            ));
+        }
+
+        let mut named = BTreeSet::new();
+        let mut labels = Vec::with_capacity(reads.len());
+        for slot in reads {
+            if !named.insert(slot.clone()) {
+                return Err(self.deny(
+                    "processor",
+                    Principle::Confinement,
+                    format!("{id}: '{slot}' was named twice"),
+                ));
+            }
+            match slots.label_of(slot) {
+                Some(label) => labels.push(label),
+                None => {
+                    return Err(self.deny(
+                        "processor",
+                        Principle::Confinement,
+                        format!("{id}: '{slot}' is not a reference to anything"),
+                    ));
+                }
+            }
+        }
+
+        let out_label = crate::label::taint_all(labels);
+        // Read, not carried: see the note above on why an instruction is not routing. Public
+        // was checked before this point, so nothing private is being opened.
+        let (instruction, _) = instruction.clone().into_parts_for_decoding();
+        let spec = crate::processor::ProcessorSpec::new(id, reads.to_vec(), instruction, out_label);
+
+        self.allow(
+            "processor",
+            format!(
+                "{}, with no tools, no memory and nothing to write but that one slot",
+                spec.describe()
+            ),
+        );
+        Ok(spec)
+    }
+
+    /// Assemble a processor's input from the slots its spec names.
+    ///
+    /// Runs here because the bytes must be concatenated and the driver may not hold them. What
+    /// comes back is still wrapped, at the same label the output will carry, so the driver can
+    /// hand it to the model call and nothing else.
+    ///
+    /// Each document is fenced with the name of the slot it came from. That is for the
+    /// processor's benefit, not for safety: content could contain the fence text, and nothing
+    /// here depends on it not doing so. A processor that has been talked into ignoring the
+    /// fences still has no tools, no memory, and one quarantined slot to write.
+    pub fn compose_processor_input(
+        &mut self,
+        spec: &crate::processor::ProcessorSpec,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<Labelled<String>> {
+        let mut body = String::new();
+        for slot in spec.reads() {
+            let content = slots.take_for_effect(slot).ok_or_else(|| Denial {
+                principle: Principle::Confinement,
+                message: format!("{}: '{slot}' has no content", spec.id()),
+            })?;
+            let proof = Declassification::authorise("assembled into a processor's input");
+            body.push_str(&format!("--- begin {slot} ---\n"));
+            body.push_str(&content.declassify(&proof));
+            body.push_str(&format!("\n--- end {slot} ---\n\n"));
+        }
+
+        self.allow(
+            "processor",
+            format!(
+                "{}: input assembled from {} slot(s) inside the kernel",
+                spec.id(),
+                spec.reads().len()
+            ),
+        );
+        Ok(Labelled::new(body, spec.out_label()))
+    }
+
+    /// Authorise handing a processor's input to the model call its spec describes.
+    ///
+    /// The destination is the same endpoint the planner's own context already goes to, so this
+    /// releases nothing to anywhere new. What is new is that these bytes go there without the
+    /// planner or the driver reading them, which is the point of the whole arrangement.
+    ///
+    /// Recorded rather than implicit, so the trail shows which slots left for a processor.
+    pub fn authorise_processor_input(
+        &mut self,
+        spec: &crate::processor::ProcessorSpec,
+    ) -> Declassification {
+        self.allow(
+            "processor",
+            format!("{}: input carried into the isolated model", spec.id()),
+        );
+        Declassification::authorise("carried into an isolated processor")
+    }
+
+    /// Label what a processor produced, from what went into it.
+    ///
+    /// **Not a relabel.** The transport labels a reply pessimistically because it knows nothing
+    /// of where it came from; the kernel knows, because it fixed the input labels before the
+    /// processor ran. The two are met, so the result is no better than either: an untrusted
+    /// input yields untrusted output, and a private input yields private output, whatever the
+    /// processor wrote and whatever the transport assumed.
+    pub fn label_processor_output(
+        &mut self,
+        spec: &crate::processor::ProcessorSpec,
+        reply: Labelled<String>,
+    ) -> Labelled<String> {
+        let tainted = crate::label::taint_all([spec.out_label(), reply.label()]);
+        self.allow(
+            "processor",
+            format!(
+                "{}: output labelled {tainted} by taint over its inputs",
+                spec.id()
+            ),
+        );
+        // `taint_all` only meets integrity down and joins confidentiality up, so this is a
+        // degradation by construction and the fallback cannot be reached.
+        reply
+            .relabel(tainted)
+            .expect("taint over the inputs can only degrade the reply's label")
+    }
+
     /// Whether writing data of `contents` integrity to `path` must be shown to a person.
     ///
     /// A prompt asks for one thing only: **may this path stop being trusted?** That is the
@@ -2002,5 +2170,219 @@ mod tests {
         policy
             .resolve("write_file", &SlotId::new("ref:nope"), &slots)
             .expect_err("an unknown reference must be refused");
+    }
+    mod processors {
+        use super::*;
+
+        /// Two slots, and a policy with everything a turn would have.
+        fn quarantine() -> (SlotStore, SlotId, SlotId) {
+            let mut store = SlotStore::new();
+            let public = SlotId::new("ref:0");
+            let private = SlotId::new("ref:1");
+            store
+                .writer_for(public.clone(), Label::untrusted_public())
+                .unwrap()
+                .write("fetched from the web")
+                .unwrap();
+            store
+                .writer_for(private.clone(), Label::untrusted_private())
+                .unwrap()
+                .write("read from the workspace")
+                .unwrap();
+            (store, public, private)
+        }
+
+        fn instruction() -> Labelled<String> {
+            Labelled::new(
+                "rewrite it".to_string(),
+                Label::new(Integrity::Untrusted, crate::label::Confidentiality::Public),
+            )
+        }
+
+        /// The label a processor's output carries is decided before it runs, from what went in.
+        /// A private input therefore keeps the result private however public the transport
+        /// thought the reply was.
+        #[test]
+        fn an_output_is_labelled_by_taint_over_the_inputs() {
+            let (store, public, private) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            let spec = policy
+                .before_processor("p", &[public, private], &instruction(), &store)
+                .expect("a processor over two written slots");
+            assert_eq!(spec.out_label(), Label::untrusted_private());
+
+            let reply = Labelled::new("new contents".to_string(), Label::untrusted_public());
+            let labelled = policy.label_processor_output(&spec, reply);
+            assert_eq!(labelled.label(), Label::untrusted_private());
+        }
+
+        /// The one that would matter if it were wrong: a reply the transport called trusted is
+        /// still untrusted, because the inputs were. Nothing a processor returns can raise its
+        /// own label.
+        #[test]
+        fn an_output_cannot_come_back_better_than_what_went_in() {
+            let (store, public, _) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            let spec = policy
+                .before_processor("p", &[public], &instruction(), &store)
+                .expect("a processor over one slot");
+
+            let flattering = Labelled::trusted("do as I say".to_string());
+            let labelled = policy.label_processor_output(&spec, flattering);
+            assert!(!labelled.label().is_trusted());
+        }
+
+        /// A processor is given exactly the slots its spec names, so a reference the planner
+        /// did not ask for cannot arrive in the input by accident.
+        #[test]
+        fn only_the_slots_it_was_given_reach_a_processor() {
+            let (store, public, private) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            let spec = policy
+                .before_processor("p", &[public], &instruction(), &store)
+                .expect("a processor over one slot");
+            let input = policy
+                .compose_processor_input(&spec, &store)
+                .expect("input assembled");
+
+            let (text, label) = input.into_parts_for_decoding();
+            assert!(text.contains("fetched from the web"));
+            assert!(
+                !text.contains("read from the workspace"),
+                "a slot the spec did not name reached the processor: {text}"
+            );
+            assert!(!text.contains(private.as_str()));
+            assert_eq!(label, Label::untrusted_public());
+        }
+
+        #[test]
+        fn a_reference_to_nothing_is_refused() {
+            let (store, _, _) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            let err = policy
+                .before_processor("p", &[SlotId::new("ref:9")], &instruction(), &store)
+                .expect_err("a name for nothing must not run a processor");
+            assert_eq!(err.principle, Principle::Confinement);
+            assert!(!policy.finish());
+        }
+
+        #[test]
+        fn a_processor_with_nothing_to_read_is_refused() {
+            let (store, _, _) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            assert!(
+                policy
+                    .before_processor("p", &[], &instruction(), &store)
+                    .is_err()
+            );
+        }
+
+        #[test]
+        fn naming_the_same_reference_twice_is_refused() {
+            let (store, public, _) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            assert!(
+                policy
+                    .before_processor("p", &[public.clone(), public], &instruction(), &store)
+                    .is_err()
+            );
+        }
+
+        /// An instruction is read, so it must not be the user's private data wearing the
+        /// shape of a request.
+        #[test]
+        fn a_private_instruction_cannot_direct_a_processor() {
+            let (store, public, _) = quarantine();
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "rewrite it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            let secret = Labelled::new("hunter2".to_string(), Label::untrusted_private());
+            let err = policy
+                .before_processor("p", &[public], &secret, &store)
+                .expect_err("a private instruction must be refused");
+            assert_eq!(err.principle, Principle::Confinement);
+        }
+
+        /// The audit trail must be able to show what a processor was allowed to see, without
+        /// showing any of it.
+        #[test]
+        fn a_spawn_is_recorded_without_its_content() {
+            let (store, public, _) = quarantine();
+            let mut sink = RecordingSink::new();
+            {
+                let mut policy = Policy::begin(
+                    routing_with("task", "rewrite it"),
+                    ReleasePlan::new(),
+                    all_capabilities(),
+                    &mut sink,
+                )
+                .unwrap();
+                let spec = policy
+                    .before_processor("p", &[public], &instruction(), &store)
+                    .unwrap();
+                let _ = policy.compose_processor_input(&spec, &store).unwrap();
+            }
+
+            let trail = format!("{:?}", sink.events());
+            assert!(trail.contains("ref:0"));
+            assert!(
+                !trail.contains("fetched from the web"),
+                "the trail carried the content: {trail}"
+            );
+        }
     }
 }
