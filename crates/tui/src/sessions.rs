@@ -24,6 +24,7 @@
 
 use bua_agent::conversation::Snapshot;
 use bua_core::event::Event;
+use bua_core::todo::{self, Item, List, Row, Status};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -51,8 +52,54 @@ pub struct Record {
     /// How many turns it has had, for a reader of the file.
     #[serde(default)]
     pub turns: usize,
+    /// The task list each turn worked to, by turn number.
+    ///
+    /// Kept per turn rather than as one list, because that is how the transcript shows it: the
+    /// plan a turn set out with sits beneath what that turn produced.
+    #[serde(default)]
+    pub todos: BTreeMap<usize, Vec<StoredTask>>,
     /// The conversation, which is what resuming restores.
     pub conversation: Snapshot,
+}
+
+/// One task as it is written down.
+///
+/// The status is a word rather than the row's marker, because the marker is a glyph this build
+/// chose and the status is what the model said. Rebuilding the row from the status means a
+/// resumed list is drawn by the same code that draws a live one, so the two cannot diverge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredTask {
+    pub content: String,
+    pub status: String,
+}
+
+impl StoredTask {
+    fn of(row: &Row) -> Self {
+        Self {
+            content: row.content.clone(),
+            status: row.status.to_string(),
+        }
+    }
+}
+
+impl Record {
+    /// The task lists this session kept, shaped for a screen.
+    ///
+    /// A status this build does not recognise parses as outstanding work, which is
+    /// [`Status::parse`]'s own rule: an item nobody can classify is the one reading that cannot
+    /// quietly hide something.
+    pub fn todo_rows(&self) -> BTreeMap<usize, Vec<Row>> {
+        self.todos
+            .iter()
+            .map(|(turn, tasks)| {
+                let items = tasks
+                    .iter()
+                    .map(|task| Item::new(task.content.clone(), Status::parse(&task.status)))
+                    .collect();
+                (*turn, todo::rows(&List::new(items)))
+            })
+            .collect()
+    }
 }
 
 /// One line of the list, without the conversation behind it.
@@ -111,7 +158,13 @@ impl Handle {
     /// Called after each turn rather than at the end, because the end may never come: a session
     /// that was killed, or whose machine slept and never woke, is exactly the one worth
     /// resuming.
-    pub fn save(&mut self, conversation: &Snapshot, turns: usize, first_prompt: &str) {
+    pub fn save(
+        &mut self,
+        conversation: &Snapshot,
+        turns: usize,
+        first_prompt: &str,
+        todos: &BTreeMap<usize, Vec<Row>>,
+    ) {
         if self.title.is_empty() {
             self.title = title_from(first_prompt);
         }
@@ -128,6 +181,10 @@ impl Handle {
             started: self.started,
             updated: now(),
             turns,
+            todos: todos
+                .iter()
+                .map(|(turn, rows)| (*turn, rows.iter().map(StoredTask::of).collect()))
+                .collect(),
             conversation: conversation.clone(),
         };
 
@@ -217,6 +274,24 @@ pub fn list(project: &Path) -> Vec<Summary> {
 pub fn load(project: &Path, id: &str) -> Option<Record> {
     let directory = project_directory(project)?;
     read(&directory.join(format!("{id}.json")))
+}
+
+/// What a resumed session shows beneath each turn, by turn number.
+///
+/// Two files behind one type: the plan comes out of the record and the trail out of the audit
+/// beside it. The transcript wants them together, since both hang off the same entry.
+#[derive(Debug, Default)]
+pub struct Recalled {
+    pub trails: BTreeMap<usize, Vec<crate::audit::TrailLine>>,
+    pub todos: BTreeMap<usize, Vec<Row>>,
+}
+
+/// Everything a resumed transcript needs beyond the conversation itself.
+pub fn recall(project: &Path, record: &Record) -> Recalled {
+    Recalled {
+        trails: audit_of(project, &record.id),
+        todos: record.todo_rows(),
+    }
 }
 
 /// What each turn of a stored session left in the audit, by turn number.

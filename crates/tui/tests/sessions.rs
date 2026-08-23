@@ -9,7 +9,9 @@ use bua_aichat::protocol::Message;
 use bua_core::capability::Capability;
 use bua_core::event::Event;
 use bua_core::label::Label;
+use bua_core::todo::{Item, List, Row, Status, rows};
 use bua_tui::sessions::{self, Handle};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// A scratch home, so a test never touches the real one.
@@ -42,6 +44,17 @@ impl Drop for Scratch {
     }
 }
 
+/// A task list for turn one, so the record has something to carry.
+fn a_plan() -> BTreeMap<usize, Vec<Row>> {
+    BTreeMap::from([(
+        1,
+        rows(&List::new(vec![
+            Item::new("read the file", Status::Done),
+            Item::new("change it", Status::Active),
+        ])),
+    )])
+}
+
 fn a_conversation() -> Conversation {
     let mut conversation = Conversation::new();
     conversation.push(Message::user("make a space invaders game"));
@@ -58,7 +71,12 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
 
     let conversation = a_conversation();
     let mut handle = Handle::begin(&scratch.project);
-    handle.save(&conversation.snapshot(), 1, "make a space invaders game");
+    handle.save(
+        &conversation.snapshot(),
+        1,
+        "make a space invaders game",
+        &a_plan(),
+    );
     handle.append_audit(
         1,
         &[
@@ -115,7 +133,12 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     assert_eq!(written.lines().count(), 3);
 
     // Saving again updates the record rather than adding a second one.
-    handle.save(&conversation.snapshot(), 2, "make a space invaders game");
+    handle.save(
+        &conversation.snapshot(),
+        2,
+        "make a space invaders game",
+        &a_plan(),
+    );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
 
     // Another directory has its own list, which is the point of keying by directory.
@@ -131,14 +154,19 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     );
 
     let mut other = Handle::begin(&elsewhere);
-    other.save(&Conversation::new().snapshot(), 1, "something else");
+    other.save(
+        &Conversation::new().snapshot(),
+        1,
+        "something else",
+        &BTreeMap::new(),
+    );
     assert_eq!(sessions::list(&elsewhere).len(), 1);
     assert_eq!(sessions::list(&scratch.project).len(), 1);
 
     // Resuming continues the same session rather than starting a new one beside it.
     let record = sessions::load(&scratch.project, &listed[0].id).expect("the session loads");
     let mut resumed = Handle::resuming(&scratch.project, &record);
-    resumed.save(&conversation.snapshot(), 3, "");
+    resumed.save(&conversation.snapshot(), 3, "", &a_plan());
     let listed = sessions::list(&scratch.project);
     assert_eq!(listed.len(), 1, "resuming forked the session");
     assert_eq!(listed[0].title, "make a space invaders game");
@@ -159,6 +187,18 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
 
     // A session that never ran a turn has no audit, which is not a failure to report.
     assert!(sessions::audit_of(&elsewhere, "no-such-session").is_empty());
+
+    // The plan each turn worked to comes back with it, under the turn that kept it, and shaped
+    // by the same code that draws a live one rather than by a glyph stored in the file.
+    let record = sessions::load(&scratch.project, &listed[0].id).expect("the session loads");
+    let recalled = sessions::recall(&scratch.project, &record);
+    assert_eq!(recalled.todos, a_plan());
+    assert_eq!(recalled.todos[&1][0].marker, "✓");
+    assert_eq!(recalled.todos[&1][1].status, Status::Active);
+
+    // A record from a build that never wrote a plan is not a broken record.
+    let plainer = sessions::load(&elsewhere, &sessions::list(&elsewhere)[0].id).expect("loads");
+    assert!(plainer.todo_rows().is_empty());
 
     // A record from a newer build, or one truncated by a full disk, costs its own line in the
     // list and nothing more: it is not a reason to be unable to show the rest.

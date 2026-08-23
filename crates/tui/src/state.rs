@@ -255,6 +255,26 @@ impl Session {
         self.todos = rows;
     }
 
+    /// The task list each turn finished with, by turn number, for writing the session down.
+    ///
+    /// Read back off the transcript rather than kept in a second place, because the transcript is
+    /// already where a finished turn's list lives: `complete` moves it there so the scrollback
+    /// shows what each turn set out to do. Turn numbers are counted the way `replay` counts them,
+    /// so a list written under turn three comes back under turn three.
+    pub fn todos_by_turn(&self) -> std::collections::BTreeMap<usize, Vec<bua_core::todo::Row>> {
+        let mut by_turn = std::collections::BTreeMap::new();
+        let mut turn = 0;
+        for entry in &self.transcript {
+            if entry.speaker == Speaker::User {
+                turn += 1;
+            }
+            if turn > 0 && !entry.todos.is_empty() {
+                by_turn.insert(turn, entry.todos.clone());
+            }
+        }
+        by_turn
+    }
+
     /// Record how much the model has written so far in the turn in flight.
     pub fn set_written(&mut self, written: u64) {
         self.written = written;
@@ -321,16 +341,16 @@ impl Session {
     /// resumed session that displayed more than it had would invite the user to refer to
     /// something the model has no record of.
     ///
-    /// `trails` is what each turn's gates decided, by turn number, from
-    /// [`crate::sessions::audit_of`]. A turn's trail goes on the last thing it said, which is
-    /// where a live turn puts it, so Ctrl-T over a resumed session shows the same shape as over
-    /// one that is still running. A turn that said nothing keeps its trail on the prompt, since
-    /// the alternative is dropping the record of a turn that was refused before it could answer.
+    /// `recalled` is what each turn left beneath it: the plan it worked to and what its gates
+    /// decided, by turn number. Both go on the last thing that turn said, which is where a live
+    /// turn puts them, so a resumed transcript reads the same as one that is still running. A
+    /// turn that said nothing keeps them on the prompt, since the alternative is dropping the
+    /// record of a turn that was refused before it could answer.
     pub fn replay(
         &mut self,
         conversation: &bua_agent::Conversation,
         title: &str,
-        trails: &std::collections::BTreeMap<usize, Vec<TrailLine>>,
+        recalled: &crate::sessions::Recalled,
     ) {
         use bua_agent::conversation::Said;
 
@@ -356,8 +376,11 @@ impl Session {
         }
 
         for (turn, index) in last_of_turn {
-            if let Some(trail) = trails.get(&turn) {
+            if let Some(trail) = recalled.trails.get(&turn) {
                 self.transcript[index].trail = trail.clone();
+            }
+            if let Some(todos) = recalled.todos.get(&turn) {
+                self.transcript[index].todos = todos.clone();
             }
         }
     }
@@ -1327,12 +1350,22 @@ mod tests {
         }
 
         fn resumed(messages: Vec<Message>, trails: &BTreeMap<usize, Vec<TrailLine>>) -> Vec<Entry> {
+            replayed(
+                messages,
+                crate::sessions::Recalled {
+                    trails: trails.clone(),
+                    todos: BTreeMap::new(),
+                },
+            )
+        }
+
+        fn replayed(messages: Vec<Message>, recalled: crate::sessions::Recalled) -> Vec<Entry> {
             let mut conversation = Conversation::new();
             for message in messages {
                 conversation.push(message);
             }
             let mut s = session();
-            s.replay(&conversation, "a title", trails);
+            s.replay(&conversation, "a title", &recalled);
             s.transcript
         }
 
@@ -1411,6 +1444,84 @@ mod tests {
                 &BTreeMap::new(),
             );
             assert!(transcript.iter().all(|entry| entry.trail.is_empty()));
+        }
+
+        /// The plan a turn worked to is beneath it in the scrollback while the session runs, and
+        /// was blank under every turn of a resumed one.
+        #[test]
+        fn a_resumed_turn_shows_the_plan_it_worked_to() {
+            use bua_core::todo::{Item, List, Status, rows};
+
+            let plan = rows(&List::new(vec![
+                Item::new("read the file", Status::Done),
+                Item::new("change it", Status::Active),
+            ]));
+            let transcript = replayed(
+                vec![
+                    Message::user("first"),
+                    Message::assistant("first reply"),
+                    Message::user("second"),
+                    Message::assistant("second reply"),
+                ],
+                crate::sessions::Recalled {
+                    trails: BTreeMap::new(),
+                    todos: BTreeMap::from([(2, plan.clone())]),
+                },
+            );
+
+            let second = transcript
+                .iter()
+                .find(|entry| entry.text == "second reply")
+                .expect("the second reply");
+            assert_eq!(second.todos, plan);
+
+            let first = transcript
+                .iter()
+                .find(|entry| entry.text == "first reply")
+                .expect("the first reply");
+            assert!(
+                first.todos.is_empty(),
+                "one turn's plan appeared under another's work"
+            );
+        }
+
+        /// The counting has to agree with what `todos_by_turn` wrote, or a plan comes back under
+        /// a turn it was never part of.
+        #[test]
+        fn the_turn_a_plan_is_written_under_is_the_turn_it_comes_back_under() {
+            use bua_core::todo::{Item, List, Status, rows};
+
+            let plan = rows(&List::new(vec![Item::new("do it", Status::Active)]));
+
+            let mut s = session();
+            s.type_char('a');
+            s.submit();
+            s.complete("first reply", Vec::new(), 0);
+            s.type_char('b');
+            s.submit();
+            s.set_todos(plan.clone());
+            s.complete("second reply", Vec::new(), 0);
+
+            let written = s.todos_by_turn();
+            assert_eq!(written.keys().copied().collect::<Vec<_>>(), vec![2]);
+
+            let transcript = replayed(
+                vec![
+                    Message::user("a"),
+                    Message::assistant("first reply"),
+                    Message::user("b"),
+                    Message::assistant("second reply"),
+                ],
+                crate::sessions::Recalled {
+                    trails: BTreeMap::new(),
+                    todos: written,
+                },
+            );
+            let second = transcript
+                .iter()
+                .find(|entry| entry.text == "second reply")
+                .expect("the second reply");
+            assert_eq!(second.todos, plan);
         }
 
         /// A trail for a turn the conversation does not have must not land on some other turn.

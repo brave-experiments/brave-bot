@@ -333,8 +333,8 @@ fn event_loop(
             // the user cannot see is one they will contradict without meaning to. The trail comes
             // out of the audit beside the record, so Ctrl-T answers for the whole session rather
             // than only for the turns this process ran.
-            let trails = crate::sessions::audit_of(workspace.root(), &record.id);
-            session.replay(&conversation, &record.title, &trails);
+            let recalled = crate::sessions::recall(workspace.root(), &record);
+            session.replay(&conversation, &record.title, &recalled);
             (conversation, handle)
         }
     };
@@ -401,7 +401,12 @@ fn event_loop(
                 // Written after each turn rather than at the end, because the end may never
                 // come: the session worth resuming is the one whose machine slept and never
                 // woke. Best-effort, like everything else under ~/.bua.
-                stored.save(&conversation.snapshot(), session.turns, &prompt);
+                stored.save(
+                    &conversation.snapshot(),
+                    session.turns,
+                    &prompt,
+                    &session.todos_by_turn(),
+                );
                 stored.append_audit(session.turns, &events);
                 // The map too, and for a stronger reason than convenience: a turn that wrote
                 // untrusted bytes into a trusted tree recorded that, and a session ending before
