@@ -7,15 +7,21 @@
 //! reversible.
 //!
 //! Two files per session. The **record** holds what the picker shows and what a resume needs:
-//! the conversation, and nothing else about it. The **audit** holds every gate decision the
-//! session made, one JSON object per line, which is the file to read when the question is what
-//! the agent was allowed to do and why.
+//! the conversation, and what the transcript showed beside it, which is the plan each turn worked
+//! to and what the whole session has spent. The **audit** holds every gate decision the session
+//! made, one JSON object per line, which is the file to read when the question is what the agent
+//! was allowed to do and why. It is also read back on a resume, since a trail under the turns
+//! from this process and nothing under the earlier ones is a worse account than either.
+//!
+//! The trust map is not here. It belongs to the working directory rather than to a session, so
+//! two sessions in one checkout share it: see [`crate::trust_file`].
 //!
 //! # What is written, and what is not
 //!
 //! Every message in the record has already been past the present gate, so what lands on disk is
 //! what the planner was allowed to hold: no untrusted bytes, by construction rather than by
-//! filtering. The quarantine is not written at all, and the audit is labels and gate names with
+//! filtering. The same goes for the task lists, which came out of the render gate on their way to
+//! the screen. The quarantine is not written at all, and the audit is labels and gate names with
 //! no content in it. See [`bua_agent::conversation::Snapshot`].
 //!
 //! Everything degrades to doing nothing. A missing home, a full disk, a corrupt record: a
