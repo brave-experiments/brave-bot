@@ -147,6 +147,51 @@ file to read next, because a read cannot change anything and is confined to the 
 must never be used for an effect. Effects need `before_granted_action` and a human
 endorsement.
 
+## Manifest mode
+
+`--mode manifest` fixes the whole run before reading anything: one planning call produces a step
+list, the kernel freezes it, and a driver walks it with no model in the control path. The default
+mode is still the turn loop, and both run under the same gates. What changes is the scope of the
+precommitment, from one turn to a whole run, not how strictly anything is enforced. Never
+describe manifest mode as the safe one, or turn mode as the lax one. The guarantee is the same
+in both, and saying otherwise concedes the thing the first section of this file refuses to
+concede.
+
+The invariants, none of which may be relaxed:
+
+- **Planning is gated, not counted.** It takes two calls, one for the goal in plain words and
+  one to fit that to the tool set, and both go through `Policy::before_planning`. The rule is
+  not "one call": it is that the planner's context holds the task string and the driver's own
+  words and has been shown nothing else. That is already true everywhere, since `present` never
+  shows untrusted content, so the gate is the invariant written where a change has to pass it.
+  What *is* forbidden is a **re-plan**: never feed a validation failure back to the planner, and
+  never plan again once a step has read something. A plan that fails validation fails the run.
+- **`Policy::adopt_manifest` refuses a plan that is not trusted.** A plan is a program, so every
+  field in it is a decision. A plan derived from anything an attacker wrote is an attacker
+  choosing the steps, and there is no repair for that.
+- **A run that stopped comes back with what it produced.** `manifest::Attempt` holds the
+  plain-words goal, the proposed manifest **verbatim**, the frozen plan, and what each step did.
+  It reaches a caller on success through `Outcome::attempt` and on failure through
+  `TurnError::Manifest`, and the failure path is the one that matters: a plan that would not
+  parse has no rendered form, so the model's own words are the only thing left to look at.
+  Never drop an artefact on the error path, and never make inspecting one conditional on a
+  flag. They are what separate "it misunderstood the task" from "it understood it and could not
+  express it as a plan" from "a gate refused".
+- **Validation is pure and total.** `bua_core::manifest::validate` sees a draft and nothing else.
+  Any violation fails the run whole. A manifest is never half adopted, and a step is never
+  repaired to make a plan usable.
+- **The driver adds nothing.** It may not insert, skip, reorder, or synthesise a step, and there
+  is no handler for a tool the schema does not name. If a plan cannot express something, the plan
+  is wrong, not the driver.
+- **Routing is locked from the manifest before the first step.** Steps read their destinations
+  out of `Routing`, not out of themselves. `Routing::insert` is the check that holds.
+- **`ANSWER` is the only path to a screen**, through a `ReleasePlan` built from the manifest
+  before the policy exists. Never widen it, and never release a slot the plan did not name.
+- **Everything a step produces is quarantined**, whatever its label, via `Policy::quarantine`.
+  There is no planner left to show anything to. Do not reach for `Policy::present` here.
+
+See docs/manifest.md, which is the specification.
+
 ## Layering
 
 - `bua-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every

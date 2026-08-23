@@ -28,6 +28,7 @@ and Windows on both x86_64 and arm64 are supported. To build from source instead
 bua                                  # interactive session
 bua "what does src/main.rs do?"      # one-shot
 bua "explain this" --file notes.md   # with named context
+bua "summarise the docs" --mode manifest   # plan the whole run first, then execute it
 bua doctor                           # check configuration and confinement
 bua import-leo-creds                 # use a Leo Premium subscription
 ```
@@ -36,6 +37,11 @@ In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, 
 toggles the audit trail, Esc cancels a running turn. Add `--trace` to a one-shot run for the
 same audit trail: which gate checked what, the label every value carried, and what was
 released.
+
+`--mode manifest` is the other way to run a task: one planning call fixes the whole step list
+before anything is read, and a driver then executes it with no model in the control path. It
+buys a program nothing observed can reshape, and costs everything a plan cannot know in
+advance. See [manifest mode](docs/manifest.md).
 
 ## What it will and will not do for you
 
@@ -141,6 +147,7 @@ Requirements and limits:
 
 - [How it works](docs/design.md), the labelling model and the six rules it enforces
 - [Tools](docs/tools.md), what each tool touches and what it may carry
+- [Manifest mode](docs/manifest.md), planning the whole run before executing any of it
 - [Trusted directories](docs/trust.md), the trust map specification
 - [Development](docs/development.md), building, configuring, and the conventions here
 - [Credit](docs/credit.md)

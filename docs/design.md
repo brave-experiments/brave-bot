@@ -188,5 +188,6 @@ run is approved because nothing here can establish that a program is harmless. S
 - `bua-net` is the single egress chokepoint. All network traffic passes the policy gate here.
 - `bua-mcp`, `bua-sandbox`, `bua-signing`, `bua-config` cover extension, confinement, and auth.
 
-See [tools.md](tools.md) for the per-tool routing and content split, and
-[trust.md](trust.md) for the trust map specification.
+See [tools.md](tools.md) for the per-tool routing and content split,
+[trust.md](trust.md) for the trust map specification, and [manifest.md](manifest.md) for the
+mode that fixes the whole run before executing any of it.

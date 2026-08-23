@@ -15,6 +15,9 @@ be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 Reads return the content itself when it is trusted and a reference when it is not, per R1.
 Writes are silent or shown according to the trust table in [trust.md](trust.md), per R6.
 
+This is the set a turn has. [manifest.md](manifest.md) describes the smaller set a manifest run
+works from, and why `edit_file` and `todo_write` are not in it.
+
 `read_file` pages: it caps at 500 lines and 2000 characters per line, reports the range it
 returned, and gives the offset to continue from. A file that is not text is reported as binary
 rather than as a decoding error.
