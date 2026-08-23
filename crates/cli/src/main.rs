@@ -2,8 +2,8 @@
 
 mod progress;
 
-use bua_agent::Workspace;
 use bua_agent::turn::{self, Task};
+use bua_agent::{Mode, Workspace};
 use bua_config::Config;
 use bua_core::cancel::Cancel;
 use bua_core::event::{Event, RecordingSink, Role};
@@ -31,6 +31,8 @@ fn main() -> ExitCode {
             Some(id) => resume_named(id),
             None => interactive(bua_tui::app::Start::Choose),
         },
+        // The task flags may lead, since "bua --mode manifest 'task'" is how people type it.
+        Some("--mode" | "--file" | "--trace") => run_task(&args),
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
@@ -64,20 +66,37 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --file <path>    Include a workspace file as context (repeatable)");
+    println!("  --mode <mode>    turn (default) observes and decides step by step;");
+    println!("                   manifest fixes the whole plan first, then executes it");
     println!("  --trace          Print the audit trail");
     println!("  -h, --help       Show this message");
     println!("  -V, --version    Show the version");
 }
 
-/// Parse `<prompt> [--file path]... [--trace]`.
+/// Parse `<prompt> [--file path]... [--mode name] [--trace]`.
 fn run_task(args: &[String]) -> ExitCode {
     let mut prompt = String::new();
     let mut files = Vec::new();
+    let mut mode = Mode::default();
     let mut trace = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
+            "--mode" => match args.get(index + 1).map(|name| name.parse::<Mode>()) {
+                Some(Ok(chosen)) => {
+                    mode = chosen;
+                    index += 2;
+                }
+                Some(Err(complaint)) => {
+                    eprintln!("{complaint}");
+                    return ExitCode::FAILURE;
+                }
+                None => {
+                    eprintln!("--mode requires one of {}", Mode::NAMES.join(", "));
+                    return ExitCode::FAILURE;
+                }
+            },
             "--file" => match args.get(index + 1) {
                 Some(path) => {
                     files.push(path.clone());
@@ -140,22 +159,47 @@ fn run_task(args: &[String]) -> ExitCode {
     // the command pipeable. Without it a long turn prints nothing until it is over.
     let mut reporter = progress::Progress::new(std::io::stderr());
 
-    match turn::run_cancellable(
-        &config,
-        &egress,
-        &workspace,
-        &task,
-        &mut confirmer,
-        &mut reporter,
-        &mut sink,
-        TrustStore::new(),
-        &Cancel::new(),
-    ) {
+    // Both modes take the same arguments and return the same outcome. The whole of the
+    // difference is inside: one asks the model what to do next after every result, the other
+    // asked once, before there were any.
+    let outcome = match mode {
+        Mode::Turn => turn::run_cancellable(
+            &config,
+            &egress,
+            &workspace,
+            &task,
+            &mut confirmer,
+            &mut reporter,
+            &mut sink,
+            TrustStore::new(),
+            &Cancel::new(),
+        ),
+        Mode::Manifest => bua_agent::manifest::run(
+            &config,
+            &egress,
+            &workspace,
+            &task,
+            &mut confirmer,
+            &mut reporter,
+            &mut sink,
+            TrustStore::new(),
+            &Cancel::new(),
+        ),
+    };
+
+    match outcome {
         Ok(outcome) => {
             // The reply is untrusted model output. Printing it is safe, since the
             // terminal is not a decision, so it is released explicitly for display.
             println!("{}", outcome.reply_for_display());
             if trace {
+                // Both planning artefacts before the gate log, because the first question about
+                // a run that went wrong is whether the model understood the task, and the
+                // second is whether it expressed it well. Only the third is about the gates.
+                if let Some(attempt) = &outcome.attempt {
+                    println!();
+                    print!("{}", attempt.describe());
+                }
                 println!();
                 print_trace(&sink);
                 println!("model: {}", outcome.model);
@@ -167,6 +211,22 @@ fn run_task(args: &[String]) -> ExitCode {
                 eprintln!("note: a policy gate refused something during this turn");
                 ExitCode::FAILURE
             }
+        }
+        // A run that stopped is the one worth looking at, so what it produced is printed
+        // whether or not --trace was asked for. Without it a failed plan is a one-line
+        // complaint about a document nobody can see.
+        Err(bua_agent::TurnError::Manifest { attempt, detail }) => {
+            eprintln!("{detail}");
+            let report = attempt.describe();
+            if !report.is_empty() {
+                eprintln!();
+                eprint!("{report}");
+            }
+            if trace {
+                eprintln!();
+                print_trace(&sink);
+            }
+            ExitCode::FAILURE
         }
         Err(err) => {
             eprintln!("{err}");
