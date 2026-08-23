@@ -68,6 +68,43 @@ untrusted file it is refused rather than performed.
 Integrity is the only axis that matters for this. Workspace content is private as a matter of
 course, and examining it in-process releases nothing.
 
+## Processors: the one thing that reads untrusted content
+
+The rule names the driver and the planner. A **processor** is neither, and it exists because an
+agent that may not read a file also cannot change it: `edit_file` refuses on an untrusted file,
+and `write_file` would need a body the planner could only have guessed.
+
+A processor is a second model instance holding **no capabilities at all**. No tools, no
+conversation, no memory of the session, no workspace, no spawn. It is given the slots its spec
+names and returns text, and that text goes straight into a new slot at the label taint gives it.
+The planner gets a reference, exactly as it would for a file it may not read.
+
+So untrusted content reaching a processor can do one thing: change the bytes in a slot nobody
+has read. It cannot redirect an effect, because nothing it produces can reach a routing field.
+
+The properties this rests on, none of which may be relaxed:
+
+- **The spec is built by the driver and frozen before the run.** `Policy::before_processor` is
+  the only thing that constructs a `ProcessorSpec`, and nothing widens one afterwards.
+- **The output label is computed before the processor runs**, by taint over the inputs. Nothing
+  the processor writes has any say in how what it writes is labelled.
+- **The input is assembled inside the kernel.** `Policy::compose_processor_input` concatenates
+  the slots; the driver carries the result wrapped and hands it to the call.
+- **No tools, ever.** The request carries no tool list. A processor with one tool is a second
+  planner with untrusted content in its context, which is the thing this design refuses.
+- **One call, no loop.** There is no round for a reply to steer.
+- **The output is never shown to the planner.** It is presented like any other untrusted
+  content: a reference, and nothing else.
+
+The confinement is the capability set, not an operating system boundary. `bua-sandbox` confines
+processes running code we did not write; a processor's caller is our own code, and putting it in
+a subprocess would confine the wrong thing.
+
+Quarantined content reaches a file through `write_file`'s `contents_ref`.
+`Policy::declassify_into_workspace` is what lets a private slot become a file body, and it is
+sound only because the destination is inside the boundary the bytes came from: nothing leaves.
+Never reach for it for a network body, a command line, or a message to someone.
+
 ## Where trusted data comes from
 
 Model output is a function of the model's context and nothing else. So when the context holds

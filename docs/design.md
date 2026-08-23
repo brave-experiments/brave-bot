@@ -50,7 +50,8 @@ than by a check a caller could forget to make.
 **R1. Nothing untrusted in the planner's context.** Untrusted content is never placed in a
 message to the model. It is quarantined in a write-once slot, and the planner is given a
 *reference*: origin, line count, byte count, label. The planner acts on content it cannot read
-by naming that reference, and the kernel resolves it when the effect fires.
+by naming that reference, and the kernel resolves it when the effect fires. Where the content
+has to be *changed* rather than moved, it goes to a processor: see below.
 
 **R2. Nothing untrusted in the driver's context.** The Rust code may carry a `Labelled<T>` and
 hand it to an effect, but cannot read one: no `Deref`, `PartialEq`, or `Display`, and no
@@ -73,6 +74,31 @@ operation anywhere raises a value's integrity.
 **R6. Losing trust needs a human.** A write that would make a trusted path untrusted is shown
 to the user first, and their approval mints a single-use endorsement bound to that exact path.
 It cannot be replayed or redirected.
+
+## The one reader: processors
+
+R1 leaves a gap. An agent that may not read a file also cannot change it, because locating a
+passage is a comparison (R3) and writing a whole new body would mean the planner authoring text
+for a file it never saw. Answering questions about an untrusted repository is useful; being
+unable to do any work in one is not.
+
+A **processor** is what closes it. A second model instance is started with no tools, no
+conversation, no memory of the session and no workspace, given exactly the slots the driver
+names, and asked to produce text. That text is not returned to the planner: it goes into a new
+slot at the label taint gives it, and the planner receives another reference.
+
+The gap closes without anything being relaxed, because a processor is neither the driver nor the
+planner and it decides nothing. Its output cannot become routing, since it is quarantined. Its
+label is fixed before it runs, from its inputs, so nothing it writes can improve how what it
+writes is labelled. It cannot act, because there is no tool in the request. It cannot persist,
+because there is no second round.
+
+So the worst an injected line can achieve, having reached the one component that can read it, is
+different bytes in a slot nobody has read, going to a path the user approved.
+
+The confinement here is the capability set rather than an OS boundary: there is no untrusted
+*code* involved, only untrusted *content*, and the caller is the same trusted driver as
+everywhere else.
 
 ## Design
 
@@ -108,6 +134,22 @@ ok      trust: notes.md read as untrusted
 slot    ref:0 at (U,priv)
 ok      present: tool_result: notes.md is (U,priv), quarantined as ref:0; the planner
         sees a reference only
+```
+
+Changing that same file, which nothing along the way is able to read:
+
+```
+ok      reference: spawn_processor.reads names ref:1
+ok      processor: processor over ref:1 reads ref:1 and writes (U,priv), with no tools,
+        no memory and nothing to write but that one slot
+ok      processor: input assembled from 1 slot(s) inside the kernel
+ok      processor: output labelled (U,priv) by taint over its inputs
+slot    ref:3 at (U,priv)
+ok      present: tool_result: quarantined as ref:3; the planner sees a reference only
+ok      resolve: write_file: ref:3 resolved to its quarantined content, (U,priv)
+release ref:3 (U,priv) -> (U,pub)
+ok      declassify: ref:3 released into src/config.py, which is inside the workspace
+ok      approval: src/config.py: a path nobody has vouched for either way, asking
 ```
 
 ## Why some things are absent

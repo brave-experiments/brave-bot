@@ -50,6 +50,17 @@ there is nobody to ask, so writes are refused rather than applied unseen.
 lines rather than a whole file. If that passage is missing or ambiguous, or the file changed
 since it was read, the edit is refused instead of guessed.
 
+**It can work in files it is not allowed to read.** In an untrusted directory the model never
+sees a line of your code. It can still change it: the file goes to an isolated processor, a
+second model with no tools, no memory and nothing but that one file, which returns the new
+version into quarantine. You see the diff and approve it. Nothing that read the file was in a
+position to act, and nothing that acted had read it.
+
+Worth being plain about the trade: a processor is a model call, so the contents of an untrusted
+file do reach the backend when you ask for work in one. What changes is not where the bytes go,
+since a trusted directory has always sent them there, but that the thing reading them can do
+nothing at all.
+
 **It runs programs, but there is no shell.** You can ask for `git commit`, `gh api`, `sed`, `awk`,
 or anything else installed, and stages compose the way a pipeline does. What you cannot get is a
 shell: `run` takes a program and a list of arguments, never a command string, so there are no pipes,
@@ -80,9 +91,10 @@ At startup you are asked whether you trust the working directory.
 every edit. **Decline** and nothing is trusted, so every write is shown to you first.
 
 Content from an untrusted source, a web page or a file outside a trusted path, is quarantined:
-the model can pass it along and write it somewhere, but never read it, and it can never decide
-what happens next. If such content is written into a trusted directory, that one file is
-recorded as untrusted, so reading it back does not launder it.
+the model can pass it along, hand it to an isolated processor, and write the result somewhere,
+but never read any of it, and none of it can decide what happens next. If such content is
+written into a trusted directory, that one file is recorded as untrusted, so reading it back
+does not launder it.
 
 You are only ever prompted about one thing: **may this path stop being trusted?** The full
 rules are in [docs/trust.md](docs/trust.md).

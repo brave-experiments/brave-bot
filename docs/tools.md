@@ -1,6 +1,6 @@
 # Tools
 
-Five tools. Every argument is either **routing**, which decides what the tool touches and must
+Six tools. Every argument is either **routing**, which decides what the tool touches and must
 be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 
 | Tool | Routing arguments | Content arguments | Result |
@@ -8,8 +8,9 @@ be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 | `read_file` | `path`, `offset`, `limit` | none | the lines, or a reference |
 | `list_files` | `directory`, `pattern` | none | the paths, or a reference |
 | `search` | `pattern`, `directory`, `include` | none | matching lines, or a reference |
-| `write_file` | `path` | `contents` | confirmation |
+| `write_file` | `path`, `contents_ref` | `contents` | confirmation |
 | `edit_file` | `path`, `replace_all` | `old_text`, `new_text` | confirmation |
+| `spawn_processor` | `reads` | `instruction` | a reference |
 
 Reads return the content itself when it is trusted and a reference when it is not, per R1.
 Writes are silent or shown according to the trust table in [trust.md](trust.md), per R6.
@@ -27,15 +28,75 @@ does not exist when the answer was merely cut off.
 through a turn would be a denial-of-service vector. The glob matcher is hand-written and
 non-backtracking for the same reason.
 
+`write_file` takes either the `contents` to write or a `contents_ref` naming quarantined
+content that becomes the whole file, never both. The reference is routing, since it decides
+which bytes the write carries, and it is a name the driver handed out rather than anything
+derived from content: the worst a wrong one can do is put the wrong quarantined bytes into a
+path that still had to be endorsed on its own.
+
 `edit_file` replaces an exact passage and refuses rather than guessing when that passage is
 missing or occurs more than once, since a guess would change bytes nobody reviewed. It also
 refuses if the file changed since it was read, and it requires a **trusted** file, because
-locating a passage means comparing text (R3). Use `write_file` for an untrusted file: nothing
-is located, and the body is shown in full.
+locating a passage means comparing text (R3). For an untrusted file, put the change through a
+processor and write the reference it returns: nothing is located, and the body is shown to you
+in full.
 
 Filenames are content too, since a file can be named to read like an instruction, so an
 untrusted listing is quarantined exactly as file contents are. A listing or search that
 touches several files is trusted only if every one of them is.
+
+## Processors
+
+An agent that may not read a file also cannot change it. `edit_file` refuses on an untrusted
+file, because matching a passage is a comparison, and a whole-file `write_file` would need a
+body the planner could only have guessed at. That would leave the agent able to answer questions
+about a repository nobody vouched for and unable to do any work in one.
+
+`spawn_processor` closes that gap. It starts a second model instance holding nothing:
+
+| | |
+|---|---|
+| Tools | none, and the request carries no tool list at all |
+| Memory | none: the messages are built from nothing each time |
+| Conversation | one request, one reply, no loop to steer |
+| Reads | exactly the references named in `reads`, and nothing else |
+| Writes | one new reference, and nothing else |
+| Label of that reference | computed by taint over the inputs, **before** it runs |
+
+So a processor is the only component in the system that reads quarantined content, and it is
+the one component that can do nothing with what it reads. Injected text in its input can change
+the bytes in a slot nobody has read. It cannot reach a routing field, because everything the
+processor produces is quarantined, and it cannot persist, because the processor is gone when the
+call returns.
+
+The usual shape is three calls:
+
+```
+read_file  src/config.py        →  [ref:1] 6 lines, (U,priv), quarantined
+spawn_processor reads=[ref:1]   →  [ref:3] 24 lines, (U,priv), quarantined
+           instruction="add error handling; return the whole file"
+write_file path=src/config.py contents_ref=ref:3
+```
+
+Nothing in that sequence reads the file. The planner sees two line counts and two names; the
+driver carries bytes it cannot open; the user sees the diff and approves it. The instruction is
+the only thing steering the processor, and it comes from the planner, whose context holds
+nothing an attacker wrote.
+
+One thing this changes and should be said plainly: a processor is a model call, so an untrusted
+file's contents now reach the backend when the agent is asked to work on one, where before they
+would have stayed on the machine. The destination is the one a trusted directory has always sent
+its files to. What is new is only that the reader holds nothing.
+
+What a processor is **not** is an operating-system sandbox. There is no untrusted code involved:
+the call is made by the same trusted driver that makes every other call. The confinement is the
+capability set, which is empty, and the label on the output, which nothing in the processor
+chooses.
+
+Writing quarantined content into a file is a move inside the workspace rather than a release out
+of it, which is why a private slot may become a file body when it may not become a network body
+or a command line. The trust map then records that path as untrusted, so reading it back does
+not launder it.
 
 ## Who decides what
 
@@ -59,8 +120,9 @@ you approved would no longer describe what happens.
 
 `edit_file` only works on trusted files. Finding the passage means comparing text, and that is
 a decision. On untrusted content it would let file contents decide whether an effect happens.
-So an untrusted file is refused rather than edited blind; trust the path, or replace the whole
-file with `write_file`, where nothing is located and the body is shown to you in full.
+So an untrusted file is refused rather than edited blind; trust the path, or send the change
+through a [processor](#processors) and write the whole file, where nothing is located and the
+body is shown to you in full.
 
 ## Running programs
 
