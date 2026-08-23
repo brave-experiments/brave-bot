@@ -2204,40 +2204,42 @@ mod tests {
         assert_eq!(replayed.for_context(), "I read notes.md");
     }
 
-    /// And the converse, so the mechanism is not merely disabled: content the planner *is* shown
-    /// still lowers the context.
+    /// Resolving a slot for an effect does not lower the context either. `write_file` pulling
+    /// quarantined bytes into a file moves them past the planner, not into it: the destination
+    /// takes their label through `reconcile_after_write`, and the planner is still none the wiser.
+    ///
+    /// Without this the chain the design exists for blinds the planner at its last step, having
+    /// kept it clean through the read and the processor.
     #[test]
-    fn the_context_falls_when_the_planner_is_shown_something_untrusted() {
+    fn resolving_a_slot_for_a_write_does_not_lower_the_context() {
         let mut sink = RecordingSink::new();
         let mut slots = SlotStore::new();
         let mut policy = Policy::begin(
-            routing_with("task", "read"),
+            routing_with("task", "write"),
             ReleasePlan::new(),
             all_capabilities(),
             &mut sink,
         )
         .expect("policy");
 
-        // Trusted content is shown, and being shown it is what feeds the context.
-        let trusted = Labelled::new("fn main() {}".to_string(), Label::trusted_public());
+        let contents = Labelled::new("quarantined".to_string(), Label::untrusted_private());
         policy
             .present(
                 "read_file",
                 SlotId::new("ref:0"),
-                "mine.rs",
-                &trusted,
+                "notes.md",
+                &contents,
                 &mut slots,
             )
             .expect("presents");
-        assert_eq!(policy.context_integrity(), Integrity::Trusted);
 
-        // There is no way to be shown untrusted content today, since `present` quarantines it.
-        // Inheriting it from an earlier conversation is the one route, and it still works.
-        let policy = policy.resuming(Integrity::Untrusted);
-        assert_eq!(policy.context_integrity(), Integrity::Untrusted);
-        let mut policy = policy;
-        let said = policy.label_model_output("chat", "x".to_string());
-        assert_eq!(said.label().integrity, Integrity::Untrusted);
+        policy
+            .resolve("write_file", &SlotId::new("ref:0"), &slots)
+            .expect("resolves");
+
+        assert_eq!(policy.context_integrity(), Integrity::Trusted);
+        let said = policy.label_model_output("chat", "wrote it".to_string());
+        assert_eq!(said.label().integrity, Integrity::Trusted);
     }
 
     #[test]
