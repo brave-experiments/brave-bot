@@ -543,6 +543,151 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(value.clone().declassify(&proof))
     }
 
+    /// Check that planning may still happen at all.
+    ///
+    /// Planning takes more than one call: a plan is easier to write in plain words first and fit
+    /// to a machine second, and both of those are model calls. What makes that sound is not the
+    /// number of calls. It is that the planner's context holds the task string and the driver's
+    /// own words and has never been shown anything else.
+    ///
+    /// **This cannot fail today, and that is the point.** The planner's context never holds
+    /// untrusted content, in either mode: [`Policy::present`] is the only thing that grows it,
+    /// and it grows it only with what it shows, which is only ever trusted. Untrusted content is
+    /// quarantined and the planner gets a reference. So this gate is not a filter catching a
+    /// live threat. It is the invariant written down where a future change has to get past it:
+    /// give the planning phase something to read and every planning call after that is refused
+    /// rather than quietly made.
+    ///
+    /// Note what it does *not* say. It says nothing about what a step has read, because in a
+    /// manifest run no step has read anything by the time planning ends. Reading is
+    /// [`Policy::observe`], the planner's context is this, and conflating the two is how a
+    /// design like this stops being able to describe itself.
+    pub fn before_planning(&mut self, round: &str) -> Gated<()> {
+        if self.context != Integrity::Trusted {
+            return Err(self.deny(
+                "planning",
+                Principle::IntegrityGate,
+                format!(
+                    "{round}: the planner's context is {:?}, and nothing that has been shown \
+                     untrusted content may be asked to plan",
+                    self.context
+                ),
+            ));
+        }
+        self.allow(
+            "planning",
+            format!("{round}: the planner's context holds nothing but trusted input"),
+        );
+        Ok(())
+    }
+
+    /// Turn the planner's proposal into a frozen program, or refuse it.
+    ///
+    /// This is the gate the whole manifest mode rests on, and it has one job: establish that
+    /// the plan came from a context holding nothing untrusted. A plan is a program, so every
+    /// field in it is a decision, and a plan derived from something an attacker wrote would be
+    /// an attacker choosing the steps. There is no repair for that and none is attempted.
+    ///
+    /// As with [`Policy::before_planning`], the refusal cannot fire while the rest of the
+    /// kernel is correct, because the planner is never shown untrusted content in the first
+    /// place. It is here so that the plan is refused rather than adopted on the day something
+    /// upstream changes, and so that the property is stated somewhere that executes.
+    ///
+    /// A trusted plan may then be examined freely, which is what
+    /// [`crate::manifest::validate`] does. That is the same permission
+    /// [`Policy::read_trusted_content`] grants and rests on the same fact: the bytes came from
+    /// somewhere the user vouched for, here the user's own task string, so comparing them
+    /// decides nothing an attacker steers.
+    ///
+    /// Note what is *not* checked. Confidentiality is irrelevant, exactly as it is for a
+    /// trusted read: validation happens in-process and releases nothing. And nothing here
+    /// consults the plan before deciding whether it may be read, because deciding from the
+    /// content whether the content may be examined is the circularity this design refuses.
+    pub fn adopt_manifest(
+        &mut self,
+        proposal: &Labelled<crate::manifest::Draft>,
+    ) -> Gated<crate::manifest::Manifest> {
+        let label = proposal.label();
+        if !label.is_trusted() {
+            return Err(self.deny(
+                "manifest",
+                Principle::IntegrityGate,
+                format!(
+                    "the plan is {label}, so something the planner was shown could have chosen \
+                     these steps. A plan is only a plan if it was fixed before anything was \
+                     observed"
+                ),
+            ));
+        }
+
+        let proof = Declassification::authorise("a trusted plan examined in-process");
+        let draft = proposal.clone().declassify(&proof);
+        let plan = crate::manifest::validate(&draft).map_err(|failure| {
+            self.deny(
+                "manifest",
+                Principle::IntegrityGate,
+                format!("the plan is not well formed: {failure}"),
+            )
+        })?;
+
+        self.allow(
+            "manifest",
+            format!(
+                "a {label} plan of {} step(s) validated and frozen",
+                plan.len()
+            ),
+        );
+        Ok(plan)
+    }
+
+    /// Put what a step produced into the slot its plan named.
+    ///
+    /// [`Policy::present`] answers "may the planner see this?" and quarantines what it may not.
+    /// This answers nothing, because in a manifest run there is no planner left to ask: the one
+    /// model call that chose the steps finished before the first step ran, and nothing a step
+    /// produces is ever shown to it. So every result is quarantined, whatever its label, and
+    /// the only ways out of a slot are the ones that were already there: a processor reading
+    /// it, a write carrying it back into the workspace, and a release the plan named in advance.
+    ///
+    /// The label is the one the content already carries. Nothing here assigns one, which is the
+    /// difference between recording where bytes came from and deciding it.
+    pub fn quarantine(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        origin: &str,
+        content: &Labelled<String>,
+        slots: &mut crate::slot::SlotStore,
+    ) -> Gated<crate::reference::Reference> {
+        let label = content.label();
+
+        let writer = slots.writer_for(slot.clone(), label).map_err(|e| Denial {
+            principle: Principle::Confinement,
+            message: format!("{tool}: could not quarantine {origin}: {e}"),
+        })?;
+
+        let measured = writer.write_measured(content.clone()).map_err(|e| Denial {
+            principle: Principle::Confinement,
+            message: format!("{tool}: could not quarantine {origin}: {e}"),
+        })?;
+
+        self.sink.emit(Event::SlotWritten {
+            slot: slot.clone(),
+            label,
+        });
+        self.allow(
+            "quarantine",
+            format!("{tool}: {origin} is {label}, stored as {slot}; nobody is shown it"),
+        );
+        Ok(crate::reference::Reference::new(
+            slot,
+            origin,
+            measured.lines,
+            measured.bytes,
+            label,
+        ))
+    }
+
     /// Decide what the planner is told about content, and quarantine it if it may not see it.
     ///
     /// This is the gate the rule in CLAUDE.md rests on. Trusted content is returned visible,
@@ -1221,6 +1366,201 @@ mod tests {
         ]
         .into_iter()
         .collect()
+    }
+
+    fn open_policy(sink: &mut RecordingSink) -> Policy<'_, RecordingSink> {
+        Policy::begin(
+            routing_with("task", "summarise the readme"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            sink,
+        )
+        .unwrap()
+    }
+
+    fn simple_draft() -> crate::manifest::Draft {
+        use crate::manifest::{Arg, DraftStep};
+        crate::manifest::Draft::new(vec![
+            DraftStep::new("read_file")
+                .with_text("path", "README.md")
+                .with_text("out_slot", "readme"),
+            DraftStep::new("process")
+                .with("reads", Arg::List(vec!["readme".to_string()]))
+                .with_text("instruction", "summarise")
+                .with_text("out_slot", "summary"),
+            DraftStep::new("answer").with_text("from_slot", "summary"),
+        ])
+    }
+
+    /// Planning is several calls, and every one of them is gated. Counting calls would be the
+    /// wrong rule: what matters is that the planner has been shown nothing but trusted input,
+    /// which is as true of the fourth call as of the first.
+    #[test]
+    fn every_planning_call_is_allowed_from_a_clean_context() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        for round in ["shape", "fit", "and again"] {
+            assert!(policy.before_planning(round).is_ok(), "{round} was refused");
+        }
+        assert!(policy.finish());
+    }
+
+    /// The invariant this encodes cannot be violated while `present` is correct, since the
+    /// planner is never shown untrusted content. The gate exists for the day that changes: a
+    /// planning phase given something to read must stop planning, not plan from it.
+    #[test]
+    fn a_planner_shown_untrusted_content_may_not_plan() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "summarise"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap()
+        .resuming(Integrity::Untrusted);
+
+        let err = policy
+            .before_planning("fit")
+            .expect_err("a tainted planner must not be asked to plan");
+        assert_eq!(err.principle, Principle::IntegrityGate);
+        assert!(!policy.finish());
+    }
+
+    /// The two gates guard the same invariant at different moments, and both must hold. A plan
+    /// adopted from a context that had already fallen would be an attacker's plan whether or not
+    /// anyone remembered to check before making the call.
+    #[test]
+    fn a_tainted_planner_is_refused_at_the_call_and_at_adoption() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "summarise"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap()
+        .resuming(Integrity::Untrusted);
+
+        assert!(policy.before_planning("fit").is_err());
+        let proposal = policy.label_model_output("fit", simple_draft());
+        assert!(policy.adopt_manifest(&proposal).is_err());
+    }
+
+    #[test]
+    fn a_plan_from_a_clean_context_is_adopted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let plan = policy
+            .adopt_manifest(&Labelled::trusted(simple_draft()))
+            .expect("a trusted plan is the whole premise of the mode");
+        assert_eq!(plan.len(), 3);
+    }
+
+    /// The load-bearing refusal. An untrusted plan means the model that wrote it had met
+    /// something an attacker could have written, so the steps are the attacker's choice of
+    /// steps. There is no repair, and none is offered.
+    #[test]
+    fn a_plan_from_a_tainted_context_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let tainted = Labelled::new(simple_draft(), Label::untrusted_public());
+        let err = policy
+            .adopt_manifest(&tainted)
+            .expect_err("an untrusted plan must never be adopted");
+        assert_eq!(err.principle, Principle::IntegrityGate);
+        assert!(!policy.finish());
+    }
+
+    /// A malformed plan fails the run rather than being repaired. Half a program is worse than
+    /// none: the steps that did run had consequences nobody approved as a whole.
+    #[test]
+    fn a_plan_that_fails_the_schema_is_refused() {
+        use crate::manifest::DraftStep;
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let backwards = crate::manifest::Draft::new(vec![
+            DraftStep::new("answer").with_text("from_slot", "nothing"),
+        ]);
+        assert!(
+            policy
+                .adopt_manifest(&Labelled::trusted(backwards))
+                .is_err()
+        );
+    }
+
+    /// Everything a step produces goes into quarantine, trusted or not, because a manifest run
+    /// has no planner left to show anything to. A gate that made an exception for trusted
+    /// content would be growing a context that no longer exists.
+    #[test]
+    fn a_step_result_is_quarantined_whatever_its_label() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+
+        for (slot, content) in [
+            ("a", Labelled::trusted("hello\nthere".to_string())),
+            (
+                "b",
+                Labelled::new("hello\nthere".to_string(), Label::untrusted_private()),
+            ),
+        ] {
+            let reference = policy
+                .quarantine(
+                    "read_file",
+                    SlotId::new(slot),
+                    "README.md",
+                    &content,
+                    &mut slots,
+                )
+                .expect("storing a step result must not depend on its label");
+            assert_eq!(reference.lines, 2);
+            assert!(slots.is_written(&SlotId::new(slot)));
+        }
+    }
+
+    /// Quarantining records the label the content already had. Assigning one here would be the
+    /// kernel deciding provenance after the fact, which is laundering with a nicer name.
+    #[test]
+    fn quarantining_keeps_the_label_the_content_arrived_with() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        let content = Labelled::new("body".to_string(), Label::untrusted_private());
+
+        policy
+            .quarantine("read_file", SlotId::new("s"), "notes", &content, &mut slots)
+            .unwrap();
+
+        assert_eq!(
+            slots.label_of(&SlotId::new("s")),
+            Some(Label::untrusted_private())
+        );
+    }
+
+    /// The release plan is the only way out to a screen, and it is fixed at construction. A
+    /// slot the plan did not name cannot be released however it came to exist.
+    #[test]
+    fn only_a_precommitted_slot_may_be_released() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "summarise"),
+            ReleasePlan::new().allow(SlotId::new("summary")),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        assert!(
+            policy
+                .declassify(&SlotId::new("summary"), Label::untrusted_private())
+                .is_ok()
+        );
+        assert!(
+            policy
+                .declassify(&SlotId::new("readme"), Label::untrusted_private())
+                .is_err()
+        );
     }
 
     #[test]
