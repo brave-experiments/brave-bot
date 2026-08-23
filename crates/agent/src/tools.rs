@@ -1512,12 +1512,10 @@ mod tests {
                 CapabilitySet::from_iter([Capability::FileRead]),
                 &mut sink,
             )
-            .expect("policy");
-
-            // An untrusted read drops the context, exactly as reading an unvouched file would.
-            policy
-                .observe_path(Capability::FileRead, "somewhere/nobody/vouched/for")
-                .expect("observed");
+            .expect("policy")
+            // A conversation that had already been shown something untrusted, which is the only
+            // way a context is untrusted: a read the planner was never shown does not do it.
+            .resuming(Integrity::Untrusted);
             assert_eq!(policy.context_integrity(), Integrity::Untrusted);
 
             let mut reporter = RecordingReporter::default();

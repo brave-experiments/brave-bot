@@ -110,7 +110,15 @@ Never reach for it for a network body, a command line, or a message to someone.
 Model output is a function of the model's context and nothing else. So when the context holds
 only trusted input, what the model produces is derived only from trusted input, and
 `Policy::label_model_output` labels it accordingly. `Policy::context_integrity` tracks this and
-only ever falls: one untrusted observation and everything afterwards is untrusted.
+only ever falls.
+
+It falls when `Policy::present` **shows** the planner something, never when a turn merely reads
+something. The distinction is load-bearing. A quarantined read puts a reference in the context, not
+the bytes, and a slot id with a line count carries no instruction: the context has not met that
+content and must not be marked as though it had. Lowering integrity at the read instead labels the
+planner's own words untrusted on the strength of a file it never saw, and `present` then quarantines
+the planner from itself, leaving it unable to see what it just did. Never move this back to the
+observation.
 
 This is **not** an upgrade path. It is the first label such text ever receives, assigned from
 provenance the kernel tracked. If you find yourself relabelling a value that already has a
