@@ -320,11 +320,12 @@ fn event_loop(
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
     // session begins with an exchange that outlived the process it happened in.
-    let (mut conversation, mut stored) = match start {
+    let (mut conversation, mut stored, inherited_trust) = match start {
         // Already answered before the loop was entered: the picker runs once, in `run`.
         Start::Fresh | Start::Choose => (
             Conversation::new(),
             crate::sessions::Handle::begin(workspace.root()),
+            None,
         ),
         Start::Resuming(record) => {
             let handle = crate::sessions::Handle::resuming(workspace.root(), &record);
@@ -344,14 +345,15 @@ fn event_loop(
             ) {
                 session.note(note);
             }
-            (conversation, handle)
+            // The trust map goes with the session, so picking one up carries the answer its own
+            // user gave. `None` for a record from before this was kept, which is asked about.
+            let inherited = record.trust_map();
+            (conversation, handle, inherited)
         }
     };
 
-    // Settled once, before any turn. Read back from disk where a previous session left one, so a
-    // path that session's writes marked untrusted is still untrusted here.
-    let mut trust = opening_trust(terminal, &mut session, workspace.root());
-    crate::trust_file::save(workspace.root(), &trust);
+    // Settled once, before any turn.
+    let mut trust = opening_trust(terminal, &mut session, workspace.root(), inherited_trust);
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
@@ -411,17 +413,16 @@ fn event_loop(
                 // come: the session worth resuming is the one whose machine slept and never
                 // woke. Best-effort, like everything else under ~/.bua.
                 stored.save(
-                    &conversation.snapshot(),
-                    session.turns,
-                    session.tokens,
                     &prompt,
-                    &session.todos_by_turn(),
+                    crate::sessions::Standing {
+                        conversation: &conversation.snapshot(),
+                        turns: session.turns,
+                        tokens: session.tokens,
+                        todos: &session.todos_by_turn(),
+                        trust: &trust,
+                    },
                 );
                 stored.append_audit(session.turns, &events);
-                // The map too, and for a stronger reason than convenience: a turn that wrote
-                // untrusted bytes into a trusted tree recorded that, and a session ending before
-                // it reached disk would let the next one read those bytes back as trusted.
-                crate::trust_file::save(workspace.root(), &trust);
             }
             // Only reachable while a turn runs, which is handled inside `run_turn_animated`.
             Action::Cancel | Action::None | Action::Redraw => {}
@@ -429,39 +430,37 @@ fn event_loop(
     }
 }
 
-/// The trust map the session starts with, asking only where nobody has answered yet.
+/// The trust map the session starts with.
 ///
-/// Three ways this can go, and the one that matters is the third. A map that will not parse is
-/// not a reason to ask again: the question grants trust, and the rules that would have overridden
-/// it are exactly the ones that could not be read. So an unreadable map trusts nothing and says
-/// so, which the user fixes by deleting the file rather than by pressing y.
+/// A fresh session always asks, whatever any session in this directory answered before. The
+/// question grants standing permission, and a launch that skipped it because someone said yes
+/// last week would be granting that permission on behalf of a user who was never asked, which is
+/// trust assumed from silence rather than granted.
+///
+/// Resuming is the one case that does not ask, and it is not an exception to that: the map comes
+/// out of the record of the very session being picked up, so the answer being honoured is the one
+/// its own user gave. It carries the rules that session's writes recorded too, which is what stops
+/// a resumed turn reading back a file an earlier turn poisoned. A record from before the map was
+/// kept has none, and is asked about.
 fn opening_trust(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
     root: &std::path::Path,
+    inherited: Option<TrustStore>,
 ) -> TrustStore {
-    match crate::trust_file::opening(crate::trust_file::load(root)) {
-        crate::trust_file::Opening::Refuse => {
-            session.note("the recorded trust map could not be read, so nothing is trusted");
-            if let Some(path) = crate::trust_file::path(root) {
-                session.note(format!("delete {} to be asked again", path.display()));
-            }
-            TrustStore::new()
-        }
-        crate::trust_file::Opening::Remembered(trust) => {
-            session.note(format!("trusting {} (remembered)", root.display()));
-            trust
-        }
-        crate::trust_file::Opening::Ask(mut trust) => {
-            crate::trust_prompt::ask(terminal, root).apply(&mut trust);
-            if trust.is_trusted(".") {
-                session.note(format!("trusting {}", root.display()));
-            } else {
-                session.note("this directory is not trusted; every write will be shown to you");
-            }
-            trust
-        }
+    // Said only when resuming. On a fresh start the user has just answered the question and does
+    // not need telling where the answer came from.
+    let (trust, how) = match inherited {
+        Some(trust) => (trust, " (as this session left it)"),
+        None => (crate::trust_prompt::ask(terminal, root), ""),
+    };
+
+    if trust.is_trusted(".") {
+        session.note(format!("trusting {}{how}", root.display()));
+    } else {
+        session.note("this directory is not trusted; every write will be shown to you");
     }
+    trust
 }
 
 /// Run a turn on a worker thread, redrawing while it works.

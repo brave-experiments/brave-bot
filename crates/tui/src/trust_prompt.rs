@@ -26,30 +26,28 @@ pub enum Answer {
     Decline,
 }
 
-impl Answer {
-    /// Record the answer in a map that may already hold rules.
-    ///
-    /// Applied to the existing map rather than to a fresh one, because a map read back off disk
-    /// can already hold paths a previous session's writes marked untrusted. Those are more
-    /// specific than the root this adds, so they keep winning: saying yes to the directory is not
-    /// a way to un-say what a write recorded.
-    pub fn apply(self, trust: &mut TrustStore) {
-        if self == Answer::Trust {
-            trust.trust(".");
-        }
-    }
-}
-
-/// Ask about `directory`.
+/// Ask about `directory`, returning the trust map the session should start with.
 ///
 /// Trusting records the workspace root, which covers everything beneath it. Declining records
-/// nothing, leaving whatever map was already there.
-pub fn ask<B: Backend>(terminal: &mut Terminal<B>, directory: &Path) -> Answer {
-    match terminal.draw(|frame| draw(frame, directory)) {
+/// nothing, leaving an empty map in which no path is trusted.
+///
+/// Asked afresh every time a session begins. The answer is standing permission for as long as
+/// that session lasts and no longer: it is not written down anywhere a later launch will read it,
+/// so nothing this grants can be inherited by a session whose user was never asked. A resumed
+/// session is the one exception, and it inherits the answer its own user gave rather than
+/// skipping the question, which is why this is not called at all in that case.
+pub fn ask<B: Backend>(terminal: &mut Terminal<B>, directory: &Path) -> TrustStore {
+    let answer = match terminal.draw(|frame| draw(frame, directory)) {
         Ok(_) => read_answer(),
         // A terminal that cannot be drawn to cannot carry the question.
         Err(_) => Answer::Decline,
+    };
+
+    let mut trust = TrustStore::new();
+    if answer == Answer::Trust {
+        trust.trust(".");
     }
+    trust
 }
 
 /// Block until the user answers.
@@ -208,7 +206,7 @@ mod tests {
     #[test]
     fn trusting_covers_the_whole_workspace() {
         let mut trust = TrustStore::new();
-        Answer::Trust.apply(&mut trust);
+        trust.trust(".");
         assert!(trust.is_trusted("src/main.rs"));
         assert!(trust.is_trusted("deep/nested/file.txt"));
     }
@@ -216,34 +214,9 @@ mod tests {
     /// Declining leaves nothing trusted, so every write is shown.
     #[test]
     fn declining_trusts_nothing() {
-        let mut trust = TrustStore::new();
-        Answer::Decline.apply(&mut trust);
+        let trust = TrustStore::new();
         assert!(trust.is_empty());
         assert!(!trust.is_trusted("src/main.rs"));
         assert!(!trust.is_trusted("."));
-    }
-
-    /// The answer is applied to what is already recorded, so a path an earlier session's write
-    /// marked untrusted is not handed its trust back by a fresh yes.
-    #[test]
-    fn saying_yes_does_not_undo_a_recorded_distrust() {
-        let mut trust = TrustStore::new();
-        trust.distrust("src/fetched.json");
-        Answer::Trust.apply(&mut trust);
-
-        assert!(trust.is_trusted("src/main.rs"));
-        assert!(!trust.is_trusted("src/fetched.json"));
-    }
-
-    /// Declining must not clear what is there either: a distrust is not a decision about the
-    /// root, and the question asked was only about the root.
-    #[test]
-    fn saying_no_leaves_recorded_rules_alone() {
-        let mut trust = TrustStore::new();
-        trust.distrust("src/fetched.json");
-        Answer::Decline.apply(&mut trust);
-
-        assert!(!trust.is_empty());
-        assert!(!trust.is_trusted("src/fetched.json"));
     }
 }

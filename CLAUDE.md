@@ -168,13 +168,17 @@ docs/trust.md, which is the specification.
 integrity of the data in it. Untrusted data landing in a trusted tree *must* mark that path
 untrusted, or reading it back would launder it. Always the exact path, never the parent.
 
-That invariant does not end with the process. `bua-tui`'s `trust_file` writes the map to
-`~/.bua/trust`, one file per working directory, because a path marked untrusted on Tuesday and
-read back as trusted on Wednesday is the same laundering with a restart in place of a round trip.
-The startup answer applies **on top of** the stored map rather than replacing it, so a fresh yes
-cannot un-say a rule a write recorded. A map that will not parse must never send the user back to
-the question: nothing is trusted for that session instead, since the rules that would have
-overridden the answer are the ones that were lost.
+The map belongs to a **session**, not to a directory. It is written into the session record, and a
+fresh session always asks, whatever any earlier session in that directory answered. Never make the
+startup answer sticky per directory: the question grants standing permission, and skipping it
+because someone said yes last week grants that permission on behalf of a user who was never asked.
+Resuming does not ask, and that is not an exception, since the map it restores is the one the
+resumed session's own user gave.
+
+So `reconcile_after_write`'s rules survive a resume but not a fresh start, and a file one session
+poisoned is read as trusted by the next session that vouches for the directory. That is a
+deliberate trade, made because the alternative was a directory that trusted itself. Do not
+"fix" it by reintroducing a per-directory map.
 
 ## Absent by design
 

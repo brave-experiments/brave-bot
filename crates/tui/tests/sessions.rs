@@ -10,7 +10,8 @@ use bua_core::capability::Capability;
 use bua_core::event::Event;
 use bua_core::label::Label;
 use bua_core::todo::{Item, List, Row, Status, rows};
-use bua_tui::sessions::{self, Handle};
+use bua_core::trust::TrustStore;
+use bua_tui::sessions::{self, Handle, Standing};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -55,6 +56,15 @@ fn a_plan() -> BTreeMap<usize, Vec<Row>> {
     )])
 }
 
+/// A map with both polarities, so the round trip is tested on the case that matters: a path a
+/// write marked untrusted inside a tree the user vouched for.
+fn a_trust_map() -> TrustStore {
+    let mut trust = TrustStore::new();
+    trust.trust(".");
+    trust.distrust("src/fetched.json");
+    trust
+}
+
 fn a_conversation() -> Conversation {
     let mut conversation = Conversation::new();
     conversation.push(Message::user("make a space invaders game"));
@@ -72,11 +82,14 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     let conversation = a_conversation();
     let mut handle = Handle::begin(&scratch.project);
     handle.save(
-        &conversation.snapshot(),
-        1,
-        1_200,
         "make a space invaders game",
-        &a_plan(),
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 1_200,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+        },
     );
     handle.append_audit(
         1,
@@ -135,11 +148,14 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
 
     // Saving again updates the record rather than adding a second one.
     handle.save(
-        &conversation.snapshot(),
-        2,
-        3_400,
         "make a space invaders game",
-        &a_plan(),
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 2,
+            tokens: 3_400,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+        },
     );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
 
@@ -157,11 +173,14 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
 
     let mut other = Handle::begin(&elsewhere);
     other.save(
-        &Conversation::new().snapshot(),
-        1,
-        0,
         "something else",
-        &BTreeMap::new(),
+        Standing {
+            conversation: &Conversation::new().snapshot(),
+            turns: 1,
+            tokens: 0,
+            todos: &BTreeMap::new(),
+            trust: &TrustStore::new(),
+        },
     );
     assert_eq!(sessions::list(&elsewhere).len(), 1);
     assert_eq!(sessions::list(&scratch.project).len(), 1);
@@ -169,7 +188,16 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     // Resuming continues the same session rather than starting a new one beside it.
     let record = sessions::load(&scratch.project, &listed[0].id).expect("the session loads");
     let mut resumed = Handle::resuming(&scratch.project, &record);
-    resumed.save(&conversation.snapshot(), 3, 5_600, "", &a_plan());
+    resumed.save(
+        "",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 3,
+            tokens: 5_600,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+        },
+    );
     let listed = sessions::list(&scratch.project);
     assert_eq!(listed.len(), 1, "resuming forked the session");
     assert_eq!(listed[0].title, "make a space invaders game");
@@ -198,6 +226,21 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     assert_eq!(recalled.todos, a_plan());
     assert_eq!(recalled.todos[&1][0].marker, "✓");
     assert_eq!(recalled.todos[&1][1].status, Status::Active);
+
+    // The trust map goes with the session, so picking it up carries the answer its own user gave
+    // and the rules its writes recorded. Both polarities, with the deeper one still winning.
+    let restored = record.trust_map().expect("the session recorded a map");
+    assert!(restored.is_trusted("src/main.rs"));
+    assert!(
+        !restored.is_trusted("src/fetched.json"),
+        "a path a write had distrusted came back trusted"
+    );
+
+    // A session that declined recorded that it declined, which is not the same as a record that
+    // predates the map. Both trust nothing; only the second is asked about again.
+    let declined = sessions::load(&elsewhere, &sessions::list(&elsewhere)[0].id).expect("loads");
+    let declined_map = declined.trust_map().expect("declining is still an answer");
+    assert!(declined_map.is_empty());
 
     // A record from a build that never wrote a plan is not a broken record.
     let plainer = sessions::load(&elsewhere, &sessions::list(&elsewhere)[0].id).expect("loads");

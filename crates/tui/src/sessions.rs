@@ -13,8 +13,9 @@
 //! was allowed to do and why. It is also read back on a resume, since a trail under the turns
 //! from this process and nothing under the earlier ones is a worse account than either.
 //!
-//! The trust map is not here. It belongs to the working directory rather than to a session, so
-//! two sessions in one checkout share it: see [`crate::trust_file`].
+//! The trust map is in the record too, and belongs there rather than to the directory: a map kept
+//! per directory would answer the startup question for a user who was never asked. A fresh session
+//! asks; a resumed one inherits what its own user answered.
 //!
 //! # What is written, and what is not
 //!
@@ -30,7 +31,9 @@
 
 use bua_agent::conversation::Snapshot;
 use bua_core::event::Event;
+use bua_core::label::Integrity;
 use bua_core::todo::{self, Item, List, Row, Status};
+use bua_core::trust::TrustStore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -70,9 +73,32 @@ pub struct Record {
     /// plan a turn set out with sits beneath what that turn produced.
     #[serde(default)]
     pub todos: BTreeMap<usize, Vec<StoredTask>>,
+    /// Which paths this session's user vouched for, and what its writes recorded since.
+    ///
+    /// Belongs to the session rather than to the directory, and that is the whole point. A map
+    /// kept per directory would answer the startup question on behalf of a user who was never
+    /// asked, which is trust assumed from silence. Resuming inherits it because the person
+    /// resuming is the person who gave it; a session started fresh in the same directory is
+    /// asked, and answers for itself.
+    ///
+    /// `None` for a record written before this was kept, which is asked about rather than read
+    /// as an empty map: nothing recorded is not the same as nothing trusted.
+    #[serde(default)]
+    pub trust: Option<Vec<StoredRule>>,
     /// The conversation, which is what resuming restores.
     pub conversation: Snapshot,
 }
+
+/// One trust rule as it is written down.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredRule {
+    pub path: String,
+    pub integrity: String,
+}
+
+/// The word for a trusted rule. Anything else reads as untrusted.
+const TRUSTED: &str = "trusted";
+const UNTRUSTED: &str = "untrusted";
 
 /// One task as it is written down.
 ///
@@ -95,6 +121,24 @@ impl StoredTask {
 }
 
 impl Record {
+    /// The trust map this session had, or `None` if it did not record one.
+    ///
+    /// An integrity this build does not recognise reads as untrusted, the safe direction, as
+    /// [`bua_agent::conversation::Snapshot`] already does for the context. A hand-edited or
+    /// newer-than-this-build record therefore resumes with less trust rather than more.
+    pub fn trust_map(&self) -> Option<TrustStore> {
+        let rules = self.trust.as_ref()?;
+        let mut trust = TrustStore::new();
+        for rule in rules {
+            if rule.integrity == TRUSTED {
+                trust.trust(&rule.path);
+            } else {
+                trust.distrust(&rule.path);
+            }
+        }
+        Some(trust)
+    }
+
     /// The task lists this session kept, shaped for a screen.
     ///
     /// A status this build does not recognise parses as outstanding work, which is
@@ -123,6 +167,19 @@ pub struct Summary {
     pub updated: u64,
     /// What the session takes up, record and audit together.
     pub bytes: u64,
+}
+
+/// What a session amounts to at the moment it is written down.
+///
+/// A value rather than a row of arguments, because everything a resume needs restored ends up
+/// here and the list was growing one parameter at a time.
+#[derive(Debug, Clone, Copy)]
+pub struct Standing<'a> {
+    pub conversation: &'a Snapshot,
+    pub turns: usize,
+    pub tokens: u64,
+    pub todos: &'a BTreeMap<usize, Vec<Row>>,
+    pub trust: &'a TrustStore,
 }
 
 /// A live session, holding where to write and what has been written.
@@ -170,14 +227,7 @@ impl Handle {
     /// Called after each turn rather than at the end, because the end may never come: a session
     /// that was killed, or whose machine slept and never woke, is exactly the one worth
     /// resuming.
-    pub fn save(
-        &mut self,
-        conversation: &Snapshot,
-        turns: usize,
-        tokens: u64,
-        first_prompt: &str,
-        todos: &BTreeMap<usize, Vec<Row>>,
-    ) {
+    pub fn save(&mut self, first_prompt: &str, standing: Standing<'_>) {
         if self.title.is_empty() {
             self.title = title_from(first_prompt);
         }
@@ -193,13 +243,28 @@ impl Handle {
             title: self.title.clone(),
             started: self.started,
             updated: now(),
-            turns,
-            tokens,
-            todos: todos
+            turns: standing.turns,
+            tokens: standing.tokens,
+            todos: standing
+                .todos
                 .iter()
                 .map(|(turn, rows)| (*turn, rows.iter().map(StoredTask::of).collect()))
                 .collect(),
-            conversation: conversation.clone(),
+            trust: Some(
+                standing
+                    .trust
+                    .rules()
+                    .map(|(path, integrity)| StoredRule {
+                        path: path.to_string(),
+                        integrity: match integrity {
+                            Integrity::Trusted => TRUSTED,
+                            Integrity::Untrusted => UNTRUSTED,
+                        }
+                        .to_string(),
+                    })
+                    .collect(),
+            ),
+            conversation: standing.conversation.clone(),
         };
 
         let Ok(body) = serde_json::to_vec_pretty(&record) else {
@@ -594,6 +659,82 @@ mod tests {
         assert_eq!(branch_of(&inside), Some("main".to_string()));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A record from before the map was kept must be asked about, not read as a map that trusts
+    /// nothing. The two look the same in the end and are answered differently: nothing recorded
+    /// is a question, and an empty map is an answer.
+    #[test]
+    fn a_record_that_predates_the_map_has_none_rather_than_an_empty_one() {
+        let older = serde_json::json!({
+            "id": "1-2",
+            "directory": "/tmp/x",
+            "title": "older",
+            "started": 1,
+            "updated": 1,
+            "conversation": {"messages": [], "context": "trusted"},
+        });
+        let record: Record = serde_json::from_value(older).expect("an older record still loads");
+        assert!(record.trust_map().is_none());
+    }
+
+    /// Whatever a record says that this build does not recognise, the answer is untrusted. A
+    /// hand edit or a newer build's word lands in the safe direction, as everything else does.
+    #[test]
+    fn an_unrecognised_integrity_in_a_record_reads_as_untrusted() {
+        for word in ["", "TRUSTED", "trusted-ish", "yes"] {
+            let mut record = a_record();
+            record.trust = Some(vec![StoredRule {
+                path: ".".to_string(),
+                integrity: word.to_string(),
+            }]);
+            let map = record.trust_map().expect("a map was recorded");
+            assert!(
+                !map.is_trusted("src/main.rs"),
+                "{word:?} was read as trusted"
+            );
+        }
+    }
+
+    /// The rule the whole map turns on has to survive being written down: a path a write marked
+    /// untrusted, inside a tree the user vouched for, stays untrusted when the session resumes.
+    #[test]
+    fn a_distrusted_path_inside_a_trusted_tree_survives_the_record() {
+        let mut record = a_record();
+        record.trust = Some(vec![
+            StoredRule {
+                path: String::new(),
+                integrity: "trusted".to_string(),
+            },
+            StoredRule {
+                path: "src/fetched.json".to_string(),
+                integrity: "untrusted".to_string(),
+            },
+        ]);
+
+        let map = record.trust_map().expect("a map was recorded");
+        assert!(map.is_trusted("src/main.rs"));
+        assert!(!map.is_trusted("src/fetched.json"));
+    }
+
+    fn a_record() -> Record {
+        Record {
+            id: "1-2".to_string(),
+            directory: "/tmp/x".to_string(),
+            branch: None,
+            title: "a session".to_string(),
+            started: 1,
+            updated: 1,
+            turns: 0,
+            tokens: 0,
+            todos: BTreeMap::new(),
+            trust: None,
+            conversation: Snapshot {
+                messages: Vec::new(),
+                context: "trusted".to_string(),
+                references: 0,
+            },
+        }
     }
 
     /// The ordinary case, which must cost no line: a session picked up where it was left.

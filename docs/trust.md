@@ -39,20 +39,22 @@ become a bypass for the gate it exists to support.
 Marking is always per file, never per directory: one untrusted file does not taint its
 siblings.
 
-## The map outlives the session
+## The map belongs to the session, not the directory
 
-The second row is worth nothing if the map is forgotten when you quit. A file recorded as
-untrusted on Tuesday and read back as trusted on Wednesday is the same laundering, taking a
-restart instead of a round trip. So the map is written to `~/.bua/trust`, one file per working
-directory, and the next session in that directory starts from it.
+**You are asked every time a session starts.** Whatever you or anyone else answered in this
+directory before makes no difference. The question grants standing permission, so a launch that
+skipped it because someone said yes last week would be granting that permission on behalf of a
+user who was never asked, and trust assumed from silence is not trust granted.
 
-That is also why the startup question is asked only once per directory. Having vouched for it
-is standing permission, and a session that asked again would be offering to overwrite the rules
-the last one recorded. It does not: an answer applies **on top of** the stored map, and the
-rules already there are more specific, so saying yes to a directory cannot un-say what a write
-recorded inside it.
+Resuming with `--resume` is the one case that does not ask. That is not an exception to the rule
+above: the map comes out of the record of the session you picked, so the answer being honoured is
+the one you gave that session. It carries the rules that session's writes recorded along with it,
+which is what stops a resumed turn reading back a file an earlier turn of the same session
+poisoned. A record from before maps were kept has none, and is asked about.
 
-A map that cannot be read is not a reason to ask again, since the rules that would have
-overridden the answer are exactly the ones that were lost. Nothing is trusted for that session
-and the session says so. Deleting the file is what asks again, and doing that is a decision you
-are making with your eyes open rather than one a corrupt file made for you.
+The consequence is worth stating plainly. A file that one session recorded as untrusted is **not**
+remembered by the next session started fresh in that directory: say yes to the directory and it is
+read as trusted again. Within a session, and across a resume of it, the second row of the table
+holds. Across a fresh start it does not, because a fresh start has no memory to hold it in. If a
+file holds content you do not trust, the answer is to say no to the directory, or to not leave it
+there.
