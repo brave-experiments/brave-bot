@@ -74,6 +74,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     handle.save(
         &conversation.snapshot(),
         1,
+        1_200,
         "make a space invaders game",
         &a_plan(),
     );
@@ -136,6 +137,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     handle.save(
         &conversation.snapshot(),
         2,
+        3_400,
         "make a space invaders game",
         &a_plan(),
     );
@@ -157,6 +159,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     other.save(
         &Conversation::new().snapshot(),
         1,
+        0,
         "something else",
         &BTreeMap::new(),
     );
@@ -166,7 +169,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     // Resuming continues the same session rather than starting a new one beside it.
     let record = sessions::load(&scratch.project, &listed[0].id).expect("the session loads");
     let mut resumed = Handle::resuming(&scratch.project, &record);
-    resumed.save(&conversation.snapshot(), 3, "", &a_plan());
+    resumed.save(&conversation.snapshot(), 3, 5_600, "", &a_plan());
     let listed = sessions::list(&scratch.project);
     assert_eq!(listed.len(), 1, "resuming forked the session");
     assert_eq!(listed[0].title, "make a space invaders game");
@@ -199,6 +202,11 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     // A record from a build that never wrote a plan is not a broken record.
     let plainer = sessions::load(&elsewhere, &sessions::list(&elsewhere)[0].id).expect("loads");
     assert!(plainer.todo_rows().is_empty());
+    assert_eq!(plainer.tokens, 0);
+
+    // What the session has spent comes back with it. The figure answers "what has this cost me",
+    // and starting it again at zero understated a session by everything it had already spent.
+    assert_eq!(record.tokens, 5_600, "the last save's total was not kept");
 
     // A record from a newer build, or one truncated by a full disk, costs its own line in the
     // list and nothing more: it is not a reason to be unable to show the rest.

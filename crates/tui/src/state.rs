@@ -255,6 +255,15 @@ impl Session {
         self.todos = rows;
     }
 
+    /// Take on what an earlier session spent.
+    ///
+    /// The counter answers "what has this cost me", and that answer does not become smaller
+    /// because the process restarted. Set rather than added to: this is a session being picked
+    /// up, not a second one being merged into it.
+    pub fn restore_spend(&mut self, tokens: u64) {
+        self.tokens = tokens;
+    }
+
     /// The task list each turn finished with, by turn number, for writing the session down.
     ///
     /// Read back off the transcript rather than kept in a second place, because the transcript is
@@ -1522,6 +1531,20 @@ mod tests {
                 .find(|entry| entry.text == "second reply")
                 .expect("the second reply");
             assert_eq!(second.todos, plan);
+        }
+
+        /// Starting the counter again at zero understated a resumed session by everything it had
+        /// already spent, which is the whole of what the figure is there to report.
+        #[test]
+        fn a_resumed_session_carries_on_counting_what_it_has_spent() {
+            let mut s = session();
+            s.restore_spend(4_200);
+            assert_eq!(s.tokens, 4_200);
+
+            s.type_char('a');
+            s.submit();
+            s.complete("reply", Vec::new(), 800);
+            assert_eq!(s.tokens, 5_000, "the turn's cost did not add to the total");
         }
 
         /// A trail for a turn the conversation does not have must not land on some other turn.

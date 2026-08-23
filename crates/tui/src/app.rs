@@ -335,6 +335,7 @@ fn event_loop(
             // than only for the turns this process ran.
             let recalled = crate::sessions::recall(workspace.root(), &record);
             session.replay(&conversation, &record.title, &recalled);
+            session.restore_spend(record.tokens);
             (conversation, handle)
         }
     };
@@ -404,6 +405,7 @@ fn event_loop(
                 stored.save(
                     &conversation.snapshot(),
                     session.turns,
+                    session.tokens,
                     &prompt,
                     &session.todos_by_turn(),
                 );

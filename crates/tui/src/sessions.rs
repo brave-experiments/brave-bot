@@ -52,6 +52,12 @@ pub struct Record {
     /// How many turns it has had, for a reader of the file.
     #[serde(default)]
     pub turns: usize,
+    /// What the session has spent, in tokens, across every turn it has had.
+    ///
+    /// The figure answers "what has this cost me", which is a question about the session rather
+    /// than about the process that happened to be running it.
+    #[serde(default)]
+    pub tokens: u64,
     /// The task list each turn worked to, by turn number.
     ///
     /// Kept per turn rather than as one list, because that is how the transcript shows it: the
@@ -162,6 +168,7 @@ impl Handle {
         &mut self,
         conversation: &Snapshot,
         turns: usize,
+        tokens: u64,
         first_prompt: &str,
         todos: &BTreeMap<usize, Vec<Row>>,
     ) {
@@ -181,6 +188,7 @@ impl Handle {
             started: self.started,
             updated: now(),
             turns,
+            tokens,
             todos: todos
                 .iter()
                 .map(|(turn, rows)| (*turn, rows.iter().map(StoredTask::of).collect()))
