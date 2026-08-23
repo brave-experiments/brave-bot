@@ -366,6 +366,30 @@ pub fn key_for(project: &Path) -> String {
     mangled
 }
 
+/// What to say about a session being picked up somewhere other than where it ran.
+///
+/// `None` when nothing moved, which is the ordinary case and should cost no line.
+///
+/// Worth saying at all because the transcript is about to be shown as though the work were still
+/// in front of the user, and half of it may no longer be: a session that was editing a feature
+/// branch, resumed on main, will be asked to carry on with changes that are not there. The record
+/// knew and said nothing, since [`Handle::resuming`] replaces the branch with the current one.
+pub fn branch_note(was: Option<&str>, now: Option<&str>) -> Option<String> {
+    if was == now {
+        return None;
+    }
+    Some(match (was, now) {
+        (Some(was), Some(now)) => format!("this session ran on {was}; this checkout is on {now}"),
+        (Some(was), None) => {
+            format!("this session ran on {was}; this checkout is not on a branch")
+        }
+        (None, Some(now)) => {
+            format!("this session ran on no branch; this checkout is on {now}")
+        }
+        (None, None) => unreachable!("equal cases returned above"),
+    })
+}
+
 /// The branch checked out in `directory`, where it is a git checkout at all.
 ///
 /// Read out of the files rather than by running git: it is one line, and this is a label on a
@@ -564,6 +588,35 @@ mod tests {
         assert_eq!(branch_of(&inside), Some("main".to_string()));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The ordinary case, which must cost no line: a session picked up where it was left.
+    #[test]
+    fn resuming_on_the_same_branch_is_not_worth_saying() {
+        assert_eq!(branch_note(Some("main"), Some("main")), None);
+        assert_eq!(branch_note(None, None), None);
+    }
+
+    /// A session that was editing a feature branch, resumed on main, is about to be asked to
+    /// carry on with changes that are not there. Both names go in the line, since which one is
+    /// wanted is the user's decision and they need to see both to make it.
+    #[test]
+    fn resuming_on_another_branch_says_which_one_it_ran_on() {
+        let note = branch_note(Some("feature-x"), Some("main")).expect("a note");
+        assert!(note.contains("feature-x"), "{note}");
+        assert!(note.contains("main"), "{note}");
+    }
+
+    /// A detached head has no name to print, and the move is still worth reporting: the branch
+    /// the work was on is not the thing checked out.
+    #[test]
+    fn moving_on_or_off_a_branch_is_still_a_move() {
+        let note = branch_note(Some("main"), None).expect("a note");
+        assert!(note.contains("main"), "{note}");
+        assert!(note.contains("not on a branch"), "{note}");
+
+        let note = branch_note(None, Some("main")).expect("a note");
+        assert!(note.contains("main"), "{note}");
     }
 
     /// A detached head is on no branch, and reporting the commit it happens to be on would put a

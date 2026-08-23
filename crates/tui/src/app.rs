@@ -336,6 +336,14 @@ fn event_loop(
             let recalled = crate::sessions::recall(workspace.root(), &record);
             session.replay(&conversation, &record.title, &recalled);
             session.restore_spend(record.tokens);
+            // Said after the transcript, so it reads as a caveat on what was just shown: the work
+            // it describes may not be in the tree the user is now looking at.
+            if let Some(note) = crate::sessions::branch_note(
+                record.branch.as_deref(),
+                crate::sessions::branch_of(workspace.root()).as_deref(),
+            ) {
+                session.note(note);
+            }
             (conversation, handle)
         }
     };
