@@ -168,6 +168,14 @@ docs/trust.md, which is the specification.
 integrity of the data in it. Untrusted data landing in a trusted tree *must* mark that path
 untrusted, or reading it back would launder it. Always the exact path, never the parent.
 
+That invariant does not end with the process. `bua-tui`'s `trust_file` writes the map to
+`~/.bua/trust`, one file per working directory, because a path marked untrusted on Tuesday and
+read back as trusted on Wednesday is the same laundering with a restart in place of a round trip.
+The startup answer applies **on top of** the stored map rather than replacing it, so a fresh yes
+cannot un-say a rule a write recorded. A map that will not parse must never send the user back to
+the question: nothing is trusted for that session instead, since the rules that would have
+overridden the answer are the ones that were lost.
+
 ## Absent by design
 
 A **shell** is excluded: a shell string is destination and payload at once, so there is no

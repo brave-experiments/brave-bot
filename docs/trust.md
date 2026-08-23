@@ -38,3 +38,21 @@ become a bypass for the gate it exists to support.
 
 Marking is always per file, never per directory: one untrusted file does not taint its
 siblings.
+
+## The map outlives the session
+
+The second row is worth nothing if the map is forgotten when you quit. A file recorded as
+untrusted on Tuesday and read back as trusted on Wednesday is the same laundering, taking a
+restart instead of a round trip. So the map is written to `~/.bua/trust`, one file per working
+directory, and the next session in that directory starts from it.
+
+That is also why the startup question is asked only once per directory. Having vouched for it
+is standing permission, and a session that asked again would be offering to overwrite the rules
+the last one recorded. It does not: an answer applies **on top of** the stored map, and the
+rules already there are more specific, so saying yes to a directory cannot un-say what a write
+recorded inside it.
+
+A map that cannot be read is not a reason to ask again, since the rules that would have
+overridden the answer are exactly the ones that were lost. Nothing is trusted for that session
+and the session says so. Deleting the file is what asks again, and doing that is a decision you
+are making with your eyes open rather than one a corrupt file made for you.

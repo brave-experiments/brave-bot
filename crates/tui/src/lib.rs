@@ -18,6 +18,7 @@ pub mod select;
 pub mod sessions;
 pub mod state;
 pub mod store;
+pub mod trust_file;
 pub mod trust_prompt;
 pub mod verbs;
 pub mod wrap;

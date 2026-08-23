@@ -336,14 +336,10 @@ fn event_loop(
         }
     };
 
-    // Asked once, before any turn: the answer decides whether ordinary work in this directory
-    // is interrupted for every write. Nothing is trusted unless the user says so.
-    let mut trust = crate::trust_prompt::ask(terminal, workspace.root());
-    if trust.is_empty() {
-        session.note("this directory is not trusted; every write will be shown to you");
-    } else {
-        session.note(format!("trusting {}", workspace.root().display()));
-    }
+    // Settled once, before any turn. Read back from disk where a previous session left one, so a
+    // path that session's writes marked untrusted is still untrusted here.
+    let mut trust = opening_trust(terminal, &mut session, workspace.root());
+    crate::trust_file::save(workspace.root(), &trust);
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
@@ -404,9 +400,48 @@ fn event_loop(
                 // woke. Best-effort, like everything else under ~/.bua.
                 stored.save(&conversation.snapshot(), session.turns, &prompt);
                 stored.append_audit(session.turns, &events);
+                // The map too, and for a stronger reason than convenience: a turn that wrote
+                // untrusted bytes into a trusted tree recorded that, and a session ending before
+                // it reached disk would let the next one read those bytes back as trusted.
+                crate::trust_file::save(workspace.root(), &trust);
             }
             // Only reachable while a turn runs, which is handled inside `run_turn_animated`.
             Action::Cancel | Action::None | Action::Redraw => {}
+        }
+    }
+}
+
+/// The trust map the session starts with, asking only where nobody has answered yet.
+///
+/// Three ways this can go, and the one that matters is the third. A map that will not parse is
+/// not a reason to ask again: the question grants trust, and the rules that would have overridden
+/// it are exactly the ones that could not be read. So an unreadable map trusts nothing and says
+/// so, which the user fixes by deleting the file rather than by pressing y.
+fn opening_trust(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    root: &std::path::Path,
+) -> TrustStore {
+    match crate::trust_file::opening(crate::trust_file::load(root)) {
+        crate::trust_file::Opening::Refuse => {
+            session.note("the recorded trust map could not be read, so nothing is trusted");
+            if let Some(path) = crate::trust_file::path(root) {
+                session.note(format!("delete {} to be asked again", path.display()));
+            }
+            TrustStore::new()
+        }
+        crate::trust_file::Opening::Remembered(trust) => {
+            session.note(format!("trusting {} (remembered)", root.display()));
+            trust
+        }
+        crate::trust_file::Opening::Ask(mut trust) => {
+            crate::trust_prompt::ask(terminal, root).apply(&mut trust);
+            if trust.is_trusted(".") {
+                session.note(format!("trusting {}", root.display()));
+            } else {
+                session.note("this directory is not trusted; every write will be shown to you");
+            }
+            trust
         }
     }
 }
