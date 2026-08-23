@@ -798,6 +798,42 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             .expect("taint over the inputs can only degrade the reply's label")
     }
 
+    /// Release a quarantined value into the workspace it came from.
+    ///
+    /// [`Policy::declassify`] answers "may this leave?", which is why it insists the slot was
+    /// named in a plan fixed before anything was observed. This answers a different question.
+    /// The bytes are not leaving: they were read out of the workspace and they are going back
+    /// into it, inside the boundary the user established by opening the directory, so the
+    /// confidentiality that stops content crossing a bridge is not in play here.
+    ///
+    /// Integrity is untouched, and integrity is what decides what the write means afterwards:
+    /// [`Policy::reconcile_after_write`] records a path holding untrusted bytes as untrusted,
+    /// so nothing written this way can be read back as trusted.
+    ///
+    /// Never for a network body, a command line, or a message to someone. Those leave, and
+    /// [`Policy::before_action`] refusing them is exactly right.
+    pub fn declassify_into_workspace(
+        &mut self,
+        slot: &SlotId,
+        path: &str,
+        value: Labelled<String>,
+    ) -> Labelled<String> {
+        let from = value.label();
+        let to = Label::new(from.integrity, crate::label::Confidentiality::Public);
+        self.sink.emit(Event::Declassified {
+            slot: slot.clone(),
+            from,
+            to,
+            reason: "written back inside the workspace it came from",
+        });
+        self.allow(
+            "declassify",
+            format!("{slot} released into {path}, which is inside the workspace"),
+        );
+        let (text, _) = value.into_parts_for_decoding();
+        Labelled::new(text, to)
+    }
+
     /// Whether writing data of `contents` integrity to `path` must be shown to a person.
     ///
     /// A prompt asks for one thing only: **may this path stop being trusted?** That is the
@@ -986,6 +1022,38 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             format!("{tool}.{field} proposed by the model, confined and non-destructive"),
         );
         Ok(Labelled::trusted(value))
+    }
+
+    /// Accept a reference the planner named, as the source of content for an effect.
+    ///
+    /// A slot id is routing: it decides which bytes an effect carries. It is nonetheless
+    /// promotable here, for a different reason than a read path is. A reference name is not
+    /// content and never was: the driver minted it, handed it to the planner, and the only
+    /// names that resolve to anything are ones the driver itself created. So the worst a wrong
+    /// name can do is carry the wrong quarantined bytes to a destination that still had to be
+    /// endorsed on its own. It cannot invent a destination, and it cannot conjure content that
+    /// was never observed.
+    ///
+    /// Private names are refused for the same reason [`Policy::promote_confined_read`] refuses
+    /// them: a name derived from the user's data would be that data, in a field that gets read.
+    pub fn accept_reference(
+        &mut self,
+        tool: &str,
+        field: &str,
+        named: &Labelled<String>,
+    ) -> Gated<SlotId> {
+        let label = named.label();
+        if !label.is_public() {
+            return Err(self.deny(
+                "reference",
+                Principle::Confinement,
+                format!("{tool}.{field} cannot name a reference from {label}"),
+            ));
+        }
+
+        let (name, _) = named.clone().into_parts_for_decoding();
+        self.allow("reference", format!("{tool}.{field} names {name}"));
+        Ok(SlotId::new(name))
     }
 
     /// Authorise releasing a value for display to the user.
@@ -2382,6 +2450,63 @@ mod tests {
             assert!(
                 !trail.contains("fetched from the web"),
                 "the trail carried the content: {trail}"
+            );
+        }
+
+        /// A name the driver never handed out resolves to nothing, so accepting one costs a
+        /// refusal at the next gate rather than an effect.
+        #[test]
+        fn a_reference_name_must_be_public() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "write it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            let named = Labelled::new("ref:0".to_string(), Label::untrusted_public());
+            assert_eq!(
+                policy
+                    .accept_reference("write_file", "contents_ref", &named)
+                    .expect("a public name"),
+                SlotId::new("ref:0")
+            );
+
+            let private = Labelled::new("ref:1".to_string(), Label::untrusted_private());
+            assert!(
+                policy
+                    .accept_reference("write_file", "contents_ref", &private)
+                    .is_err()
+            );
+        }
+
+        /// Writing back into the workspace lowers confidentiality, because nothing is leaving,
+        /// and leaves integrity alone, because that is what says the file is untrusted
+        /// afterwards.
+        #[test]
+        fn a_write_back_into_the_workspace_lowers_only_confidentiality() {
+            let mut sink = RecordingSink::new();
+            let released = {
+                let mut policy = Policy::begin(
+                    routing_with("path", "src/config.py"),
+                    ReleasePlan::new(),
+                    all_capabilities(),
+                    &mut sink,
+                )
+                .unwrap();
+
+                let content = Labelled::new("body".to_string(), Label::untrusted_private());
+                policy.declassify_into_workspace(&SlotId::new("ref:2"), "src/config.py", content)
+            };
+
+            assert_eq!(released.label(), Label::untrusted_public());
+            assert!(
+                sink.events().iter().any(
+                    |e| matches!(e, Event::Declassified { slot, .. } if slot.as_str() == "ref:2")
+                ),
+                "the release was not recorded"
             );
         }
     }
