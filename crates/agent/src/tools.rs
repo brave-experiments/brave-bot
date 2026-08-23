@@ -16,13 +16,21 @@
 //! Locating the passage is an ordinary confined read; only the write that follows needs the
 //! endorsement. Where the passage is ambiguous the edit is refused rather than guessed,
 //! since a guess would mutate bytes that were never shown to anyone.
+//!
+//! `spawn_processor` is how work happens in a file the planner may not read. It hands
+//! quarantined content to a model that holds nothing: no tools, no memory, no second round,
+//! and one quarantined output. What comes back is a reference like any other, and
+//! `write_file`'s `contents_ref` is what puts it in a file. Between them, the planner can
+//! change a file it never saw and the driver can write bytes it never opened.
 
 use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use crate::diff::Diff;
+use crate::processor::{self, Chat};
 use crate::report::{Activity, Reporter};
-use bua_aichat::protocol::{Tool, ToolCall};
+use bua_aichat::protocol::{Tool, ToolCall, Usage};
 use bua_core::event::Sink;
 use bua_core::policy::Policy;
+use bua_core::slot::SlotStore;
 use bua_core::todo::{self, Item, List, Status};
 use bua_core::value::Labelled;
 use serde_json::{Value, json};
@@ -84,7 +92,8 @@ pub fn available() -> Vec<Tool> {
         ),
         Tool::function(
             "write_file",
-            "Write a UTF-8 text file in the workspace. The user must approve each write \
+            "Write a UTF-8 text file in the workspace. Give either the contents or a reference \
+             to quarantined content that becomes the contents. The user must approve each write \
              before it happens, so explain what you are changing.",
             json!({
                 "type": "object",
@@ -95,10 +104,18 @@ pub fn available() -> Vec<Tool> {
                     },
                     "contents": {
                         "type": "string",
-                        "description": "The complete new contents of the file."
+                        "description": "The complete new contents of the file. Give this or \
+                                        contents_ref, never both."
+                    },
+                    "contents_ref": {
+                        "type": "string",
+                        "description": "A reference whose quarantined content becomes the whole \
+                                        file, e.g. \"ref:2\". This is how to write out something \
+                                        you were never shown, such as what spawn_processor \
+                                        produced."
                     }
                 },
-                "required": ["path", "contents"]
+                "required": ["path"]
             }),
         ),
         Tool::function(
@@ -192,6 +209,36 @@ pub fn available() -> Vec<Tool> {
                 "required": ["pattern"]
             }),
         ),
+        Tool::function(
+            "spawn_processor",
+            "Transform quarantined content you were not shown. Spawns an isolated model with no \
+             tools, no memory and nothing to read but the references you name; it follows your \
+             instruction and its output is quarantined as a new reference. This is how to \
+             change a file you cannot see: read the file, process the reference it gave you \
+             into the contents you want, then pass the new reference to write_file as \
+             contents_ref. You are not shown its output either, and nobody reads it before \
+             it is written, so say exactly what it must be.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "reads": {
+                        "type": "array",
+                        "description": "The references to give it, e.g. [\"ref:0\"]. At least one.",
+                        "items": {"type": "string"}
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "What to do with them and what to produce. Say that you \
+                                        want the whole document back where you do, since \
+                                        anything shorter is what gets written out. Include the \
+                                        file's name and language if that matters, because the \
+                                        processor knows nothing but what you tell it and what \
+                                        the references hold."
+                    }
+                },
+                "required": ["reads", "instruction"]
+            }),
+        ),
     ]
 }
 
@@ -209,6 +256,25 @@ pub struct Output {
     pub text: Labelled<String>,
     /// Where the content came from, for the reference the planner is shown instead.
     pub origin: String,
+    /// What the call spent at the model, where it called one.
+    ///
+    /// Zero for every tool but the processor. A turn that reported only its own rounds would
+    /// understate what it cost by however much its processors wrote.
+    pub usage: Usage,
+}
+
+/// Everything a tool works with that is not the policy.
+///
+/// Three things, and the second two are new because of the processor: the quarantine, so a
+/// reference the planner names resolves to something, and the model, so an isolated processor
+/// has somewhere to run. Bundled rather than passed one by one because dispatch would otherwise
+/// take seven arguments to give two tools what they need.
+pub struct Tools<'a> {
+    pub workspace: &'a Workspace,
+    /// Where quarantined content lives, by the names the planner was given for it.
+    pub slots: &'a mut SlotStore,
+    /// The model an isolated processor runs on.
+    pub chat: Chat<'a>,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -224,6 +290,8 @@ struct Produced {
     failed: bool,
     /// The change a write made, for showing under the line it belongs to.
     changes: Vec<crate::diff::Change>,
+    /// What the tool spent at the model. Only a processor spends anything.
+    usage: Usage,
 }
 
 impl Produced {
@@ -235,11 +303,17 @@ impl Produced {
             note: note.into(),
             failed: false,
             changes: Vec::new(),
+            usage: Usage::default(),
         }
     }
 
     fn with_changes(mut self, changes: Vec<crate::diff::Change>) -> Self {
         self.changes = changes;
+        self
+    }
+
+    fn costing(mut self, usage: Usage) -> Self {
+        self.usage = usage;
         self
     }
 }
@@ -257,6 +331,7 @@ fn verb_for(tool: &str) -> &'static str {
         "write_file" => "Write",
         "edit_file" => "Update",
         "todo_write" => "Plan",
+        "spawn_processor" => "Process",
         _ => "Tool",
     }
 }
@@ -267,6 +342,13 @@ fn verb_for(tool: &str) -> &'static str {
 /// own name. The value is the model's word for it, released to a screen and nowhere else: it
 /// goes on a line a person reads and is never compared, matched, or routed anywhere.
 fn target_of<S: Sink>(policy: &mut Policy<'_, S>, tool: &str, arguments: &Value) -> String {
+    // A processor has no single argument naming a target: what it is working on is the set of
+    // references it was given, which are names the driver handed out and can read back.
+    if tool == "spawn_processor" {
+        let proof = policy.authorise_display_release("what a tool is working on");
+        return references_in(arguments).declassify(&proof);
+    }
+
     let key = match tool {
         "read_file" | "write_file" | "edit_file" => "path",
         "list_files" => "directory",
@@ -373,7 +455,7 @@ fn change_report(
 /// about a compile error.
 pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     policy: &mut Policy<'_, S>,
-    workspace: &Workspace,
+    tools: &mut Tools<'_>,
     confirmer: &mut C,
     reporter: &mut R,
     call: &ToolCall,
@@ -393,6 +475,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 tool: name,
                 text: produced.text,
                 origin: produced.origin,
+                usage: produced.usage,
             };
         }
     };
@@ -403,12 +486,13 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     reporter.tool_started(Activity::running(verb, target.clone()));
 
     let produced = match name.as_str() {
-        "read_file" => read_file(policy, workspace, &arguments),
-        "list_files" => list_files(policy, workspace, &arguments),
-        "search" => search(policy, workspace, &arguments),
-        "write_file" => write_file(policy, workspace, confirmer, &arguments),
-        "edit_file" => edit_file(policy, workspace, confirmer, &arguments),
+        "read_file" => read_file(policy, tools.workspace, &arguments),
+        "list_files" => list_files(policy, tools.workspace, &arguments),
+        "search" => search(policy, tools.workspace, &arguments),
+        "write_file" => write_file(policy, tools, confirmer, &arguments),
+        "edit_file" => edit_file(policy, tools.workspace, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, &arguments),
+        "spawn_processor" => spawn_processor(policy, tools, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
 
@@ -424,6 +508,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         tool: name,
         text: produced.text,
         origin: produced.origin,
+        usage: produced.usage,
     }
 }
 
@@ -439,6 +524,7 @@ fn problem(text: impl Into<String>) -> Produced {
         note: text,
         failed: true,
         changes: Vec::new(),
+        usage: Usage::default(),
     }
 }
 
@@ -454,6 +540,20 @@ fn argument(arguments: &Value, key: &str) -> Option<Labelled<String>> {
         raw,
         bua_core::label::Label::untrusted_public(),
     ))
+}
+
+/// The reference names in a `reads` argument, as one line.
+///
+/// Wrapped like every other argument: what the planner asked for is model output, and the
+/// driver reads it only where a gate says so. Entries that are not strings are left out here
+/// and refused where the call is actually made.
+fn references_in(arguments: &Value) -> Labelled<String> {
+    let names: Vec<&str> = arguments
+        .get("reads")
+        .and_then(Value::as_array)
+        .map(|entries| entries.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    Labelled::new(names.join(", "), bua_core::label::Label::untrusted_public())
 }
 
 fn read_file<S: Sink>(
@@ -592,6 +692,29 @@ fn list_files<S: Sink>(
     }
 }
 
+/// Resolve a reference into the bytes a write will carry.
+///
+/// Three steps, each one a gate. The name is accepted as a reference rather than read as
+/// content; the kernel resolves it, refusing a name that points at nothing; and what comes back
+/// is released for a write that stays inside the workspace. The bytes are wrapped throughout, so
+/// nothing here can look at what it is about to write.
+fn quarantined_body<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    slots: &SlotStore,
+    named: &Labelled<String>,
+    path: &str,
+) -> Result<Labelled<String>, String> {
+    let slot = policy
+        .accept_reference("write_file", "contents_ref", named)
+        .map_err(|denial| format!("refused: {denial}"))?;
+
+    let content = policy
+        .resolve("write_file", &slot, slots)
+        .map_err(|denial| format!("refused: {denial}"))?;
+
+    Ok(policy.declassify_into_workspace(&slot, path, content))
+}
+
 /// Write a file, after a person approves it.
 ///
 /// The order matters: the user sees the exact path and body *before* any grant exists, and
@@ -599,24 +722,49 @@ fn list_files<S: Sink>(
 /// value that could still change.
 fn write_file<S: Sink, C: Confirmer>(
     policy: &mut Policy<'_, S>,
-    workspace: &Workspace,
+    tools: &mut Tools<'_>,
     confirmer: &mut C,
     arguments: &Value,
 ) -> Produced {
+    let workspace = tools.workspace;
     let Some(path) = argument(arguments, "path") else {
         return problem("error: 'path' is required and must be a string");
-    };
-    let Some(contents) = argument(arguments, "contents") else {
-        return problem("error: 'contents' is required and must be a string");
     };
 
     // The path is routing, so naming a destination from it is not a content decision.
     let proposed_path = path.clone().into_parts_for_decoding().0;
 
-    // The body is the model's words. Its integrity is that of the context the model was
-    // working from, which the kernel tracked: nothing here upgrades anything.
-    let (raw_body, _) = contents.into_parts_for_decoding();
-    let body = policy.label_model_output("write_file", raw_body);
+    let written = argument(arguments, "contents");
+    let named = argument(arguments, "contents_ref");
+
+    // Two sources would leave the driver deciding which one was meant, and they say different
+    // things about what lands in the file. Neither is a decision taken from content: both
+    // arguments are the planner's, and this only reports which of them are present.
+    let body = match (written, named) {
+        (Some(_), Some(_)) => {
+            return problem(
+                "error: give 'contents' or 'contents_ref', not both. Use contents_ref alone \
+                 when the file is to hold quarantined content.",
+            );
+        }
+        (None, None) => {
+            return problem("error: one of 'contents' or 'contents_ref' is required");
+        }
+        // The body is the model's words. Its integrity is that of the context the model was
+        // working from, which the kernel tracked: nothing here upgrades anything.
+        (Some(contents), None) => {
+            let (raw_body, _) = contents.into_parts_for_decoding();
+            policy.label_model_output("write_file", raw_body)
+        }
+        // Quarantined content, going where the planner said without the planner or the driver
+        // having read a byte of it. The user still sees it, which is what an approval is.
+        (None, Some(reference)) => {
+            match quarantined_body(policy, tools.slots, &reference, &proposed_path) {
+                Ok(body) => body,
+                Err(refusal) => return problem(refusal),
+            }
+        }
+    };
     let body_label = body.label();
 
     // Released for display only, and released whether or not anyone is asked: the reviewer sees
@@ -858,6 +1006,71 @@ fn todo_write<S: Sink, R: Reporter>(
     Produced::new(summary, "", note)
 }
 
+/// Hand quarantined content to an isolated model and quarantine what comes back.
+///
+/// The tool that makes an untrusted workspace workable. Everything the planner cannot read, a
+/// processor can, and everything a processor produces the planner still cannot read: what comes
+/// back is a reference, exactly as a read of an untrusted file is.
+///
+/// Nothing here decides anything from content. The references are names the driver handed out,
+/// the instruction is the planner's, and the label on the result is computed by the kernel from
+/// the inputs before the processor runs.
+fn spawn_processor<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    arguments: &Value,
+) -> Produced {
+    let Some(instruction) = argument(arguments, "instruction") else {
+        return problem("error: 'instruction' is required and must be a string");
+    };
+    let Some(entries) = arguments.get("reads").and_then(Value::as_array) else {
+        return problem(
+            "error: 'reads' is required and must be an array of reference names, e.g. \
+             [\"ref:0\"]",
+        );
+    };
+
+    let mut reads = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(name) = entry.as_str() else {
+            return problem(
+                "error: every entry in 'reads' must be a reference name, e.g. \"ref:0\"",
+            );
+        };
+        let named = Labelled::new(name.to_string(), bua_core::label::Label::untrusted_public());
+        match policy.accept_reference("spawn_processor", "reads", &named) {
+            Ok(slot) => reads.push(slot),
+            Err(denial) => return problem(format!("refused: {denial}")),
+        }
+    }
+
+    // Named for the audit trail from the slots it reads, which are the driver's own names for
+    // things. Two processors reading the same references in one turn share a name, and that is
+    // the honest description of them.
+    let origin = {
+        let proof = policy.authorise_display_release("which references a processor was given");
+        format!(
+            "processor over {}",
+            references_in(arguments).declassify(&proof)
+        )
+    };
+
+    let spec = match policy.before_processor(&origin, &reads, &instruction, tools.slots) {
+        Ok(spec) => spec,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
+    match processor::run(policy, &mut tools.chat, tools.slots, &spec) {
+        Ok(done) => {
+            let note = note_for(policy, "spawn_processor", &done.text, |text: String| {
+                tally(text.lines().count(), "line", "lines")
+            });
+            Produced::new(done.text, origin, note).costing(done.usage)
+        }
+        Err(error) => problem(format!("error: {error}")),
+    }
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -940,7 +1153,8 @@ mod tests {
                 "write_file",
                 "edit_file",
                 "todo_write",
-                "search"
+                "search",
+                "spawn_processor"
             ]
         );
     }

@@ -59,6 +59,18 @@ To change part of an existing file, prefer edit_file over write_file: the user r
 diff rather than a whole body. Read the file first so the text you replace matches exactly, \
 and include enough surrounding lines to identify it uniquely.
 
+Some content is quarantined. Instead of the text you are given a reference such as ref:0, with \
+where it came from and how big it is, and nothing will ever show you what is in it: not another \
+read, not a search, not asking. edit_file does not work on a quarantined file either, since \
+matching a passage would mean reading it. To change one, call spawn_processor with the \
+reference and an instruction saying exactly what the new contents must be, then call write_file \
+with contents_ref set to the reference that comes back. Ask for the complete file in your \
+instruction, because whatever the processor produces is what gets written.
+
+What a processor produces is quarantined too, so you will not be shown that either. One call \
+does the work: do not run a processor again hoping to be told what it said, and never write a \
+file from a guess about what a quarantined one contains.
+
 When the work takes several steps, call todo_write to record the steps, then call it again as \
 each one finishes so the user can watch progress. Send the whole list every time, keeping \
 finished tasks in it marked completed, and keep exactly one task in_progress while work \
@@ -360,10 +372,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         .as_deref()
         .and_then(crate::ImportedSubscription::discover);
 
-    let mut client = AichatClient::new(config, egress);
-    if let Some(subscription) = subscription.as_mut() {
-        client = client.with_subscription(subscription);
-    }
     let offered = tools::available();
 
     let mut steps = 0;
@@ -395,18 +403,27 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // number going backwards with no explanation reads as a bug. Decided from the attempt
         // number and the count, both of the driver's own making.
         let mut showing = round;
-        let completion = client.complete_streaming(&mut policy, &request, |progress| {
-            let phase = if progress.attempt > 1 && progress.output_tokens == 0 {
-                Phase::Reconnecting
-            } else {
-                round
-            };
-            if phase != showing {
-                showing = phase;
-                reporter.phase(phase);
+        // The client lives for one round rather than for the turn, so that a processor spawned
+        // later in the round can present the same subscription. A credential is single-use and
+        // whichever call comes next asks for its own.
+        let completion = {
+            let mut client = AichatClient::new(config, egress);
+            if let Some(subscription) = subscription.as_mut() {
+                client = client.with_subscription(subscription);
             }
-            reporter.output_tokens(written_before + progress.output_tokens);
-        })?;
+            client.complete_streaming(&mut policy, &request, |progress| {
+                let phase = if progress.attempt > 1 && progress.output_tokens == 0 {
+                    Phase::Reconnecting
+                } else {
+                    round
+                };
+                if phase != showing {
+                    showing = phase;
+                    reporter.phase(phase);
+                }
+                reporter.output_tokens(written_before + progress.output_tokens);
+            })?
+        };
         tokens += completion.usage.total();
         output_tokens += completion.usage.completion_tokens;
 
@@ -487,7 +504,28 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 return Err(TurnError::Cancelled);
             }
 
-            let output = tools::dispatch(&mut policy, workspace, confirmer, reporter, call);
+            let output = tools::dispatch(
+                &mut policy,
+                &mut tools::Tools {
+                    workspace,
+                    slots: conversation.quarantine(),
+                    chat: crate::processor::Chat {
+                        config,
+                        egress,
+                        subscription: subscription
+                            .as_mut()
+                            .map(|s| s as &mut dyn bua_aichat::Subscription),
+                    },
+                },
+                confirmer,
+                reporter,
+                call,
+            );
+            // A processor is a model call of its own, so what it spent belongs in the turn's
+            // total. Left out, a turn that did most of its work in processors would report
+            // having cost almost nothing.
+            tokens += output.usage.total();
+            output_tokens += output.usage.completion_tokens;
             // As with a context file: what the turn has seen belongs to the conversation the
             // moment it sees it, not once the turn happens to end well.
             conversation.observed(policy.context_integrity());
