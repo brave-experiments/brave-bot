@@ -179,8 +179,9 @@ pub enum Said {
 /// The **quarantine** is not stored. Untrusted content would then be sitting in a file, to be
 /// read back and relabelled from what that file says, and a label that survives a round trip
 /// through an editable file is not a label. A resumed conversation therefore holds references
-/// that no longer name anything, which costs nothing today and is the honest failure: a name
-/// with nothing behind it, rather than bytes with a label nobody checked.
+/// that no longer name anything, which is the honest failure: a name with nothing behind it,
+/// rather than bytes with a label nobody checked. [`Conversation::restored`] says so rather than
+/// leaving the planner to find out by being refused.
 ///
 /// The **reference counter** goes with them so a resumed session cannot hand out a name an
 /// earlier message already used.
@@ -205,9 +206,20 @@ const UNTRUSTED: &str = "untrusted";
 
 impl Conversation {
     /// The conversation as it can be written down.
+    ///
+    /// The note [`Conversation::restored`] adds is left out. It is something a resume produces
+    /// rather than part of the exchange, and writing it down would stack another copy on every
+    /// resume while the one already there named a shorter list than the session had by then.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            messages: self.messages.clone(),
+            messages: self
+                .messages
+                .iter()
+                .filter(|message| {
+                    !(message.role == Role::User && message.content.starts_with(RESUMED_PREFIX))
+                })
+                .cloned()
+                .collect(),
             context: match self.context {
                 Integrity::Trusted => TRUSTED.to_string(),
                 Integrity::Untrusted => UNTRUSTED.to_string(),
@@ -221,9 +233,20 @@ impl Conversation {
     /// The quarantine starts empty, since a snapshot has none: see [`Snapshot`]. Anything but
     /// the word for trusted is read as untrusted, so a truncated, hand-edited or
     /// newer-than-this-build file resumes with less trust rather than more.
+    ///
+    /// A conversation that had been handed references is told they are dead. The names are still
+    /// in the transcript in front of the planner, and nothing in it says they stopped naming
+    /// anything, so without this the first thing a resumed session does with quarantined content
+    /// is spend a call finding out. Saying so is cheap and needs no content: the note is written
+    /// here, from a counter the kernel kept, and holds no byte of what was quarantined.
     pub fn restored(snapshot: Snapshot) -> Self {
+        let mut messages = snapshot.messages;
+        if let Some(note) = dead_references(snapshot.references) {
+            messages.push(Message::user(note));
+        }
+
         Self {
-            messages: snapshot.messages,
+            messages,
             quarantine: SlotStore::new(),
             references: snapshot.references,
             context: if snapshot.context == TRUSTED {
@@ -254,6 +277,9 @@ impl Conversation {
             .iter()
             .filter_map(|message| match message.role {
                 Role::User if message.content.starts_with(TOOL_RESULT_PREFIX) => None,
+                // Addressed to the planner, not said by anyone. Drawn as a prompt it would look
+                // like something the user typed and never did.
+                Role::User if message.content.starts_with(RESUMED_PREFIX) => None,
                 Role::User => Some(Said::User(message.content.clone())),
                 Role::Assistant if message.tool_calls.is_some() => None,
                 Role::Assistant if message.content.trim().is_empty() => None,
@@ -269,6 +295,29 @@ impl Conversation {
 /// Public because an interface replaying a conversation has to tell one from a prompt, and a
 /// literal repeated in two crates is a literal that will disagree with itself.
 pub const TOOL_RESULT_PREFIX: &str = "Result of ";
+
+/// How the note about a resume begins, so a transcript can tell it from something a person said.
+pub const RESUMED_PREFIX: &str = "This session was resumed.";
+
+/// What to tell the planner about the references it was handed before the resume.
+///
+/// `None` when the session never quarantined anything, since a note about references nobody was
+/// given is noise in the context of every resumed session that never read an untrusted file.
+///
+/// The counter is the whole of the input, and a counter is not content: it says how many names
+/// were handed out, never what was behind any of them.
+fn dead_references(references: usize) -> Option<String> {
+    let names = match references {
+        0 => return None,
+        1 => "ref:0".to_string(),
+        n => format!("ref:0 to ref:{}", n - 1),
+    };
+    Some(format!(
+        "{RESUMED_PREFIX} The quarantined content behind {names} was not kept, so those \
+         references no longer name anything and using one will be refused. Read a file again to \
+         be given a fresh reference to it."
+    ))
+}
 
 #[cfg(test)]
 mod tests {
@@ -369,8 +418,8 @@ mod tests {
         let _ = conversation.next_reference();
 
         let restored = Conversation::restored(conversation.snapshot());
-        assert_eq!(restored.len(), 2);
         assert_eq!(restored.messages()[0].content, "what is 2 + 2?");
+        assert_eq!(restored.messages()[1].content, "four");
         assert_eq!(restored.context(), Integrity::Trusted);
         // The counter continues rather than starting over, or a resumed session would hand out
         // a name an earlier message already used.
@@ -378,6 +427,88 @@ mod tests {
             Conversation::restored(conversation.snapshot()).next_reference(),
             conversation.next_reference()
         );
+    }
+
+    /// The quarantine does not survive, so every reference the planner holds is a name for
+    /// nothing. Nothing in the transcript says so, which is what left a resumed session to find
+    /// out by asking for content that no longer exists.
+    #[test]
+    fn a_resumed_conversation_is_told_its_references_are_dead() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("summarise notes.md"));
+        let _ = conversation.next_reference();
+        let _ = conversation.next_reference();
+        let _ = conversation.next_reference();
+
+        let restored = Conversation::restored(conversation.snapshot());
+        let note = &restored.messages().last().expect("a note").content;
+        assert!(note.contains("ref:0"), "{note}");
+        assert!(note.contains("ref:2"), "{note}");
+        assert!(
+            !note.contains("ref:3"),
+            "a name that was never handed out: {note}"
+        );
+    }
+
+    /// One reference is named rather than described as a range, since "ref:0 to ref:0" is a way
+    /// of writing one name that invites a reader to look for two.
+    #[test]
+    fn a_single_dead_reference_is_named_on_its_own() {
+        let mut conversation = Conversation::new();
+        let _ = conversation.next_reference();
+
+        let restored = Conversation::restored(conversation.snapshot());
+        let note = &restored.messages().last().expect("a note").content;
+        assert!(note.contains("ref:0"), "{note}");
+        assert_eq!(
+            note.matches("ref:").count(),
+            1,
+            "one reference was described as a range: {note}"
+        );
+    }
+
+    /// A session that never quarantined anything gets no note. It would be in the context of
+    /// every resumed session, saying nothing about anything.
+    #[test]
+    fn a_conversation_that_was_handed_no_references_is_told_nothing() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("what is 2 + 2?"));
+        conversation.push(Message::assistant("four"));
+
+        let restored = Conversation::restored(conversation.snapshot());
+        assert_eq!(restored.len(), 2, "a note appeared with nothing to say");
+    }
+
+    /// The note is for the planner. Drawn in a transcript it would read as a prompt the user
+    /// never typed, in a session they are resuming precisely to see what was said.
+    #[test]
+    fn the_note_is_not_shown_as_something_the_user_said() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("summarise notes.md"));
+        let _ = conversation.next_reference();
+
+        let restored = Conversation::restored(conversation.snapshot());
+        assert_eq!(
+            restored.recounted(),
+            vec![Said::User("summarise notes.md".to_string())]
+        );
+    }
+
+    /// Restoring twice must not stack notes, which is what would happen if the note were saved
+    /// with the messages and then added again on the way back in.
+    #[test]
+    fn resuming_a_resumed_session_does_not_repeat_the_note() {
+        let mut conversation = Conversation::new();
+        let _ = conversation.next_reference();
+
+        let once = Conversation::restored(conversation.snapshot());
+        let twice = Conversation::restored(once.snapshot());
+        let notes = twice
+            .messages()
+            .iter()
+            .filter(|message| message.content.starts_with(RESUMED_PREFIX))
+            .count();
+        assert_eq!(notes, 1, "the note was added again on top of itself");
     }
 
     /// Integrity is the one thing here that must never come back better than it went in, and a
