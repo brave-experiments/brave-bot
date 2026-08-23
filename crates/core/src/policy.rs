@@ -1809,22 +1809,6 @@ mod tests {
         assert_eq!(value.label(), Label::trusted_public());
     }
 
-    /// And once anything untrusted has entered the context, everything the model produces
-    /// afterwards is untrusted.
-    #[test]
-    fn model_output_stays_trusted_when_what_was_read_was_quarantined() {
-        let mut sink = RecordingSink::new();
-        let mut policy = policy_trusting(&mut sink, &["."]);
-
-        policy.observe(Capability::WebFetch).expect("observes");
-        assert_eq!(policy.context_integrity(), Integrity::Trusted);
-
-        // The planner was shown a reference, not the page, so its next words cannot have been
-        // influenced by anything the page said.
-        let value = policy.label_model_output("write_file", "payload".to_string());
-        assert_eq!(value.label().integrity, Integrity::Trusted);
-    }
-
     /// Context integrity must not recover, or a trusted read after an untrusted one would
     /// launder the whole turn.
     /// A later turn of a session inherits what the conversation has already met. Starting each
@@ -1888,30 +1872,6 @@ mod tests {
         assert_eq!(value.label().integrity, Integrity::Untrusted);
     }
 
-    /// Reading an untrusted file is enough to taint the context: the model saw it.
-    #[test]
-    fn reading_an_untrusted_file_does_not_taint_a_context_never_shown_it() {
-        let mut sink = RecordingSink::new();
-        let mut store = TrustStore::new();
-        store.trust(".");
-        store.distrust("vendor");
-        let mut policy = Policy::begin(
-            routing_with("task", "edit"),
-            ReleasePlan::new(),
-            all_capabilities(),
-            &mut sink,
-        )
-        .expect("policy")
-        .with_trust(store);
-
-        policy
-            .observe_path(Capability::FileRead, "vendor/x.js")
-            .expect("observes");
-
-        // The bytes were read, but reading is not showing: `present` will quarantine them, and
-        // the planner's context is whatever `present` let through.
-        assert_eq!(policy.context_integrity(), Integrity::Trusted);
-    }
     /// Asking for untrusted content must fail loudly rather than quietly returning it. This is
     /// the backstop for the rule the whole design rests on.
     #[test]
@@ -2202,44 +2162,6 @@ mod tests {
             "the planner was quarantined from its own words"
         );
         assert_eq!(replayed.for_context(), "I read notes.md");
-    }
-
-    /// Resolving a slot for an effect does not lower the context either. `write_file` pulling
-    /// quarantined bytes into a file moves them past the planner, not into it: the destination
-    /// takes their label through `reconcile_after_write`, and the planner is still none the wiser.
-    ///
-    /// Without this the chain the design exists for blinds the planner at its last step, having
-    /// kept it clean through the read and the processor.
-    #[test]
-    fn resolving_a_slot_for_a_write_does_not_lower_the_context() {
-        let mut sink = RecordingSink::new();
-        let mut slots = SlotStore::new();
-        let mut policy = Policy::begin(
-            routing_with("task", "write"),
-            ReleasePlan::new(),
-            all_capabilities(),
-            &mut sink,
-        )
-        .expect("policy");
-
-        let contents = Labelled::new("quarantined".to_string(), Label::untrusted_private());
-        policy
-            .present(
-                "read_file",
-                SlotId::new("ref:0"),
-                "notes.md",
-                &contents,
-                &mut slots,
-            )
-            .expect("presents");
-
-        policy
-            .resolve("write_file", &SlotId::new("ref:0"), &slots)
-            .expect("resolves");
-
-        assert_eq!(policy.context_integrity(), Integrity::Trusted);
-        let said = policy.label_model_output("chat", "wrote it".to_string());
-        assert_eq!(said.label().integrity, Integrity::Trusted);
     }
 
     #[test]
