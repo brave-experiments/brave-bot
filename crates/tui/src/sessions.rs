@@ -25,6 +25,7 @@
 use bua_agent::conversation::Snapshot;
 use bua_core::event::Event;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -216,6 +217,38 @@ pub fn list(project: &Path) -> Vec<Summary> {
 pub fn load(project: &Path, id: &str) -> Option<Record> {
     let directory = project_directory(project)?;
     read(&directory.join(format!("{id}.json")))
+}
+
+/// What each turn of a stored session left in the audit, by turn number.
+///
+/// The record holds the conversation and the audit holds what the gates decided, so a resumed
+/// session that reads only the record shows a transcript with the trail missing under every turn
+/// that happened before the resume. The data was never lost; it was simply never read back.
+///
+/// Empty for a session with no audit file, which is the ordinary case for one that never ran a
+/// turn. A line that will not parse is skipped rather than reported: a trail is read to answer a
+/// question about what happened, and one unreadable line should cost its own line and no more.
+pub fn audit_of(project: &Path, id: &str) -> BTreeMap<usize, Vec<crate::audit::TrailLine>> {
+    let mut trails: BTreeMap<usize, Vec<crate::audit::TrailLine>> = BTreeMap::new();
+    let Some(directory) = project_directory(project) else {
+        return trails;
+    };
+    let Ok(contents) = std::fs::read_to_string(directory.join(format!("{id}.audit.jsonl"))) else {
+        return trails;
+    };
+
+    for line in contents.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(turn) = entry["turn"].as_u64() else {
+            continue;
+        };
+        if let Some(recorded) = crate::audit::recalled(&entry["event"]) {
+            trails.entry(turn as usize).or_default().push(recorded);
+        }
+    }
+    trails
 }
 
 /// Where a project's sessions live.

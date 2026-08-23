@@ -4,6 +4,7 @@
 //! display; it does **not** hold a policy. Each turn constructs its own, which is what
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
+use crate::audit::TrailLine;
 use bua_agent::report::{Activity, Phase};
 use bua_core::event::Event;
 use std::time::{Duration, Instant};
@@ -26,8 +27,12 @@ pub enum Speaker {
 pub struct Entry {
     pub speaker: Speaker,
     pub text: String,
-    /// Gate events recorded while producing this entry, shown when the trail is visible.
-    pub trail: Vec<Event>,
+    /// The audit trail recorded while producing this entry, shown when the trail is visible.
+    ///
+    /// Already in the words it is drawn in, because an entry replayed from a stored session has
+    /// no events behind it: what the audit file holds is a record of what a gate decided, not the
+    /// decision. See [`crate::audit::TrailLine`].
+    pub trail: Vec<TrailLine>,
     /// The task list as it stood when this entry was made, if the turn kept one.
     ///
     /// Held on the entry rather than in one place so the scrollback shows what each turn did.
@@ -51,7 +56,7 @@ impl Entry {
         }
     }
 
-    pub fn assistant(text: impl Into<String>, trail: Vec<Event>) -> Self {
+    pub fn assistant(text: impl Into<String>, trail: Vec<TrailLine>) -> Self {
         Self {
             speaker: Speaker::Assistant,
             text: text.into(),
@@ -315,10 +320,26 @@ impl Session {
     /// What the model can see is what the user is shown, which is the honest thing to draw: a
     /// resumed session that displayed more than it had would invite the user to refer to
     /// something the model has no record of.
-    pub fn replay(&mut self, conversation: &bua_agent::Conversation, title: &str) {
+    ///
+    /// `trails` is what each turn's gates decided, by turn number, from
+    /// [`crate::sessions::audit_of`]. A turn's trail goes on the last thing it said, which is
+    /// where a live turn puts it, so Ctrl-T over a resumed session shows the same shape as over
+    /// one that is still running. A turn that said nothing keeps its trail on the prompt, since
+    /// the alternative is dropping the record of a turn that was refused before it could answer.
+    pub fn replay(
+        &mut self,
+        conversation: &bua_agent::Conversation,
+        title: &str,
+        trails: &std::collections::BTreeMap<usize, Vec<TrailLine>>,
+    ) {
         use bua_agent::conversation::Said;
 
         self.note(format!("resumed session: {title}"));
+
+        // The last entry of each turn, which is where that turn's trail goes. Filled as the
+        // transcript is built and applied afterwards, so a turn that spoke several times ends up
+        // with one trail on its last line rather than a copy under each of them.
+        let mut last_of_turn: std::collections::BTreeMap<usize, usize> = Default::default();
         for said in conversation.recounted() {
             match said {
                 Said::User(text) => {
@@ -326,6 +347,17 @@ impl Session {
                     self.transcript.push(Entry::user(text));
                 }
                 Said::Assistant(text) => self.transcript.push(Entry::assistant(text, Vec::new())),
+            }
+            // An assistant entry before any prompt belongs to no turn, so there is nothing whose
+            // trail it could be carrying.
+            if self.turns > 0 {
+                last_of_turn.insert(self.turns, self.transcript.len() - 1);
+            }
+        }
+
+        for (turn, index) in last_of_turn {
+            if let Some(trail) = trails.get(&turn) {
+                self.transcript[index].trail = trail.clone();
             }
         }
     }
@@ -484,6 +516,7 @@ impl Session {
 
     /// Record a completed turn, and what it cost.
     pub fn complete(&mut self, reply: impl Into<String>, trail: Vec<Event>, tokens: u64) {
+        let trail = trail.iter().map(crate::audit::as_line).collect();
         // The list moves onto the entry rather than being dropped, so what the turn set out to do
         // stays in the scrollback next to the answer it produced.
         let todos = std::mem::take(&mut self.todos);
@@ -1269,6 +1302,132 @@ mod tests {
 
             assert_eq!(s.input, "never mind");
             assert!(s.transcript.is_empty());
+        }
+    }
+
+    mod replay {
+        use super::*;
+        use bua_agent::Conversation;
+        use bua_aichat::protocol::Message;
+        use std::collections::BTreeMap;
+
+        fn line(text: &str) -> TrailLine {
+            TrailLine {
+                text: text.to_string(),
+                blocked: false,
+            }
+        }
+
+        fn trails(entries: &[(usize, &str)]) -> BTreeMap<usize, Vec<TrailLine>> {
+            let mut map: BTreeMap<usize, Vec<TrailLine>> = BTreeMap::new();
+            for (turn, text) in entries {
+                map.entry(*turn).or_default().push(line(text));
+            }
+            map
+        }
+
+        fn resumed(messages: Vec<Message>, trails: &BTreeMap<usize, Vec<TrailLine>>) -> Vec<Entry> {
+            let mut conversation = Conversation::new();
+            for message in messages {
+                conversation.push(message);
+            }
+            let mut s = session();
+            s.replay(&conversation, "a title", trails);
+            s.transcript
+        }
+
+        /// The audit is written beside the record, so what a gate decided two sessions ago is on
+        /// disk. Not reading it back is what left Ctrl-T blank over everything before the resume.
+        #[test]
+        fn a_resumed_turn_shows_the_trail_it_left() {
+            let transcript = resumed(
+                vec![
+                    Message::user("first"),
+                    Message::assistant("first reply"),
+                    Message::user("second"),
+                    Message::assistant("second reply"),
+                ],
+                &trails(&[(1, "capability: file_read granted"), (2, "action: refused")]),
+            );
+
+            let first = transcript
+                .iter()
+                .find(|entry| entry.text == "first reply")
+                .expect("the first reply");
+            assert_eq!(first.trail, vec![line("capability: file_read granted")]);
+
+            let second = transcript
+                .iter()
+                .find(|entry| entry.text == "second reply")
+                .expect("the second reply");
+            assert_eq!(second.trail, vec![line("action: refused")]);
+        }
+
+        /// A turn's trail belongs to the turn, not to each thing it said. Repeating it under
+        /// every narration would make one file read look like four.
+        #[test]
+        fn a_turn_that_spoke_several_times_shows_its_trail_once() {
+            let transcript = resumed(
+                vec![
+                    Message::user("do it"),
+                    Message::assistant("looking"),
+                    Message::assistant("still looking"),
+                    Message::assistant("done"),
+                ],
+                &trails(&[(1, "capability: file_read granted")]),
+            );
+
+            let with_trail: Vec<&str> = transcript
+                .iter()
+                .filter(|entry| !entry.trail.is_empty())
+                .map(|entry| entry.text.as_str())
+                .collect();
+            assert_eq!(with_trail, vec!["done"], "the trail was repeated");
+        }
+
+        /// A turn that was refused before it answered still had gates decide things, and that
+        /// record is the one a user most wants. It goes on the prompt, since there is nothing
+        /// else of that turn to hang it on.
+        #[test]
+        fn a_turn_that_never_answered_keeps_its_trail_on_the_prompt() {
+            let transcript = resumed(
+                vec![Message::user("do the thing")],
+                &trails(&[(1, "action: refused")]),
+            );
+
+            let prompt = transcript
+                .iter()
+                .find(|entry| entry.text == "do the thing")
+                .expect("the prompt");
+            assert_eq!(prompt.trail, vec![line("action: refused")]);
+        }
+
+        /// A session resumed with no audit beside it is not an error: it draws the transcript it
+        /// has, with nothing under it.
+        #[test]
+        fn a_session_with_no_audit_replays_without_one() {
+            let transcript = resumed(
+                vec![Message::user("hello"), Message::assistant("hi")],
+                &BTreeMap::new(),
+            );
+            assert!(transcript.iter().all(|entry| entry.trail.is_empty()));
+        }
+
+        /// A trail for a turn the conversation does not have must not land on some other turn.
+        /// An audit can outlast the record it belongs to, since the two are separate files.
+        #[test]
+        fn a_trail_for_a_turn_that_is_not_there_lands_nowhere() {
+            let transcript = resumed(
+                vec![Message::user("only turn"), Message::assistant("only reply")],
+                &trails(&[(1, "capability: file_read granted"), (7, "action: refused")]),
+            );
+
+            assert!(
+                transcript
+                    .iter()
+                    .all(|entry| entry.trail != vec![line("action: refused")]),
+                "a trail from a turn that is not in the transcript was drawn on one that is"
+            );
         }
     }
 

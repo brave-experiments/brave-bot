@@ -11,13 +11,13 @@
 
 use bua_agent::diff::Change;
 use bua_agent::report::Activity;
-use bua_core::event::{Event, Role};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
+use crate::audit::TrailLine;
 use crate::markdown;
 use crate::state::{Session, Speaker, Status};
 use crate::wrap;
@@ -236,8 +236,8 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
         lines.extend(todo_lines(&entry.todos));
 
         if session.show_trail && !entry.trail.is_empty() {
-            for event in &entry.trail {
-                lines.push(trail_line(event));
+            for recorded in &entry.trail {
+                lines.push(trail_line(recorded));
             }
         }
 
@@ -267,51 +267,21 @@ fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
     );
 }
 
-/// Render one audit event.
+/// Render one line of the audit trail.
 ///
 /// Refusals are coloured differently from passes: a blocked gate is the most important
-/// thing on the screen when it happens.
-fn trail_line(event: &Event) -> Line<'static> {
-    let bad = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-
-    match event {
-        Event::GatePassed { gate, detail } => Line::from(Span::styled(
-            format!("  {DETAIL_MARKER} {gate}: {detail}"),
-            dim(),
-        )),
-        Event::GateBlocked { gate, reason, .. } => Line::from(Span::styled(
-            format!("  {DETAIL_MARKER} {gate}: {reason}"),
-            bad,
-        )),
-        Event::Observed { capability, label } => Line::from(Span::styled(
-            format!("  {DETAIL_MARKER} {capability} produced {label}"),
-            dim(),
-        )),
-        Event::SlotWritten { slot, label } => Line::from(Span::styled(
-            format!("  {DETAIL_MARKER} slot {slot} at {label}"),
-            dim(),
-        )),
-        Event::Declassified { slot, from, to, .. } => Line::from(Span::styled(
-            format!("  {DETAIL_MARKER} released {slot} {from} → {to}"),
-            dim(),
-        )),
-        Event::ActionField {
-            tool,
-            field,
-            role,
-            label,
-            allowed,
-        } => {
-            let role = match role {
-                Role::Routing => "routing",
-                Role::Content => "content",
-            };
-            Line::from(Span::styled(
-                format!("  {DETAIL_MARKER} {tool}.{field} [{role}] {label}"),
-                if *allowed { dim() } else { bad },
-            ))
-        }
-    }
+/// thing on the screen when it happens. The wording is settled in [`crate::audit`], so a line
+/// that happened in this session and one read back off disk are drawn the same way.
+fn trail_line(recorded: &TrailLine) -> Line<'static> {
+    let style = if recorded.blocked {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        dim()
+    };
+    Line::from(Span::styled(
+        format!("  {DETAIL_MARKER} {}", recorded.text),
+        style,
+    ))
 }
 
 /// Columns available for input text inside the box.
@@ -469,6 +439,7 @@ fn tally(n: usize, one: &str, many: &str) -> String {
 mod tests {
     use super::*;
     use bua_core::capability::Capability;
+    use bua_core::event::Event;
     use bua_core::label::Label;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

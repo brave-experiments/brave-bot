@@ -330,8 +330,11 @@ fn event_loop(
             let handle = crate::sessions::Handle::resuming(workspace.root(), &record);
             let conversation = Conversation::restored(record.conversation.clone());
             // Shown before anything else, because a session that silently continues something
-            // the user cannot see is one they will contradict without meaning to.
-            session.replay(&conversation, &record.title);
+            // the user cannot see is one they will contradict without meaning to. The trail comes
+            // out of the audit beside the record, so Ctrl-T answers for the whole session rather
+            // than only for the turns this process ran.
+            let trails = crate::sessions::audit_of(workspace.root(), &record.id);
+            session.replay(&conversation, &record.title, &trails);
             (conversation, handle)
         }
     };
@@ -620,7 +623,7 @@ fn fold_outcome(
         Err(error) => {
             // The trail is kept on failure too: a refusal is exactly when a user wants
             // to see what happened.
-            let trail = sink.events().to_vec();
+            let trail = sink.events().iter().map(crate::audit::as_line).collect();
             session.fail(format!("error: {error}"));
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;

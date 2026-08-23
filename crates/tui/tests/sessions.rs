@@ -143,6 +143,23 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     assert_eq!(listed.len(), 1, "resuming forked the session");
     assert_eq!(listed[0].title, "make a space invaders game");
 
+    // The audit comes back grouped by the turn that left it, which is what puts a trail under
+    // the right entry when the transcript is replayed. Reading the record alone left every turn
+    // from before the resume with nothing beneath it, though the events were on disk all along.
+    let trails = sessions::audit_of(&scratch.project, &listed[0].id);
+    assert_eq!(trails.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(trails[&1].len(), 2);
+    assert!(
+        trails[&1].iter().any(|line| line.blocked),
+        "the refusal came back as an ordinary line"
+    );
+    assert!(trails[&1][0].text.contains("(U,priv)"), "{:?}", trails[&1]);
+    assert_eq!(trails[&2].len(), 1);
+    assert!(!trails[&2][0].blocked);
+
+    // A session that never ran a turn has no audit, which is not a failure to report.
+    assert!(sessions::audit_of(&elsewhere, "no-such-session").is_empty());
+
     // A record from a newer build, or one truncated by a full disk, costs its own line in the
     // list and nothing more: it is not a reason to be unable to show the rest.
     let directory = sessions::project_directory(&scratch.project).expect("a directory");
@@ -150,4 +167,18 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     let listed = sessions::list(&scratch.project);
     assert_eq!(listed.len(), 1, "an unreadable record hid the readable one");
     assert_eq!(listed[0].title, "make a space invaders game");
+
+    // A half-written last line is what a killed session leaves. It costs itself and no more: the
+    // turns before it still have their trail.
+    let audit_path = directory.join(format!("{}.audit.jsonl", listed[0].id));
+    let mut contents = std::fs::read_to_string(&audit_path).expect("the audit");
+    contents.push_str("{\"at\":1,\"turn\":3,\"eve");
+    std::fs::write(&audit_path, contents).expect("write");
+
+    let trails = sessions::audit_of(&scratch.project, &listed[0].id);
+    assert_eq!(
+        trails.keys().copied().collect::<Vec<_>>(),
+        vec![1, 2],
+        "a truncated line took the readable ones with it"
+    );
 }
