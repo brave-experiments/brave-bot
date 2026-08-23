@@ -8,6 +8,8 @@ pub mod confirm;
 pub mod conversation;
 pub mod diff;
 pub mod glob;
+pub mod manifest;
+pub mod mode;
 pub mod processor;
 pub mod replace;
 pub mod report;
@@ -18,6 +20,7 @@ pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RefuseWrites, WriteRequest};
 pub use conversation::Conversation;
+pub use mode::Mode;
 pub use processor::ProcessorError;
 pub use report::{Activity, IgnoreReports, Reporter};
 pub use subscription::ImportedSubscription;

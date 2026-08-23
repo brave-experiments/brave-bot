@@ -86,6 +86,14 @@ pub enum TurnError {
     Workspace(WorkspaceError),
     /// The model call failed or was refused.
     Chat(bua_aichat::ChatError),
+    /// A manifest run stopped before finishing.
+    ///
+    /// Carries everything the run produced before it stopped, because a run that failed is the
+    /// one somebody needs to look at. See [`crate::manifest::Attempt`].
+    Manifest {
+        attempt: Box<crate::manifest::Attempt>,
+        detail: String,
+    },
 }
 
 impl fmt::Display for TurnError {
@@ -95,6 +103,8 @@ impl fmt::Display for TurnError {
             Self::Precommit(detail) => write!(f, "{detail}"),
             Self::Workspace(e) => write!(f, "{e}"),
             Self::Chat(e) => write!(f, "{e}"),
+            // The attempt is inspected, not printed here: a one-line error stays one line.
+            Self::Manifest { detail, .. } => write!(f, "{detail}"),
         }
     }
 }
@@ -142,6 +152,14 @@ impl Task {
 pub struct Outcome {
     /// The assistant's reply. Untrusted, since it is model output.
     pub reply: Labelled<String>,
+    /// What the run produced on its way to this outcome, where it had a planning phase.
+    ///
+    /// `None` for a turn, which has no plan separate from the conversation: the turn loop
+    /// decides one step at a time and the record of that is the exchange itself. A manifest run
+    /// has artefacts nothing else holds, and they are what a person reads when a run does the
+    /// wrong thing. The same value comes back on failure, inside
+    /// [`TurnError::Manifest`]. See [`crate::manifest::Attempt`].
+    pub attempt: Option<crate::manifest::Attempt>,
     /// The model the server reported using.
     pub model: String,
     /// How many tool-calling rounds the turn took.
@@ -161,7 +179,7 @@ pub struct Outcome {
     /// the history each round re-sends, while this tracks how much the model actually produced.
     pub output_tokens: u64,
     /// The reply, released for display while the policy was still open.
-    display: String,
+    pub(crate) display: String,
 }
 
 impl Outcome {
@@ -606,6 +624,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
     Ok(Outcome {
         reply: completion.content,
+        attempt: None,
         model: completion.model,
         steps,
         trust,
