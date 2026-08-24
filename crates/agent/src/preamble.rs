@@ -116,10 +116,21 @@ fn read_workspace_agents<S: Sink>(
         return Ok(None);
     };
 
+    // Asked of the label before it is asked of the gate. The gate is still the only thing that
+    // hands bytes over, and it still runs whenever this proceeds; what this avoids is recording a
+    // denial for a condition that is ordinary and expected. Without it every turn in an untrusted
+    // directory holding an AGENTS.md would report that a gate refused something, which is how a
+    // warning stops being read.
+    if !contents.label().is_trusted() {
+        return Err(Notice::from_message(format!(
+            "{AGENTS_FILE} was not loaded: this directory is not trusted"
+        )));
+    }
+
     match policy.read_trusted_content("preamble", &contents) {
         Ok(text) => Ok(Some(text)),
         Err(_) => Err(Notice::from_message(format!(
-            "{AGENTS_FILE} was not loaded: this directory is not trusted"
+            "{AGENTS_FILE} was not loaded: it is not trusted"
         ))),
     }
 }

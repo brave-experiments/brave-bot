@@ -320,9 +320,9 @@ fn discover_workspace<S: Sink>(
     // for could be named to read like an instruction, and it would reach the user's screen in a
     // notice even if it never reached the prompt.
     if !policy.trust().is_trusted(WORKSPACE_SKILLS) {
+        let (count, verb) = counted(names.len());
         notices.push(Notice::new(format!(
-            "{} skills in {WORKSPACE_SKILLS} were not loaded: this directory is not trusted",
-            names.len()
+            "{count} in {WORKSPACE_SKILLS} {verb} not loaded: this directory is not trusted"
         )));
         return;
     }
@@ -333,10 +333,19 @@ fn discover_workspace<S: Sink>(
         let Ok(contents) = workspace.read(policy, &Labelled::trusted(relative.clone())) else {
             continue;
         };
-        let Ok(text) = policy.read_trusted_content("skills", &contents) else {
+
+        // Asked of the label before it is asked of the gate. The gate is still the only thing
+        // that hands bytes over, and it still runs whenever this proceeds; what this avoids is
+        // recording a denial for a condition that is ordinary and expected, which would mark
+        // every turn in an untrusted directory as one where something was refused and teach the
+        // user to ignore the times it means something.
+        if !contents.label().is_trusted() {
             notices.push(Notice::new(format!(
                 "{relative} was not loaded: it is not trusted"
             )));
+            continue;
+        }
+        let Ok(text) = policy.read_trusted_content("skills", &contents) else {
             continue;
         };
 
@@ -356,6 +365,16 @@ fn discover_workspace<S: Sink>(
                 "{relative} was skipped: it needs a name and a description in its frontmatter"
             ))),
         }
+    }
+}
+
+/// A count of skills, and the verb that agrees with it, so a line does not read "1 skills were"
+/// or "1 skill were".
+fn counted(n: usize) -> (String, &'static str) {
+    if n == 1 {
+        ("1 skill".to_string(), "was")
+    } else {
+        (format!("{n} skills"), "were")
     }
 }
 

@@ -4383,3 +4383,78 @@ fn the_preamble_is_not_stored_in_the_conversation() {
         "the second turn carried more than one copy: {second}"
     );
 }
+
+/// An untrusted working directory is an ordinary condition, not an anomaly, and a turn in one
+/// reports no refusal. Marking every such turn as one where a gate refused something is how a
+/// warning stops being read by the time it means something.
+#[test]
+fn an_untrusted_directory_is_not_reported_as_a_refusal() {
+    let scratch = Scratch::new("agents-clean");
+    std::fs::write(scratch.path.join("AGENTS.md"), "some conventions").unwrap();
+    write_project_skill(&scratch.path, "local", "local", "a body");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("do the work"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut bua_agent::IgnoreReports,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        outcome.clean,
+        "leaving out untrusted standing instructions was reported as a gate refusing something"
+    );
+    assert_eq!(
+        outcome.notices.len(),
+        2,
+        "expected one notice each for AGENTS.md and the skills: {:?}",
+        outcome.notices
+    );
+}
+
+/// A count reads as a count. "1 skills" is the kind of detail that makes a tool feel unfinished.
+#[test]
+fn a_single_skipped_skill_is_counted_in_the_singular() {
+    let scratch = Scratch::new("agents-singular");
+    write_project_skill(&scratch.path, "only", "only", "a body");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("do the work"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut bua_agent::IgnoreReports,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.starts_with("1 skill in") && n.contains("was not loaded")),
+        "the count does not read naturally: {:?}",
+        outcome.notices
+    );
+}
