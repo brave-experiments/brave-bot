@@ -303,6 +303,11 @@ fn print_trace(sink: &RecordingSink) {
                 println!("  observe {capability} produced {label}")
             }
             Event::SlotWritten { slot, label } => println!("  slot    {slot} at {label}"),
+            Event::SlotDeferred {
+                slot,
+                label,
+                origin,
+            } => println!("  defer   {slot} holds {origin}, unread, at {label}"),
             Event::Declassified { slot, from, to, .. } => {
                 println!("  release {slot} {from} -> {to}")
             }

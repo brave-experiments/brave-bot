@@ -3182,6 +3182,64 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
     }
 }
 
+/// Reading a file the planner may not see costs nothing but the reference.
+///
+/// The point of the whole arrangement is that nobody reads quarantined content until something
+/// can use it, and most of what a planner reads it never uses: it is looking for the file that
+/// matters. A reference names the file, and the file stays shut.
+#[test]
+fn a_file_the_planner_may_not_see_is_reserved_rather_than_opened() {
+    let scratch = Scratch::new("deferred-read");
+    std::fs::write(scratch.path.join("notes.md"), "some notes\nand more\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"notes.md"}"#),
+        reply_with("there is a file called notes.md"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is here?");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let reserved = sink
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::SlotDeferred { origin, .. } if origin == "notes.md"));
+    assert!(reserved, "the read did not reserve a slot for the file");
+
+    let read = sink
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::SlotWritten { .. }));
+    assert!(!read, "the file was opened although nothing needed the bytes");
+
+    // What the planner is told: a name, a size, and that nothing has looked.
+    let bodies: Vec<String> = received.try_iter().collect();
+    let reference = bodies
+        .iter()
+        .find(|body| body.contains("[ref:1]"))
+        .expect("the planner was given a reference");
+    assert!(
+        reference.contains("not read yet"),
+        "the planner was not told the file is unread: {reference}"
+    );
+    assert!(
+        !reference.contains("some notes"),
+        "quarantined content reached the planner: {reference}"
+    );
+}
+
 /// A processor's output is quarantined exactly as a file read is, so the planner is told its
 /// shape and given a name for it, and nothing else.
 #[test]

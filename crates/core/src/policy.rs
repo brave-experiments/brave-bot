@@ -688,6 +688,134 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         ))
     }
 
+    /// Whether a read of `path` would be quarantined rather than shown.
+    ///
+    /// A question about the trust map, keyed by a path the planner named, which is routing and
+    /// therefore already trusted. Nothing about any file's contents reaches this decision, so a
+    /// caller branching on it is not branching on untrusted data: it is asking the same question
+    /// [`Policy::present`] will ask afterwards, early enough to avoid reading a file nobody will
+    /// be shown.
+    pub fn read_is_quarantined(&self, path: &str) -> bool {
+        !matches!(self.trust.integrity_of(path), Some(Integrity::Trusted))
+    }
+
+    /// Record that a slot will hold a file, without reading it.
+    ///
+    /// The planner gets the reference it would have got anyway, and the file stays on disk until
+    /// something needs the bytes. The gates that matter run here rather than later: the path is
+    /// checked as routing, the capability is checked, and the label is fixed from the trust map
+    /// now, so a promise made about a trusted path cannot be filled from an untrusted one.
+    ///
+    /// Only for content that would be quarantined. Deferring what the planner is allowed to see
+    /// would mean not showing it, which is a different decision and not this one to make.
+    pub fn defer(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        path: &Labelled<String>,
+        bytes: usize,
+        slots: &mut crate::slot::SlotStore,
+    ) -> Gated<crate::reference::Reference> {
+        self.before_capability(Capability::FileRead)?;
+        self.before_action(tool, "path", Role::Routing, path)?;
+
+        // Safe to read: `before_action` just proved this is (T,pub).
+        let proof = Declassification::authorise("a path checked as routing");
+        let path = path.clone().declassify(&proof);
+
+        let base = Capability::FileRead.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: "'file_read' produces no observation to label".to_string(),
+        })?;
+        let integrity = match self.trust.integrity_of(&path) {
+            Some(Integrity::Trusted) => Integrity::Trusted,
+            _ => Integrity::Untrusted,
+        };
+        let label = Label::new(integrity, base.confidentiality);
+
+        slots
+            .defer(slot.clone(), &path, label)
+            .map_err(|e| Denial {
+                principle: Principle::Confinement,
+                message: format!("{tool}: could not reserve {slot} for {path}: {e}"),
+            })?;
+
+        self.sink.emit(Event::SlotDeferred {
+            slot: slot.clone(),
+            label,
+            origin: path.clone(),
+        });
+        self.allow(
+            "defer",
+            format!(
+                "{tool}: {path} will be {label} and is not shown to the planner, so {slot} \
+                 holds the file and nothing reads it yet"
+            ),
+        );
+        Ok(crate::reference::Reference::unread(
+            slot, path, bytes, label,
+        ))
+    }
+
+    /// Read the file a deferred slot was promised, at the label the trust map gives it now.
+    ///
+    /// The bytes come from `read`, because the kernel does no I/O of its own, and they are
+    /// labelled here, because the caller supplying them does not get to say what they are. The
+    /// label is the meet of what was recorded and what the map says at this moment: a path that
+    /// stopped being trusted between the promise and the reading is read as untrusted, which is
+    /// the only direction a label ever moves.
+    ///
+    /// Doing nothing for a slot that already holds its bytes, so a consumer can ask without
+    /// knowing whether an earlier one already did.
+    pub fn materialise<F>(
+        &mut self,
+        tool: &str,
+        slot: &SlotId,
+        slots: &mut crate::slot::SlotStore,
+        read: F,
+    ) -> Gated<()>
+    where
+        F: FnOnce(&str) -> Result<String, String>,
+    {
+        let Some(deferred) = slots.deferred(slot) else {
+            return Ok(());
+        };
+        let path = deferred.path().to_string();
+        let promised = deferred.label();
+
+        // The reading happens now, so the capability must be held now rather than only when the
+        // slot was reserved.
+        self.before_capability(Capability::FileRead)?;
+        let current = self.observe_path(Capability::FileRead, &path)?;
+        let label = crate::label::taint_all([promised, current]);
+
+        let text = read(&path).map_err(|detail| Denial {
+            principle: Principle::Confinement,
+            message: format!("{tool}: {slot} could not be read from {path}: {detail}"),
+        })?;
+
+        let measured = slots
+            .fill(slot, Labelled::new(text, label))
+            .map_err(|e| Denial {
+                principle: Principle::Confinement,
+                message: format!("{tool}: {slot} could not be filled from {path}: {e}"),
+            })?;
+
+        self.sink.emit(Event::SlotWritten {
+            slot: slot.clone(),
+            label,
+        });
+        self.allow(
+            "materialise",
+            format!(
+                "{tool}: {path} read into {slot} at {label}, {} lines, because something \
+                 needed the bytes",
+                measured.lines
+            ),
+        );
+        Ok(())
+    }
+
     /// Decide what the planner is told about content, and quarantine it if it may not see it.
     ///
     /// This is the gate the rule in CLAUDE.md rests on. Trusted content is returned visible,
@@ -773,9 +901,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                     "resolve",
                     format!("{tool}: {slot} resolved to its quarantined content, {label}"),
                 );
-                slots.take_for_effect(slot).ok_or_else(|| Denial {
+                slots.take_for_effect(slot).map_err(|e| Denial {
                     principle: Principle::Confinement,
-                    message: format!("{tool}: '{slot}' has no content"),
+                    message: format!("{tool}: {e}"),
                 })
             }
             None => Err(self.deny(
@@ -888,9 +1016,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ) -> Gated<Labelled<String>> {
         let mut body = String::new();
         for slot in spec.reads() {
-            let content = slots.take_for_effect(slot).ok_or_else(|| Denial {
+            let content = slots.take_for_effect(slot).map_err(|e| Denial {
                 principle: Principle::Confinement,
-                message: format!("{}: '{slot}' has no content", spec.id()),
+                message: format!("{}: {e}", spec.id()),
             })?;
             let proof = Declassification::authorise("assembled into a processor's input");
             body.push_str(&format!("--- begin {slot} ---\n"));
@@ -1392,6 +1520,95 @@ mod tests {
         ])
     }
 
+    /// The point of deferring: naming a file costs nothing until something wants what is in it.
+    #[test]
+    fn a_deferred_slot_reads_nothing_until_something_needs_the_bytes() {
+        use std::cell::Cell;
+
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        let slot = SlotId::new("ref:0");
+
+        policy
+            .defer(
+                "read_file",
+                slot.clone(),
+                &Labelled::trusted("notes.md".to_string()),
+                42,
+                &mut slots,
+            )
+            .expect("a file may be reserved");
+
+        let reads = Cell::new(0);
+        let reader = |_: &str| {
+            reads.set(reads.get() + 1);
+            Ok("the contents".to_string())
+        };
+
+        assert_eq!(reads.get(), 0, "the file was read before anything asked");
+
+        policy
+            .materialise("write_file", &slot, &mut slots, reader)
+            .expect("the file is read when something needs it");
+        assert_eq!(reads.get(), 1);
+
+        // A second consumer must not read the file again: the slot is written once, and a file
+        // that changed in between would give two consumers different bytes for one reference.
+        policy
+            .materialise("write_file", &slot, &mut slots, |_| {
+                panic!("a slot that holds its bytes must not be read again")
+            })
+            .expect("asking twice is not an error");
+    }
+
+    /// A path that stopped being trusted between the promise and the reading is read as
+    /// untrusted. Anything else would launder bytes through a reference made earlier.
+    #[test]
+    fn a_path_that_lost_its_trust_fills_the_slot_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut store = crate::trust::TrustStore::new();
+        store.trust("src");
+        let mut policy = Policy::begin(
+            routing_with("task", "tidy up"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap()
+        .with_trust(store);
+
+        let mut slots = SlotStore::new();
+        let slot = SlotId::new("ref:0");
+        let reference = policy
+            .defer(
+                "read_file",
+                slot.clone(),
+                &Labelled::trusted("src/main.rs".to_string()),
+                10,
+                &mut slots,
+            )
+            .expect("a file may be reserved");
+        assert!(
+            reference.label.is_trusted(),
+            "it was reserved from a trusted path"
+        );
+
+        // Something wrote untrusted data there in the meantime, which is what
+        // `reconcile_after_write` records.
+        policy.reconcile_after_write("src/main.rs", Label::untrusted_private());
+
+        policy
+            .materialise("process", &slot, &mut slots, |_| Ok("payload".to_string()))
+            .expect("the file is still readable");
+
+        let label = slots.label_of(&slot).expect("the slot holds its bytes now");
+        assert!(
+            !label.is_trusted(),
+            "a slot reserved as trusted was filled from a path that is not: {label}"
+        );
+    }
+
     /// Planning is several calls, and every one of them is gated. Counting calls would be the
     /// wrong rule: what matters is that the planner has been shown nothing but trusted input,
     /// which is as true of the fourth call as of the first.
@@ -1514,7 +1731,7 @@ mod tests {
                     &mut slots,
                 )
                 .expect("storing a step result must not depend on its label");
-            assert_eq!(reference.lines, 2);
+            assert_eq!(reference.lines, Some(2));
             assert!(slots.is_written(&SlotId::new(slot)));
         }
     }
@@ -2533,7 +2750,7 @@ mod tests {
         assert!(!context.contains(secret), "content leaked: {context}");
         // The shape is reported, so the planner can still act on it.
         let reference = presented.reference().expect("a reference");
-        assert_eq!(reference.lines, 2);
+        assert_eq!(reference.lines, Some(2));
         assert_eq!(reference.origin, "evil.txt");
     }
 

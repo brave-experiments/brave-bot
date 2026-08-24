@@ -11,6 +11,14 @@
 //!   does not compile.
 //! - **Label floor**: the writer's label is fixed when the writer is minted, by the
 //!   policy layer, never chosen by the code doing the writing.
+//!
+//! A slot may also be **deferred**: it names a file it has not read, and the bytes arrive when
+//! something finally needs them. What is deferred is only the reading. The slot is spoken for
+//! from the moment it is deferred, its label is decided then rather than by whatever turns up,
+//! and the reading is a single filling that cannot be repeated. Nothing may read a deferred
+//! slot in the meantime: [`SlotStore::take_for_effect`] and [`SlotReader::read`] refuse it by
+//! name rather than returning nothing, so a consumer that forgot to ask for the file is an
+//! error and never an empty document.
 
 use crate::label::Label;
 use crate::value::Labelled;
@@ -40,6 +48,8 @@ impl fmt::Display for SlotId {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SlotError {
+    /// Something wanted the bytes of a slot whose file has not been read yet.
+    Unread(SlotId),
     /// A slot was written twice. Reaching this at runtime means something bypassed
     /// the consuming [`SlotWriter`].
     AlreadyWritten(SlotId),
@@ -58,6 +68,10 @@ pub enum SlotError {
 impl fmt::Display for SlotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unread(s) => write!(
+                f,
+                "slot '{s}' names a file that has not been read yet, so it has no bytes to give"
+            ),
             Self::AlreadyWritten(s) => write!(f, "slot '{s}' has already been written"),
             Self::NotWritten(s) => write!(f, "slot '{s}' has not been written yet"),
             Self::OutOfScope(s) => write!(f, "slot '{s}' is not in this reader's scope"),
@@ -75,13 +89,55 @@ impl fmt::Display for SlotError {
 
 impl std::error::Error for SlotError {}
 
+/// A slot that names a file it has not read.
+///
+/// The path is routing: the planner named it and it was checked `(T,pub)` before the slot was
+/// deferred, so holding it here decides nothing an attacker steers. The label is what the trust
+/// map said when the promise was made, and it is a ceiling rather than a promise in its own
+/// right: [`crate::policy::Policy::materialise`] takes the meet with what the map says when the
+/// file is actually read, so a path that stopped being trusted in between cannot be read back
+/// as though it had not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deferred {
+    path: String,
+    label: Label,
+}
+
+impl Deferred {
+    /// The file this slot will hold.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The label recorded when the read was deferred.
+    pub fn label(&self) -> Label {
+        self.label
+    }
+}
+
+/// What a slot holds: the bytes, or the promise of them.
+#[derive(Debug, Clone)]
+enum Entry {
+    Read(Labelled<String>),
+    Unread(Deferred),
+}
+
+impl Entry {
+    fn label(&self) -> Label {
+        match self {
+            Self::Read(value) => value.label(),
+            Self::Unread(deferred) => deferred.label,
+        }
+    }
+}
+
 /// Quarantined storage for one run.
 ///
 /// Holds `Labelled<String>` because slot content is always opaque text as far as the
 /// kernel is concerned; interpreting it is the job of whatever declassifies it.
 #[derive(Debug, Default)]
 pub struct SlotStore {
-    slots: HashMap<SlotId, Labelled<String>>,
+    slots: HashMap<SlotId, Entry>,
 }
 
 impl SlotStore {
@@ -94,7 +150,18 @@ impl SlotStore {
     }
 
     pub fn label_of(&self, id: &SlotId) -> Option<Label> {
-        self.slots.get(id).map(Labelled::label)
+        self.slots.get(id).map(Entry::label)
+    }
+
+    /// The file a slot is waiting on, where it is waiting on one.
+    ///
+    /// Metadata, like everything else a caller may ask a slot store: a path the planner chose
+    /// and a label, never a byte of what the file holds.
+    pub fn deferred(&self, id: &SlotId) -> Option<&Deferred> {
+        match self.slots.get(id) {
+            Some(Entry::Unread(deferred)) => Some(deferred),
+            _ => None,
+        }
     }
 
     /// Metadata for every slot: id, whether written, and label. Never contents, so
@@ -103,7 +170,7 @@ impl SlotStore {
         let mut items: Vec<_> = self
             .slots
             .iter()
-            .map(|(id, v)| (id.clone(), v.label()))
+            .map(|(id, entry)| (id.clone(), entry.label()))
             .collect();
         items.sort_by(|a, b| a.0.cmp(&b.0));
         items
@@ -116,8 +183,70 @@ impl SlotStore {
     ///
     /// Bypasses the reader ceiling deliberately: a ceiling limits what a *reader* may see, and
     /// this is not a read. Nobody sees these bytes; they travel from the slot to the effect.
-    pub fn take_for_effect(&self, id: &SlotId) -> Option<Labelled<String>> {
-        self.slots.get(id).cloned()
+    /// A slot still waiting on its file refuses by name. Returning nothing would read as an
+    /// empty document, and an effect would carry out the emptiness.
+    pub fn take_for_effect(&self, id: &SlotId) -> Result<Labelled<String>, SlotError> {
+        match self.slots.get(id) {
+            Some(Entry::Read(value)) => Ok(value.clone()),
+            Some(Entry::Unread(_)) => Err(SlotError::Unread(id.clone())),
+            None => Err(SlotError::NotWritten(id.clone())),
+        }
+    }
+
+    /// Record that a slot will hold `path`, without reading it.
+    ///
+    /// Only the policy layer defers, for the same reason only the policy layer mints a writer:
+    /// the label is decided here and not by whatever eventually turns up in the file.
+    pub(crate) fn defer(
+        &mut self,
+        id: SlotId,
+        path: impl Into<String>,
+        label: Label,
+    ) -> Result<(), SlotError> {
+        if self.is_written(&id) {
+            return Err(SlotError::AlreadyWritten(id));
+        }
+        self.slots.insert(
+            id,
+            Entry::Unread(Deferred {
+                path: path.into(),
+                label,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Put the bytes into a slot that was waiting for them.
+    ///
+    /// The single write that a deferred slot gets: an entry already holding content is refused,
+    /// so a file cannot be read twice into one slot and the second reading cannot be the one
+    /// that counts.
+    pub(crate) fn fill(
+        &mut self,
+        id: &SlotId,
+        content: Labelled<String>,
+    ) -> Result<Measured, SlotError> {
+        let deferred = match self.slots.get(id) {
+            Some(Entry::Unread(deferred)) => deferred.clone(),
+            Some(Entry::Read(_)) => return Err(SlotError::AlreadyWritten(id.clone())),
+            None => return Err(SlotError::NotWritten(id.clone())),
+        };
+
+        // The recorded label is a ceiling, so a file read back out of a path that lost its
+        // trust in the meantime lands untrusted rather than at the label it was promised.
+        let label = crate::label::taint_all([deferred.label, content.label()]);
+
+        // Reading to measure, not to decide, exactly as `write_measured` does.
+        let proof = crate::value::Declassification::authorise("measured on the way into a slot");
+        let text = content.declassify(&proof);
+        let measured = Measured {
+            lines: text.lines().count(),
+            bytes: text.len(),
+        };
+
+        self.slots
+            .insert(id.clone(), Entry::Read(Labelled::new(text, label)));
+        Ok(measured)
     }
 
     /// Mint a single-use write capability with a fixed label.
@@ -194,9 +323,10 @@ impl SlotWriter<'_> {
         if self.store.is_written(&self.id) {
             return Err(SlotError::AlreadyWritten(self.id));
         }
-        self.store
-            .slots
-            .insert(self.id, Labelled::new(content.into(), self.label));
+        self.store.slots.insert(
+            self.id,
+            Entry::Read(Labelled::new(content.into(), self.label)),
+        );
         Ok(())
     }
 
@@ -224,7 +354,9 @@ impl SlotWriter<'_> {
             bytes: text.len(),
         };
 
-        self.store.slots.insert(self.id, Labelled::new(text, label));
+        self.store
+            .slots
+            .insert(self.id, Entry::Read(Labelled::new(text, label)));
         Ok(measured)
     }
 }
@@ -263,11 +395,11 @@ impl SlotReader<'_> {
         if !self.scope.contains(id) {
             return Err(SlotError::OutOfScope(id.clone()));
         }
-        let value = self
-            .store
-            .slots
-            .get(id)
-            .ok_or_else(|| SlotError::NotWritten(id.clone()))?;
+        let value = match self.store.slots.get(id) {
+            Some(Entry::Read(value)) => value,
+            Some(Entry::Unread(_)) => return Err(SlotError::Unread(id.clone())),
+            None => return Err(SlotError::NotWritten(id.clone())),
+        };
         if !value.label().flows_to(self.ceiling) {
             return Err(SlotError::CeilingExceeded {
                 slot: id.clone(),
@@ -285,6 +417,97 @@ mod tests {
 
     fn sid(s: &str) -> SlotId {
         SlotId::new(s)
+    }
+
+    /// A slot waiting on its file must say so rather than hand back nothing. An effect given
+    /// nothing would carry out the emptiness: a write would truncate the file it was meant to
+    /// change.
+    #[test]
+    fn a_slot_that_has_not_read_its_file_refuses_to_give_bytes() {
+        let mut store = SlotStore::new();
+        store
+            .defer(sid("ref:0"), "notes.md", Label::untrusted_private())
+            .unwrap();
+
+        assert_eq!(
+            store.take_for_effect(&sid("ref:0")).unwrap_err(),
+            SlotError::Unread(sid("ref:0"))
+        );
+
+        let reader = store
+            .reader_for([sid("ref:0")], Label::untrusted_private())
+            .unwrap();
+        assert_eq!(
+            reader.read(&sid("ref:0")).unwrap_err(),
+            SlotError::Unread(sid("ref:0"))
+        );
+    }
+
+    /// Deferring reserves the slot. A second slot of the same name would mean two files behind
+    /// one reference, and the reference the planner holds would name whichever won.
+    #[test]
+    fn a_reserved_slot_cannot_be_reserved_or_written_again() {
+        let mut store = SlotStore::new();
+        store
+            .defer(sid("ref:0"), "notes.md", Label::untrusted_private())
+            .unwrap();
+
+        assert_eq!(
+            store.defer(sid("ref:0"), "other.md", Label::untrusted_private()),
+            Err(SlotError::AlreadyWritten(sid("ref:0")))
+        );
+        assert!(
+            store
+                .writer_for(sid("ref:0"), Label::untrusted_private())
+                .is_err()
+        );
+    }
+
+    /// Reading the file is the slot's single write, so a second reading has nowhere to go.
+    #[test]
+    fn a_file_is_read_into_its_slot_once() {
+        let mut store = SlotStore::new();
+        store
+            .defer(sid("ref:0"), "notes.md", Label::untrusted_private())
+            .unwrap();
+
+        let measured = store
+            .fill(
+                &sid("ref:0"),
+                Labelled::new("one\ntwo".to_string(), Label::untrusted_private()),
+            )
+            .expect("the first reading fills it");
+        assert_eq!(measured.lines, 2);
+
+        assert_eq!(
+            store.fill(
+                &sid("ref:0"),
+                Labelled::new("something else".to_string(), Label::untrusted_private())
+            ),
+            Err(SlotError::AlreadyWritten(sid("ref:0")))
+        );
+    }
+
+    /// The label recorded when the slot was reserved is a ceiling, never a promise: content that
+    /// arrives worse than the reservation keeps its own label.
+    #[test]
+    fn filling_a_slot_cannot_raise_the_label_it_was_reserved_at() {
+        let mut store = SlotStore::new();
+        store
+            .defer(sid("ref:0"), "notes.md", Label::untrusted_private())
+            .unwrap();
+        store
+            .fill(
+                &sid("ref:0"),
+                Labelled::new("payload".to_string(), Label::trusted_public()),
+            )
+            .unwrap();
+
+        let label = store.label_of(&sid("ref:0")).unwrap();
+        assert!(
+            !label.is_trusted(),
+            "the reservation was untrusted: {label}"
+        );
     }
 
     #[test]

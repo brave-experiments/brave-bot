@@ -208,20 +208,38 @@ impl Workspace {
                 reason: "the path was not trusted",
             })?;
 
-        let resolved = self.resolve(&relative)?;
         let label = policy.observe_path(Capability::FileRead, &relative)?;
+        Ok(Labelled::new(self.page(&relative, offset, limit)?, label))
+    }
+
+    /// One page of a file, with no gate of its own.
+    ///
+    /// Split out of [`Workspace::read_page`] for the deferred case, where the gates ran when the
+    /// slot was reserved and the reading happens later, under
+    /// [`bua_core::policy::Policy::materialise`], which observes the path again itself. What
+    /// comes back is therefore unlabelled, and the kernel labels it: this returns the shape of a
+    /// file and never decides what it means.
+    pub fn page(
+        &self,
+        relative: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Page, WorkspaceError> {
+        let resolved = self.resolve(relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
-            path: relative.clone(),
+            path: relative.to_string(),
             detail: e.to_string(),
         })?;
 
         if looks_binary(&raw) {
-            return Err(WorkspaceError::Binary { path: relative });
+            return Err(WorkspaceError::Binary {
+                path: relative.to_string(),
+            });
         }
 
         let contents = String::from_utf8(raw).map_err(|_| WorkspaceError::Binary {
-            path: relative.clone(),
+            path: relative.to_string(),
         })?;
 
         let limit = limit.clamp(1, MAX_PAGE_LINES);
@@ -240,15 +258,44 @@ impl Workspace {
             lines.push(text);
         }
 
-        Ok(Labelled::new(
-            Page {
-                lines,
-                first_line: start + 1,
-                total_lines: total,
-                long_lines,
-            },
-            label,
-        ))
+        Ok(Page {
+            lines,
+            first_line: start + 1,
+            total_lines: total,
+            long_lines,
+        })
+    }
+
+    /// What a deferred read must know before it can put off reading: how big the file is, and
+    /// whether it is text at all.
+    ///
+    /// Both answers have to be had now rather than later. A path that names nothing is an error
+    /// the planner is told about at the moment it asks, as it always was, and a binary file is
+    /// refused the same way rather than becoming a reference to something no processor could
+    /// use. The size is what the planner is told instead of a line count.
+    ///
+    /// The sniff reads the same prefix [`looks_binary`] would have seen, so it reaches the same
+    /// verdict on the same file. A file that turns to rubbish after that prefix is caught when
+    /// the bytes are actually read, which is where an eager read would have caught it too.
+    pub fn survey(&self, relative: &str) -> Result<usize, WorkspaceError> {
+        let resolved = self.resolve(relative)?;
+        let io = |e: std::io::Error| WorkspaceError::Io {
+            path: relative.to_string(),
+            detail: e.to_string(),
+        };
+
+        let size = std::fs::metadata(&resolved).map_err(io)?.len();
+
+        let mut head = vec![0u8; SNIFF_BYTES];
+        let mut file = std::fs::File::open(&resolved).map_err(io)?;
+        let read = read_up_to(&mut file, &mut head).map_err(io)?;
+        if looks_binary(&head[..read]) {
+            return Err(WorkspaceError::Binary {
+                path: relative.to_string(),
+            });
+        }
+
+        Ok(size.min(usize::MAX as u64) as usize)
     }
 
     /// The current contents of a workspace file, for showing a reviewer what a write
@@ -470,6 +517,19 @@ fn truncate_on_char_boundary(text: &mut String, limit: usize) {
 /// A null byte is decisive, since no text file contains one. Beyond that, a high proportion of
 /// control characters means the same thing without needing a file-type list to be kept up
 /// to date. Only the head is inspected, since the answer does not improve by reading more.
+/// Fill as much of `buffer` as the file has, since one read is not obliged to return it all.
+fn read_up_to(file: &mut std::fs::File, buffer: &mut [u8]) -> std::io::Result<usize> {
+    use std::io::Read;
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
 fn looks_binary(bytes: &[u8]) -> bool {
     let head = &bytes[..bytes.len().min(SNIFF_BYTES)];
     if head.is_empty() {

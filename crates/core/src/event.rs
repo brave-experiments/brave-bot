@@ -60,6 +60,16 @@ pub enum Event {
     },
     /// A slot was written.
     SlotWritten { slot: SlotId, label: Label },
+    /// A slot was reserved for a file that has not been read yet.
+    ///
+    /// Distinct from [`Event::SlotWritten`], which follows when something needs the bytes. A
+    /// trail that recorded only the writing would say a file was read at a moment nothing had
+    /// touched it.
+    SlotDeferred {
+        slot: SlotId,
+        label: Label,
+        origin: String,
+    },
     /// A capability produced data at a label.
     Observed {
         capability: Capability,

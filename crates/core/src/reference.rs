@@ -31,9 +31,9 @@ pub struct Reference {
     pub slot: SlotId,
     /// Where it came from, as a workspace-relative path. Routing, so already trusted.
     pub origin: String,
-    /// Lines of text.
-    pub lines: usize,
-    /// Bytes of text.
+    /// Lines of text, or `None` for a file that has not been read yet.
+    pub lines: Option<usize>,
+    /// Bytes of text, or of the file on disk where it has not been read yet.
     pub bytes: usize,
     /// The label the content carries.
     pub label: Label,
@@ -50,7 +50,22 @@ impl Reference {
         Self {
             slot,
             origin: origin.into(),
-            lines,
+            lines: Some(lines),
+            bytes,
+            label,
+        }
+    }
+
+    /// A reference to a file the slot has reserved but not read.
+    ///
+    /// The line count is the one fact that cannot be had without opening the file, so it is
+    /// absent rather than guessed. The size comes from the filesystem, which is where the
+    /// planner's sense of scale came from anyway.
+    pub fn unread(slot: SlotId, origin: impl Into<String>, bytes: usize, label: Label) -> Self {
+        Self {
+            slot,
+            origin: origin.into(),
+            lines: None,
             bytes,
             label,
         }
@@ -62,10 +77,16 @@ impl Reference {
     /// where it came from, and how big it is, enough to decide what to do with it, and
     /// nothing an injection could ride in on.
     pub fn describe(&self) -> String {
+        let shape = match self.lines {
+            Some(lines) => format!("{lines} lines, {} bytes", self.bytes),
+            // Said plainly, because a planner told only a size would read the absence of a line
+            // count as a small file rather than as a file nothing has opened.
+            None => format!("{} bytes on disk, not read yet", self.bytes),
+        };
         format!(
-            "[{}] {} ({} lines, {} bytes, {}). The contents are quarantined and not shown. \
+            "[{}] {} ({shape}, {}). The contents are quarantined and not shown. \
              Refer to this content as {} in tool arguments.",
-            self.slot, self.origin, self.lines, self.bytes, self.label, self.slot,
+            self.slot, self.origin, self.label, self.slot,
         )
     }
 }

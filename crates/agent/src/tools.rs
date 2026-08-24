@@ -30,7 +30,7 @@ use crate::report::{Activity, Reporter};
 use bua_aichat::protocol::{Tool, ToolCall, Usage};
 use bua_core::event::Sink;
 use bua_core::policy::Policy;
-use bua_core::slot::SlotStore;
+use bua_core::slot::{SlotId, SlotStore};
 use bua_core::todo::{self, Item, List, Status};
 use bua_core::value::Labelled;
 use serde_json::{Value, json};
@@ -246,6 +246,20 @@ pub fn available() -> Vec<Tool> {
     ]
 }
 
+/// A read a tool decided not to perform yet.
+///
+/// The planner asked for a file whose contents it may not see, so there is nothing to show it
+/// and no reason to have the bytes in hand. What travels back is the path and the size, and the
+/// slot the turn reserves from them holds the file until something needs it.
+///
+/// The path is the promoted one, still labelled, because the kernel checks it as routing again
+/// when it reserves the slot.
+#[derive(Debug, Clone)]
+pub struct Deferral {
+    pub path: Labelled<String>,
+    pub bytes: usize,
+}
+
 /// What a dispatched call produced, ready to send back as a tool message.
 #[derive(Debug)]
 pub struct Output {
@@ -260,6 +274,9 @@ pub struct Output {
     pub text: Labelled<String>,
     /// Where the content came from, for the reference the planner is shown instead.
     pub origin: String,
+    /// A file this call reserved rather than read. `text` is empty where this is set: there is
+    /// nothing to present, and the turn reserves the slot instead.
+    pub deferred: Option<Deferral>,
     /// What the call spent at the model, where it called one.
     ///
     /// Zero for every tool but the processor. A turn that reported only its own rounds would
@@ -292,6 +309,8 @@ struct Produced {
     /// What to tell the person watching. A few words, never the result itself.
     note: String,
     failed: bool,
+    /// Set by a read that reserved a file instead of opening it.
+    deferred: Option<Deferral>,
     /// The change a write made, for showing under the line it belongs to.
     changes: Vec<crate::diff::Change>,
     /// What the tool spent at the model. Only a processor spends anything.
@@ -306,9 +325,21 @@ impl Produced {
             origin: origin.into(),
             note: note.into(),
             failed: false,
+            deferred: None,
             changes: Vec::new(),
             usage: Usage::default(),
         }
+    }
+
+    /// A read that reserved a file rather than opening it.
+    fn deferring(path: Labelled<String>, origin: String, bytes: usize) -> Self {
+        Self::new(Labelled::trusted(String::new()), origin, "not read yet")
+            .with_deferral(Deferral { path, bytes })
+    }
+
+    fn with_deferral(mut self, deferral: Deferral) -> Self {
+        self.deferred = Some(deferral);
+        self
     }
 
     fn with_changes(mut self, changes: Vec<crate::diff::Change>) -> Self {
@@ -520,6 +551,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 tool: name,
                 text: produced.text,
                 origin: produced.origin,
+                deferred: produced.deferred,
                 usage: produced.usage,
             };
         }
@@ -553,6 +585,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         tool: name,
         text: produced.text,
         origin: produced.origin,
+        deferred: produced.deferred,
         usage: produced.usage,
     }
 }
@@ -568,6 +601,7 @@ fn problem(text: impl Into<String>) -> Produced {
         origin: String::new(),
         note: text,
         failed: true,
+        deferred: None,
         changes: Vec::new(),
         usage: Usage::default(),
     }
@@ -629,6 +663,20 @@ fn read_file<S: Sink>(
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
 
+    // A file the planner may not see need not be opened yet. Whether it may see it is a
+    // question about the trust map, keyed by the path it named, so nothing about any file's
+    // contents reaches this branch. A page of a file is a different request: the offset and the
+    // limit describe a slice, and there is nothing to slice until something reads it, so those
+    // are still read now.
+    let whole_file = arguments.get("offset").is_none() && arguments.get("limit").is_none();
+    if whole_file && policy.read_is_quarantined(&proposed_path) {
+        return match workspace.survey(&proposed_path) {
+            Ok(bytes) => Produced::deferring(path, proposed_path, bytes),
+            // A path that names nothing is said so now, exactly as an eager read would have.
+            Err(e) => problem(format!("error: {e}")),
+        };
+    }
+
     match workspace.read_page(policy, &path, offset, limit) {
         Ok(page) => {
             // Reshaped inside the kernel, so the driver never holds the text. Only
@@ -641,6 +689,38 @@ fn read_file<S: Sink>(
         }
         Err(e) => problem(format!("error: {e}")),
     }
+}
+
+/// The text a slot holds for a file, read at the moment something needs it.
+///
+/// The same shaping an eager read would have applied, from the same two functions, so a
+/// deferred read and an immediate one put the same bytes in the same slot. Deferring changes
+/// when a file is read and nothing else about it.
+pub(crate) fn read_into_slot(workspace: &Workspace, path: &str) -> Result<String, String> {
+    workspace
+        .page(path, 1, usize::MAX)
+        .map(|page| render_page(&page))
+        .map_err(|e| e.to_string())
+}
+
+/// Read the files any of these slots is still waiting on.
+///
+/// Called by every consumer of a slot before it asks for the bytes. Doing nothing where the
+/// slots hold their contents already, so a consumer need not know whether an earlier one got
+/// there first.
+pub(crate) fn materialise<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    slots: &mut SlotStore,
+    tool: &str,
+    wanted: &[SlotId],
+) -> Result<(), String> {
+    for slot in wanted {
+        policy
+            .materialise(tool, slot, slots, |path| read_into_slot(workspace, path))
+            .map_err(|denial| format!("refused: {denial}"))?;
+    }
+    Ok(())
 }
 
 /// Render a page, saying what was left out.
@@ -745,13 +825,17 @@ fn list_files<S: Sink>(
 /// nothing here can look at what it is about to write.
 fn quarantined_body<S: Sink>(
     policy: &mut Policy<'_, S>,
-    slots: &SlotStore,
+    workspace: &Workspace,
+    slots: &mut SlotStore,
     named: &Labelled<String>,
     path: &str,
 ) -> Result<Labelled<String>, String> {
     let slot = policy
         .accept_reference("write_file", "contents_ref", named)
         .map_err(|denial| format!("refused: {denial}"))?;
+
+    // The bytes are needed now, so a slot still holding only a path reads its file here.
+    materialise(policy, workspace, slots, "write_file", &[slot.clone()])?;
 
     let content = policy
         .resolve("write_file", &slot, slots)
@@ -804,7 +888,7 @@ fn write_file<S: Sink, C: Confirmer>(
         // Quarantined content, going where the planner said without the planner or the driver
         // having read a byte of it. The user still sees it, which is what an approval is.
         (None, Some(reference)) => {
-            match quarantined_body(policy, tools.slots, &reference, &proposed_path) {
+            match quarantined_body(policy, workspace, tools.slots, &reference, &proposed_path) {
                 Ok(body) => body,
                 Err(refusal) => return problem(refusal),
             }
@@ -1099,6 +1183,20 @@ fn spawn_processor<S: Sink>(
             references_in(arguments).declassify(&proof)
         )
     };
+
+    // Before the spec, not after: `before_processor` computes the output's label by taint over
+    // the inputs, and a slot that reads its file here may come back untrusted where the trust
+    // map fell after the slot was reserved. A spec built first would carry the label the inputs
+    // used to have.
+    if let Err(refusal) = materialise(
+        policy,
+        tools.workspace,
+        tools.slots,
+        "spawn_processor",
+        &reads,
+    ) {
+        return problem(refusal);
+    }
 
     let spec = match policy.before_processor(&origin, &reads, &instruction, tools.slots) {
         Ok(spec) => spec,

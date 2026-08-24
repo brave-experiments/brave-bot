@@ -145,6 +145,20 @@ because there is no planner left to show it to: the one call that chose the step
 the first step ran. `Policy::quarantine` is that store, and it is deliberately not
 `Policy::present`, which exists to decide what a planner may see.
 
+A whole-file `FILE_READ` **reserves** its slot rather than filling it. The step checks that the
+path is there and is text, records the size, and fixes the label from the trust map, and the file
+itself is opened when a transform, a write or an answer needs the bytes. This is what makes the
+shape the mode pushes a planner towards affordable: a plan written before anything has been read
+covers the candidates it cannot choose between, and the ones no later step reads are never
+opened. A read with an `offset` or a `limit` is not deferred, since a slice exists only once
+something has read the file.
+
+The ordering rule is unchanged and is what bounds this. Before the first Tier 3 step, every slot
+a remaining step reads is filled, so all of a run's reading still happens before any of its
+writing. `Policy::materialise` is the one place a reserved slot is filled, and it observes the
+path again as it does: a path that stopped being trusted between the reservation and the reading
+is read as untrusted, because a label may fall and may not rise.
+
 ## What the schema enforces
 
 `bua_core::manifest` holds a static contract per tool, the specification's `TOOL_SCHEMA`,

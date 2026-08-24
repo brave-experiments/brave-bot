@@ -9,7 +9,7 @@ use bua_agent::manifest;
 use bua_agent::turn::Task;
 use bua_agent::{Mode, Workspace};
 use bua_config::Config;
-use bua_core::event::RecordingSink;
+use bua_core::event::{Event, RecordingSink};
 use bua_core::trust::TrustStore;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -164,6 +164,59 @@ fn run(
         TrustStore::new(),
         &bua_core::cancel::Cancel::new(),
     )
+}
+
+/// A plan may name a file no later step reads, and that file is never opened.
+///
+/// Planning happens before anything has been looked at, so a plan that covers the candidates it
+/// cannot choose between is the right shape for this mode rather than a wasteful one. It is only
+/// affordable if a slot nothing goes on to read costs nothing, which is what deferring the read
+/// buys. The reads that are needed still all happen before the first write, which is the
+/// property the ordering rule protects.
+#[test]
+fn a_slot_no_step_reads_is_never_opened() {
+    let scratch = Scratch::new("unused-slot");
+    std::fs::write(scratch.path.join("a.md"), "the one that matters").unwrap();
+    std::fs::write(scratch.path.join("b.md"), "the one nothing reads").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_READ", "args": {"path": "a.md", "out_slot": "one"}},
+            {"capability": "FILE_READ", "args": {"path": "b.md", "out_slot": "two"}},
+            {"capability": "ANSWER", "args": {"from_slot": "one"}},
+        ])),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let outcome = run(&config, &workspace, "say what a.md holds", &mut sink).expect("runs");
+    assert_eq!(outcome.reply_for_display(), "the one that matters");
+
+    let reserved: Vec<&str> = sink
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            Event::SlotDeferred { origin, .. } => Some(origin.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reserved, vec!["a.md", "b.md"], "both reads reserved a slot");
+
+    let opened: Vec<&str> = sink
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            Event::SlotWritten { slot, .. } => Some(slot.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        vec!["one"],
+        "a file nothing reads was opened anyway"
+    );
 }
 
 #[test]
@@ -730,9 +783,11 @@ fn a_step_that_fails_leaves_the_plan_and_everything_that_ran() {
         "the run stopped at the failing step"
     );
     assert!(attempt.steps[0].contains("read a.md into one"));
-    // The same pluralisation the turn loop uses, so a one-line file does not read "1 lines".
+    // A read reserves the file rather than opening it, so what the step can report is its size.
+    // The line count belongs to the moment something needs the bytes, and the audit trail
+    // records it there.
     assert!(
-        attempt.steps[0].ends_with(": 1 line"),
+        attempt.steps[0].ends_with("5 bytes, read when something needs them"),
         "{}",
         attempt.steps[0]
     );

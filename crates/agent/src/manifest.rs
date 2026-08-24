@@ -809,6 +809,7 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
     );
 
     let mut slots = SlotStore::new();
+    let mut filled = false;
     let mut answer: Option<Labelled<String>> = None;
     let mut shown = String::new();
     let mut chat = Chat {
@@ -826,16 +827,27 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         let activity = Activity::running(entry.capability, step.describe());
         reporter.tool_started(activity.clone());
 
-        let outcome = run_step(
+        let outcome = fill_before_acting(
             &mut policy,
             workspace,
             &mut slots,
-            &mut chat,
-            confirmer,
+            &plan,
             index,
-            step,
             entry,
-        );
+            &mut filled,
+        )
+        .and_then(|()| {
+            run_step(
+                &mut policy,
+                workspace,
+                &mut slots,
+                &mut chat,
+                confirmer,
+                index,
+                step,
+                entry,
+            )
+        });
 
         match outcome {
             Ok(done) => {
@@ -912,6 +924,37 @@ struct Answered {
     value: Labelled<String>,
 }
 
+/// Read the files still owed to the plan, at the moment before it starts changing things.
+///
+/// A deferred slot is a read the plan named, not one the driver invented, and this is where the
+/// last of them happen. Every read in a manifest run comes before the first write, which the
+/// validator enforces over the plan and this keeps true of the run: after an Act step the
+/// workspace is no longer the one the plan was written against, so a file opened then would not
+/// be the file the plan asked for.
+///
+/// Only the slots some remaining step names. A slot nothing goes on to read is never opened,
+/// which is the whole point of deferring it.
+fn fill_before_acting<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    slots: &mut SlotStore,
+    plan: &Manifest,
+    index: usize,
+    entry: &'static Advertised,
+    filled: &mut bool,
+) -> Result<(), String> {
+    if *filled || entry.tier != Tier::Act {
+        return Ok(());
+    }
+    *filled = true;
+
+    let wanted: Vec<SlotId> = plan.steps()[index..]
+        .iter()
+        .flat_map(|step| step.reads().to_vec())
+        .collect();
+    crate::tools::materialise(policy, workspace, slots, "manifest", &wanted)
+}
+
 /// Run one step. Errors are fatal to the run and say why.
 #[allow(clippy::too_many_arguments)]
 fn run_step<S: Sink, C: Confirmer>(
@@ -931,22 +974,53 @@ fn run_step<S: Sink, C: Confirmer>(
     }
 
     match step.tool() {
-        "read_file" => fetch(policy, slots, step, |policy| {
+        "read_file" => {
             let path = locked(policy, index, "path")?;
-            let offset = step.count("offset").unwrap_or(1).max(1) as usize;
-            let limit = step
-                .count("limit")
-                .unwrap_or(u64::MAX)
-                .min(usize::MAX as u64) as usize;
-            let page = workspace
-                .read_page(policy, &Labelled::trusted(path.clone()), offset, limit)
-                .map_err(|e| e.to_string())?;
-            let rendered = policy.render_in_place("read_file", &page, |page| page.lines.join("\n"));
-            let note = policy.render_in_place("read_file", &page, |page| {
-                crate::tools::tally(page.lines.len(), "line", "lines")
-            });
-            Ok((rendered, note, path))
-        }),
+            let paged = step.count("offset").is_some() || step.count("limit").is_some();
+
+            // A whole file is reserved rather than read. Nothing in this mode is shown to
+            // anybody, so the reading has no audience until a transform, a write or an answer
+            // asks for the bytes, and a slot no later step names is never opened at all. A
+            // page is a different request: it names a slice, and there is nothing to slice
+            // until the file is read.
+            if !paged {
+                let out_slot = step
+                    .out_slot()
+                    .expect("a validated read names a slot")
+                    .clone();
+                let bytes = workspace.survey(&path).map_err(|e| e.to_string())?;
+                policy
+                    .defer(
+                        "read_file",
+                        out_slot,
+                        &Labelled::trusted(path.clone()),
+                        bytes,
+                        slots,
+                    )
+                    .map_err(|d| d.to_string())?;
+                return Ok(Done {
+                    note: format!("{bytes} bytes, read when something needs them"),
+                    ..Done::default()
+                });
+            }
+
+            fetch(policy, slots, step, |policy| {
+                let offset = step.count("offset").unwrap_or(1).max(1) as usize;
+                let limit = step
+                    .count("limit")
+                    .unwrap_or(u64::MAX)
+                    .min(usize::MAX as u64) as usize;
+                let page = workspace
+                    .read_page(policy, &Labelled::trusted(path.clone()), offset, limit)
+                    .map_err(|e| e.to_string())?;
+                let rendered =
+                    policy.render_in_place("read_file", &page, |page| page.lines.join("\n"));
+                let note = policy.render_in_place("read_file", &page, |page| {
+                    crate::tools::tally(page.lines.len(), "line", "lines")
+                });
+                Ok((rendered, note, path))
+            })
+        }
         "list_files" => fetch(policy, slots, step, |policy| {
             let directory = locked(policy, index, "directory")?;
             let pattern = step.arg("pattern").and_then(Arg::text).map(str::to_string);
@@ -999,6 +1073,11 @@ fn run_step<S: Sink, C: Confirmer>(
             // The instruction is the plan's, fixed before anything was read, so it is trusted
             // by the same provenance every other field of the plan is.
             let instruction = Labelled::trusted(step.text("instruction").to_string());
+
+            // Before the spec, because the spec's output label is taint over the inputs and a
+            // slot that reads its file here may come back worse than it was reserved at.
+            crate::tools::materialise(policy, workspace, slots, "process", step.reads())?;
+
             let spec = policy
                 .before_processor(&format!("step_{index}"), step.reads(), &instruction, slots)
                 .map_err(|d| d.to_string())?;
