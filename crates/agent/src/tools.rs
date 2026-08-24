@@ -217,7 +217,9 @@ pub fn available() -> Vec<Tool> {
              change a file you cannot see: read the file, process the reference it gave you \
              into the contents you want, then pass the new reference to write_file as \
              contents_ref. You are not shown its output either, and nobody reads it before \
-             it is written, so say exactly what it must be.",
+             it is written, so say exactly what it must be. It reads the whole document, so it \
+             can be asked to work out where a change goes, and to leave the document alone if \
+             it turns out not to be the one you are after.",
             json!({
                 "type": "object",
                 "properties": {
@@ -233,7 +235,9 @@ pub fn available() -> Vec<Tool> {
                                         anything shorter is what gets written out. Include the \
                                         file's name and language if that matters, because the \
                                         processor knows nothing but what you tell it and what \
-                                        the references hold."
+                                        the references hold. May be conditional: say what the \
+                                        document must look like if it is the one the task is \
+                                        about, and to return it unchanged if it is not."
                     }
                 },
                 "required": ["reads", "instruction"]

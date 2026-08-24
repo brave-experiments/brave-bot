@@ -83,6 +83,20 @@ driver carries bytes it cannot open; the user sees the diff and approves it. The
 the only thing steering the processor, and it comes from the planner, whose context holds
 nothing an attacker wrote.
 
+An instruction can ask the processor to decide as well as to rewrite, and that is what makes
+the mechanism useful rather than merely sound. The planner has not seen the file, so it has no
+edit to hand over; what it has is the task. So the instruction carries the task: "this is
+game.js; if it sets the movement speed, fix the bug that makes it double each frame; if it does
+not, return the document exactly as it was." Where several files could be the one, each is read
+into its own slot, transformed with the same instruction, and written back to the path it came
+from.
+
+Nothing about the guarantee moves when it does. The processor's judgement decides which bytes
+land in a slot nobody has read, and no more than that: the destination is a path the planner
+named, the write is one a person approves, and a file the processor chose to leave alone is
+written back byte for byte. What it costs is a write, and therefore an approval, for each
+candidate rather than for the one that changed.
+
 One thing this changes and should be said plainly: a processor is a model call, so an untrusted
 file's contents now reach the backend when the agent is asked to work on one, where before they
 would have stayed on the machine. The destination is the one a trusted directory has always sent
