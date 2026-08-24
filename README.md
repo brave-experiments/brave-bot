@@ -99,6 +99,25 @@ does not launder it.
 You are only ever prompted about one thing: **may this path stop being trusted?** The full
 rules are in [docs/trust.md](docs/trust.md).
 
+## Skills and AGENTS.md
+
+Put standing instructions in `AGENTS.md` and they apply to every task in that directory. Put a
+skill in `~/.bua/skills/<name>/SKILL.md` and it is available in every project:
+
+```markdown
+---
+name: commit-style
+description: How commit messages are written here. Use before writing one.
+---
+
+Write the subject in the imperative. Explain why in the body, never what.
+```
+
+Only the name and the description are put in front of the model, which loads the body when the
+task calls for it. Your own `~/.bua` is trusted for being yours; a project's `AGENTS.md` and
+`.bua/skills` are read through the trust map, so they load when you vouched for the directory and
+are left out when you did not. See [docs/skills.md](docs/skills.md).
+
 ## Configuration
 
 Configuration is built into the released binary, so there is nothing to set up. `bua doctor`
@@ -142,6 +161,7 @@ Requirements and limits:
 - [How it works](docs/design.md), the labelling model and the six rules it enforces
 - [Tools](docs/tools.md), what each tool touches and what it may carry
 - [Trusted directories](docs/trust.md), the trust map specification
+- [Skills](docs/skills.md), standing instructions and reusable skills, and what each is trusted for
 - [Development](docs/development.md), building, configuring, and the conventions here
 - [Credit](docs/credit.md)
 

@@ -124,6 +124,28 @@ This is **not** an upgrade path. It is the first label such text ever receives, 
 provenance the kernel tracked. If you find yourself relabelling a value that already has a
 label, stop: see the section below.
 
+## The user's own directory
+
+`~/.bua` holds history, sessions, standing instructions (`AGENTS.md`), and skills
+(`skills/<name>/SKILL.md`). Its contents are read as **trusted**, labelled by
+`Policy::label_user_configuration` from provenance rather than from the trust map, which is
+keyed by workspace-relative paths and has nothing to say about a path outside the workspace.
+
+The justification is that the directory is the user's own configuration surface, on the same
+footing as the endpoint and the model. It is not trust assumed from silence: an empty directory
+yields nothing, and placing a file there is the grant. The honest cost, which docs/skills.md
+states plainly, is that a downloaded skill is trusted as far as a pasted config file is.
+
+Never point `label_user_configuration` at a workspace path. A project's `AGENTS.md` and
+`.bua/skills` are labelled by `Workspace::read`, so the trust map decides, and asking the other
+function instead would be laundering.
+
+Both then pass `Policy::read_trusted_content` on the way into the system prompt. A source that
+refuses is **dropped entirely**, never quarantined: a reference to an instruction is no use to
+anyone, and a skill's name and description are content that would otherwise go into the prompt
+verbatim. `.bua/skills` is checked for trust before it is enumerated at all, because a directory
+name is content too.
+
 ## Labels only ever degrade
 
 Integrity may go trusted → untrusted. It may **never** go the other way. `Label::degrades_to`

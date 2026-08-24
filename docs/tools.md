@@ -1,6 +1,6 @@
 # Tools
 
-Six tools. Every argument is either **routing**, which decides what the tool touches and must
+Eight tools. Every argument is either **routing**, which decides what the tool touches and must
 be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 
 | Tool | Routing arguments | Content arguments | Result |
@@ -11,6 +11,8 @@ be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 | `write_file` | `path`, `contents_ref` | `contents` | confirmation |
 | `edit_file` | `path`, `replace_all` | `old_text`, `new_text` | confirmation |
 | `spawn_processor` | `reads` | `instruction` | a reference |
+| `load_skill` | `name` | none | the skill's text |
+| `todo_write` | none | `todos` | confirmation |
 
 Reads return the content itself when it is trusted and a reference when it is not, per R1.
 Writes are silent or shown according to the trust table in [trust.md](trust.md), per R6.
@@ -78,6 +80,15 @@ destination.
 Reading through a reference is the ordinary confined-read promotion: the model already chooses
 which file to read next, and this only changes where the name came from. `search` still returns
 one reference for the whole result, so its hits are not addresses yet.
+
+`load_skill` reads one of the skills named in the system prompt. Its `name` is routing, and it is
+promoted the way a read path is, but it is more confined than a read: the name never becomes a
+path component, it only selects from a set the driver enumerated before the turn began. A name
+holding a traversal matches nothing, because there is no lookup for it to reach. See
+[skills.md](skills.md).
+
+`todo_write` has no routing at all: it records the model's own plan, which is shown to the user
+and touches nothing.
 
 ## Processors
 
