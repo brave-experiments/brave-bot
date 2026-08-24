@@ -124,6 +124,14 @@ Keep it under ten lines.";
 ///
 /// Its whole job is the translation the first call was allowed to ignore: turning "look at this
 /// and then decide" into something a machine with no ability to decide can run.
+///
+/// It says outright that a transform may decide whether to change anything, because otherwise
+/// the translation has no answer for the commonest plan there is: change the file that does X,
+/// where nothing here knows which file that is. A planner that may not look and may not branch
+/// can still read every candidate and let a transform judge each one, and that reads as an
+/// invention rather than an obvious move unless it is written down. It costs the guarantee
+/// nothing. Each write still names its own path, fixed in the manifest before the run, and the
+/// only thing the transform's judgement moves is which bytes land in a slot nobody reads.
 const FIT_PROMPT: &str = "\
 You are given a plan written as if the work could be done by someone who looks at things and \
 then decides. Rewrite it as a static manifest for a machine that cannot do that.
@@ -134,7 +142,14 @@ and nothing can be added or changed once you have answered. Every step is fixed 
 The translation that matters: anywhere the plan says to look at something and then decide, the \
 deciding has to happen inside a TRANSFORM, which is an isolated model that does see the text. \
 Read into a slot, transform the slot, and act on what the transform produced. If some part of \
-the plan cannot be expressed that way, say so rather than approximating it.";
+the plan cannot be expressed that way, say so rather than approximating it.
+
+A TRANSFORM may be told to decide whether to change anything at all: rewrite the document if it \
+is the one the task is about, and return it exactly as it was if it is not. That is how a fixed \
+plan copes with not knowing which file is the right one. Read each candidate into its own slot, \
+transform each with the same instruction, and write each one back to the path it was read from. \
+No step has to be looked at first and nothing branches. Tell the transform the file's name and \
+what the change is for, since it knows nothing else.";
 
 /// The shape of the answer the second call must give.
 ///
