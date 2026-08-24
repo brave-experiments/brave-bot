@@ -19,6 +19,16 @@ Writes are silent or shown according to the trust table in [trust.md](trust.md),
 returned, and gives the offset to continue from. A file that is not text is reported as binary
 rather than as a decoding error.
 
+A read whose result would be quarantined does not open the file. There is nothing to show the
+planner, so the slot holds the path and the reference says the size and that nothing has looked
+yet; the file is read when a processor or a write needs the bytes, and never if neither does.
+That matters because most of what an agent reads in a directory nobody vouched for is a file it
+turns out not to want. What is deferred is only the reading: the path is checked, the file is
+confirmed to be there and to be text, and the label is fixed from the trust map, all at the
+moment the planner asks. When the bytes are finally read the path is checked again, so a file
+that lost its trust in between is read as untrusted rather than at the label its reference was
+issued with.
+
 `list_files` and `search` take a glob (`*.rs`, `src/**/*.rs`; `*` and `?` do not cross `/`,
 `**` does, brace groups are unsupported) and skip version-control and build directories. Both
 cap their output and **say so when they do**. Silence there would let the model conclude a file

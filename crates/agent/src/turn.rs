@@ -591,15 +591,28 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 output.origin.clone()
             };
 
-            let presented = policy
-                .present(
+            // A read of a file the planner may not see reserves the slot instead of filling
+            // it. The planner is told the same thing either way, a reference and a size, and
+            // the file is opened when a processor or a write finally needs the bytes.
+            let presented = match &output.deferred {
+                Some(deferral) => policy
+                    .defer(
+                        "read_file",
+                        slot,
+                        &deferral.path,
+                        deferral.bytes,
+                        conversation.quarantine(),
+                    )
+                    .map(Presentation::Quarantined),
+                None => policy.present(
                     "tool_result",
                     slot,
                     &origin,
                     &output.text,
                     conversation.quarantine(),
-                )
-                .map_err(|d| TurnError::Precommit(d.to_string()))?;
+                ),
+            }
+            .map_err(|d| TurnError::Precommit(d.to_string()))?;
 
             let body = match &presented {
                 Presentation::Visible(text) => {

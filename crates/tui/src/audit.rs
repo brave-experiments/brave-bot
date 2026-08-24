@@ -46,6 +46,11 @@ pub fn as_line(event: &Event) -> TrailLine {
             TrailLine::passed(format!("{capability} produced {label}"))
         }
         Event::SlotWritten { slot, label } => TrailLine::passed(format!("slot {slot} at {label}")),
+        Event::SlotDeferred {
+            slot,
+            label,
+            origin,
+        } => TrailLine::passed(format!("slot {slot} holds {origin}, unread, at {label}")),
         Event::Declassified { slot, from, to, .. } => {
             TrailLine::passed(format!("released {slot} {from} → {to}"))
         }
@@ -88,6 +93,12 @@ pub fn recalled(event: &Value) -> Option<TrailLine> {
         "slot_written" => format!(
             "slot {} at {}",
             event["slot"].as_str()?,
+            label_text(&event["label"])
+        ),
+        "slot_deferred" => format!(
+            "slot {} holds {}, unread, at {}",
+            event["slot"].as_str()?,
+            event["origin"].as_str()?,
             label_text(&event["label"])
         ),
         "declassified" => format!(
@@ -179,6 +190,16 @@ pub fn as_json(event: &Event) -> Value {
         Event::SlotWritten { slot, label } => json!({
             "kind": "slot_written",
             "slot": slot.as_str(),
+            "label": label_json(*label),
+        }),
+        Event::SlotDeferred {
+            slot,
+            label,
+            origin,
+        } => json!({
+            "kind": "slot_deferred",
+            "slot": slot.as_str(),
+            "origin": origin,
             "label": label_json(*label),
         }),
         Event::Observed { capability, label } => json!({
