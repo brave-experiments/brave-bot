@@ -8,6 +8,7 @@ use bua_config::Config;
 use bua_core::cancel::Cancel;
 use bua_core::event::{Event, RecordingSink, Role};
 use bua_core::trust::TrustStore;
+use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -31,6 +32,9 @@ fn main() -> ExitCode {
             Some(id) => resume_named(id),
             None => interactive(bua_tui::app::Start::Choose),
         },
+        // The flag may lead, as it does for every other agent: `bua -p "task"`. Without this arm
+        // it would be caught below as an unknown option.
+        Some("-p" | "--print") => run_task(&args),
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
@@ -49,6 +53,7 @@ fn print_help() {
     println!("Usage:");
     println!("  bua                               Start an interactive session");
     println!("  bua \"<task>\" [--file <path>]...   Run a single task");
+    println!("  cat file | bua -p \"<task>\"        ...with piped input, never trusted");
     println!("  bua --resume [id]                 Pick up a session in this directory");
     println!("  bua doctor                        Check configuration and confinement");
     println!("  bua import-leo-creds [channel]    Import a Leo Premium subscription");
@@ -64,16 +69,18 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --file <path>    Include a workspace file as context (repeatable)");
+    println!("  -p, --print      Non-interactive. Reads piped stdin as quarantined context");
     println!("  --trace          Print the audit trail");
     println!("  -h, --help       Show this message");
     println!("  -V, --version    Show the version");
 }
 
-/// Parse `<prompt> [--file path]... [--trace]`.
+/// Parse `<prompt> [--file path]... [--trace] [-p]`.
 fn run_task(args: &[String]) -> ExitCode {
     let mut prompt = String::new();
     let mut files = Vec::new();
     let mut trace = false;
+    let mut print = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -92,6 +99,10 @@ fn run_task(args: &[String]) -> ExitCode {
                 trace = true;
                 index += 1;
             }
+            "-p" | "--print" => {
+                print = true;
+                index += 1;
+            }
             other if prompt.is_empty() => {
                 prompt = other.to_string();
                 index += 1;
@@ -103,7 +114,23 @@ fn run_task(args: &[String]) -> ExitCode {
         }
     }
 
-    if prompt.is_empty() {
+    // Read before the emptiness check below, since `cat notes.md | bua -p` is a complete
+    // invocation: the pipe is the input and the prompt may be left off.
+    let piped = if print {
+        let stdin = std::io::stdin();
+        let is_tty = stdin.is_terminal();
+        match piped_input(stdin.lock(), is_tty) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+
+    if prompt.is_empty() && piped.is_none() {
         eprintln!("a task is required");
         return ExitCode::FAILURE;
     }
@@ -130,6 +157,9 @@ fn run_task(args: &[String]) -> ExitCode {
     let mut task = Task::new(prompt);
     for file in files {
         task = task.with_file(file);
+    }
+    if let Some(text) = piped {
+        task = task.with_piped_input(text);
     }
 
     // A one-shot run has nobody to ask about a write, so writes are refused rather than
@@ -173,6 +203,50 @@ fn run_task(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// What a pipe may carry before it is refused.
+///
+/// Matches the cap other agents document, and exists because the alternative is a `bua -p` that a
+/// stray `cat` of a disk image holds open while it fills memory.
+const PIPE_CAP: usize = 10 * 1024 * 1024;
+
+/// Read input piped into the process, if any.
+///
+/// Generic over the source, as [`progress::Progress`] is over its sink, so a test can pass bytes
+/// and a terminal answer without a real pipe.
+///
+/// A terminal means nothing was piped, and a read error means nobody is feeding us: neither is a
+/// reason to stop, so the run continues on the argument prompt. Exceeding the cap is different,
+/// since silently truncating would hand the model a fragment of what the user piped and say
+/// nothing about it.
+fn piped_input(source: impl Read, is_tty: bool) -> Result<Option<String>, String> {
+    if is_tty {
+        return Ok(None);
+    }
+
+    // One byte past the cap, so the buffer that proves the input was too large is not itself the
+    // problem the cap exists to avoid.
+    let mut buffer = Vec::new();
+    if let Err(err) = source.take(PIPE_CAP as u64 + 1).read_to_end(&mut buffer) {
+        eprintln!("warning: could not read piped input: {err}");
+        return Ok(None);
+    }
+
+    if buffer.len() > PIPE_CAP {
+        return Err(format!(
+            "piped input is larger than {} MiB. Write it to a file and name that instead",
+            PIPE_CAP / (1024 * 1024)
+        ));
+    }
+
+    if buffer.is_empty() {
+        return Ok(None);
+    }
+
+    // Lossy because the bytes are never decided from: they go into a slot and the planner is shown
+    // a reference, so a replacement character changes nothing that matters.
+    Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
 }
 
 /// Print the audit trail: what was checked, allowed, and refused.
@@ -450,5 +524,40 @@ fn report_confinement(ok: &mut bool) {
             eprintln!("  {err}");
             *ok = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An interactive `bua -p "task"` must not block waiting for a pipe that is not coming.
+    #[test]
+    fn a_terminal_stdin_is_not_read() {
+        let source: &[u8] = b"this would be read from a pipe";
+        assert_eq!(piped_input(source, true), Ok(None));
+    }
+
+    #[test]
+    fn piped_bytes_are_read_when_stdin_is_not_a_terminal() {
+        let source: &[u8] = b"a build log\n";
+        assert_eq!(piped_input(source, false), Ok(Some("a build log\n".into())));
+    }
+
+    /// Truncating would hand the planner a fragment of what the user piped without saying so, and
+    /// a quarantined fragment is one nobody can notice is short.
+    #[test]
+    fn input_over_the_cap_is_refused() {
+        let oversized = vec![b'x'; PIPE_CAP + 1];
+        assert!(
+            piped_input(oversized.as_slice(), false).is_err(),
+            "an oversized pipe must be refused, not truncated"
+        );
+
+        let at_the_cap = vec![b'x'; PIPE_CAP];
+        assert!(
+            piped_input(at_the_cap.as_slice(), false).is_ok(),
+            "the cap itself is allowed"
+        );
     }
 }
