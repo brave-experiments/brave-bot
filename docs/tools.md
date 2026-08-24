@@ -122,6 +122,19 @@ of it, which is why a private slot may become a file body when it may not become
 or a command line. The trust map then records that path as untrusted, so reading it back does
 not launder it.
 
+## What bounds a turn
+
+A turn may make 40 rounds of tool calls. On the fortieth the tools are taken away rather than the
+turn ended: the next request offers none, the planner is told it has none left, and it answers
+with what it has. A call it asks for anyway is dropped rather than run.
+
+This is not a safety property. A gate refuses on the thousandth round what it refuses on the
+first, and nothing here gets more dangerous for running longer. It is a bound on futility, and
+the case that needs it is a directory nobody vouched for: every listing comes back as a
+reference, no filename can be learned from one, and a planner looking for a file it cannot name
+will try glob after glob for as long as anyone lets it. Forty is well past what real work in a
+large repository takes, and well short of an afternoon.
+
 ## Who decides what
 
 The model may choose *which* file to read next, because a read cannot change anything and
