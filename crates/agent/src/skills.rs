@@ -26,6 +26,13 @@
 //! use to anyone, and a name from a file an attacker wrote would be untrusted content in the
 //! planner's context.
 
+use crate::workspace::Workspace;
+use bua_core::capability::Capability;
+use bua_core::event::Sink;
+use bua_core::policy::Policy;
+use bua_core::value::Labelled;
+use std::path::Path;
+
 /// What a `SKILL.md` declares about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frontmatter {
@@ -109,6 +116,241 @@ pub fn body_after_frontmatter(text: &str) -> &str {
     }
     // No closing marker, so there was no frontmatter to strip.
     text
+}
+
+/// A skill the planner may ask for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skill {
+    /// What the planner names to load it.
+    pub name: String,
+    /// When to use it, which is what the planner decides from.
+    pub description: String,
+    /// Where it came from, for the audit trail and for what the user is told.
+    pub origin: String,
+    /// The instructions themselves, already gated as trusted.
+    body: String,
+}
+
+impl Skill {
+    /// The instructions, which reach the planner only when it asks for them by name.
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+}
+
+/// Something the user should be told about discovery, in words a person reads.
+///
+/// A skill that was skipped is worth a line: silence would read as "you have no skills" to
+/// someone who just wrote one, and the reason is usually a typo in the frontmatter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub message: String,
+}
+
+impl Notice {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// The skills available this turn, in the order they are offered to the planner.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalogue {
+    entries: Vec<Skill>,
+}
+
+impl Catalogue {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Skill> {
+        self.entries.iter()
+    }
+
+    /// The skill by that name, or `None`.
+    ///
+    /// The planner selects from this set rather than naming a path, so whatever it asks for
+    /// either matches something the driver enumerated or matches nothing at all. That is what
+    /// keeps a proposed name from reaching the filesystem.
+    pub fn get(&self, name: &str) -> Option<&Skill> {
+        self.entries.iter().find(|s| s.name == name)
+    }
+
+    /// Add a skill, replacing one of the same name.
+    ///
+    /// Later wins, and discovery visits the home directory before the workspace, so a project's
+    /// own skill shadows a global one. That is the same "most specific wins" the trust map uses.
+    fn insert(&mut self, skill: Skill) {
+        match self.entries.iter_mut().find(|s| s.name == skill.name) {
+            Some(existing) => *existing = skill,
+            None => self.entries.push(skill),
+        }
+    }
+
+    /// The lines that go in the system prompt: one per skill, name and when to use it.
+    ///
+    /// Never the body. A directory of long skills would otherwise fill a context that has room
+    /// for the task instead, which is the whole reason the body waits to be asked for.
+    pub fn describe_for_prompt(&self) -> String {
+        let mut out = String::new();
+        for skill in &self.entries {
+            out.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+        }
+        out
+    }
+}
+
+/// The directory holding skills, inside the user's own directory and inside a project.
+const SKILLS: &str = "skills";
+const WORKSPACE_SKILLS: &str = ".bua/skills";
+
+/// The one file that makes a directory a skill.
+const SKILL_FILE: &str = "SKILL.md";
+
+/// Find the skills available to this turn.
+///
+/// Two sources, visited least specific first so the more specific shadows it: the user's own
+/// directory, whose contents are trusted for being the user's own, and the project, whose
+/// contents are trusted only if the trust map says so.
+///
+/// A skill from a path nobody vouched for is **dropped, not quarantined**. Its name and its
+/// description would go into the system prompt verbatim, so offering a reference in their place
+/// would be no use to the planner, and offering the strings themselves would be untrusted
+/// content in the planner's context. There is no third option, and dropping it is the one that
+/// holds the rule.
+pub fn discover<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    home: Option<&Path>,
+) -> (Catalogue, Vec<Notice>) {
+    let mut catalogue = Catalogue::default();
+    let mut notices = Vec::new();
+
+    if let Some(home) = home {
+        discover_home(policy, &home.join(SKILLS), &mut catalogue, &mut notices);
+    }
+    discover_workspace(policy, workspace, &mut catalogue, &mut notices);
+
+    (catalogue, notices)
+}
+
+/// Skills from `~/.bua/skills`, labelled from where they sit.
+fn discover_home<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    root: &Path,
+    catalogue: &mut Catalogue,
+    notices: &mut Vec<Notice>,
+) {
+    if policy.before_capability(Capability::FileRead).is_err() {
+        return;
+    }
+
+    for name in skill_directories(root) {
+        let file = root.join(&name).join(SKILL_FILE);
+        let origin = format!("~/.bua/{SKILLS}/{name}/{SKILL_FILE}");
+
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+
+        // Labelled here and gated below rather than used directly. The gate is the same one a
+        // workspace skill passes through, so there is one way into the system prompt and it
+        // refuses, and the trail records both halves.
+        let labelled = policy.label_user_configuration(&origin, text);
+        let Ok(text) = policy.read_trusted_content("skills", &labelled) else {
+            continue;
+        };
+
+        match parse_frontmatter(&text) {
+            Some(front) => catalogue.insert(Skill {
+                name: front.name,
+                description: front.description,
+                body: body_after_frontmatter(&text).to_string(),
+                origin,
+            }),
+            None => notices.push(Notice::new(format!(
+                "{origin} was skipped: it needs a name and a description in its frontmatter"
+            ))),
+        }
+    }
+}
+
+/// Skills from `<workspace>/.bua/skills`, labelled by the trust map.
+fn discover_workspace<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    catalogue: &mut Catalogue,
+    notices: &mut Vec<Notice>,
+) {
+    let root = workspace.root().join(WORKSPACE_SKILLS);
+    let names = skill_directories(&root);
+    if names.is_empty() {
+        return;
+    }
+
+    // Checked before anything is enumerated, and checked on the label rather than on any
+    // content. A directory name is content too: a skill directory in a project nobody vouched
+    // for could be named to read like an instruction, and it would reach the user's screen in a
+    // notice even if it never reached the prompt.
+    if !policy.trust().is_trusted(WORKSPACE_SKILLS) {
+        notices.push(Notice::new(format!(
+            "{} skills in {WORKSPACE_SKILLS} were not loaded: this directory is not trusted",
+            names.len()
+        )));
+        return;
+    }
+
+    for name in names {
+        let relative = format!("{WORKSPACE_SKILLS}/{name}/{SKILL_FILE}");
+
+        let Ok(contents) = workspace.read(policy, &Labelled::trusted(relative.clone())) else {
+            continue;
+        };
+        let Ok(text) = policy.read_trusted_content("skills", &contents) else {
+            notices.push(Notice::new(format!(
+                "{relative} was not loaded: it is not trusted"
+            )));
+            continue;
+        };
+
+        match parse_frontmatter(&text) {
+            Some(front) => catalogue.insert(Skill {
+                name: front.name,
+                description: front.description,
+                body: body_after_frontmatter(&text).to_string(),
+                origin: relative,
+            }),
+            None => notices.push(Notice::new(format!(
+                "{relative} was skipped: it needs a name and a description in its frontmatter"
+            ))),
+        }
+    }
+}
+
+/// The names of the directories under a skills root, sorted.
+///
+/// Sorted so a turn offers the same skills in the same order every time. An order that came from
+/// the filesystem would vary by machine, which would make the prompt vary with it.
+fn skill_directories(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| root.join(name).join(SKILL_FILE).is_file())
+        .collect();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
