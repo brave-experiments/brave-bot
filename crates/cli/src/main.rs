@@ -187,6 +187,13 @@ fn run_task(args: &[String]) -> ExitCode {
         ),
     };
 
+    // A manifest run is written down like any other session. It cannot be resumed, and the
+    // picker says so, but "cannot be continued" is a different thing from "leaves no trace":
+    // the run somebody needs to read is the one that stopped, and until now it left nothing.
+    if mode == Mode::Manifest {
+        record_manifest_run(&workspace, &task.prompt, &outcome, &sink);
+    }
+
     match outcome {
         Ok(outcome) => {
             // The reply is untrusted model output. Printing it is safe, since the
@@ -235,6 +242,56 @@ fn run_task(args: &[String]) -> ExitCode {
     }
 }
 
+/// Write a manifest run into the session store, finished or not.
+///
+/// Best-effort, like everything else under `~/.bua`: a run that cannot be written down still
+/// ran, and failing the command because the record did not save would be the wrong trade.
+fn record_manifest_run(
+    workspace: &bua_agent::Workspace,
+    prompt: &str,
+    outcome: &Result<bua_agent::Outcome, bua_agent::TurnError>,
+    sink: &RecordingSink,
+) {
+    use bua_tui::sessions::{Handle, Standing, StoredManifest};
+
+    let (stored, trust) = match outcome {
+        Ok(finished) => (
+            finished
+                .attempt
+                .as_ref()
+                .map(|attempt| StoredManifest::of(attempt, None)),
+            finished.trust.clone(),
+        ),
+        Err(bua_agent::TurnError::Manifest { attempt, detail }) => (
+            Some(StoredManifest::of(attempt, Some(detail.clone()))),
+            TrustStore::new(),
+        ),
+        // Cancelled, or a failure with nothing to show. Nothing worth a record.
+        Err(_) => (None, TrustStore::new()),
+    };
+
+    let Some(stored) = stored else {
+        return;
+    };
+
+    let mut handle = Handle::begin(workspace.root());
+    handle.save(
+        prompt,
+        Standing {
+            // Empty, and it has to be: a manifest run has no conversation, which is the same
+            // fact that makes it unresumable. Filling this with something conversation-shaped
+            // would make the picker offer to continue a run that cannot be continued.
+            conversation: &bua_agent::Conversation::new().snapshot(),
+            turns: 1,
+            tokens: outcome.as_ref().map(|o| o.tokens).unwrap_or(0),
+            todos: &std::collections::BTreeMap::new(),
+            trust: &trust,
+            manifest: Some(&stored),
+        },
+    );
+    handle.append_audit(1, sink.events());
+}
+
 /// Print the audit trail: what was checked, allowed, and refused.
 fn print_trace(sink: &RecordingSink) {
     println!("audit trail");
@@ -275,6 +332,12 @@ fn resume_named(id: &str) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match bua_tui::sessions::load(&directory, id) {
+        // Refused by name as well as in the picker, since `--resume <id>` skips the picker
+        // entirely and would otherwise resume a manifest run into an empty conversation.
+        Some(record) if record.manifest.is_some() => {
+            eprintln!("{}", bua_tui::resume::MANIFEST_NOTE);
+            ExitCode::FAILURE
+        }
         Some(record) => interactive(bua_tui::app::Start::Resuming(Box::new(record))),
         None => {
             eprintln!("no session {id} in this directory");
