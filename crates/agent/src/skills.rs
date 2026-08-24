@@ -119,7 +119,10 @@ pub fn body_after_frontmatter(text: &str) -> &str {
 }
 
 /// A skill the planner may ask for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Deliberately not comparable: it holds a `Labelled`, which has no `PartialEq` precisely so
+/// that content cannot be decided from by comparing it.
+#[derive(Debug, Clone)]
 pub struct Skill {
     /// What the planner names to load it.
     pub name: String,
@@ -127,13 +130,17 @@ pub struct Skill {
     pub description: String,
     /// Where it came from, for the audit trail and for what the user is told.
     pub origin: String,
-    /// The instructions themselves, already gated as trusted.
-    body: String,
+    /// The instructions themselves, still carrying the label they were read with.
+    ///
+    /// Kept labelled rather than as bare text so the planner is shown them through
+    /// `Policy::present` like any other content. Nothing here re-labels: the value is the one
+    /// the source produced, reshaped in the kernel to drop the frontmatter.
+    body: Labelled<String>,
 }
 
 impl Skill {
     /// The instructions, which reach the planner only when it asks for them by name.
-    pub fn body(&self) -> &str {
+    pub fn body(&self) -> &Labelled<String> {
         &self.body
     }
 }
@@ -156,7 +163,7 @@ impl Notice {
 }
 
 /// The skills available this turn, in the order they are offered to the planner.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct Catalogue {
     entries: Vec<Skill>,
 }
@@ -269,12 +276,17 @@ fn discover_home<S: Sink>(
         };
 
         match parse_frontmatter(&text) {
-            Some(front) => catalogue.insert(Skill {
-                name: front.name,
-                description: front.description,
-                body: body_after_frontmatter(&text).to_string(),
-                origin,
-            }),
+            Some(front) => {
+                let body = policy.render_in_place("skills", &labelled, |whole| {
+                    body_after_frontmatter(&whole).to_string()
+                });
+                catalogue.insert(Skill {
+                    name: front.name,
+                    description: front.description,
+                    body,
+                    origin,
+                });
+            }
             None => notices.push(Notice::new(format!(
                 "{origin} was skipped: it needs a name and a description in its frontmatter"
             ))),
@@ -321,12 +333,17 @@ fn discover_workspace<S: Sink>(
         };
 
         match parse_frontmatter(&text) {
-            Some(front) => catalogue.insert(Skill {
-                name: front.name,
-                description: front.description,
-                body: body_after_frontmatter(&text).to_string(),
-                origin: relative,
-            }),
+            Some(front) => {
+                let body = policy.render_in_place("skills", &contents, |whole| {
+                    body_after_frontmatter(&whole).to_string()
+                });
+                catalogue.insert(Skill {
+                    name: front.name,
+                    description: front.description,
+                    body,
+                    origin: relative,
+                });
+            }
             None => notices.push(Notice::new(format!(
                 "{relative} was skipped: it needs a name and a description in its frontmatter"
             ))),

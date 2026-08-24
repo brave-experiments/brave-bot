@@ -54,6 +54,21 @@ fn write_skill(root: &Path, dir: &str, name: &str, description: &str, body: &str
     .expect("write skill");
 }
 
+/// The body of a named skill, as text, asserting that it is trusted on the way past.
+///
+/// A skill body is labelled, and a `Labelled` cannot be compared or printed, which is the point.
+/// A body from the workspace is `(T,priv)` and one from the user's own directory is `(T,pub)`:
+/// both are trusted, and trusted is what `Policy::present` shows the planner.
+fn body_of(catalogue: &skills::Catalogue, name: &str) -> String {
+    let body = catalogue.get(name).expect("the skill is offered").body();
+    assert!(
+        body.label().is_trusted(),
+        "a skill body reached the catalogue untrusted: {:?}",
+        body.label()
+    );
+    body.clone().into_parts_for_decoding().0
+}
+
 fn routing() -> Routing {
     let mut r = Routing::new();
     r.insert_trusted("task", "do the work");
@@ -171,10 +186,7 @@ fn a_home_skill_is_not_labelled_by_a_rule_meant_for_the_workspace() {
     };
 
     assert_eq!(catalogue.len(), 1, "the user's own skill was not offered");
-    assert_eq!(
-        catalogue.get("commit-style").map(|s| s.body()),
-        Some("body")
-    );
+    assert_eq!(body_of(&catalogue, "commit-style"), "body");
 }
 
 /// Most specific wins, as it does in the trust map. A project that ships its own version of a
@@ -207,8 +219,11 @@ fn a_workspace_skill_shadows_a_home_skill_of_the_same_name() {
     };
 
     assert_eq!(catalogue.len(), 1, "the same skill was offered twice");
-    let skill = catalogue.get("commit-style").expect("offered");
-    assert_eq!(skill.body(), "local", "the global skill won");
+    assert_eq!(
+        body_of(&catalogue, "commit-style"),
+        "local",
+        "the global skill won"
+    );
 }
 
 /// A file that one turn poisoned is recorded untrusted, and reading it back as a skill would

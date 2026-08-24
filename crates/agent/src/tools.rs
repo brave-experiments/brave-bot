@@ -271,6 +271,20 @@ pub fn available() -> Vec<Tool> {
                 "required": ["reads", "instruction"]
             }),
         ),
+        Tool::function(
+            "load_skill",
+            "Read one of the skills listed for you. A skill is instructions the user wrote for a              kind of task. Load one before doing that kind of work, and follow what it says.              Only the names you were listed exist; there is no path to give and nothing else to              browse.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The name of a skill exactly as it was listed for you,                                         e.g. commit-style."
+                    }
+                },
+                "required": ["name"]
+            }),
+        ),
     ]
 }
 
@@ -432,6 +446,7 @@ fn verb_for(tool: &str) -> &'static str {
         "edit_file" => "Update",
         "todo_write" => "Plan",
         "spawn_processor" => "Process",
+        "load_skill" => "Skill",
         _ => "Tool",
     }
 }
@@ -445,6 +460,7 @@ fn target_key(tool: &str) -> Option<&'static str> {
         "read_file" | "write_file" | "edit_file" => Some("path"),
         "list_files" => Some("directory"),
         "search" => Some("pattern"),
+        "load_skill" => Some("name"),
         _ => None,
     }
 }
@@ -644,6 +660,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
+        "load_skill" => load_skill(policy, tools.skills, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
 
@@ -1523,6 +1540,51 @@ fn spawn_processor<S: Sink>(
     }
 }
 
+/// Read a skill the planner was listed.
+///
+/// The name arrives as model output, so it is promoted the way a read path is: the operation
+/// changes nothing and is confined to a boundary the user established. It is in fact more
+/// confined than a read. The promoted name never becomes a path component; it only **selects**
+/// from the set the driver enumerated before the turn began, so a name naming a traversal, an
+/// absolute path, or anything else at all matches nothing and the call is refused. There is no
+/// filesystem lookup for it to reach.
+///
+/// The body keeps the label it was read with and goes back like any other tool result, so
+/// `Policy::present` is what decides whether the planner sees it.
+fn load_skill<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    skills: &crate::skills::Catalogue,
+    arguments: &Value,
+) -> Produced {
+    let Some(proposed) = argument(arguments, "name") else {
+        return problem("error: 'name' is required and must be a string");
+    };
+
+    let name = match policy.promote_confined_read("load_skill", "name", &proposed) {
+        Ok(name) => name,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+    // Safe to read: promotion just proved this is (T,pub), and comparing trusted text decides
+    // nothing an attacker steers.
+    let Ok(name) = name.into_trusted() else {
+        return problem("error: the skill name was not usable");
+    };
+
+    let Some(skill) = skills.get(&name) else {
+        // The names are listed in the system prompt, so this is a mistake worth naming rather
+        // than a refusal worth explaining.
+        return problem(format!(
+            "error: no skill named '{name}'. The skills available to you are listed for you; \
+             there are no others."
+        ));
+    };
+
+    let note = note_for(policy, "load_skill", skill.body(), |text: String| {
+        tally(text.lines().count(), "line", "lines")
+    });
+    Produced::new(skill.body().clone(), skill.origin.clone(), note)
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -1634,7 +1696,8 @@ mod tests {
                 "edit_file",
                 "todo_write",
                 "search",
-                "spawn_processor"
+                "spawn_processor",
+                "load_skill"
             ]
         );
     }
