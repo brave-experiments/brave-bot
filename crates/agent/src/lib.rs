@@ -12,6 +12,7 @@ pub mod home;
 pub mod processor;
 pub mod replace;
 pub mod report;
+pub mod skills;
 pub mod subscription;
 pub mod tools;
 pub mod turn;
