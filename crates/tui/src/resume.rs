@@ -25,6 +25,8 @@ pub struct Picker {
     sessions: Vec<Summary>,
     /// What has been typed to narrow it.
     search: String,
+    /// A refusal to show under the list, cleared by the next key.
+    note: Option<&'static str>,
     /// Which of the matching sessions is under the cursor.
     selected: usize,
     /// The project these sessions belong to, for the heading.
@@ -36,6 +38,7 @@ impl Picker {
         Self {
             sessions,
             search: String::new(),
+            note: None,
             selected: 0,
             project: project.into(),
         }
@@ -98,7 +101,21 @@ pub enum Outcome {
     Resume,
     /// Leave without resuming anything.
     Cancel,
+    /// The session under the cursor cannot be continued, with the reason to show.
+    ///
+    /// Distinct from `Continue` so the refusal is said out loud. A picker that quietly ignored
+    /// Enter would look broken, and the reason is worth knowing: the record is still there to
+    /// read, it just has nothing to carry on from.
+    Refused(&'static str),
 }
+
+/// Why a manifest run cannot be picked up.
+///
+/// A session is turns over one conversation and a manifest run has none: the planner is never
+/// shown a result, so there is nothing for a later turn to continue. The record is written all
+/// the same, because what a run produced is worth reading whether or not it can be resumed.
+pub const MANIFEST_NOTE: &str =
+    "that was a manifest run, which cannot be continued; read it with --trace or start fresh";
 
 /// Interpret one key press.
 ///
@@ -113,7 +130,10 @@ pub fn handle_key(picker: &mut Picker, code: KeyCode, modifiers: KeyModifiers) -
 
     match code {
         KeyCode::Esc => Outcome::Cancel,
-        KeyCode::Enter => Outcome::Resume,
+        KeyCode::Enter => match picker.chosen() {
+            Some(session) if session.manifest => Outcome::Refused(MANIFEST_NOTE),
+            _ => Outcome::Resume,
+        },
         KeyCode::Up => {
             picker.up();
             Outcome::Continue
@@ -156,9 +176,17 @@ pub fn choose<B: Backend>(terminal: &mut Terminal<B>, project: &Path) -> Option<
             continue;
         }
 
+        // Cleared on every key, so a refusal stays up until the user does something and no
+        // longer than that.
+        picker.note = None;
+
         match handle_key(&mut picker, key.code, key.modifiers) {
             Outcome::Continue => continue,
             Outcome::Cancel => return None,
+            Outcome::Refused(note) => {
+                picker.note = Some(note);
+                continue;
+            }
             Outcome::Resume => {
                 let id = picker.chosen()?.id.clone();
                 return sessions::load(project, &id);
@@ -218,10 +246,18 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 
     frame.render_widget(Paragraph::new(list_lines(picker, layout[3])), layout[3]);
 
+    let (footer, colour) = match picker.note {
+        Some(note) => (format!("  {note}"), Color::Yellow),
+        None => (
+            "  ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session"
+                .to_string(),
+            Color::DarkGray,
+        ),
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session",
-            Style::default().fg(Color::DarkGray),
+            footer,
+            Style::default().fg(colour),
         ))),
         layout[4],
     );
@@ -269,6 +305,10 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
 /// The second line of an entry: when, where and how much.
 fn describe(session: &Summary) -> String {
     let mut parts = vec![sessions::how_long_ago(session.updated)];
+    // Said on the row rather than on selection, so nobody picks one and then finds out.
+    if session.manifest {
+        parts.push("manifest".to_string());
+    }
     if let Some(branch) = &session.branch {
         parts.push(branch.clone());
     }
@@ -288,6 +328,13 @@ mod tests {
             updated,
             bytes: 1024,
             manifest: false,
+        }
+    }
+
+    fn manifest_summary(id: &str, title: &str, updated: u64) -> Summary {
+        Summary {
+            manifest: true,
+            ..summary(id, title, updated)
         }
     }
 
@@ -408,5 +455,36 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("a clock")
             .as_secs()
+    }
+
+    /// A manifest run has no conversation to continue, so Enter must say so rather than
+    /// resuming an empty one or appearing to do nothing.
+    #[test]
+    fn a_manifest_session_cannot_be_resumed() {
+        let mut picker = Picker::new(
+            vec![manifest_summary("1", "summarise the docs", 100)],
+            "/tmp/x",
+        );
+        assert_eq!(
+            handle_key(&mut picker, KeyCode::Enter, KeyModifiers::NONE),
+            Outcome::Refused(MANIFEST_NOTE)
+        );
+    }
+
+    /// The ordinary case must keep working, or the check is refusing everything.
+    #[test]
+    fn a_turn_session_still_resumes() {
+        let mut picker = Picker::new(vec![summary("1", "fix the bug", 100)], "/tmp/x");
+        assert_eq!(
+            handle_key(&mut picker, KeyCode::Enter, KeyModifiers::NONE),
+            Outcome::Resume
+        );
+    }
+
+    /// The row says so before it is chosen. Finding out after selecting is finding out too late.
+    #[test]
+    fn a_manifest_run_is_marked_in_the_list() {
+        assert!(describe(&manifest_summary("1", "t", 100)).contains("manifest"));
+        assert!(!describe(&summary("1", "t", 100)).contains("manifest"));
     }
 }
