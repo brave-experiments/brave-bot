@@ -14,28 +14,45 @@ use bua_core::trust::TrustStore;
 use bua_tui::sessions::{self, Handle, Standing};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
+
+/// Serialises the tests in this binary.
+///
+/// `HOME` is process-wide, and each test points it at a directory of its own, so two running at
+/// once would send one test's writes into the other's home. Held for the lifetime of the
+/// [`Scratch`], which is exactly the span over which `HOME` belongs to one test.
+///
+/// This was a comment saying there was only one test function here for that reason. That is not
+/// a property anyone can maintain, and the next test added broke the first.
+static HOME: Mutex<()> = Mutex::new(());
 
 /// A scratch home, so a test never touches the real one.
-///
-/// `HOME` is process-wide, so these tests must not run beside each other. They are in one file
-/// and one test function for that reason: separate `#[test]`s would run on separate threads and
-/// fight over it.
 struct Scratch {
     home: PathBuf,
     project: PathBuf,
+    /// Dropped last, releasing `HOME` only once this test's directory is gone.
+    _lock: MutexGuard<'static, ()>,
 }
 
 impl Scratch {
     fn new(name: &str) -> Self {
+        // A test that panicked while holding this poisoned nothing worth protecting: the guard
+        // covers an environment variable, and the next test overwrites it anyway.
+        let lock = HOME.lock().unwrap_or_else(|held| held.into_inner());
         let root = std::env::temp_dir().join(format!("bua-sessions-test-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let project = root.join("project");
         std::fs::create_dir_all(&home).expect("create home");
         std::fs::create_dir_all(&project).expect("create project");
-        // SAFETY: single-threaded test, and no other test in this binary reads HOME.
+        // SAFETY: `HOME` is held for as long as this value lives, so no other test in this
+        // binary is reading or writing the variable while this one owns it.
         unsafe { std::env::set_var("HOME", &home) };
-        Self { home, project }
+        Self {
+            home,
+            project,
+            _lock: lock,
+        }
     }
 }
 
