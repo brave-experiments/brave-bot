@@ -156,7 +156,7 @@ fn run_task(args: &[String]) -> ExitCode {
     let egress = bua_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let mut task = Task::new(prompt);
+    let mut task = Task::new(prompt).with_home(bua_agent::home::directory());
     for file in files {
         task = task.with_file(file);
     }

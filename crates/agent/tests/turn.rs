@@ -3973,3 +3973,50 @@ fn a_tool_call_from_a_processor_does_nothing() {
         "SAFE OUTPUT"
     );
 }
+
+/// The home directory is the caller's to name, and a task that has not named one has none. This
+/// pins the default: a library that read `$HOME` here would make every test in this file depend
+/// on whatever the developer happened to have installed under it.
+#[test]
+fn a_task_has_no_home_until_a_caller_names_one() {
+    let task = Task::new("anything");
+    assert_eq!(task.home, None, "a task reached for a home nobody gave it");
+
+    let named = Task::new("anything").with_home(Some(PathBuf::from("/somewhere/.bua")));
+    assert_eq!(named.home, Some(PathBuf::from("/somewhere/.bua")));
+}
+
+/// A turn with no home offers no global skills, whatever is installed on the machine running
+/// the tests. The property is the isolation, not the count.
+#[test]
+fn a_turn_with_no_home_reaches_the_model_the_same_way_it_always_did() {
+    let scratch = Scratch::new("no-home-turn");
+    std::fs::create_dir_all(scratch.path.join(".bua/skills/local")).unwrap();
+    std::fs::write(
+        scratch.path.join(".bua/skills/local/SKILL.md"),
+        "---\nname: local-only\ndescription: a project skill\n---\nbody\n",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("done"));
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("do the work");
+    assert_eq!(task.home, None);
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(body.contains("do the work"));
+}

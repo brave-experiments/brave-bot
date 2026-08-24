@@ -338,6 +338,8 @@ pub struct Output {
 /// take seven arguments to give two tools what they need.
 pub struct Tools<'a> {
     pub workspace: &'a Workspace,
+    /// The skills this turn found, which the planner selects from by name.
+    pub skills: &'a crate::skills::Catalogue,
     /// Where quarantined content lives, by the names the planner was given for it.
     pub slots: &'a mut SlotStore,
     /// The model an isolated processor runs on.

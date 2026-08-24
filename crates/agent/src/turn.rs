@@ -24,6 +24,7 @@ use bua_core::trust::TrustStore;
 use bua_core::value::Labelled;
 use bua_net::Egress;
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::confirm::Confirmer;
 use crate::conversation::{Conversation, TOOL_RESULT_PREFIX};
@@ -182,6 +183,13 @@ pub struct Task {
     /// says only that some bytes arrived, and `gh pr diff` carries whatever the author of the
     /// pull request wrote. So the planner is shown a reference, never the bytes.
     pub piped: Option<String>,
+    /// The user's own directory, holding standing instructions and skills.
+    ///
+    /// Supplied by the caller rather than read from the environment, and `None` by default. A
+    /// library that reached for `$HOME` behind its callers' backs would make every test depend
+    /// on whatever the developer happened to have installed, and a run would differ from the
+    /// same run elsewhere for reasons nothing in the task described.
+    pub home: Option<PathBuf>,
 }
 
 impl Task {
@@ -190,6 +198,7 @@ impl Task {
             prompt: prompt.into(),
             files: Vec::new(),
             piped: None,
+            home: None,
         }
     }
 
@@ -200,6 +209,15 @@ impl Task {
 
     pub fn with_piped_input(mut self, text: impl Into<String>) -> Self {
         self.piped = Some(text.into());
+        self
+    }
+
+    /// Name the user's own directory, usually [`crate::home::directory`].
+    ///
+    /// Without one, a turn has no global skills and no global standing instructions, which is
+    /// the correct behaviour for a caller that has not said where those live.
+    pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
+        self.home = home;
         self
     }
 }
@@ -390,6 +408,12 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         .map_err(|d| TurnError::Precommit(d.to_string()))?
         .with_trust(trust)
         .resuming(conversation.context());
+
+    // Found once per turn and reused for every round. Per turn rather than per session so a
+    // skill written or edited while the session is open takes effect on the next one, including
+    // one this agent wrote itself.
+    let (catalogue, _notices) =
+        crate::skills::discover(&mut policy, workspace, task.home.as_deref());
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
     // construction and the read gate can only pass for files the user named.
@@ -644,6 +668,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 &mut policy,
                 &mut tools::Tools {
                     workspace,
+                    skills: &catalogue,
                     slots: conversation.quarantine(),
                     chat: crate::processor::Chat {
                         config,
