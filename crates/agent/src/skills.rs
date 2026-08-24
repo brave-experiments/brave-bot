@@ -155,6 +155,14 @@ pub struct Notice {
 }
 
 impl Notice {
+    /// Build a notice from words the driver wrote.
+    ///
+    /// Public so the preamble can report a refusal of its own. The message is always the
+    /// driver's own text, never content, which is what makes it safe to put on a screen.
+    pub fn from_message(message: impl Into<String>) -> Self {
+        Self::new(message)
+    }
+
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),

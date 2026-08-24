@@ -247,6 +247,11 @@ pub struct Outcome {
     pub output_tokens: u64,
     /// The reply, released for display while the policy was still open.
     display: String,
+    /// What to tell the person watching about standing instructions and skills.
+    ///
+    /// The driver's own words about what loaded and what did not, never anything read out of a
+    /// file, so they may go straight to a screen.
+    pub notices: Vec<String>,
 }
 
 impl Outcome {
@@ -412,8 +417,16 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // Found once per turn and reused for every round. Per turn rather than per session so a
     // skill written or edited while the session is open takes effect on the next one, including
     // one this agent wrote itself.
-    let (catalogue, _notices) =
+    let (catalogue, mut notices) =
         crate::skills::discover(&mut policy, workspace, task.home.as_deref());
+
+    // Built once and put in front of every round of this turn. Nothing here is stored in the
+    // conversation, so a session running many turns holds one copy of AGENTS.md rather than one
+    // per turn.
+    let preamble =
+        crate::preamble::compose(&mut policy, workspace, task.home.as_deref(), &catalogue);
+    notices.extend(preamble.notices.iter().cloned());
+    let system = format!("{SYSTEM_PROMPT}{}", preamble.text);
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
     // construction and the read gate can only pass for files the user named.
@@ -511,7 +524,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let round = Phase::of_round(steps);
         reporter.phase(round);
 
-        let request = ChatRequest::new(&config.model, conversation.with_system(SYSTEM_PROMPT));
+        let request = ChatRequest::new(&config.model, conversation.with_system(&system));
         let request = if may_call_tools {
             request.with_tools(offered.clone())
         } else {
@@ -822,5 +835,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         output_tokens,
         clean: policy.finish(),
         display,
+        notices: notices.into_iter().map(|n| n.message).collect(),
     })
 }
