@@ -12,7 +12,7 @@
 use bua_core::trust::TrustStore;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode};
+use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -24,6 +24,8 @@ use std::path::Path;
 pub enum Answer {
     Trust,
     Decline,
+    /// Leave without starting a session at all.
+    Leave,
 }
 
 /// Ask about `directory`, returning the trust map the session should start with.
@@ -36,34 +38,66 @@ pub enum Answer {
 /// so nothing this grants can be inherited by a session whose user was never asked. A resumed
 /// session is the one exception, and it inherits the answer its own user gave rather than
 /// skipping the question, which is why this is not called at all in that case.
-pub fn ask<B: Backend>(terminal: &mut Terminal<B>, directory: &Path) -> TrustStore {
+///
+/// `None` is the third answer: the user pressed Ctrl-C, which is neither trusting nor declining
+/// but a request to leave, so no session begins at all.
+pub fn ask<B: Backend>(terminal: &mut Terminal<B>, directory: &Path) -> Option<TrustStore> {
     let answer = match terminal.draw(|frame| draw(frame, directory)) {
         Ok(_) => read_answer(),
         // A terminal that cannot be drawn to cannot carry the question.
         Err(_) => Answer::Decline,
     };
 
-    let mut trust = TrustStore::new();
-    if answer == Answer::Trust {
-        trust.trust(".");
+    trust_for(answer)
+}
+
+/// The map an answer starts the session with, or `None` for leaving.
+fn trust_for(answer: Answer) -> Option<TrustStore> {
+    match answer {
+        Answer::Leave => None,
+        Answer::Trust => {
+            let mut trust = TrustStore::new();
+            trust.trust(".");
+            Some(trust)
+        }
+        Answer::Decline => Some(TrustStore::new()),
     }
-    trust
 }
 
 /// Block until the user answers.
 fn read_answer() -> Answer {
     loop {
         match event::read() {
-            Ok(TermEvent::Key(key)) => match key.code {
-                KeyCode::Char('y' | 'Y') => return Answer::Trust,
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => return Answer::Decline,
-                // Enter is deliberately not a yes: it is the key most likely to be pressed
-                // out of habit, and this question grants standing permission.
-                _ => continue,
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(answer) => return answer,
+                None => continue,
             },
             Ok(_) => continue,
             Err(_) => return Answer::Decline,
         }
+    }
+}
+
+/// Interpret one key press, or `None` for a key that answers nothing.
+///
+/// Separated from the loop so it can be tested without a terminal.
+fn answer_for(key: KeyEvent) -> Option<Answer> {
+    // Raw mode delivers Ctrl-C as a key rather than as a signal, so a prompt that ignored it
+    // would be a screen with no way out: the interrupt everyone reaches for would do nothing.
+    // It is not an answer to the question, so it starts nothing rather than declining.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Some(Answer::Leave),
+            _ => None,
+        };
+    }
+
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(Answer::Trust),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Answer::Decline),
+        // Enter is deliberately not a yes: it is the key most likely to be pressed
+        // out of habit, and this question grants standing permission.
+        _ => None,
     }
 }
 
@@ -115,7 +149,14 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
                 "n",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" ask me about every write"),
+            Span::raw(" ask me about every write    "),
+            Span::styled(
+                "ctrl-c",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" quit", Style::default().fg(Color::DarkGray)),
         ]),
     ];
 
@@ -209,6 +250,35 @@ mod tests {
         trust.trust(".");
         assert!(trust.is_trusted("src/main.rs"));
         assert!(trust.is_trusted("deep/nested/file.txt"));
+    }
+
+    /// Ctrl-C is the interrupt everyone reaches for, and raw mode turns it into an ordinary key
+    /// press. A prompt that ignored it would be a screen with no way out.
+    #[test]
+    fn ctrl_c_leaves_rather_than_answering_the_question() {
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(answer_for(key), Some(Answer::Leave));
+    }
+
+    /// Leaving is not a quiet decline: a session that started anyway would be one the user
+    /// never agreed to have.
+    #[test]
+    fn leaving_starts_no_session() {
+        assert!(trust_for(Answer::Leave).is_none());
+        assert!(trust_for(Answer::Decline).is_some());
+    }
+
+    /// A plain `c` is not an interrupt, and neither is any other control chord.
+    #[test]
+    fn only_ctrl_c_leaves() {
+        assert_eq!(
+            answer_for(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            answer_for(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+            None
+        );
     }
 
     /// Declining leaves nothing trusted, so every write is shown.
