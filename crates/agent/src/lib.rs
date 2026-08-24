@@ -8,6 +8,7 @@ pub mod confirm;
 pub mod conversation;
 pub mod diff;
 pub mod glob;
+pub mod home;
 pub mod processor;
 pub mod replace;
 pub mod report;

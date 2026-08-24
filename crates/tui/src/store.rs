@@ -15,12 +15,9 @@
 //! and presses Enter. That keystroke is what makes it trusted, exactly as typing it would have.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// The directory holding global state.
-const DIRECTORY: &str = ".bua";
-
-/// The history file inside it.
+/// The history file inside the global state directory.
 const HISTORY_FILE: &str = "history";
 
 /// Prompts kept on disk.
@@ -36,14 +33,11 @@ const MAX_ENTRIES: usize = 1_000;
 const MAX_ENTRY_BYTES: usize = 4_096;
 
 /// The global state directory, or `None` when there is no home to put it in.
+///
+/// Delegated rather than computed again here: the agent reads standing instructions and skills
+/// from the same directory, and two definitions of where it is would eventually disagree.
 pub fn directory() -> Option<PathBuf> {
-    // Read directly rather than taking a dependency for one variable. Absent in some daemon and
-    // container environments, which is a case that has to be handled anyway.
-    let home = std::env::var_os("HOME")?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(Path::new(&home).join(DIRECTORY))
+    bua_agent::home::directory()
 }
 
 /// Read stored prompts, oldest first.
@@ -165,14 +159,6 @@ fn unescape(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_directory_is_under_the_home() {
-        // Whatever HOME is in the test environment, the directory sits inside it.
-        if let Some(dir) = directory() {
-            assert!(dir.ends_with(DIRECTORY));
-        }
-    }
 
     #[test]
     fn entries_round_trip_through_the_file_format() {
