@@ -198,12 +198,13 @@ having been fixed in advance. The plan is printed before the run for the same re
 planner's context; here the planner is told the paths and plans a `FILE_READ` for each, because
 the whole premise is that it decides before it has seen anything.
 
-The attempt is carried out in `Outcome::attempt` and in `TurnError::Manifest`, but it is **not**
-written into a session record on disk. `~/.bua/sessions` belongs to the
-interactive interface, and manifest mode is a one-shot command with no session to write into. A
-caller that wanted to persist them has everything it needs in the outcome; nothing does yet.
+A manifest run **is** written into the session store, with its audit beside it, whether it
+finished or stopped. It appears in `bua --resume` marked `manifest`, and selecting one is refused
+with a reason rather than resumed: there is no conversation to continue. The record is for
+reading, not for carrying on from, and those are different things.
 
-There is no conversation and no resuming. The planner is never shown a result, so there is
+The conversation in such a record is empty, and has to be. Filling it with something
+conversation-shaped would have the picker offer to continue a run that cannot be continued. The planner is never shown a result, so there is
 nothing for a second turn to continue, which is why the mode is a one-shot command and not
 something a session can be switched into.
 
