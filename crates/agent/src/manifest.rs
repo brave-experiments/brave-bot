@@ -93,11 +93,26 @@ use crate::workspace::Workspace;
 /// words first is not politeness to the model: it is the artefact a person reads when a run
 /// does the wrong thing, and it is the difference between "it misunderstood me" and "it
 /// understood me and could not express it".
+///
+/// It must nonetheless say that **an agent will carry this out and can read the workspace**. An
+/// earlier version left that out, on the grounds that the first call should not think about
+/// mechanism at all, and the model drew the only other conclusion available: that it was being
+/// asked the question itself, could not see the files, and should ask the user to paste them.
+/// The fit call then correctly refused to express "wait for the user" as a static manifest, and
+/// a run failed at phase one for want of a sentence. Never remove it again.
 const SHAPE_PROMPT: &str = "\
 You are planning work in a code workspace. Say what has to happen to finish the task, as a short
-numbered list, in plain words. Describe the goal and the steps a person would take.
+numbered list, in plain words. Describe the goal and the steps someone would take.
 
-Do not write JSON. Do not name tools. Do not worry yet about how any of it will be carried out.
+An agent will carry out what you describe. It can read files in the workspace, search them, and
+write them. So plan the reading: say which files should be read and what should be worked out
+from them. You are not being asked to do the work and you are not expected to have seen any code.
+
+Never ask for anything to be pasted or provided. Nothing will answer you: this is the only thing
+you will be asked, and a plan that waits for a reply cannot be carried out. If you need to see a
+file, that is a step, not a question.
+
+Do not write JSON and do not name tools. How each step is carried out is somebody else's problem.
 
 Be specific about which files are involved where the task names them, and say plainly where it \
 does not name them and something will have to be searched for. If the task cannot be finished by \

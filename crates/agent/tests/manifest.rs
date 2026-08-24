@@ -794,3 +794,31 @@ fn a_cancelled_run_is_not_reported_as_a_failed_attempt() {
 
     assert!(matches!(failure, bua_agent::TurnError::Cancelled));
 }
+
+/// The first planning call must know that something downstream will read the workspace, or it
+/// answers as a chatbot that cannot see the code and asks for it to be pasted. That is not a
+/// hypothetical: run `1787539137-87301` failed exactly that way, at phase one, and the fit call
+/// then correctly refused to express "wait for the user" as a static manifest.
+///
+/// A prompt cannot really be regression-tested, since what is being asserted is what a model
+/// concludes from it. What this pins is the sentence whose absence caused it.
+#[test]
+fn the_shape_call_is_told_an_agent_will_read_the_workspace() {
+    let scratch = Scratch::new("shape-prompt");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve(vec![any_shape(), plan(json!([]))]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let _ = run(&config, &workspace, "fix the bug", &mut sink);
+    let shaping = received.recv().expect("the shape request");
+
+    assert!(
+        shaping.contains("It can read files in the workspace"),
+        "the shape call was not told the work gets carried out for it"
+    );
+    assert!(
+        shaping.contains("Never ask for anything to be pasted"),
+        "the shape call may still ask the user to paste code"
+    );
+}
