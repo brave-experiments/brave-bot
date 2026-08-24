@@ -489,6 +489,33 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         label
     }
 
+    /// Label a file the user keeps their own configuration in, from where it sits.
+    ///
+    /// Standing instructions and skills come from `~/.bua`, a directory whose only contents are
+    /// ones the person running this put there. That provenance is what the label records: the
+    /// bytes are trusted for the same reason the endpoint and the model are, which is that
+    /// configuring the agent is the user's own act.
+    ///
+    /// **This is not an upgrade.** It is the first label these bytes ever receive, assigned from
+    /// provenance the driver knows, exactly as [`Policy::label_model_output`] and
+    /// [`Policy::label_command_output`] are. Nothing here relabels a value that already had a
+    /// label, and nothing here may be pointed at a path outside that directory: a file from the
+    /// workspace is labelled by the trust map, through `Workspace::read`, and asking this instead
+    /// would be laundering it.
+    ///
+    /// The honest caveat, which the documentation states too: a skill someone downloaded into
+    /// `~/.bua/skills` is trusted on the same footing as a configuration file someone pasted.
+    /// Putting a file there is the grant. What this does not do is assume trust from silence,
+    /// since an empty directory yields nothing at all.
+    pub fn label_user_configuration(&mut self, origin: &str, text: String) -> Labelled<String> {
+        let label = Label::trusted_public();
+        self.allow(
+            "provenance",
+            format!("{origin}: labelled {label}, from the user's own configuration directory"),
+        );
+        Labelled::new(text, label)
+    }
+
     /// Transform content without exposing it, keeping its label.
     ///
     /// A tool often needs to reshape what it read, joining lines or adding a truncation notice, before
@@ -2493,6 +2520,42 @@ mod tests {
 
         let value = policy.label_model_output("write_file", "some code".to_string());
         assert_eq!(value.label(), Label::trusted_public());
+    }
+
+    /// The user's own configuration directory is where standing instructions and skills come
+    /// from, and nothing an attacker reached ever lands there. Labelling it from that provenance
+    /// is what lets those files steer the planner at all.
+    #[test]
+    fn configuration_the_user_placed_is_trusted_from_where_it_came_from() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &[]);
+
+        let value = policy
+            .label_user_configuration("~/.bua/AGENTS.md", "always run make check".to_string());
+
+        assert_eq!(value.label(), Label::trusted_public());
+    }
+
+    /// Calling a file trusted is a decision, and a decision nobody can see is one nobody can
+    /// audit. The trail must name what was labelled and why, as every other provenance call does.
+    #[test]
+    fn labelling_configuration_is_recorded_in_the_audit_trail() {
+        let mut sink = RecordingSink::new();
+        {
+            let mut policy = policy_trusting(&mut sink, &[]);
+            let _ =
+                policy.label_user_configuration("~/.bua/skills/commit-style/SKILL.md", "x".into());
+        }
+
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed { gate: "provenance", detail }
+                    if detail.contains("~/.bua/skills/commit-style/SKILL.md")
+            )),
+            "the provenance decision left no trace: {:?}",
+            sink.events()
+        );
     }
 
     /// Context integrity must not recover, or a trusted read after an untrusted one would
