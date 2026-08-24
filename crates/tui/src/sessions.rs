@@ -345,8 +345,17 @@ pub fn list(project: &Path) -> Vec<Summary> {
         })
         .collect();
 
-    summaries.sort_by(|a, b| b.updated.cmp(&a.updated));
+    newest_first(&mut summaries);
     summaries
+}
+
+/// Order a list so the most recently written session comes first.
+///
+/// The picker offers the top entry, so the direction is the behaviour rather than a detail of
+/// how the list is built. Named and separate because a reversed comparator is silent: the list
+/// still renders, just with the session someone is least likely to want at the top.
+fn newest_first(summaries: &mut [Summary]) {
+    summaries.sort_by_key(|s| std::cmp::Reverse(s.updated));
 }
 
 /// Read one session back, by the id the list gave.
@@ -715,6 +724,29 @@ mod tests {
         let map = record.trust_map().expect("a map was recorded");
         assert!(map.is_trusted("src/main.rs"));
         assert!(!map.is_trusted("src/fetched.json"));
+    }
+
+    /// The picker offers the top entry, so a reversed comparator would silently hand someone
+    /// the session they last touched a month ago. Nothing else in the suite pins the direction.
+    #[test]
+    fn a_list_puts_the_most_recently_written_session_first() {
+        fn at(updated: u64) -> Summary {
+            Summary {
+                id: format!("s-{updated}"),
+                title: "a session".to_string(),
+                branch: None,
+                updated,
+                bytes: 0,
+            }
+        }
+
+        let mut summaries = vec![at(10), at(30), at(20)];
+        newest_first(&mut summaries);
+
+        assert_eq!(
+            summaries.iter().map(|s| s.updated).collect::<Vec<_>>(),
+            vec![30, 20, 10]
+        );
     }
 
     fn a_record() -> Record {
