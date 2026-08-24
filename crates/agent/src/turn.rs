@@ -79,6 +79,15 @@ What a processor produces is quarantined too, so you will not be shown that eith
 does the work: do not run a processor again hoping to be told what it said, and never write a \
 file from a guess about what a quarantined one contains.
 
+Listings and searches are quarantined the same way, because a filename is content too. In a \
+directory like that you cannot learn what the files are called: a reference tells you how many \
+there are and nothing more, a processor's answer about it is quarantined in its turn, and a path \
+you have not seen is not one you can pass to a tool. Trying one glob after another to see which \
+come back empty is not a search and will not become one. Read the paths the user named, and if \
+you need a file whose name you do not have, say exactly that and ask for it. One question is \
+worth more than twenty listings, and repeating a call that taught you nothing will not teach you \
+anything the second time.
+
 A processor is a model reading the whole document, so ask it to work something out rather than \
 only to apply an edit you have already written. Give it the file's name and language, say what \
 the change is for, and let it find the place. Its instruction may be conditional: where you are \
@@ -91,6 +100,20 @@ When the work takes several steps, call todo_write to record the steps, then cal
 each one finishes so the user can watch progress. Send the whole list every time, keeping \
 finished tasks in it marked completed, and keep exactly one task in_progress while work \
 remains on it. Do not use it for a single step or a question.";
+
+/// How many rounds of tool calls one turn may make before it has to answer.
+///
+/// Not a safety property: nothing here is unsafe for running long, and a gate refuses what it
+/// refuses on the thousandth round as readily as on the first. It is a bound on futility. Real
+/// work in a large repository takes tens of calls, so the number is high enough not to interrupt
+/// any of that, and low enough that a turn which has stopped making progress stops.
+pub const MAX_TOOL_ROUNDS: usize = 40;
+
+/// How the driver introduces itself when it takes the tools away.
+///
+/// Marked so the message reads as the system speaking rather than as the user changing their
+/// mind about the task.
+const TOOL_BUDGET_SPENT: &str = "(from the system, not the user)";
 
 #[derive(Debug)]
 pub enum TurnError {
@@ -409,6 +432,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     let offered = tools::available();
 
     let mut steps = 0;
+    // Whether the planner may ask for another round of tools. Cleared once, when the budget
+    // runs out, so the last request goes out with none offered and the turn ends with an answer
+    // rather than with the driver's apology.
+    let mut may_call_tools = true;
     let mut tokens = 0u64;
     // Tracked apart from the total because it is what the live count reports. Adding a round's
     // output to a running total that also holds prompt tokens would make the figure jump by the
@@ -426,8 +453,12 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let round = Phase::of_round(steps);
         reporter.phase(round);
 
-        let request = ChatRequest::new(&config.model, conversation.with_system(SYSTEM_PROMPT))
-            .with_tools(offered.clone());
+        let request = ChatRequest::new(&config.model, conversation.with_system(SYSTEM_PROMPT));
+        let request = if may_call_tools {
+            request.with_tools(offered.clone())
+        } else {
+            request
+        };
 
         // Streamed so the interface can show the reply growing. Each round's count restarts at
         // zero, so earlier rounds are added back: the figure is for the turn, not the round.
@@ -461,11 +492,48 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         tokens += completion.usage.total();
         output_tokens += completion.usage.completion_tokens;
 
+        // The budget is spent, so this round is the answer whatever it holds. A planner that
+        // asked for a tool anyway does not get one: a request that offered none is not one a
+        // call can be answering, and running them would put the turn back in the loop the
+        // budget exists to end.
+        if !may_call_tools {
+            if !completion.calls.is_empty() {
+                reporter.narration(
+                    "the tool budget was spent, so the last calls were not run".to_string(),
+                );
+            }
+            break completion;
+        }
+
         if completion.calls.is_empty() {
             break completion;
         }
 
         steps += 1;
+
+        // A turn with no bound on it does not stop being a turn, it stops being anything: an
+        // agent that cannot make progress asks for one more tool call for as long as anyone
+        // lets it. What ran into this was a directory nobody vouched for, where a listing comes
+        // back as a reference and the planner cannot learn a filename, so it probed one glob
+        // after another, learning nothing from each and having no reason to stop.
+        //
+        // The budget is spent on tools, so the last word is taken away rather than the turn:
+        // the next request carries no tools at all, and the planner answers with what it has.
+        // Ending here instead would throw away the work and tell the user only that something
+        // went round in circles.
+        if steps >= MAX_TOOL_ROUNDS && may_call_tools {
+            may_call_tools = false;
+            reporter.narration(format!(
+                "that is {MAX_TOOL_ROUNDS} tool calls without an answer, so this turn has to \
+                 finish with what it has"
+            ));
+            conversation.push(Message::user(format!(
+                "{TOOL_BUDGET_SPENT} You have made {MAX_TOOL_ROUNDS} tool calls this turn and \
+                 have no more. Answer now with what you know. If the work is not finished, say \
+                 what you found, what stopped you, and what would let you finish, such as a \
+                 file named or a directory trusted."
+            )));
+        }
 
         // What the model said on the way to these calls. It used to be dropped on the floor,
         // which is why a turn that narrated every step showed none of it. Released to a screen

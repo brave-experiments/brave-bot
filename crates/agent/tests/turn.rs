@@ -5,7 +5,7 @@
 //! contents try to redirect the turn cannot do so.
 
 use bua_agent::Workspace;
-use bua_agent::turn::{self, Task};
+use bua_agent::turn::{self, MAX_TOOL_ROUNDS, Task};
 use bua_config::Config;
 use bua_core::event::{Event, RecordingSink};
 use bua_core::label::Label;
@@ -3180,6 +3180,118 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
             "what the processor produced reached the planner: {body}"
         );
     }
+}
+
+/// A turn that never stops asking for tools is stopped, and stopped with an answer.
+///
+/// What produced this was a directory nobody had vouched for: every listing came back as a
+/// reference, the planner could not learn a single filename from one, and it worked through
+/// globs one extension at a time for as long as it was allowed to. Nothing was unsafe about it.
+/// It simply never ended, because nothing in the loop had a reason to end it.
+#[test]
+fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
+    let scratch = Scratch::new("round-cap");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut replies: Vec<String> = (0..MAX_TOOL_ROUNDS)
+        .map(|_| tool_request("list_files", r#"{"directory":"."}"#))
+        .collect();
+    replies.push(reply_with("I could not find the file; which one did you mean?"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("fix the bug");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("the turn finishes");
+
+    assert_eq!(
+        outcome.reply_for_display(),
+        "I could not find the file; which one did you mean?",
+        "the turn ended with the driver's own words rather than the planner's"
+    );
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    assert_eq!(
+        bodies.len(),
+        MAX_TOOL_ROUNDS + 1,
+        "the budget bought {MAX_TOOL_ROUNDS} rounds and one last request"
+    );
+
+    // Every round up to the cap could call tools, and the last one could not: taking the tools
+    // away is what makes the planner answer, rather than telling it to and hoping.
+    for (round, body) in bodies.iter().take(MAX_TOOL_ROUNDS).enumerate() {
+        assert!(
+            body.contains("\"tools\""),
+            "round {round} was offered no tools"
+        );
+    }
+    let last = bodies.last().expect("a last request");
+    assert!(
+        !last.contains("\"tools\""),
+        "the last request still offered tools: {last}"
+    );
+    assert!(
+        last.contains("no more"),
+        "the planner was not told why it has to answer: {last}"
+    );
+}
+
+/// A planner that asks for a tool after the budget is spent does not get one.
+///
+/// The request it was answering offered no tools, so the call is not an answer to anything, and
+/// running it would put the turn back in the loop the budget exists to end.
+#[test]
+fn calls_made_after_the_budget_is_spent_are_not_run() {
+    let scratch = Scratch::new("round-cap-ignored");
+    std::fs::write(scratch.path.join("marker.txt"), "before").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Every round asks to overwrite the file, including the round after the tools are gone.
+    let replies: Vec<String> = (0..MAX_TOOL_ROUNDS + 1)
+        .map(|_| {
+            tool_request(
+                "write_file",
+                r#"{"path":"marker.txt","contents":"after"}"#,
+            )
+        })
+        .collect();
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("keep going");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("the turn finishes");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    assert_eq!(
+        bodies.len(),
+        MAX_TOOL_ROUNDS + 1,
+        "the turn kept going after the budget was spent"
+    );
+    assert_eq!(
+        outcome.steps, MAX_TOOL_ROUNDS,
+        "the round after the budget was spent ran its calls anyway"
+    );
 }
 
 /// Reading a file the planner may not see costs nothing but the reference.
