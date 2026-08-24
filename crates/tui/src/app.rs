@@ -283,13 +283,18 @@ pub fn run(
     // drawn for it. Choosing nothing is an ordinary session rather than an error.
     let start = match start {
         Start::Choose => match crate::resume::choose(&mut terminal, workspace.root()) {
-            Some(record) => Start::Resuming(Box::new(record)),
-            None => Start::Fresh,
+            crate::resume::Choice::Resume(record) => Some(Start::Resuming(record)),
+            crate::resume::Choice::Fresh => Some(Start::Fresh),
+            // Leaving at the picker starts nothing. The terminal is still put back below.
+            crate::resume::Choice::Quit => None,
         },
-        chosen => chosen,
+        chosen => Some(chosen),
     };
 
-    let result = event_loop(&mut terminal, config, workspace, confinement, start);
+    let result = match start {
+        Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
+        None => Ok(()),
+    };
 
     // Restore the terminal even if the loop failed: leaving a user in raw mode on an
     // alternate screen is worse than the original error.
@@ -352,8 +357,12 @@ fn event_loop(
         }
     };
 
-    // Settled once, before any turn.
-    let mut trust = opening_trust(terminal, &mut session, workspace.root(), inherited_trust);
+    // Settled once, before any turn. Nothing means the user left at the question, and a session
+    // they never agreed to have must not begin behind it.
+    let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), inherited_trust)
+    else {
+        return Ok(());
+    };
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
@@ -430,7 +439,7 @@ fn event_loop(
     }
 }
 
-/// The trust map the session starts with.
+/// The trust map the session starts with, or nothing if the user asked to leave.
 ///
 /// A fresh session always asks, whatever any session in this directory answered before. The
 /// question grants standing permission, and a launch that skipped it because someone said yes
@@ -447,12 +456,12 @@ fn opening_trust(
     session: &mut Session,
     root: &std::path::Path,
     inherited: Option<TrustStore>,
-) -> TrustStore {
+) -> Option<TrustStore> {
     // Said only when resuming. On a fresh start the user has just answered the question and does
     // not need telling where the answer came from.
     let (trust, how) = match inherited {
         Some(trust) => (trust, " (as this session left it)"),
-        None => (crate::trust_prompt::ask(terminal, root), ""),
+        None => (crate::trust_prompt::ask(terminal, root)?, ""),
     };
 
     if trust.is_trusted(".") {
@@ -460,7 +469,7 @@ fn opening_trust(
     } else {
         session.note("this directory is not trusted; every write will be shown to you");
     }
-    trust
+    Some(trust)
 }
 
 /// Run a turn on a worker thread, redrawing while it works.
@@ -555,10 +564,16 @@ fn run_turn_animated(
 
         match from_worker.recv_timeout(FRAME) {
             Ok(crate::remote_confirm::ToMain::Write(request)) => {
-                let decision = crate::confirm::ask(terminal, &request);
+                let answer = crate::confirm::ask(terminal, &request);
+                // Ctrl-C at the prompt is the same request it is anywhere else in a turn: stop.
+                // Set before the answer goes back, so the worker sees it as soon as it wakes.
+                if answer == crate::confirm::Answer::Interrupt {
+                    cancel.cancel();
+                    session.note("cancelling…");
+                }
                 // A closed channel means the worker is already gone, so there is nothing to
                 // answer and the loop below will collect its result.
-                let _ = answer_tx.send(decision);
+                let _ = answer_tx.send(answer.decision());
             }
             // No reply: each of these is recorded and the next redraw, one iteration away,
             // shows it. That is what makes a long turn legible while it runs.

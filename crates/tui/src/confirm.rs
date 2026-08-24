@@ -11,7 +11,7 @@ use bua_agent::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use bua_agent::diff::Change;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode};
+use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -39,7 +39,27 @@ impl<'t, B: Backend> TerminalConfirmer<'t, B> {
 
 impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
-        ask(self.terminal, request)
+        ask(self.terminal, request).decision()
+    }
+}
+
+/// What the user did with the question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Approve,
+    Reject,
+    /// Refuse the write and stop the turn that asked for it.
+    Interrupt,
+}
+
+impl Answer {
+    /// What to tell the waiting turn. Interrupting refuses, since a turn being stopped is not
+    /// consent to the write it was stopped at.
+    pub fn decision(self) -> Decision {
+        match self {
+            Answer::Approve => Decision::Approve,
+            Answer::Reject | Answer::Interrupt => Decision::Reject,
+        }
     }
 }
 
@@ -47,31 +67,51 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
 ///
 /// Standalone as well as available through [`TerminalConfirmer`], because a turn running on a
 /// worker thread cannot hold the terminal: the main thread calls this on its behalf.
-pub fn ask<B: Backend>(terminal: &mut Terminal<B>, request: &WriteRequest) -> Decision {
+pub fn ask<B: Backend>(terminal: &mut Terminal<B>, request: &WriteRequest) -> Answer {
     // A terminal that cannot be drawn to cannot carry a question, so refuse rather
     // than proceed unseen.
     if terminal.draw(|frame| draw(frame, request)).is_err() {
-        return Decision::Reject;
+        return Answer::Reject;
     }
 
-    read_decision()
+    read_answer()
 }
 
 /// Block until the user answers.
-fn read_decision() -> Decision {
+fn read_answer() -> Answer {
     loop {
         match event::read() {
-            Ok(TermEvent::Key(key)) => match key.code {
-                KeyCode::Char('y' | 'Y') => return Decision::Approve,
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => return Decision::Reject,
-                // Enter is deliberately not an approval: it is the key most likely to
-                // be pressed out of habit.
-                _ => continue,
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(answer) => return answer,
+                None => continue,
             },
             Ok(_) => continue,
             // Losing the event stream must not approve anything.
-            Err(_) => return Decision::Reject,
+            Err(_) => return Answer::Reject,
         }
+    }
+}
+
+/// Interpret one key press, or `None` for a key that answers nothing.
+///
+/// Separated from the loop so it can be tested without a terminal.
+fn answer_for(key: KeyEvent) -> Option<Answer> {
+    // The prompt blocks the whole interface, so without this Ctrl-C would do nothing at the one
+    // moment a user is most likely to press it. It stops the turn as well as refusing, because
+    // someone reaching for the interrupt wants the work to stop, not just this write.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Some(Answer::Interrupt),
+            _ => None,
+        };
+    }
+
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(Answer::Approve),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Answer::Reject),
+        // Enter is deliberately not an approval: it is the key most likely to
+        // be pressed out of habit.
+        _ => None,
     }
 }
 
@@ -170,7 +210,14 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
             "n",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" leave it alone"),
+        Span::raw(" leave it alone    "),
+        Span::styled(
+            "ctrl-c",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
     ]));
 
     frame.render_widget(
@@ -236,6 +283,24 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    /// The prompt blocks everything else, so Ctrl-C must be answerable here too. It stops the
+    /// turn rather than only refusing the write: a user reaching for the interrupt wants the
+    /// work to stop.
+    #[test]
+    fn ctrl_c_refuses_the_write_and_stops_the_turn() {
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(answer_for(key), Some(Answer::Interrupt));
+        assert_eq!(Answer::Interrupt.decision(), Decision::Reject);
+    }
+
+    /// Refusing one write leaves the turn running, which is what makes it different from
+    /// interrupting.
+    #[test]
+    fn saying_no_does_not_stop_the_turn() {
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(answer_for(key), Some(Answer::Reject));
     }
 
     #[test]

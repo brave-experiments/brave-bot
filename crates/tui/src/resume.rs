@@ -96,8 +96,10 @@ pub enum Outcome {
     Continue,
     /// Resume the session under the cursor.
     Resume,
-    /// Leave without resuming anything.
+    /// Leave without resuming anything, and start an ordinary session.
     Cancel,
+    /// Leave without starting anything at all.
+    Quit,
 }
 
 /// Interpret one key press.
@@ -106,7 +108,9 @@ pub enum Outcome {
 pub fn handle_key(picker: &mut Picker, code: KeyCode, modifiers: KeyModifiers) -> Outcome {
     if modifiers.contains(KeyModifiers::CONTROL) {
         return match code {
-            KeyCode::Char('c') => Outcome::Cancel,
+            // Raw mode delivers the interrupt as a key rather than as a signal, and someone
+            // pressing it wants out of the program, not a different session.
+            KeyCode::Char('c') => Outcome::Quit,
             _ => Outcome::Continue,
         };
     }
@@ -134,20 +138,34 @@ pub fn handle_key(picker: &mut Picker, code: KeyCode, modifiers: KeyModifiers) -
     }
 }
 
-/// Show the list and return the session to resume, if any.
-///
-/// `None` means an ordinary session: either there was nothing to resume, or the user decided not
-/// to. Both are the same thing to the caller, and neither is a failure.
-pub fn choose<B: Backend>(terminal: &mut Terminal<B>, project: &Path) -> Option<sessions::Record> {
+/// What the picker settled on.
+#[derive(Debug)]
+pub enum Choice {
+    /// Pick this session up.
+    Resume(Box<sessions::Record>),
+    /// Start an ordinary session: there was nothing to resume, or the user decided not to.
+    /// Neither is a failure.
+    Fresh,
+    /// Start nothing. The user asked to leave.
+    Quit,
+}
+
+/// Show the list and return what to do.
+pub fn choose<B: Backend>(terminal: &mut Terminal<B>, project: &Path) -> Choice {
     let mut picker = Picker::new(sessions::list(project), project.display().to_string());
     if picker.is_empty() {
-        return None;
+        return Choice::Fresh;
     }
 
     loop {
-        terminal.draw(|frame| draw(frame, &picker)).ok()?;
+        if terminal.draw(|frame| draw(frame, &picker)).is_err() {
+            return Choice::Fresh;
+        }
 
-        let TermEvent::Key(key) = event::read().ok()? else {
+        let Ok(event) = event::read() else {
+            return Choice::Fresh;
+        };
+        let TermEvent::Key(key) = event else {
             continue;
         };
         // A key event arrives twice on Windows, once pressed and once released, and the release
@@ -158,10 +176,17 @@ pub fn choose<B: Backend>(terminal: &mut Terminal<B>, project: &Path) -> Option<
 
         match handle_key(&mut picker, key.code, key.modifiers) {
             Outcome::Continue => continue,
-            Outcome::Cancel => return None,
+            Outcome::Cancel => return Choice::Fresh,
+            Outcome::Quit => return Choice::Quit,
             Outcome::Resume => {
-                let id = picker.chosen()?.id.clone();
-                return sessions::load(project, &id);
+                let Some(chosen) = picker.chosen() else {
+                    continue;
+                };
+                let id = chosen.id.clone();
+                return match sessions::load(project, &id) {
+                    Some(record) => Choice::Resume(Box::new(record)),
+                    None => Choice::Fresh,
+                };
             }
         }
     }
@@ -383,13 +408,14 @@ mod tests {
     }
 
     /// Ctrl-C is the key a user reaches for to get out of anything, and it must not be typed
-    /// into the search box as a letter.
+    /// into the search box as a letter. Escape declines to resume, which leaves a session
+    /// running; Ctrl-C asks for the program to end, so the two are not the same answer.
     #[test]
-    fn ctrl_c_leaves_rather_than_typing_a_letter() {
+    fn ctrl_c_quits_rather_than_typing_a_letter() {
         let mut picker = picker();
         assert_eq!(
             handle_key(&mut picker, KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Outcome::Cancel
+            Outcome::Quit
         );
         assert!(picker.search.is_empty());
     }
