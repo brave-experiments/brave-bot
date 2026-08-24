@@ -11,7 +11,7 @@ use bua_core::event::Event;
 use bua_core::label::Label;
 use bua_core::todo::{Item, List, Row, Status, rows};
 use bua_core::trust::TrustStore;
-use bua_tui::sessions::{self, Handle, Standing};
+use bua_tui::sessions::{self, Handle, Standing, StoredManifest};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -106,6 +106,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 1_200,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            manifest: None,
         },
     );
     handle.append_audit(
@@ -172,6 +173,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 3_400,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            manifest: None,
         },
     );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
@@ -197,6 +199,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 0,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
+            manifest: None,
         },
     );
     assert_eq!(sessions::list(&elsewhere).len(), 1);
@@ -213,6 +216,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 5_600,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            manifest: None,
         },
     );
     let listed = sessions::list(&scratch.project);
@@ -289,4 +293,75 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
         vec![1, 2],
         "a truncated line took the readable ones with it"
     );
+}
+
+/// A manifest run leaves a record like any other session. Until it did, a run that failed left
+/// nothing at all and the only way to find out what happened was to run it again.
+#[test]
+fn a_manifest_run_is_written_down_and_marked() {
+    let scratch = Scratch::new("manifest-record");
+    let mut handle = Handle::begin(&scratch.project);
+
+    let attempt = bua_agent::manifest::Attempt {
+        shape: Some("1. Read the readme. 2. Summarise it.".to_string()),
+        proposed: Some("Sure, first I will read it".to_string()),
+        plan: None,
+        steps: Vec::new(),
+    };
+    let stored = StoredManifest::of(&attempt, Some("the plan was not usable".to_string()));
+
+    handle.save(
+        "summarise the readme",
+        Standing {
+            conversation: &bua_agent::Conversation::new().snapshot(),
+            turns: 1,
+            tokens: 0,
+            todos: &BTreeMap::new(),
+            trust: &TrustStore::new(),
+            manifest: Some(&stored),
+        },
+    );
+
+    let record = sessions::load(&scratch.project, handle.id()).expect("it was written");
+    let manifest = record.manifest.expect("this was a manifest run");
+    assert_eq!(
+        manifest.shape.as_deref(),
+        Some("1. Read the readme. 2. Summarise it.")
+    );
+    // The raw proposal survives, which is the whole point: a plan that would not parse has no
+    // rendered form and the model's own words are the only thing left to read.
+    assert_eq!(
+        manifest.proposed.as_deref(),
+        Some("Sure, first I will read it")
+    );
+    assert_eq!(manifest.failure.as_deref(), Some("the plan was not usable"));
+
+    // And the list marks it, so the picker can refuse it before anyone selects it.
+    let listed = sessions::list(&scratch.project);
+    assert!(listed.iter().any(|s| s.id == record.id && s.manifest));
+}
+
+/// A turn session must not be marked, or the picker would refuse to resume everything.
+#[test]
+fn a_turn_session_is_not_marked_as_a_manifest_run() {
+    let scratch = Scratch::new("turn-not-marked");
+    let mut handle = Handle::begin(&scratch.project);
+    let mut conversation = Conversation::new();
+    conversation.push(Message::user("hello"));
+
+    handle.save(
+        "hello",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 10,
+            todos: &BTreeMap::new(),
+            trust: &TrustStore::new(),
+            manifest: None,
+        },
+    );
+
+    let record = sessions::load(&scratch.project, handle.id()).expect("it was written");
+    assert!(record.manifest.is_none());
+    assert!(sessions::list(&scratch.project).iter().all(|s| !s.manifest));
 }

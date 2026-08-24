@@ -87,6 +87,51 @@ pub struct Record {
     pub trust: Option<Vec<StoredRule>>,
     /// The conversation, which is what resuming restores.
     pub conversation: Snapshot,
+    /// What a manifest run produced, where this was one.
+    ///
+    /// Its presence is what makes a record a manifest run, and its absence a turn session. A
+    /// manifest run has no conversation to restore, so [`Record::conversation`] is empty for one
+    /// and resuming is refused rather than attempted. What it has instead is this: the goal in
+    /// plain words, the manifest the planner proposed, the plan that was frozen, and what each
+    /// step did.
+    ///
+    /// Written whether the run finished or failed, because the run somebody needs to read is the
+    /// one that stopped.
+    #[serde(default)]
+    pub manifest: Option<StoredManifest>,
+}
+
+/// A manifest run as it is written down.
+///
+/// The same fields as `bua_agent::manifest::Attempt`, flattened for the file. Kept as its own
+/// type rather than serialising the agent's, because a record on disk outlives the shape of a
+/// struct in memory and a `#[serde(default)]` field here is cheaper than a migration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StoredManifest {
+    #[serde(default)]
+    pub shape: Option<String>,
+    #[serde(default)]
+    pub proposed: Option<String>,
+    #[serde(default)]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<String>,
+    /// Why the run stopped, where it did.
+    #[serde(default)]
+    pub failure: Option<String>,
+}
+
+impl StoredManifest {
+    /// Write down what a run produced, finished or not.
+    pub fn of(attempt: &bua_agent::manifest::Attempt, failure: Option<String>) -> Self {
+        Self {
+            shape: attempt.shape.clone(),
+            proposed: attempt.proposed.clone(),
+            plan: attempt.plan.clone(),
+            steps: attempt.steps.clone(),
+            failure,
+        }
+    }
 }
 
 /// One trust rule as it is written down.
@@ -167,6 +212,11 @@ pub struct Summary {
     pub updated: u64,
     /// What the session takes up, record and audit together.
     pub bytes: u64,
+    /// Whether this was a manifest run, which can be read but not continued.
+    ///
+    /// On the summary rather than left to the record, because the picker has to say so on the
+    /// row: finding out only after selecting one is finding out too late.
+    pub manifest: bool,
 }
 
 /// What a session amounts to at the moment it is written down.
@@ -180,6 +230,9 @@ pub struct Standing<'a> {
     pub tokens: u64,
     pub todos: &'a BTreeMap<usize, Vec<Row>>,
     pub trust: &'a TrustStore,
+    /// What a manifest run produced. `None` for a turn session, which is every session the
+    /// interactive interface writes.
+    pub manifest: Option<&'a StoredManifest>,
 }
 
 /// A live session, holding where to write and what has been written.
@@ -265,6 +318,7 @@ impl Handle {
                     .collect(),
             ),
             conversation: standing.conversation.clone(),
+            manifest: standing.manifest.cloned(),
         };
 
         let Ok(body) = serde_json::to_vec_pretty(&record) else {
@@ -341,6 +395,7 @@ pub fn list(project: &Path) -> Vec<Summary> {
                 branch: record.branch,
                 updated: record.updated,
                 bytes,
+                manifest: record.manifest.is_some(),
             })
         })
         .collect();
@@ -729,6 +784,7 @@ mod tests {
             tokens: 0,
             todos: BTreeMap::new(),
             trust: None,
+            manifest: None,
             conversation: Snapshot {
                 messages: Vec::new(),
                 context: "trusted".to_string(),

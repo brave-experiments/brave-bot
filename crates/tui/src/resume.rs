@@ -287,6 +287,7 @@ mod tests {
             branch: Some("main".to_string()),
             updated,
             bytes: 1024,
+            manifest: false,
         }
     }
 

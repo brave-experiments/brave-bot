@@ -420,6 +420,7 @@ fn event_loop(
                         tokens: session.tokens,
                         todos: &session.todos_by_turn(),
                         trust: &trust,
+                        manifest: None,
                     },
                 );
                 stored.append_audit(session.turns, &events);
