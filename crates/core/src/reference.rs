@@ -84,19 +84,51 @@ impl Reference {
     /// where it came from, and how big it is, enough to decide what to do with it, and
     /// nothing an injection could ride in on.
     pub fn describe(&self) -> String {
-        let shape = match (self.lines, self.bytes) {
-            (Some(lines), Some(bytes)) => format!("{lines} lines, {bytes} bytes"),
-            (Some(lines), None) => format!("{lines} lines"),
+        // What to do with it, which differs by what it is, and matters more than it looks. A
+        // reference to a file used to invite reading, and a planner that read it got a second
+        // reference saying the same thing: it read that one too, four references deep, and
+        // concluded that reading was broken. Say what the next step actually is.
+        let (shape, next) = match (self.lines, self.bytes) {
+            (Some(lines), Some(bytes)) => (
+                format!("{lines} lines, {bytes} bytes"),
+                format!(
+                    "The contents are quarantined and not shown. Give {} to spawn_processor to \
+                     work on, or write it into a file as contents_ref.",
+                    self.slot
+                ),
+            ),
+            (Some(lines), None) => (
+                format!("{lines} lines"),
+                format!(
+                    "The contents are quarantined and not shown. Give {} to spawn_processor to \
+                     work on, or write it into a file as contents_ref.",
+                    self.slot
+                ),
+            ),
             // Said plainly, because a planner told only a size would read the absence of a line
             // count as a small file rather than as a file nothing has opened.
-            (None, Some(bytes)) => format!("{bytes} bytes on disk, not read yet"),
-            (None, None) => "not read yet".to_string(),
+            (None, Some(bytes)) => (
+                format!("{bytes} bytes on disk, not read yet"),
+                format!(
+                    "Nothing will ever show you what this file holds, and reading it again \
+                     will not either. Give {} to spawn_processor to work on it, and name {} as \
+                     path_ref to write what comes back to the same file.",
+                    self.slot, self.slot
+                ),
+            ),
+            (None, None) => (
+                "not read yet".to_string(),
+                format!(
+                    "Nothing will ever show you what this file holds, and reading it will not \
+                     either. Give {} to spawn_processor to work on it, and name {} as path_ref \
+                     to write what comes back to the same file.",
+                    self.slot, self.slot
+                ),
+            ),
         };
         format!(
-            "[{}] {} ({shape}, {}). The contents are quarantined and not shown. \
-             Refer to this content as {} in tool arguments, both to read it and as a \
-             destination to write it back to.",
-            self.slot, self.origin, self.label, self.slot,
+            "[{}] {} ({shape}, {}). {next}",
+            self.slot, self.origin, self.label,
         )
     }
 }
@@ -175,8 +207,31 @@ mod tests {
     fn a_description_says_how_to_refer_to_the_content() {
         let described = reference().describe();
         assert!(
-            described.contains("Refer to this content as ref:1"),
-            "the planner is not told how to address it: {described}"
+            described.contains("spawn_processor") && described.contains("ref:1"),
+            "the planner is not told what to do with it: {described}"
+        );
+    }
+
+    /// A reference to a file nothing has opened must not invite another read. A planner that
+    /// reads one gets a second reference saying the same thing, reads that, and concludes that
+    /// reading is broken, which is what one did.
+    #[test]
+    fn a_file_that_has_not_been_read_does_not_invite_reading() {
+        let described = Reference::unread(
+            SlotId::new("ref:1"),
+            "an entry in \".\"",
+            None,
+            Label::untrusted_private(),
+        )
+        .describe();
+
+        assert!(
+            described.contains("reading it will not either"),
+            "the planner was left to try reading it: {described}"
+        );
+        assert!(
+            described.contains("path_ref"),
+            "the planner was not told it is a destination: {described}"
         );
     }
 
