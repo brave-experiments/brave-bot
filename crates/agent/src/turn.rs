@@ -79,14 +79,17 @@ What a processor produces is quarantined too, so you will not be shown that eith
 does the work: do not run a processor again hoping to be told what it said, and never write a \
 file from a guess about what a quarantined one contains.
 
-Listings and searches are quarantined the same way, because a filename is content too. In a \
-directory like that you cannot learn what the files are called: a reference tells you how many \
-there are and nothing more, a processor's answer about it is quarantined in its turn, and a path \
-you have not seen is not one you can pass to a tool. Trying one glob after another to see which \
-come back empty is not a search and will not become one. Read the paths the user named, and if \
-you need a file whose name you do not have, say exactly that and ask for it. One question is \
-worth more than twenty listings, and repeating a call that taught you nothing will not teach you \
-anything the second time.
+Listings are quarantined the same way, because a filename is content too, and there you get one \
+reference per file rather than one for the listing. You will never be told what any of them is \
+called, and you do not need to be: a reference is an address as well as a document. Pass it as \
+path_ref to read that file, name it in a processor's reads, and pass it as path_ref to write the \
+result back to the file it came from. The user sees the real name when they approve the write.
+
+So do not ask which file to look at, and do not try one glob after another to see which come \
+back empty. That is not a search and will not become one. When you cannot tell which of several \
+references is the file you want, do not guess: process each of them with an instruction that \
+says what to do if it is the right file and to return the document unchanged if it is not, then \
+write each result back to its own reference.
 
 A processor is a model reading the whole document, so ask it to work something out rather than \
 only to apply an edit you have already written. Give it the file's name and language, say what \
@@ -634,7 +637,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
             // The same gate as file context. A tool result the kernel judges untrusted is
             // quarantined and the planner is told its shape; only trusted results are shown.
-            let slot = conversation.next_reference();
             let origin = if output.origin.is_empty() {
                 output.tool.clone()
             } else {
@@ -644,35 +646,69 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             // A read of a file the planner may not see reserves the slot instead of filling
             // it. The planner is told the same thing either way, a reference and a size, and
             // the file is opened when a processor or a write finally needs the bytes.
-            let presented = match &output.deferred {
-                Some(deferral) => policy
-                    .defer(
-                        "read_file",
-                        slot,
-                        &deferral.path,
-                        deferral.bytes,
+            // Three shapes, and which one a result takes was decided by the tool that
+            // produced it and the kernel that labelled it, never here.
+            let body = if let Some(entries) = &output.entries {
+                // A listing of files the planner may not see. The names never come out: it
+                // gets one reference per entry, which it can read through and write back to
+                // without ever being told what any of them is called.
+                let ids: Vec<_> = (0..entries.count)
+                    .map(|_| conversation.next_reference())
+                    .collect();
+                let references = policy
+                    .defer_entries(
+                        &output.tool,
+                        &entries.origin,
+                        &entries.paths,
+                        &ids,
                         conversation.quarantine(),
                     )
-                    .map(Presentation::Quarantined),
-                None => policy.present(
-                    "tool_result",
-                    slot,
-                    &origin,
-                    &output.text,
-                    conversation.quarantine(),
-                ),
-            }
-            .map_err(|d| TurnError::Precommit(d.to_string()))?;
-
-            let body = match &presented {
-                Presentation::Visible(text) => {
-                    format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
-                }
-                Presentation::Quarantined(reference) => format!(
-                    "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}",
+                    .map_err(|d| TurnError::Precommit(d.to_string()))?;
+                let described: Vec<String> =
+                    references.iter().map(bua_core::reference::Reference::describe).collect();
+                format!(
+                    "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are \
+                     quarantined, one reference each.\n\n{}",
                     output.tool,
-                    reference.describe()
-                ),
+                    references.len(),
+                    described.join("\n")
+                )
+            } else {
+                // Reserved here rather than before the branch above, which reserves one per
+                // entry and would otherwise leave this one hanging: a name handed out and
+                // never used still moves the numbering the planner is reading.
+                let slot = conversation.next_reference();
+                let presented = match &output.deferred {
+                    Some(deferral) => policy
+                        .defer(
+                            "read_file",
+                            slot,
+                            &deferral.origin,
+                            &deferral.path,
+                            deferral.bytes,
+                            conversation.quarantine(),
+                        )
+                        .map(Presentation::Quarantined),
+                    None => policy.present(
+                        "tool_result",
+                        slot,
+                        &origin,
+                        &output.text,
+                        conversation.quarantine(),
+                    ),
+                }
+                .map_err(|d| TurnError::Precommit(d.to_string()))?;
+
+                match &presented {
+                    Presentation::Visible(text) => {
+                        format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
+                    }
+                    Presentation::Quarantined(reference) => format!(
+                        "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}",
+                        output.tool,
+                        reference.describe()
+                    ),
+                }
             };
 
             // A result answers the call it belongs to by id where the round replayed calls at

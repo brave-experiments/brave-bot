@@ -58,6 +58,30 @@ Filenames are content too, since a file can be named to read like an instruction
 untrusted listing is quarantined exactly as file contents are. A listing or search that
 touches several files is trusted only if every one of them is.
 
+Such a listing comes back as **one reference per entry**, not one for the listing. That is what
+keeps the quarantine from being a dead end: a reference is an address as well as a document, so
+the planner passes `path_ref` where it would have typed a path.
+
+```
+list_files "."              →  [ref:1] an entry in "." (not read yet, (U,priv))
+                               [ref:2] an entry in "." (not read yet, (U,priv))
+spawn_processor reads=[ref:2]  →  [ref:4]
+     instruction="if this sets the movement speed, fix …; else return it unchanged"
+write_file path_ref=ref:2 contents_ref=ref:4
+     ↳ always asks:  Overwrite game.js   +1 -1
+```
+
+The planner is never told a filename, at any point. The person approving the write is, which is
+where it belongs: they own the directory, and they are the only party who can say whether that
+file should be rewritten. A write to a `path_ref` is shown every time, even where the trust table
+would not ask, because the approval is the only moment the path is visible to anybody. A
+reference that names no file, which is anything a processor produced, is refused as a
+destination.
+
+Reading through a reference is the ordinary confined-read promotion: the model already chooses
+which file to read next, and this only changes where the name came from. `search` still returns
+one reference for the whole result, so its hits are not addresses yet.
+
 ## Processors
 
 An agent that may not read a file also cannot change it. `edit_file` refuses on an untrusted

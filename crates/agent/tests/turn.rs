@@ -3182,6 +3182,170 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
     }
 }
 
+/// The scenario the whole design exists for, in a directory nobody vouched for.
+///
+/// The planner is not shown one filename from first to last. It lists the directory, gets a
+/// reference per file, hands each to a processor with an instruction that says what to do if
+/// this is the file and what to do if it is not, and writes each result back to the reference it
+/// came from. The user is the one who sees which file is which, at the approval, which is where
+/// that belongs.
+#[test]
+fn a_file_nobody_may_name_is_fixed_through_its_reference() {
+    let scratch = Scratch::new("entry-references");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"if this sets the speed, halve it; else return it unchanged"}"#,
+        ),
+        reply_with("const SPEED = 50;"),
+        tool_request("write_file", r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let outcome = turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("the game runs too fast"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+    assert!(outcome.clean, "no gate should have refused");
+
+    // The write landed on the file the reference named, which the planner never learned.
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("game.js")).unwrap(),
+        "const SPEED = 50;"
+    );
+
+    // The person approving is the one who is told which file it is.
+    assert_eq!(confirmer.seen.len(), 1, "the write was not shown");
+    assert_eq!(confirmer.seen[0].path, "game.js");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    let (processor, planner): (Vec<&String>, Vec<&String>) = bodies
+        .iter()
+        .partition(|body| body.contains("isolated processor"));
+    assert_eq!(processor.len(), 1, "exactly one processor ran");
+
+    for body in planner {
+        assert!(
+            !body.contains("game.js"),
+            "a filename reached the planner: {body}"
+        );
+    }
+}
+
+/// Every write through a reference is shown, including the second one to the same file.
+///
+/// The trust table would not ask for it: the first write records the path as untrusted, and
+/// untrusted data landing in an untrusted path changes nothing the table cares about. But the
+/// approval is the only moment the path exists anywhere a person can read it, so skipping it
+/// would mean a file being rewritten with nobody, planner or user, ever seeing which.
+#[test]
+fn every_write_through_a_reference_is_shown() {
+    let scratch = Scratch::new("reference-writes-ask");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request("write_file", r#"{"path_ref":"ref:1","contents":"once"}"#),
+        tool_request("write_file", r#"{"path_ref":"ref:1","contents":"twice"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("write it twice"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        confirmer.seen.len(),
+        2,
+        "a second write to a file nobody has seen the name of went through unshown"
+    );
+    for request in &confirmer.seen {
+        assert_eq!(request.path, "game.js", "the user was not told which file");
+    }
+}
+
+/// A reference to something a processor wrote is content and nothing else. If it could name a
+/// destination, untrusted text would be choosing where an effect lands, which is the one thing
+/// none of this may permit.
+#[test]
+fn a_processors_output_cannot_be_a_destination() {
+    let scratch = Scratch::new("no-destination");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"rewrite it"}"#,
+        ),
+        reply_with("../../etc/passwd"),
+        // ref:4 is what the processor produced, so it names no file.
+        tool_request("write_file", r#"{"path_ref":"ref:3","contents":"x"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("rewrite it"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "a write with no destination was put to the user anyway"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("game.js")).unwrap(),
+        "const SPEED = 100;\n",
+        "the file was written from a reference that names no file"
+    );
+}
+
 /// A turn that never stops asking for tools is stopped, and stopped with an answer.
 ///
 /// What produced this was a directory nobody had vouched for: every listing came back as a

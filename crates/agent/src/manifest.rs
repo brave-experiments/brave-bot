@@ -73,7 +73,7 @@ use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::Sink;
 use bua_core::label::{Confidentiality, Label};
 use bua_core::manifest::{self, Arg, Draft, DraftStep, Manifest, Step, Tier};
-use bua_core::policy::{Policy, ReleasePlan, Routing};
+use bua_core::policy::{Destination, Policy, ReleasePlan, Routing};
 use bua_core::slot::{SlotId, SlotStore};
 use bua_core::trust::TrustStore;
 use bua_core::value::Labelled;
@@ -993,6 +993,7 @@ fn run_step<S: Sink, C: Confirmer>(
                     .defer(
                         "read_file",
                         out_slot,
+                        &path,
                         &Labelled::trusted(path.clone()),
                         bytes,
                         slots,
@@ -1212,7 +1213,7 @@ fn write<S: Sink, C: Confirmer>(
         Intent::Create
     };
 
-    if policy.write_needs_approval(&path, body_label) {
+    if policy.write_needs_approval(&path, body_label, Destination::Named) {
         let request = WriteRequest {
             intent,
             existing: existing.clone(),

@@ -125,6 +125,19 @@ impl ReleasePlan {
     }
 }
 
+/// Where a write's destination came from.
+///
+/// The difference is what a person has had the chance to see: a path the planner wrote out is in
+/// the call it made, and a path taken out of a reference is nowhere at all until the approval
+/// puts it in front of somebody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Destination {
+    /// The planner named the path itself.
+    Named,
+    /// The path came out of a reference, so nobody has read it yet.
+    Reference,
+}
+
 /// The reference monitor for exactly one turn.
 ///
 /// Not `Clone`. [`Policy::finish`] takes `self`, so a policy cannot outlive its turn.
@@ -712,6 +725,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         &mut self,
         tool: &str,
         slot: SlotId,
+        origin: &str,
         path: &Labelled<String>,
         bytes: usize,
         slots: &mut crate::slot::SlotStore,
@@ -753,8 +767,148 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ),
         );
         Ok(crate::reference::Reference::unread(
-            slot, path, bytes, label,
+            slot,
+            origin,
+            Some(bytes),
+            label,
         ))
+    }
+
+    /// Reserve one slot per entry in a listing the planner may not read.
+    ///
+    /// A listing quarantined as one document is a dead end. The only thing anyone can do with a
+    /// reference is hand it to a processor, whose answer is a reference in its turn, and a
+    /// reference is not a path, so an agent holding the names of the files it is working among
+    /// can do nothing with any of them. That is not confinement, it is paralysis, and what came
+    /// of it was a planner guessing globs to see which came back empty.
+    ///
+    /// One slot per entry makes a reference an **address**. The planner can hand `ref:2` to a
+    /// processor and name it as a destination without ever being told what the file is called.
+    /// The name stays in here: `origin` is what the planner is shown instead, and it says which
+    /// directory the entry came from and nothing about the entry.
+    ///
+    /// What an attacker who names the files gains by this is the ability to make one entry look
+    /// more inviting than another, when nothing about any of them is shown. What they cannot
+    /// gain is a destination: reading through a reference is confined and changes nothing, and
+    /// writing through one is refused unless a person, who is shown the resolved path, endorses
+    /// it. See [`Policy::destination_from_reference`].
+    pub fn defer_entries(
+        &mut self,
+        tool: &str,
+        origin: &str,
+        entries: &Labelled<Vec<String>>,
+        ids: &[SlotId],
+        slots: &mut crate::slot::SlotStore,
+    ) -> Gated<Vec<crate::reference::Reference>> {
+        self.before_capability(Capability::FileRead)?;
+
+        let base = Capability::FileRead.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: "'file_read' produces no observation to label".to_string(),
+        })?;
+
+        // The names are read here and nowhere else. They go from the listing into the slots
+        // without the driver holding one, which is what keeps a filename out of a place it
+        // could be compared, matched or printed.
+        let proof = Declassification::authorise("filenames reserved as references");
+        let paths = entries.clone().declassify(&proof);
+
+        // The caller reserved the names before the kernel counted the entries, so the two must
+        // agree: a mismatch means the count it was told and the list it holds are not the same
+        // listing, and quietly using the shorter of them would drop entries nobody hears about.
+        if ids.len() != paths.len() {
+            return Err(self.deny(
+                "defer",
+                Principle::Confinement,
+                format!(
+                    "{tool}: {} names were reserved for {} entries",
+                    ids.len(),
+                    paths.len()
+                ),
+            ));
+        }
+
+        let mut references = Vec::with_capacity(paths.len());
+        for (slot, path) in ids.iter().cloned().zip(paths) {
+            let integrity = match self.trust.integrity_of(&path) {
+                Some(Integrity::Trusted) => Integrity::Trusted,
+                _ => Integrity::Untrusted,
+            };
+            let label = Label::new(integrity, base.confidentiality);
+
+            slots
+                .defer(slot.clone(), &path, label)
+                .map_err(|e| Denial {
+                    principle: Principle::Confinement,
+                    message: format!("{tool}: could not reserve {slot}: {e}"),
+                })?;
+
+            // The trail names the file, because the trail is read by the person whose directory
+            // it is. The planner's copy of this says only which directory it came from.
+            self.sink.emit(Event::SlotDeferred {
+                slot: slot.clone(),
+                label,
+                origin: path.clone(),
+            });
+            references.push(crate::reference::Reference::unread(
+                slot, origin, None, label,
+            ));
+        }
+
+        self.allow(
+            "defer",
+            format!(
+                "{tool}: {} entries of {origin} reserved as references; no name was shown",
+                references.len()
+            ),
+        );
+        Ok(references)
+    }
+
+    /// The file a reference names.
+    ///
+    /// The one place a quarantined name comes back out, and it authorises nothing by itself.
+    /// What happens next decides what it may be:
+    ///
+    /// - a **read** promotes it through [`Policy::promote_confined_read`], the relaxation that
+    ///   already lets the model choose which file to look at, on the same grounds: the read
+    ///   changes nothing and cannot leave the workspace.
+    /// - a **write** shows it to a person and takes a grant for that exact path. Promotion is
+    ///   not enough for an effect and is not used for one here.
+    ///
+    /// Refuses a slot that names no file. A processor's output is content and nothing else, and
+    /// a planner that could turn it into a path would have found the way to make untrusted text
+    /// choose a destination.
+    pub fn path_of_reference(
+        &mut self,
+        tool: &str,
+        field: &str,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<String> {
+        let Some(path) = slots.path_of(slot) else {
+            return Err(self.deny(
+                "reference",
+                Principle::IntegrityGate,
+                format!(
+                    "{tool}.{field}: '{slot}' does not name a file, so there is nowhere for it \
+                     to be a destination for; only a reference that came from a file can be one"
+                ),
+            ));
+        };
+        let path = path.to_string();
+
+        self.sink.emit(Event::Declassified {
+            slot: slot.clone(),
+            from: slots.label_of(slot).unwrap_or(Label::untrusted_private()),
+            to: Label::untrusted_public(),
+            reason: "the file a reference names, for a person to approve",
+        });
+        self.allow(
+            "reference",
+            format!("{tool}.{field}: {slot} names {path}, which a person must approve"),
+        );
+        Ok(path)
     }
 
     /// Read the file a deferred slot was promised, at the label the trust map gives it now.
@@ -1144,8 +1298,24 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// destination only gains trust, never loses it.
     ///
     /// Takes a [`Label`], never the bytes.
-    pub fn write_needs_approval(&mut self, path: &str, contents: Label) -> bool {
+    pub fn write_needs_approval(
+        &mut self,
+        path: &str,
+        contents: Label,
+        destination: Destination,
+    ) -> bool {
         let data_trusted = contents.is_trusted();
+
+        // A destination taken out of a reference is shown whatever the table says, because the
+        // approval is the only moment the path exists anywhere a person can see it. The table
+        // below reasons about a path somebody named; this one nobody has.
+        if destination == Destination::Reference {
+            self.allow(
+                "approval",
+                format!("{path}: named only by a reference, so it is shown, asking"),
+            );
+            return true;
+        }
 
         let (needed, reason) = match self.trust.integrity_of(path) {
             // Nobody has said anything about this path, so the first write is the moment to ask.
@@ -1534,6 +1704,7 @@ mod tests {
             .defer(
                 "read_file",
                 slot.clone(),
+                "notes.md",
                 &Labelled::trusted("notes.md".to_string()),
                 42,
                 &mut slots,
@@ -1562,6 +1733,85 @@ mod tests {
             .expect("asking twice is not an error");
     }
 
+    /// The names of the files in a directory nobody vouched for are content. A reference to one
+    /// says which directory it came from and nothing else, which is what makes it safe to put in
+    /// front of a planner that must nonetheless be able to work on the file.
+    #[test]
+    fn an_entry_reference_names_its_directory_and_never_its_file() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+
+        let entries = Labelled::new(
+            vec!["secret-plans.md".to_string(), "game.js".to_string()],
+            Label::untrusted_private(),
+        );
+        let ids = vec![SlotId::new("ref:1"), SlotId::new("ref:2")];
+
+        let references = policy
+            .defer_entries("list_files", "an entry in \".\"", &entries, &ids, &mut slots)
+            .expect("entries may be reserved");
+
+        assert_eq!(references.len(), 2);
+        for reference in &references {
+            let described = reference.describe();
+            assert!(
+                !described.contains("secret-plans") && !described.contains("game.js"),
+                "a filename reached the planner: {described}"
+            );
+            assert!(described.contains("an entry in"), "{described}");
+            assert!(described.contains("not read yet"), "{described}");
+        }
+
+        // The kernel kept them, which is what makes the reference an address.
+        assert_eq!(slots.path_of(&ids[0]), Some("secret-plans.md"));
+        assert_eq!(slots.path_of(&ids[1]), Some("game.js"));
+    }
+
+    /// The count comes from outside and the list from inside, so they have to agree. Taking the
+    /// shorter of the two would drop entries with nothing saying so.
+    #[test]
+    fn reserving_the_wrong_number_of_names_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+
+        let entries = Labelled::new(
+            vec!["a".to_string(), "b".to_string()],
+            Label::untrusted_private(),
+        );
+        let err = policy
+            .defer_entries(
+                "list_files",
+                "an entry",
+                &entries,
+                &[SlotId::new("ref:1")],
+                &mut slots,
+            )
+            .expect_err("one name for two entries must be refused");
+        assert_eq!(err.principle, Principle::Confinement);
+    }
+
+    /// A reference that came from a processor names no file, so it cannot be a destination.
+    /// If it could, untrusted text would be choosing where an effect lands.
+    #[test]
+    fn a_reference_that_names_no_file_is_not_a_destination() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+
+        slots
+            .writer_for(SlotId::new("ref:9"), Label::untrusted_private())
+            .unwrap()
+            .write("../../etc/passwd")
+            .unwrap();
+
+        let err = policy
+            .path_of_reference("write_file", "path_ref", &SlotId::new("ref:9"), &slots)
+            .expect_err("content is not an address");
+        assert_eq!(err.principle, Principle::IntegrityGate);
+    }
+
     /// A path that stopped being trusted between the promise and the reading is read as
     /// untrusted. Anything else would launder bytes through a reference made earlier.
     #[test]
@@ -1584,6 +1834,7 @@ mod tests {
             .defer(
                 "read_file",
                 slot.clone(),
+                "src/main.rs",
                 &Labelled::trusted("src/main.rs".to_string()),
                 10,
                 &mut slots,
@@ -2215,7 +2466,7 @@ mod tests {
         let mut sink = RecordingSink::new();
         let mut policy = policy_trusting(&mut sink, &["."]);
 
-        assert!(!policy.write_needs_approval("src/a.rs", Label::trusted_public()));
+        assert!(!policy.write_needs_approval("src/a.rs", Label::trusted_public(), Destination::Named));
 
         let before = policy.trust().rules().count();
         policy.reconcile_after_write("src/a.rs", Label::trusted_public());
@@ -2229,7 +2480,7 @@ mod tests {
         let mut sink = RecordingSink::new();
         let mut policy = policy_trusting(&mut sink, &["."]);
 
-        assert!(policy.write_needs_approval("src/a.rs", Label::untrusted_public()));
+        assert!(policy.write_needs_approval("src/a.rs", Label::untrusted_public(), Destination::Named));
 
         policy.reconcile_after_write("src/a.rs", Label::untrusted_public());
         assert!(!policy.trust().is_trusted("src/a.rs"));
@@ -2253,7 +2504,7 @@ mod tests {
         .expect("policy")
         .with_trust(store);
 
-        assert!(!policy.write_needs_approval("vendor/ours.js", Label::trusted_public()));
+        assert!(!policy.write_needs_approval("vendor/ours.js", Label::trusted_public(), Destination::Named));
 
         policy.reconcile_after_write("vendor/ours.js", Label::trusted_public());
         assert!(policy.trust().is_trusted("vendor/ours.js"));
@@ -2276,7 +2527,7 @@ mod tests {
         .expect("policy")
         .with_trust(store);
 
-        assert!(!policy.write_needs_approval("vendor/x.js", Label::untrusted_public()));
+        assert!(!policy.write_needs_approval("vendor/x.js", Label::untrusted_public(), Destination::Named));
 
         let before = policy.trust().rules().count();
         policy.reconcile_after_write("vendor/x.js", Label::untrusted_public());
@@ -2297,8 +2548,8 @@ mod tests {
         )
         .expect("policy");
 
-        assert!(policy.write_needs_approval("a.rs", Label::trusted_public()));
-        assert!(policy.write_needs_approval("a.rs", Label::untrusted_public()));
+        assert!(policy.write_needs_approval("a.rs", Label::trusted_public(), Destination::Named));
+        assert!(policy.write_needs_approval("a.rs", Label::untrusted_public(), Destination::Named));
     }
 
     /// Reading out of a trusted directory yields trusted data. This is what lets row 1 of
