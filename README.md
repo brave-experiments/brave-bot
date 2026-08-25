@@ -113,6 +113,9 @@ description: How commit messages are written here. Use before writing one.
 Write the subject in the imperative. Explain why in the body, never what.
 ```
 
+Type `/skills` in a session, or run `bua skills`, to see what loaded, what a project skill
+shadowed, what was left out and why, and what it all costs per request.
+
 Only the name and the description are put in front of the model, which loads the body when the
 task calls for it. Your own `~/.bua` is trusted for being yours; a project's `AGENTS.md` and
 `.bua/skills` are read through the trust map, so they load when you vouched for the directory and
