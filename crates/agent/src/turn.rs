@@ -682,8 +682,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         conversation.quarantine(),
                     )
                     .map_err(|d| TurnError::Precommit(d.to_string()))?;
-                let described: Vec<String> =
-                    references.iter().map(bua_core::reference::Reference::describe).collect();
+                let described: Vec<String> = references
+                    .iter()
+                    .map(bua_core::reference::Reference::describe)
+                    .collect();
                 format!(
                     "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are \
                      quarantined, one reference each.\n\n{}",

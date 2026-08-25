@@ -386,11 +386,11 @@ impl Produced {
             origin.clone(),
             format!("{bytes} bytes, quarantined"),
         )
-            .with_deferral(Deferral {
-                path,
-                origin,
-                bytes,
-            })
+        .with_deferral(Deferral {
+            path,
+            origin,
+            bytes,
+        })
     }
 
     fn with_deferral(mut self, deferral: Deferral) -> Self {
@@ -755,7 +755,9 @@ fn read_file<S: Sink>(
     // A reference to a file the planner may not read already is that file, so reading it has
     // nothing to hand back but another name for the same thing, which reads as the read having
     // failed. One planner went four references deep before giving up. Nothing to do but say so.
-    if whole_file && destination == Destination::Reference && policy.read_is_quarantined(&proposed_path)
+    if whole_file
+        && destination == Destination::Reference
+        && policy.read_is_quarantined(&proposed_path)
     {
         return confirmed(
             format!(
@@ -820,7 +822,6 @@ pub(crate) fn materialise<S: Sink>(
     }
     Ok(())
 }
-
 
 /// The path a call is about, from `path` or from a reference to a file.
 ///
@@ -964,23 +965,19 @@ fn list_files<S: Sink>(
             // the same question `present` would ask a moment later.
             if !listing.label().is_trusted() {
                 let count = {
-                    let shaped =
-                        policy.render_in_place("list_files", &listing, |listing| listing.files.len());
+                    let shaped = policy
+                        .render_in_place("list_files", &listing, |listing| listing.files.len());
                     let proof = policy.authorise_display_release("how many entries a listing has");
                     shaped.declassify(&proof)
                 };
                 let paths =
                     policy.render_in_place("list_files", &listing, |listing| listing.files.clone());
-                return Produced::new(
-                    Labelled::trusted(String::new()),
-                    proposed_dir.clone(),
-                    note,
-                )
-                .with_entries(Entries {
-                    origin: format!("an entry in \"{proposed_dir}\""),
-                    paths,
-                    count,
-                });
+                return Produced::new(Labelled::trusted(String::new()), proposed_dir.clone(), note)
+                    .with_entries(Entries {
+                        origin: format!("an entry in \"{proposed_dir}\""),
+                        paths,
+                        count,
+                    });
             }
 
             let rendered = policy.render_in_place("list_files", &listing, |listing| {
@@ -1023,7 +1020,13 @@ fn quarantined_body<S: Sink>(
         .map_err(|denial| format!("refused: {denial}"))?;
 
     // The bytes are needed now, so a slot still holding only a path reads its file here.
-    materialise(policy, workspace, slots, "write_file", &[slot.clone()])?;
+    materialise(
+        policy,
+        workspace,
+        slots,
+        "write_file",
+        std::slice::from_ref(&slot),
+    )?;
 
     let content = policy
         .resolve("write_file", &slot, slots)
