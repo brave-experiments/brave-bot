@@ -121,6 +121,12 @@ pub struct Task {
     /// Workspace-relative files to include as context. Trusted because the user named
     /// them, not the model.
     pub files: Vec<String>,
+    /// Input piped into the process on stdin.
+    ///
+    /// Untrusted, unlike [`Task::files`]. Naming a file says which bytes the user meant; a pipe
+    /// says only that some bytes arrived, and `gh pr diff` carries whatever the author of the
+    /// pull request wrote. So the planner is shown a reference, never the bytes.
+    pub piped: Option<String>,
 }
 
 impl Task {
@@ -128,11 +134,17 @@ impl Task {
         Self {
             prompt: prompt.into(),
             files: Vec::new(),
+            piped: None,
         }
     }
 
     pub fn with_file(mut self, path: impl Into<String>) -> Self {
         self.files.push(path.into());
+        self
+    }
+
+    pub fn with_piped_input(mut self, text: impl Into<String>) -> Self {
+        self.piped = Some(text.into());
         self
     }
 }
@@ -356,6 +368,30 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             Presentation::Quarantined(reference) => {
                 format!(
                     "{path} could not be shown to you.\n\n{}",
+                    reference.describe()
+                )
+            }
+        }));
+    }
+
+    // Piped input, if any. Same four steps as a context file, and deliberately so: the kernel
+    // decides what the planner is told, from the label alone. The label here happens to be fixed
+    // at untrusted, so this always quarantines, but the driver must not assume that and shape the
+    // message itself.
+    if let Some(text) = &task.piped {
+        let piped = policy.label_piped_input(text.clone());
+        conversation.observed(policy.context_integrity());
+
+        let slot = conversation.next_reference();
+        let presented = policy
+            .present("chat", slot, "stdin", &piped, conversation.quarantine())
+            .map_err(|d| TurnError::Precommit(d.to_string()))?;
+
+        conversation.push(Message::user(match &presented {
+            Presentation::Visible(body) => format!("Piped input:\n\n{body}"),
+            Presentation::Quarantined(reference) => {
+                format!(
+                    "Piped input could not be shown to you.\n\n{}",
                     reference.describe()
                 )
             }
