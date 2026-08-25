@@ -18,7 +18,9 @@ fn main() -> ExitCode {
 
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
-            println!("bua {VERSION}");
+            // The same words a session record writes down, so the two can be compared without
+            // anyone having to work out what "the current build" means.
+            println!("bua {}", bua_tui::BUILD);
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") => {
