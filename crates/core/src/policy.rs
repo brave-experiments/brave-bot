@@ -1139,9 +1139,44 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
         // `taint_all` only meets integrity down and joins confidentiality up, so this is a
         // degradation by construction and the fallback cannot be reached.
-        reply
+        let reply = reply
             .relabel(tainted)
-            .expect("taint over the inputs can only degrade the reply's label")
+            .expect("taint over the inputs can only degrade the reply's label");
+
+        self.unfence(spec.id(), reply)
+    }
+
+    /// Take a processor's answer out of the code fence it wrapped it in.
+    ///
+    /// A model asked for a file tends to hand back a markdown block, and this one is asked for a
+    /// file every time it is used to change one. Nobody downstream can notice: the planner never
+    /// sees the output, the driver may not read it, and the bytes go into a file exactly as they
+    /// arrived. One did, and `server.py` on disk began with ```` ```python ```` and ended with
+    /// ```` ``` ````, which is not a Python file.
+    ///
+    /// This reads the content, which needs saying plainly. It reads it to reshape it and for no
+    /// other purpose: the same bytes come out, minus a wrapper, still quarantined, still at the
+    /// same label, going to the same place they were already going. Nothing branches on what it
+    /// finds outside these lines, so an attacker who controls the text controls what is in the
+    /// file they already controlled and nothing else. That is the standing of
+    /// [`Policy::render_in_place`], which reshapes untrusted content for a screen.
+    ///
+    /// Only a fence that wraps the *whole* answer is removed, since that is the one that is
+    /// packaging rather than content. A document with fences inside it is left alone.
+    fn unfence(&mut self, id: &str, reply: Labelled<String>) -> Labelled<String> {
+        let label = reply.label();
+        let proof = Declassification::authorise("reshaped on the way out of a processor");
+        let text = reply.declassify(&proof);
+
+        let Some(inner) = crate::fence::strip(&text) else {
+            return Labelled::new(text, label);
+        };
+
+        self.allow(
+            "processor",
+            format!("{id}: a code fence wrapped the whole answer and was removed"),
+        );
+        Labelled::new(inner, label)
     }
 
     /// Release a quarantined value into the workspace it came from.

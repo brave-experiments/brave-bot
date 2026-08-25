@@ -16,6 +16,7 @@ pub mod cancel;
 pub mod capability;
 pub mod command;
 pub mod event;
+pub mod fence;
 pub mod label;
 pub mod policy;
 pub mod processor;

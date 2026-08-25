@@ -184,8 +184,14 @@ fn two_tool_requests(first: (&str, &str), second: (&str, &str)) -> String {
 }
 
 fn reply_with(content: &str) -> String {
+    // Escaped, so a reply may contain the newlines a real one does. A model handing back a file
+    // is the ordinary case here, and a file has lines.
+    let escaped = content
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
     format!(
-        r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","content":"{content}"}}}}]}}"#
+        r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","content":"{escaped}"}}}}]}}"#
     )
 }
 
@@ -3475,6 +3481,50 @@ fn a_write_through_a_reference_says_what_landed_and_that_it_is_done() {
     assert!(
         !told.contains("game.js"),
         "the filename reached the planner: {told}"
+    );
+}
+
+/// A processor asked for a file hands back a markdown block, because that is what returning code
+/// looks like in a chat. Nobody downstream can notice: the planner never sees the output and the
+/// driver may not read it, so the fence goes into the file. One did, and left ```python at the
+/// top of a Python file.
+#[test]
+fn a_fenced_answer_is_unwrapped_before_it_becomes_a_file() {
+    let scratch = Scratch::new("fenced-answer");
+    std::fs::write(scratch.path.join("server.py"), "print(1)\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"return the whole file with the bug fixed"}"#,
+        ),
+        reply_with("```python\nprint(2)\n```"),
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix it"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        "print(2)\n",
+        "the fence the model wrapped its answer in was written into the file"
     );
 }
 
