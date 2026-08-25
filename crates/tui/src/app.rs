@@ -542,7 +542,10 @@ fn run_turn_animated(
                     session.note("cancelling…");
                 }
                 TermEvent::Mouse(mouse) => {
-                    if handle_mouse(session, mouse) == Action::Copy {
+                    // Bound rather than tested inline, because handling the event scrolls and
+                    // moves the selection whatever it returns. A match guard would hide that.
+                    let action = handle_mouse(session, mouse);
+                    if action == Action::Copy {
                         copy_selection(terminal, session)?;
                     }
                 }
