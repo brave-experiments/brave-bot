@@ -38,6 +38,7 @@ fn main() -> ExitCode {
         // it would be caught below as an unknown option.
         Some("-p" | "--print") => run_task(&args),
         Some("doctor") => doctor(),
+        Some("skills") => skills(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
             eprintln!("unknown option: {flag}");
@@ -57,6 +58,7 @@ fn print_help() {
     println!("  bua \"<task>\" [--file <path>]...   Run a single task");
     println!("  cat file | bua -p \"<task>\"        ...with piped input, never trusted");
     println!("  bua --resume [id]                 Pick up a session in this directory");
+    println!("  bua skills                        List the skills and standing instructions");
     println!("  bua doctor                        Check configuration and confinement");
     println!("  bua import-leo-creds [channel]    Import a Leo Premium subscription");
     println!();
@@ -462,6 +464,42 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
 }
 
 /// Report whether configuration is usable, without revealing the signing key.
+/// List what a turn in this directory would load.
+///
+/// A one-shot command vouches for nothing, so it runs with an empty trust map and the project's
+/// own skills come back under "not loaded". That is honest rather than unhelpful: they are still
+/// listed, by path and size, which is what tells you the file was found and why it was rejected.
+/// The trusted view is `/skills` inside a session, where the question was actually answered.
+fn skills() -> ExitCode {
+    let workspace = match current_workspace() {
+        Ok(workspace) => workspace,
+        Err(err) => {
+            eprintln!("workspace error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut sink = RecordingSink::new();
+    let inventory = bua_agent::skills::inventory(
+        &mut sink,
+        &workspace,
+        bua_agent::home::directory().as_deref(),
+        bua_core::trust::TrustStore::new(),
+    );
+
+    for line in bua_tui::skills_view::lines(&inventory) {
+        println!("{line}");
+    }
+
+    if !inventory.skipped.is_empty() {
+        println!();
+        println!("  This command vouches for nothing, so nothing in this directory is trusted.");
+        println!("  Run bua, answer yes, and type /skills for what a session here would load.");
+    }
+
+    ExitCode::SUCCESS
+}
+
 fn doctor() -> ExitCode {
     let mut ok = true;
 
