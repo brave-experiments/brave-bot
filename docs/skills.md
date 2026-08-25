@@ -112,6 +112,17 @@ Skills
   preamble                        587 bytes, roughly 146 tokens per request
 ```
 
+The `project` line is always there, even when the project holds nothing:
+
+```
+  project                         ~/repos/thing
+      not trusted, and no .bua/skills directory
+```
+
+It says where the search looked and whether that directory is trusted, which is what separates
+"there is nothing here" from "there is something here you are not being shown". Without it an
+empty listing means both, and the one question this command exists to answer goes unanswered.
+
 **Use `/skills` for the real answer.** A one-shot `bua skills` vouches for nothing, so it runs
 with an empty trust map and everything in the project comes back under "not loaded". They are
 still listed, by path and size, so you can tell "not trusted" from "not found". Only a session

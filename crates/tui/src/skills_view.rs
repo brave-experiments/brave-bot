@@ -86,6 +86,13 @@ pub fn lines(inventory: &Inventory) -> Vec<String> {
     }
 
     out.push(String::new());
+    out.push(format!(
+        "  {}{}",
+        pad("project", FIELD - 2),
+        clean(&inventory.project.root)
+    ));
+    out.push(format!("      {}", project_state(&inventory.project)));
+
     if !inventory.agents.is_empty() {
         out.push(format!(
             "  {}{}",
@@ -106,6 +113,20 @@ pub fn lines(inventory: &Inventory) -> Vec<String> {
     ));
 
     out
+}
+
+/// What the project's line says about itself.
+///
+/// Always said, even when there is nothing to report, because an empty listing is otherwise two
+/// different situations wearing the same face: a directory with no skills, and a directory whose
+/// skills are not being shown. Telling those apart is the question this command answers.
+fn project_state(project: &bua_agent::skills::Project) -> &'static str {
+    match (project.trusted, project.has_skills_directory) {
+        (true, true) => "trusted",
+        (true, false) => "trusted, and no .bua/skills directory",
+        (false, true) => "not trusted, so nothing here was loaded",
+        (false, false) => "not trusted, and no .bua/skills directory",
+    }
 }
 
 /// The part of a reason worth showing beside a path, without repeating "was not loaded".
@@ -154,7 +175,7 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_agent::skills::{Inventory, Loaded, Shadowed, Shape, Skipped};
+    use bua_agent::skills::{Inventory, Loaded, Project, Shadowed, Shape, Skipped};
 
     fn rendered(inventory: &Inventory) -> String {
         lines(inventory).join("\n")
@@ -251,6 +272,72 @@ mod tests {
         let out = rendered(&Inventory::default());
         assert!(out.contains("nothing loaded"), "{out}");
         assert!(out.contains("preamble"), "{out}");
+    }
+
+    /// The four states have to read differently. A directory with no skills and a directory whose
+    /// skills are being withheld look identical without this, and telling them apart is the whole
+    /// question: someone who declined trust and sees an empty listing cannot otherwise know
+    /// whether the command found nothing or is showing nothing.
+    #[test]
+    fn every_state_a_project_can_be_in_reads_differently() {
+        let states = [(true, true), (true, false), (false, true), (false, false)];
+        let mut seen: Vec<&str> = states
+            .iter()
+            .map(|&(trusted, has)| {
+                project_state(&Project {
+                    root: "~/work".to_string(),
+                    trusted,
+                    has_skills_directory: has,
+                })
+            })
+            .collect();
+
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            before,
+            seen.len(),
+            "two states say the same thing: {seen:?}"
+        );
+    }
+
+    /// An empty project section is only unambiguous if the listing says where it looked.
+    #[test]
+    fn the_project_is_named_even_when_it_holds_nothing() {
+        let inventory = Inventory {
+            project: Project {
+                root: "~/repos/thing".to_string(),
+                trusted: false,
+                has_skills_directory: false,
+            },
+            ..Default::default()
+        };
+
+        let out = rendered(&inventory);
+        assert!(out.contains("~/repos/thing"), "{out}");
+        assert!(out.contains("not trusted"), "{out}");
+        assert!(out.contains("no .bua/skills directory"), "{out}");
+    }
+
+    /// The case that prompted this: declining trust in a project that does hold skills has to say
+    /// so, or the listing looks the same as one with nothing to show.
+    #[test]
+    fn a_declined_project_with_skills_says_they_were_withheld() {
+        let inventory = Inventory {
+            project: Project {
+                root: "~/repos/thing".to_string(),
+                trusted: false,
+                has_skills_directory: true,
+            },
+            ..Default::default()
+        };
+
+        assert!(
+            rendered(&inventory).contains("nothing here was loaded"),
+            "{}",
+            rendered(&inventory)
+        );
     }
 
     /// The layout stops being a layout the moment a line soft-wraps, and the transcript indents

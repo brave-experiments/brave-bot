@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// A scratch directory that removes itself, so tests do not leave state behind.
 struct Scratch {
-    path: PathBuf,
+    pub path: PathBuf,
 }
 
 impl Scratch {
@@ -584,4 +584,66 @@ fn an_inventory_with_nothing_installed_is_empty_and_quiet() {
     assert!(inventory.shadowed.is_empty());
     assert!(inventory.agents.is_empty());
     assert_eq!(inventory.preamble_bytes, 0);
+}
+
+/// The four states a project can be in, each of which a listing has to distinguish. Without
+/// this, a directory with no skills and a directory whose skills are being withheld render the
+/// same way, and the listing cannot answer the question it exists for.
+#[test]
+fn the_project_is_reported_whether_or_not_it_holds_anything() {
+    for (trusted, populated) in [(true, true), (true, false), (false, true), (false, false)] {
+        let scratch = Scratch::new(&format!("project-{trusted}-{populated}"));
+        let project = scratch.workspace();
+        if populated {
+            write_skill(&project.join(".bua"), "one", "one", "d", "b");
+        }
+        let workspace = Workspace::new(project).expect("workspace");
+
+        let mut store = TrustStore::new();
+        if trusted {
+            store.trust(".");
+        }
+        let mut sink = RecordingSink::new();
+        let inventory = skills::inventory(&mut sink, &workspace, None, store);
+
+        assert_eq!(
+            inventory.project.trusted, trusted,
+            "trust misreported for ({trusted}, {populated})"
+        );
+        assert_eq!(
+            inventory.project.has_skills_directory, populated,
+            "the skills directory was misreported for ({trusted}, {populated})"
+        );
+        assert!(
+            !inventory.project.root.is_empty(),
+            "the listing did not say where it looked"
+        );
+    }
+}
+
+/// A path is easier to recognise as `~/work/thing` than as an absolute one, and the home root is
+/// already to hand. Derived from the argument rather than the environment, like everything else
+/// here.
+#[test]
+fn the_project_path_abbreviates_the_home_directory() {
+    let scratch = Scratch::new("abbreviated");
+    let home = scratch.path.join("home/.bua");
+    std::fs::create_dir_all(&home).expect("home");
+    let project = scratch.path.join("home/work");
+    std::fs::create_dir_all(&project).expect("project");
+    let workspace = Workspace::new(project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let inventory = skills::inventory(&mut sink, &workspace, Some(&home), TrustStore::new());
+
+    assert!(
+        inventory.project.root.starts_with("~/"),
+        "the home directory was not abbreviated: {}",
+        inventory.project.root
+    );
+    assert!(
+        inventory.project.root.ends_with("work"),
+        "{}",
+        inventory.project.root
+    );
 }

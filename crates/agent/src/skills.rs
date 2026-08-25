@@ -294,6 +294,20 @@ pub struct Skipped {
     pub shape: Option<Shape>,
 }
 
+/// Where the project's skills would come from, and whether they could.
+///
+/// Reported whether or not anything was found, because "nothing here" and "nothing shown" look
+/// identical otherwise, and telling them apart is the question a listing exists to answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Project {
+    /// The workspace root, with the home directory abbreviated.
+    pub root: String,
+    /// Whether the trust map vouches for `.bua/skills`.
+    pub trusted: bool,
+    /// Whether there is a `.bua/skills` directory at all.
+    pub has_skills_directory: bool,
+}
+
 /// Everything a person needs to answer "what standing context am I sending, and what was left
 /// out".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -308,6 +322,8 @@ pub struct Inventory {
     /// Measured from the text `preamble::compose` actually produced rather than re-derived, so
     /// this cannot disagree with what is sent.
     pub preamble_bytes: usize,
+    /// Where the project's own skills would come from, and whether they could.
+    pub project: Project,
 }
 
 impl Inventory {
@@ -444,6 +460,11 @@ pub fn inventory<S: Sink>(
         skipped: found.skipped,
         agents: preamble.agents,
         preamble_bytes: preamble.text.len(),
+        project: Project {
+            root: abbreviate_home(workspace.root(), home),
+            trusted: policy.trust().is_trusted(WORKSPACE_SKILLS),
+            has_skills_directory: workspace.root().join(WORKSPACE_SKILLS).is_dir(),
+        },
     };
     policy.finish();
     inventory
@@ -591,6 +612,29 @@ fn discover_workspace<S: Sink>(
                 None,
             ),
         }
+    }
+}
+
+/// A path with the user's home abbreviated to `~`, which is how they refer to it.
+///
+/// The home root arrives as `~/.bua`, so its parent is the home directory. Derived from what the
+/// caller passed rather than read from the environment, for the same reason nothing else here
+/// reads it: a library that reaches for `$HOME` makes its own output depend on the machine.
+fn abbreviate_home(path: &Path, home: Option<&Path>) -> String {
+    let shown = path.display().to_string();
+    let Some(parent) = home.and_then(Path::parent) else {
+        return shown;
+    };
+    // Resolved before comparing, because a workspace root already is: `Workspace::new`
+    // canonicalises, and on macOS that turns /var into /private/var. Comparing the two as typed
+    // would fail to match on any machine whose home sits behind a symlink.
+    let resolved = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    let prefix = resolved.display().to_string();
+    match shown.strip_prefix(&prefix) {
+        Some(rest) => format!("~{rest}"),
+        None => shown,
     }
 }
 
