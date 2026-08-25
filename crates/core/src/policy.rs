@@ -1749,7 +1749,13 @@ mod tests {
         let ids = vec![SlotId::new("ref:1"), SlotId::new("ref:2")];
 
         let references = policy
-            .defer_entries("list_files", "an entry in \".\"", &entries, &ids, &mut slots)
+            .defer_entries(
+                "list_files",
+                "an entry in \".\"",
+                &entries,
+                &ids,
+                &mut slots,
+            )
             .expect("entries may be reserved");
 
         assert_eq!(references.len(), 2);
@@ -2468,7 +2474,11 @@ mod tests {
         let mut sink = RecordingSink::new();
         let mut policy = policy_trusting(&mut sink, &["."]);
 
-        assert!(!policy.write_needs_approval("src/a.rs", Label::trusted_public(), Destination::Named));
+        assert!(!policy.write_needs_approval(
+            "src/a.rs",
+            Label::trusted_public(),
+            Destination::Named
+        ));
 
         let before = policy.trust().rules().count();
         policy.reconcile_after_write("src/a.rs", Label::trusted_public());
@@ -2482,7 +2492,11 @@ mod tests {
         let mut sink = RecordingSink::new();
         let mut policy = policy_trusting(&mut sink, &["."]);
 
-        assert!(policy.write_needs_approval("src/a.rs", Label::untrusted_public(), Destination::Named));
+        assert!(policy.write_needs_approval(
+            "src/a.rs",
+            Label::untrusted_public(),
+            Destination::Named
+        ));
 
         policy.reconcile_after_write("src/a.rs", Label::untrusted_public());
         assert!(!policy.trust().is_trusted("src/a.rs"));
@@ -2506,7 +2520,11 @@ mod tests {
         .expect("policy")
         .with_trust(store);
 
-        assert!(!policy.write_needs_approval("vendor/ours.js", Label::trusted_public(), Destination::Named));
+        assert!(!policy.write_needs_approval(
+            "vendor/ours.js",
+            Label::trusted_public(),
+            Destination::Named
+        ));
 
         policy.reconcile_after_write("vendor/ours.js", Label::trusted_public());
         assert!(policy.trust().is_trusted("vendor/ours.js"));
@@ -2529,7 +2547,11 @@ mod tests {
         .expect("policy")
         .with_trust(store);
 
-        assert!(!policy.write_needs_approval("vendor/x.js", Label::untrusted_public(), Destination::Named));
+        assert!(!policy.write_needs_approval(
+            "vendor/x.js",
+            Label::untrusted_public(),
+            Destination::Named
+        ));
 
         let before = policy.trust().rules().count();
         policy.reconcile_after_write("vendor/x.js", Label::untrusted_public());

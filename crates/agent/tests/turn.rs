@@ -3202,7 +3202,10 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
             r#"{"reads":["ref:1"],"instruction":"if this sets the speed, halve it; else return it unchanged"}"#,
         ),
         reply_with("const SPEED = 50;"),
-        tool_request("write_file", r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#),
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
+        ),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -3447,7 +3450,9 @@ fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
     let mut replies: Vec<String> = (0..MAX_TOOL_ROUNDS)
         .map(|_| tool_request("list_files", r#"{"directory":"."}"#))
         .collect();
-    replies.push(reply_with("I could not find the file; which one did you mean?"));
+    replies.push(reply_with(
+        "I could not find the file; which one did you mean?",
+    ));
 
     let (endpoint, received) = serve_sequence(replies);
     let config = config_for(&endpoint);
@@ -3509,12 +3514,7 @@ fn calls_made_after_the_budget_is_spent_are_not_run() {
 
     // Every round asks to overwrite the file, including the round after the tools are gone.
     let replies: Vec<String> = (0..MAX_TOOL_ROUNDS + 1)
-        .map(|_| {
-            tool_request(
-                "write_file",
-                r#"{"path":"marker.txt","contents":"after"}"#,
-            )
-        })
+        .map(|_| tool_request("write_file", r#"{"path":"marker.txt","contents":"after"}"#))
         .collect();
 
     let (endpoint, received) = serve_sequence(replies);
@@ -3585,7 +3585,10 @@ fn a_file_the_planner_may_not_see_is_reserved_rather_than_opened() {
         .events()
         .iter()
         .any(|e| matches!(e, Event::SlotWritten { .. }));
-    assert!(!read, "the file was opened although nothing needed the bytes");
+    assert!(
+        !read,
+        "the file was opened although nothing needed the bytes"
+    );
 
     // What the planner is told: a name, a size, and that nothing has looked.
     let bodies: Vec<String> = received.try_iter().collect();

@@ -812,7 +812,10 @@ mod tests {
         assert_eq!(build_note(Some("0.1.0 (aaaaaaa)"), "0.1.0 (aaaaaaa)"), None);
         let note = build_note(Some("0.1.0 (aaaaaaa)"), "0.1.0 (bbbbbbb)")
             .expect("a different build is worth saying");
-        assert!(note.contains("aaaaaaa") && note.contains("bbbbbbb"), "{note}");
+        assert!(
+            note.contains("aaaaaaa") && note.contains("bbbbbbb"),
+            "{note}"
+        );
         // Nothing recorded is nothing to compare, rather than something to remark on.
         assert_eq!(build_note(None, "0.1.0 (bbbbbbb)"), None);
     }
