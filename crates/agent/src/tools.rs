@@ -714,7 +714,10 @@ fn read_file<S: Sink>(
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
-    let proposed = found.path;
+    // What the reference that comes back is said to be of. The planner's own path where it
+    // typed one, and the reference's name where it did not: a read through a reference must not
+    // hand back the filename the reference exists to hold.
+    let (proposed, shown_path) = (found.path, found.shown);
 
     // The promotion the model's own choice of file already gets. A name out of a listing is
     // promoted on the same grounds and no others: the read is confined to the workspace and
@@ -746,7 +749,7 @@ fn read_file<S: Sink>(
     let whole_file = arguments.get("offset").is_none() && arguments.get("limit").is_none();
     if whole_file && policy.read_is_quarantined(&proposed_path) {
         return match workspace.survey(&proposed_path) {
-            Ok(bytes) => Produced::deferring(path, proposed_path, bytes),
+            Ok(bytes) => Produced::deferring(path, shown_path, bytes),
             // A path that names nothing is said so now, exactly as an eager read would have.
             Err(e) => problem(format!("error: {e}")),
         };
@@ -760,7 +763,7 @@ fn read_file<S: Sink>(
                 tally(p.lines.len(), "line", "lines")
             });
             let rendered = policy.render_in_place("read_file", &page, |p| render_page(&p));
-            Produced::new(rendered, proposed_path, note)
+            Produced::new(rendered, shown_path, note)
         }
         Err(e) => problem(format!("error: {e}")),
     }
