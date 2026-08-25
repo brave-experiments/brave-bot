@@ -350,6 +350,13 @@ fn event_loop(
             ) {
                 session.note(note);
             }
+            // The same caveat about the other half of what produced that transcript: not the
+            // tree it ran against, but the code that ran.
+            if let Some(note) =
+                crate::sessions::build_note(record.build.as_deref(), crate::BUILD)
+            {
+                session.note(note);
+            }
             // The trust map goes with the session, so picking one up carries the answer its own
             // user gave. `None` for a record from before this was kept, which is asked about.
             let inherited = record.trust_map();

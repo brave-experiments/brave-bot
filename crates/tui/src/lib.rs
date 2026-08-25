@@ -19,6 +19,13 @@ pub mod sessions;
 pub mod state;
 pub mod store;
 pub mod trust_prompt;
+
+/// What this build is: the version, the commit it was built from, and whether the tree had
+/// uncommitted changes at the time.
+///
+/// Written into every session record, so a transcript read later can be matched to the code that
+/// produced it rather than inferred from its own symptoms.
+pub const BUILD: &str = env!("BUA_BUILD");
 pub mod verbs;
 pub mod wrap;
 

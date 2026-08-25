@@ -85,6 +85,16 @@ pub struct Record {
     /// as an empty map: nothing recorded is not the same as nothing trusted.
     #[serde(default)]
     pub trust: Option<Vec<StoredRule>>,
+    /// Which build wrote this record: the version, the commit, and whether the tree was
+    /// modified. See [`crate::BUILD`].
+    ///
+    /// A transcript is read after the fact, usually because something in it went wrong, and the
+    /// first question is whether the code that produced it is the code in front of you. Without
+    /// this that has to be inferred from the transcript's own symptoms.
+    ///
+    /// `None` for a record written before this was kept.
+    #[serde(default)]
+    pub build: Option<String>,
     /// The conversation, which is what resuming restores.
     pub conversation: Snapshot,
     /// What a manifest run produced, where this was one.
@@ -317,6 +327,7 @@ impl Handle {
                     })
                     .collect(),
             ),
+            build: Some(crate::BUILD.to_string()),
             conversation: standing.conversation.clone(),
             manifest: standing.manifest.cloned(),
         };
@@ -521,6 +532,16 @@ pub fn branch_note(was: Option<&str>, now: Option<&str>) -> Option<String> {
 /// Read out of the files rather than by running git: it is one line, and this is a label on a
 /// list entry. A detached head has no branch name, which is reported as none rather than as the
 /// commit it happens to be on.
+/// What to say when the build that recorded a session is not the one resuming it.
+///
+/// The same kind of caveat as [`branch_note`], and for the same reason: what the transcript above
+/// describes was done by something other than what is about to carry on. Silent for a record
+/// with no build written down, which is one from before this was kept and has nothing to compare.
+pub fn build_note(was: Option<&str>, now: &str) -> Option<String> {
+    let was = was?;
+    (was != now).then(|| format!("that session ran on bua {was}; this is {now}"))
+}
+
 pub fn branch_of(directory: &Path) -> Option<String> {
     let git = find_git(directory)?;
     let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
@@ -772,6 +793,30 @@ mod tests {
         assert!(!map.is_trusted("src/fetched.json"));
     }
 
+    /// A transcript is read after the fact, and the first question about a strange one is
+    /// whether the code that produced it is the code in front of you. Inferring that from the
+    /// transcript's own symptoms is guesswork at the moment guesswork is worth least.
+    #[test]
+    fn a_record_says_which_build_wrote_it() {
+        assert!(
+            crate::BUILD.starts_with(env!("CARGO_PKG_VERSION")),
+            "the build stamp does not name the version: {}",
+            crate::BUILD
+        );
+    }
+
+    /// Resuming on different code is a caveat on the transcript above it, exactly as resuming on
+    /// a different branch is.
+    #[test]
+    fn a_session_recorded_by_another_build_says_so() {
+        assert_eq!(build_note(Some("0.1.0 (aaaaaaa)"), "0.1.0 (aaaaaaa)"), None);
+        let note = build_note(Some("0.1.0 (aaaaaaa)"), "0.1.0 (bbbbbbb)")
+            .expect("a different build is worth saying");
+        assert!(note.contains("aaaaaaa") && note.contains("bbbbbbb"), "{note}");
+        // Nothing recorded is nothing to compare, rather than something to remark on.
+        assert_eq!(build_note(None, "0.1.0 (bbbbbbb)"), None);
+    }
+
     fn a_record() -> Record {
         Record {
             id: "1-2".to_string(),
@@ -785,6 +830,7 @@ mod tests {
             todos: BTreeMap::new(),
             trust: None,
             manifest: None,
+            build: None,
             conversation: Snapshot {
                 messages: Vec::new(),
                 context: "trusted".to_string(),
