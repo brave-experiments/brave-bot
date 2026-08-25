@@ -741,21 +741,57 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(references)
     }
 
+    /// The file a reference names, for a read.
+    ///
+    /// Promoted exactly as the model's own choice of file already is, and for the same reasons:
+    /// the read changes nothing and cannot leave the workspace. What comes back is `(T,pub)` and
+    /// may be used as a read's path and nothing else.
+    pub fn promote_reference_for_read(
+        &mut self,
+        tool: &str,
+        field: &str,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<Labelled<String>> {
+        let path = self.path_of_reference(tool, field, slot, slots)?;
+        self.allow(
+            "promote",
+            format!("{tool}.{field}: {slot} names {path}, read confined and non-destructive"),
+        );
+        Ok(Labelled::trusted(path))
+    }
+
+    /// The file a reference names, for a person to approve as a destination.
+    ///
+    /// No promotion: an effect needs an endorsement, and this is the value the endorsement will
+    /// be issued for. What comes back is a plain path because the next two things that happen to
+    /// it are a person reading it and a grant being taken out on it, and both need the bytes.
+    pub fn destination_from_reference(
+        &mut self,
+        tool: &str,
+        field: &str,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<String> {
+        let path = self.path_of_reference(tool, field, slot, slots)?;
+        self.allow(
+            "reference",
+            format!("{tool}.{field}: {slot} names {path}, which a person must approve"),
+        );
+        Ok(path)
+    }
+
     /// The file a reference names.
     ///
-    /// The one place a quarantined name comes back out, and it authorises nothing by itself.
-    /// What happens next decides what it may be:
-    ///
-    /// - a **read** promotes it through [`Policy::promote_confined_read`], the relaxation that
-    ///   already lets the model choose which file to look at, on the same grounds: the read
-    ///   changes nothing and cannot leave the workspace.
-    /// - a **write** shows it to a person and takes a grant for that exact path. Promotion is
-    ///   not enough for an effect and is not used for one here.
+    /// The one place a quarantined name comes back out, and it authorises nothing by itself:
+    /// [`Policy::promote_reference_for_read`] and [`Policy::destination_from_reference`] are the
+    /// two things that may be done with what it returns, and they are kept apart so that neither
+    /// can be reached by asking for the other.
     ///
     /// Refuses a slot that names no file. A processor's output is content and nothing else, and
     /// a planner that could turn it into a path would have found the way to make untrusted text
     /// choose a destination.
-    pub fn path_of_reference(
+    fn path_of_reference(
         &mut self,
         tool: &str,
         field: &str,
@@ -767,8 +803,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 "reference",
                 Principle::IntegrityGate,
                 format!(
-                    "{tool}.{field}: '{slot}' does not name a file, so there is nowhere for it \
-                     to be a destination for; only a reference that came from a file can be one"
+                    "{tool}.{field}: '{slot}' does not name a file, so it cannot say where to \
+                     read from or write to; only a reference that came from a file can"
                 ),
             ));
         };
@@ -778,12 +814,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             slot: slot.clone(),
             from: slots.label_of(slot).unwrap_or(Label::untrusted_private()),
             to: Label::untrusted_public(),
-            reason: "the file a reference names, for a person to approve",
+            reason: "the file a reference names",
         });
-        self.allow(
-            "reference",
-            format!("{tool}.{field}: {slot} names {path}, which a person must approve"),
-        );
         Ok(path)
     }
 
@@ -1662,6 +1694,65 @@ mod tests {
         assert_eq!(err.principle, Principle::Confinement);
     }
 
+    /// A read and a write take different routes out of a reference, and the audit says which:
+    /// a read is a promotion, and an effect is a name for a person to approve. One message for
+    /// both said a read needed approval, which is not true and is not a small thing to say.
+    #[test]
+    fn a_read_and_a_write_leave_different_trails() {
+        let mut sink = RecordingSink::new();
+        {
+            let mut policy = open_policy(&mut sink);
+            let mut slots = SlotStore::new();
+            let entries = Labelled::new(vec!["game.js".to_string()], Label::untrusted_private());
+            let ids = vec![SlotId::new("ref:1")];
+            policy
+                .defer_entries("list_files", "an entry", &entries, &ids, &mut slots)
+                .unwrap();
+
+            let promoted = policy
+                .promote_reference_for_read("read_file", "path_ref", &ids[0], &slots)
+                .expect("a read may have the name");
+            assert!(
+                promoted.label().is_trusted(),
+                "a read's path must be routing"
+            );
+
+            policy
+                .destination_from_reference("write_file", "path_ref", &ids[0], &slots)
+                .expect("a write may have the name");
+        }
+
+        let said: Vec<String> = sink
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                Event::GatePassed { gate, detail }
+                    if *gate == "promote" || *gate == "reference" =>
+                {
+                    Some(detail.clone())
+                }
+                _ => None,
+            })
+            .collect();
+
+        let read = said
+            .iter()
+            .find(|d| d.starts_with("read_file.path_ref"))
+            .expect("the read was recorded");
+        assert!(
+            !read.contains("approve"),
+            "a read was recorded as needing an approval: {read}"
+        );
+        let write = said
+            .iter()
+            .find(|d| d.starts_with("write_file.path_ref"))
+            .expect("the write was recorded");
+        assert!(
+            write.contains("a person must approve"),
+            "the write did not say who decides: {write}"
+        );
+    }
+
     /// A reference that came from a processor names no file, so it cannot be a destination.
     /// If it could, untrusted text would be choosing where an effect lands.
     #[test]
@@ -1677,7 +1768,7 @@ mod tests {
             .unwrap();
 
         let err = policy
-            .path_of_reference("write_file", "path_ref", &SlotId::new("ref:9"), &slots)
+            .destination_from_reference("write_file", "path_ref", &SlotId::new("ref:9"), &slots)
             .expect_err("content is not an address");
         assert_eq!(err.principle, Principle::IntegrityGate);
     }

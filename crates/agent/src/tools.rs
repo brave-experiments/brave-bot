@@ -714,7 +714,7 @@ fn read_file<S: Sink>(
     slots: &SlotStore,
     arguments: &Value,
 ) -> Produced {
-    let found = match path_argument(policy, "read_file", slots, arguments) {
+    let found = match path_argument(policy, "read_file", Purpose::Read, slots, arguments) {
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
@@ -723,12 +723,16 @@ fn read_file<S: Sink>(
     // hand back the filename the reference exists to hold.
     let (proposed, destination, shown_path) = (found.path, found.destination, found.shown);
 
-    // The promotion the model's own choice of file already gets. A name out of a listing is
-    // promoted on the same grounds and no others: the read is confined to the workspace and
-    // changes nothing in it.
-    let path = match policy.promote_confined_read("read_file", "path", &proposed) {
-        Ok(p) => p,
-        Err(denial) => return problem(format!("refused: {denial}")),
+    let path = match destination {
+        // The promotion the model's own choice of file already gets: the read is confined to the
+        // workspace and changes nothing in it.
+        Destination::Named => match policy.promote_confined_read("read_file", "path", &proposed) {
+            Ok(p) => p,
+            Err(denial) => return problem(format!("refused: {denial}")),
+        },
+        // Already promoted, by the gate that took the name out of the reference. Promoting it
+        // again would work and would record that the model proposed a path it never saw.
+        Destination::Reference => proposed.clone(),
     };
 
     // A model that omits these gets the head of the file, which is the useful default.
@@ -831,6 +835,7 @@ pub(crate) fn materialise<S: Sink>(
 fn path_argument<S: Sink>(
     policy: &mut Policy<'_, S>,
     tool: &'static str,
+    purpose: Purpose,
     slots: &SlotStore,
     arguments: &Value,
 ) -> Result<PathArgument, String> {
@@ -856,19 +861,39 @@ fn path_argument<S: Sink>(
             let slot = policy
                 .accept_reference(tool, "path_ref", &reference)
                 .map_err(|denial| format!("refused: {denial}"))?;
-            let path = policy
-                .path_of_reference(tool, "path_ref", &slot, slots)
-                .map_err(|denial| format!("refused: {denial}"))?;
-            // Untrusted and public, which is what it is: a name out of a directory nobody
-            // vouched for. What may be done with it is decided by the gate that comes next,
-            // promotion for a read and a person's endorsement for a write.
+            // Which gate the name comes out of is decided by what this call will do with it: a
+            // read may promote it, an effect may not and needs a person instead. Asking the
+            // wrong one is not possible from here, because the caller says which it is.
+            let path = match purpose {
+                Purpose::Read => policy
+                    .promote_reference_for_read(tool, "path_ref", &slot, slots)
+                    .map_err(|denial| format!("refused: {denial}"))?,
+                Purpose::Effect => {
+                    let path = policy
+                        .destination_from_reference(tool, "path_ref", &slot, slots)
+                        .map_err(|denial| format!("refused: {denial}"))?;
+                    // Untrusted and public, which is what a name out of a directory nobody
+                    // vouched for is. The endorsement is what will authorise it, not its label.
+                    Labelled::new(path, bua_core::label::Label::untrusted_public())
+                }
+            };
             Ok(PathArgument {
-                path: Labelled::new(path, bua_core::label::Label::untrusted_public()),
+                path,
                 destination: Destination::Reference,
                 shown: slot.to_string(),
             })
         }
     }
+}
+
+/// What a call is going to do with the path it asked for.
+///
+/// The two take different routes out of a reference, and neither is reachable by asking for the
+/// other: a read is promoted, and an effect is not promoted at all but endorsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Read,
+    Effect,
 }
 
 /// A path a call is about, and what the planner may be told about it.
@@ -1047,7 +1072,13 @@ fn write_file<S: Sink, C: Confirmer>(
     arguments: &Value,
 ) -> Produced {
     let workspace = tools.workspace;
-    let found = match path_argument(policy, "write_file", tools.slots, arguments) {
+    let found = match path_argument(
+        policy,
+        "write_file",
+        Purpose::Effect,
+        tools.slots,
+        arguments,
+    ) {
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
@@ -1165,7 +1196,7 @@ fn edit_file<S: Sink, C: Confirmer>(
     confirmer: &mut C,
     arguments: &Value,
 ) -> Produced {
-    let found = match path_argument(policy, "edit_file", slots, arguments) {
+    let found = match path_argument(policy, "edit_file", Purpose::Effect, slots, arguments) {
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
