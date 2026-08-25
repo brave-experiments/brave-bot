@@ -3593,9 +3593,15 @@ fn a_file_the_planner_may_not_see_is_reserved_rather_than_opened() {
         .iter()
         .find(|body| body.contains("[ref:1]"))
         .expect("the planner was given a reference");
+    // What it is and what to do with it. Whether the driver has opened it is not the planner's
+    // business, and saying so once had it trying to perform the read it was being told about.
     assert!(
-        reference.contains("not read yet"),
-        "the planner was not told the file is unread: {reference}"
+        !reference.contains("read yet"),
+        "the planner was told about the driver's reading: {reference}"
+    );
+    assert!(
+        reference.contains("spawn_processor") && reference.contains("path_ref"),
+        "the planner was not told what the reference is for: {reference}"
     );
     assert!(
         !reference.contains("some notes"),

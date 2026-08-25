@@ -1760,7 +1760,9 @@ mod tests {
                 "a filename reached the planner: {described}"
             );
             assert!(described.contains("an entry in"), "{described}");
-            assert!(described.contains("not read yet"), "{described}");
+            // What to do with it, rather than what has been done to it.
+            assert!(described.contains("spawn_processor"), "{described}");
+            assert!(described.contains("path_ref"), "{described}");
         }
 
         // The kernel kept them, which is what makes the reference an address.

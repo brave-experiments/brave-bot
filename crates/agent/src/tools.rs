@@ -381,7 +381,11 @@ impl Produced {
 
     /// A read that reserved a file rather than opening it.
     fn deferring(path: Labelled<String>, origin: String, bytes: usize) -> Self {
-        Self::new(Labelled::trusted(String::new()), origin.clone(), "not read yet")
+        Self::new(
+            Labelled::trusted(String::new()),
+            origin.clone(),
+            format!("{bytes} bytes, quarantined"),
+        )
             .with_deferral(Deferral {
                 path,
                 origin,
@@ -749,9 +753,8 @@ fn read_file<S: Sink>(
     let whole_file = arguments.get("offset").is_none() && arguments.get("limit").is_none();
 
     // A reference to a file the planner may not read already is that file, so reading it has
-    // nothing to hand back but another name for the same thing. A planner given one reads that
-    // too: the message says "not read yet" either way, which reads as the read having failed.
-    // One went four deep and gave up. Nothing to do here but say so.
+    // nothing to hand back but another name for the same thing, which reads as the read having
+    // failed. One planner went four references deep before giving up. Nothing to do but say so.
     if whole_file && destination == Destination::Reference && policy.read_is_quarantined(&proposed_path)
     {
         return confirmed(
