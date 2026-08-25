@@ -249,6 +249,25 @@ cannot be listed in advance. Do not add an allowlist and treat it as the safety 
 is the label on the output, not a belief about the binary. Whether to confine children is issue #4;
 whether output can ever be trusted is issue #3. Neither may be resolved by weakening the labels.
 
+## Committing
+
+**`make check` must pass before every commit.** Not after it, not in the next one, and not
+"probably fine". It runs fmt, clippy with `-D warnings`, and the tests, and a commit made without
+it is a broken state that somebody else finds later, from the history, which is the worst place
+to find one. There is no exemption for a change that only touched a comment, a document, or a
+name: fmt and clippy fail on those as readily as on anything else. If a check cannot pass for a
+reason outside the change, say so in the commit message rather than leaving it to be discovered.
+
+**One change per commit, with its tests in that same commit.** A commit is the unit somebody
+reads, reverts, and bisects on, so it has to stand up alone: the change, the tests that pin it,
+and any documentation the change makes wrong if it lands without it. Tests that arrive a commit
+later say the behaviour went in unverified, and a bisect that lands between the two hits a
+revision passing for the wrong reason.
+
+Keep them small. If the message needs an "and" to describe what the commit does, it is usually
+two commits. Every commit must leave the tree building and passing, since that is the whole of
+what makes a history worth bisecting.
+
 ## Conventions
 
 - **Never use an em-dash.** Not in documentation, commit messages, the README, code comments,
@@ -259,8 +278,6 @@ whether output can ever be trusted is issue #3. Neither may be resolved by weake
   matters, not what the test does.
 - Test refusals and denials, not just happy paths. A test that would pass against the buggy
   code is worthless: verify a new test fails before the fix.
-- Small commits, one property each. Run `make check` (fmt, clippy `-D warnings`, tests)
-  before committing.
 - No new dependencies without a reason that survives scrutiny. Patterns that arrive through a
   turn are attack surface: prefer literal matching and hand-written, non-backtracking
   matchers to a regex engine.
