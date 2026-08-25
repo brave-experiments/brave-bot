@@ -25,8 +25,24 @@ use std::fmt;
 /// untrusted bytes, which is not the same as the bytes: a line count cannot carry an
 /// instruction, so telling the planner about it does not put attacker-controlled text in its
 /// context.
+/// What a reference is a reference to.
+///
+/// The planner acts on the two differently, so it is told which it has. A file can be worked on
+/// and written back to; content can be worked on and written out. Deliberately not inferred from
+/// whether the bytes happen to have been read: that is the driver's business and saying it aloud
+/// was what sent a planner off trying to read a reference it already held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A file in the workspace. An address as well as a document.
+    File,
+    /// Text in a slot, which came from somewhere but is not somewhere.
+    Content,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference {
+    /// Which of the two things this is.
+    pub kind: Kind,
     /// The slot the content lives in.
     pub slot: SlotId,
     /// Where it came from, as a workspace-relative path. Routing, so already trusted.
@@ -49,6 +65,7 @@ impl Reference {
         label: Label,
     ) -> Self {
         Self {
+            kind: Kind::Content,
             slot,
             origin: origin.into(),
             lines: Some(lines),
@@ -70,6 +87,7 @@ impl Reference {
         label: Label,
     ) -> Self {
         Self {
+            kind: Kind::File,
             slot,
             origin: origin.into(),
             lines: None,
@@ -84,52 +102,38 @@ impl Reference {
     /// where it came from, and how big it is, enough to decide what to do with it, and
     /// nothing an injection could ride in on.
     pub fn describe(&self) -> String {
-        // What to do with it, which differs by what it is, and matters more than it looks. A
-        // reference to a file used to invite reading, and a planner that read it got a second
-        // reference saying the same thing: it read that one too, four references deep, and
-        // concluded that reading was broken. Say what the next step actually is.
-        let (shape, next) = match (self.lines, self.bytes) {
-            (Some(lines), Some(bytes)) => (
-                format!("{lines} lines, {bytes} bytes"),
-                format!(
-                    "The contents are quarantined and not shown. Give {} to spawn_processor to \
-                     work on, or write it into a file as contents_ref.",
-                    self.slot
-                ),
+        // What it is and what to do with it, never what the driver has done with it. Whether the
+        // bytes have been read off disk is an implementation detail of when files are opened,
+        // and putting it here once cost a whole session: told "not read yet", a planner read the
+        // reference, was told the same thing about the reference that came back, and concluded
+        // that reading was broken.
+        // The label brings its own brackets, so an entry with no measurements is not wrapped
+        // in a second pair.
+        let shape = match (self.lines, self.bytes) {
+            (Some(lines), Some(bytes)) => format!("({lines} lines, {bytes} bytes, {})", self.label),
+            (Some(lines), None) => format!("({lines} lines, {})", self.label),
+            (None, Some(bytes)) => format!("({bytes} bytes, {})", self.label),
+            // Nothing but the label, which happens for an entry in a listing: how big the files
+            // in a directory are is the directory's business, and a planner that cannot tell two
+            // entries apart works on both, which is the right answer anyway.
+            (None, None) => self.label.to_string(),
+        };
+
+        let next = match self.kind {
+            Kind::File => format!(
+                "Quarantined: you will not be shown what this file holds. Give {} to \
+                 spawn_processor to work on it, and name {} as path_ref to write what comes \
+                 back to the same file.",
+                self.slot, self.slot
             ),
-            (Some(lines), None) => (
-                format!("{lines} lines"),
-                format!(
-                    "The contents are quarantined and not shown. Give {} to spawn_processor to \
-                     work on, or write it into a file as contents_ref.",
-                    self.slot
-                ),
-            ),
-            // Said plainly, because a planner told only a size would read the absence of a line
-            // count as a small file rather than as a file nothing has opened.
-            (None, Some(bytes)) => (
-                format!("{bytes} bytes on disk, not read yet"),
-                format!(
-                    "Nothing will ever show you what this file holds, and reading it again \
-                     will not either. Give {} to spawn_processor to work on it, and name {} as \
-                     path_ref to write what comes back to the same file.",
-                    self.slot, self.slot
-                ),
-            ),
-            (None, None) => (
-                "not read yet".to_string(),
-                format!(
-                    "Nothing will ever show you what this file holds, and reading it will not \
-                     either. Give {} to spawn_processor to work on it, and name {} as path_ref \
-                     to write what comes back to the same file.",
-                    self.slot, self.slot
-                ),
+            Kind::Content => format!(
+                "Quarantined: you will not be shown it. Give {} to spawn_processor to work on, \
+                 or write it into a file as contents_ref.",
+                self.slot
             ),
         };
-        format!(
-            "[{}] {} ({shape}, {}). {next}",
-            self.slot, self.origin, self.label,
-        )
+
+        format!("[{}] {} {shape}. {next}", self.slot, self.origin)
     }
 }
 
@@ -198,7 +202,7 @@ mod tests {
         assert!(described.contains("vendor/lib.js"));
         assert!(described.contains("120 lines"));
         assert!(described.contains("4096 bytes"));
-        assert!(described.contains("quarantined"));
+        assert!(described.contains("Quarantined"));
     }
 
     /// A reference must tell the planner how to act on the content, or it cannot do anything
@@ -212,11 +216,11 @@ mod tests {
         );
     }
 
-    /// A reference to a file nothing has opened must not invite another read. A planner that
-    /// reads one gets a second reference saying the same thing, reads that, and concludes that
-    /// reading is broken, which is what one did.
+    /// A reference to a file says what it is and what to do with it, and says nothing about
+    /// whether the bytes have been read. That is the driver's business, and a planner told about
+    /// it reads a pending read: one was, and spent a session trying to perform it.
     #[test]
-    fn a_file_that_has_not_been_read_does_not_invite_reading() {
+    fn a_file_reference_says_what_to_do_and_not_what_the_driver_did() {
         let described = Reference::unread(
             SlotId::new("ref:1"),
             "an entry in \".\"",
@@ -226,12 +230,32 @@ mod tests {
         .describe();
 
         assert!(
-            described.contains("reading it will not either"),
-            "the planner was left to try reading it: {described}"
+            !described.contains("read yet") && !described.contains("not read"),
+            "the planner was told about the driver's reading: {described}"
+        );
+        assert!(
+            described.contains("spawn_processor"),
+            "the planner was not told what to do with it: {described}"
         );
         assert!(
             described.contains("path_ref"),
             "the planner was not told it is a destination: {described}"
+        );
+    }
+
+    /// Content is not a destination. Only a reference to a file is one, and the two must not
+    /// read alike: a planner that tried to write to a processor's output would be refused, and
+    /// refusals it was invited to earn are the ones that cost a round.
+    #[test]
+    fn content_is_not_offered_as_a_destination() {
+        let described = reference().describe();
+        assert!(
+            !described.contains("path_ref"),
+            "content was offered as a destination: {described}"
+        );
+        assert!(
+            described.contains("contents_ref"),
+            "the planner was not told how to write it out: {described}"
         );
     }
 
