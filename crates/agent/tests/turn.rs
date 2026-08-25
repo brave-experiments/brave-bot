@@ -3296,6 +3296,43 @@ fn every_write_through_a_reference_is_shown() {
     }
 }
 
+/// Reading through a reference must not hand back the name the reference exists to hold.
+///
+/// The reference the read produces is described to the planner, and describing it by the file it
+/// came from would say the filename out loud on the round after the one that withheld it.
+#[test]
+fn a_read_through_a_reference_still_withholds_the_name() {
+    let scratch = Scratch::new("read-through-reference");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request("read_file", r#"{"path_ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look at what is here"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    for body in received.try_iter() {
+        assert!(
+            !body.contains("game.js"),
+            "a filename reached the planner: {body}"
+        );
+    }
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.
