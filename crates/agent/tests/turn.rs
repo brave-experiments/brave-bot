@@ -3424,6 +3424,60 @@ fn reading_a_reference_does_not_mint_another_one() {
     );
 }
 
+/// What a write through a reference reports back has to be actionable, in the only terms the
+/// planner has. It read "replaced ref:1, which was already there", which names a reference rather
+/// than a file and never says the work is done: one planner wrote both files a second time.
+#[test]
+fn a_write_through_a_reference_says_what_landed_and_that_it_is_done() {
+    let scratch = Scratch::new("write-reports");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"halve the speed"}"#,
+        ),
+        reply_with("const SPEED = 50;"),
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("halve the speed"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let told = received
+        .try_iter()
+        .find(|body| body.contains("replaced the file ref:1 names"))
+        .expect("the planner was not told what the write did");
+    assert!(
+        told.contains("from ref:3"),
+        "the planner was not told what landed there: {told}"
+    );
+    assert!(
+        told.contains("do not write ref:1 again"),
+        "the planner was not told the work is finished: {told}"
+    );
+    assert!(
+        !told.contains("game.js"),
+        "the filename reached the planner: {told}"
+    );
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.

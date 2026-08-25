@@ -1093,6 +1093,16 @@ fn write_file<S: Sink, C: Confirmer>(
     // Two sources would leave the driver deciding which one was meant, and they say different
     // things about what lands in the file. Neither is a decision taken from content: both
     // arguments are the planner's, and this only reports which of them are present.
+    // What the planner called the body, for the account it is given afterwards. Its own words
+    // either way: the reference it named, or its own text.
+    let body_from = match &named {
+        Some(reference) => {
+            let proof = policy.authorise_display_release("which reference a write carried");
+            reference.clone().declassify(&proof)
+        }
+        None => "the contents you gave".to_string(),
+    };
+
     let body = match (written, named) {
         (Some(_), Some(_)) => {
             return problem(
@@ -1170,9 +1180,27 @@ fn write_file<S: Sink, C: Confirmer>(
             // What the model is told, which is what its own account of the turn will repeat. It
             // used to be told "wrote" either way, and would go on to say it had created a file
             // it had in fact replaced, which is the opposite of what the user needed to hear.
-            let done = match intent {
-                Intent::Create => format!("created {shown_path}"),
-                _ => format!("replaced {shown_path}, which was already there"),
+            //
+            // A write through a reference says the same in the only terms the planner has. It
+            // used to read "replaced ref:1, which was already there", which says a reference was
+            // replaced rather than a file, and does not say the work is done: one planner read
+            // that, could not tell whether anything had happened, and wrote both files a second
+            // time. So this says what landed where, and that there is nothing left to do.
+            let done = match (intent, destination) {
+                (Intent::Create, Destination::Named) => format!("created {shown_path}"),
+                (_, Destination::Named) => {
+                    format!("replaced {shown_path}, which was already there")
+                }
+                (Intent::Create, Destination::Reference) => format!(
+                    "created the file {shown_path} names, from {}. It is written; do not write \
+                     {shown_path} again.",
+                    body_from
+                ),
+                (_, Destination::Reference) => format!(
+                    "replaced the file {shown_path} names, which was already there, from {}. It \
+                     is written; do not write {shown_path} again.",
+                    body_from
+                ),
             };
             confirmed(done, note).with_changes(changes)
         }
