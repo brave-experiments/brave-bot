@@ -741,6 +741,43 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(references)
     }
 
+    /// The files this run's references name, for lines a person reads.
+    ///
+    /// A person is entitled to know which file `ref:1` is: it is their directory, and a task list
+    /// or a progress line that says "write ref:1 back to its file" tells them nothing about their
+    /// own workspace. The planner is not entitled to it and never receives what this returns,
+    /// which is why it is a display release and not a promotion: nothing here may become a path
+    /// an effect uses. Only [`Policy::destination_from_reference`] does that, and only with a
+    /// person's endorsement behind it.
+    pub fn names_for_display(&mut self, slots: &crate::slot::SlotStore) -> Vec<(SlotId, String)> {
+        let named: Vec<(SlotId, String)> = slots
+            .inventory()
+            .into_iter()
+            .filter_map(|(slot, _)| {
+                slots
+                    .path_of(&slot)
+                    .map(|path| (slot.clone(), path.to_string()))
+            })
+            .collect();
+
+        if !named.is_empty() {
+            self.sink.emit(Event::Declassified {
+                slot: named[0].0.clone(),
+                from: Label::untrusted_private(),
+                to: Label::untrusted_public(),
+                reason: "the files references name, for a person to read",
+            });
+            self.allow(
+                "display",
+                format!(
+                    "{} reference(s) named on a line a person reads, and nowhere else",
+                    named.len()
+                ),
+            );
+        }
+        named
+    }
+
     /// The file a reference names, for a read.
     ///
     /// Promoted exactly as the model's own choice of file already is, and for the same reasons:

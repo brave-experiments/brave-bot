@@ -640,7 +640,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "search" => search(policy, tools.workspace, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
         "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
-        "todo_write" => todo_write(policy, reporter, &arguments),
+        "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
@@ -907,6 +907,35 @@ struct PathArgument {
     path: Labelled<String>,
     destination: Destination,
     shown: String,
+}
+
+/// Put the file a reference names into a line a person is about to read.
+///
+/// Literal matching, not a pattern: the names are `ref:0`, `ref:1` and so on, the driver handed
+/// them out itself, and a regular expression over text a model wrote is attack surface for no
+/// gain. A name that has no file behind it, which is anything a processor produced, is left as
+/// the model wrote it.
+fn name_references(text: &str, named: &[(SlotId, String)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(at) = rest.find("ref:") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + "ref:".len()..];
+        let digits = after.chars().take_while(|c| c.is_ascii_digit()).count();
+        let name = format!("ref:{}", &after[..digits]);
+
+        // A name with no file behind it, which is anything a processor produced, stays as the
+        // planner wrote it: there is nothing truer to put in its place.
+        match named.iter().find(|(slot, _)| slot.as_str() == name) {
+            Some((_, path)) if digits > 0 => out.push_str(path),
+            _ => out.push_str(&name),
+        }
+        rest = &after[digits..];
+    }
+
+    out.push_str(rest);
+    out
 }
 
 /// Render a page, saying what was left out.
@@ -1337,6 +1366,7 @@ fn edit_file<S: Sink, C: Confirmer>(
 fn todo_write<S: Sink, R: Reporter>(
     policy: &mut Policy<'_, S>,
     reporter: &mut R,
+    slots: &SlotStore,
     arguments: &Value,
 ) -> Produced {
     let Some(todos) = arguments.get("todos").and_then(Value::as_array) else {
@@ -1377,7 +1407,17 @@ fn todo_write<S: Sink, R: Reporter>(
     // Showing a person what the model is doing is a release to a screen, which is one of the
     // destinations a witness exists for. It cannot feed an effect.
     let proof = policy.authorise_display_release("task list");
-    reporter.todos(rows.declassify(&proof));
+    let mut rows = rows.declassify(&proof);
+
+    // The planner writes its list in the only terms it has, which are reference names. The
+    // person reading the list has the opposite problem: "write ref:1 back to its file" says
+    // nothing about their own workspace, and they are the only one entitled to know which file
+    // that is. So the names go in here, on the way to the screen and nowhere else.
+    let named = policy.names_for_display(slots);
+    for row in &mut rows {
+        row.content = name_references(&row.content, &named);
+    }
+    reporter.todos(rows);
 
     // The model gets its own list back as the tool result, which is how it knows what is next:
     // the turn keeps no state, so the echo in the conversation *is* the memory. Rendered through
@@ -1547,6 +1587,34 @@ fn search<S: Sink>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A task list is written by the planner, which has only reference names, and read by the
+    /// person whose directory it is, who has only filenames. The line has to carry both, and the
+    /// filename has to be the half that reaches the screen.
+    #[test]
+    fn a_task_list_names_the_file_a_reference_stands_for() {
+        let named = vec![
+            (SlotId::new("ref:1"), "src/game.js".to_string()),
+            (SlotId::new("ref:10"), "server.py".to_string()),
+        ];
+
+        assert_eq!(
+            name_references("Write the fixed ref:1 back to its file", &named),
+            "Write the fixed src/game.js back to its file"
+        );
+        // A longer name is not the shorter one with something after it.
+        assert_eq!(
+            name_references("ref:10 and ref:1.", &named),
+            "server.py and src/game.js."
+        );
+        // A reference with no file behind it is left as the planner wrote it: a processor's
+        // output is content, and there is nothing truer to put in its place.
+        assert_eq!(
+            name_references("what ref:4 produced", &named),
+            "what ref:4 produced"
+        );
+        assert_eq!(name_references("nothing to do", &named), "nothing to do");
+    }
     use super::*;
 
     #[test]
@@ -1807,7 +1875,7 @@ mod tests {
             )
             .expect("policy");
             let mut reporter = RecordingReporter::default();
-            let produced = todo_write(&mut policy, &mut reporter, &arguments);
+            let produced = todo_write(&mut policy, &mut reporter, &SlotStore::new(), &arguments);
             // A task list has no destination, so there is nothing for an origin to name.
             assert!(
                 produced.origin.is_empty(),
@@ -1891,6 +1959,7 @@ mod tests {
             let text = todo_write(
                 &mut policy,
                 &mut reporter,
+                &SlotStore::new(),
                 &list(&[("after reading something untrusted", "pending")]),
             )
             .text;
@@ -1966,6 +2035,7 @@ mod tests {
             todo_write(
                 &mut policy,
                 &mut reporter,
+                &SlotStore::new(),
                 &list(&[("a task", "in_progress")]),
             );
 
