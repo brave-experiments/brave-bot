@@ -155,6 +155,42 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     }
 }
 
+/// Interpret a key press while a turn is running.
+///
+/// Only the ones that cannot start anything. What the user types goes into the box and stays
+/// there, and the keys that look back through the transcript still work. Enter is not among them:
+/// a second turn must not begin while the first is in flight, so the line waits, and sending it
+/// is the first thing available when the turn ends.
+///
+/// Everything used to be dropped here, cancel and mouse aside. A user typing during a slow turn
+/// therefore watched their words go nowhere, with nothing on the screen to say why, which is
+/// indistinguishable from an interface that has stopped responding.
+pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::None;
+    }
+
+    match key.code {
+        KeyCode::Char(c) => {
+            session.type_char(c);
+            Action::Redraw
+        }
+        KeyCode::Backspace => {
+            session.backspace();
+            Action::Redraw
+        }
+        KeyCode::PageUp => {
+            session.scroll_up(10);
+            Action::Redraw
+        }
+        KeyCode::PageDown => {
+            session.scroll_down(10);
+            Action::Redraw
+        }
+        _ => Action::None,
+    }
+}
+
 /// Interpret a paste.
 ///
 /// A paste is one act rather than a run of keys, which is the whole point of asking the
@@ -555,6 +591,10 @@ fn run_turn_animated(
                     cancel.cancel();
                     session.note("cancelling…");
                 }
+                TermEvent::Key(key) => {
+                    handle_key_while_working(session, key);
+                }
+                TermEvent::Paste(text) => session.paste(&text),
                 TermEvent::Mouse(mouse) => {
                     // Bound rather than tested inline, because handling the event scrolls and
                     // moves the selection whatever it returns. A match guard would hide that.

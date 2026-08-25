@@ -349,15 +349,17 @@ impl Session {
         entry.activity.as_ref().is_some_and(Activity::is_running)
     }
 
-    /// Accept a typed character. Ignored while a turn is running, so input cannot be
-    /// interleaved with a turn in flight.
+    /// Accept a typed character.
+    ///
+    /// Allowed while a turn runs as well as between turns. What it cannot do then is send: a
+    /// second turn must not begin while the first is in flight, and [`Session::submit`] still
+    /// refuses. Dropping the keys instead, which is what this used to do, meant a user typing
+    /// during a slow turn watched their words go nowhere with nothing to say why.
     pub fn type_char(&mut self, c: char) {
-        if self.status == Status::Idle {
-            // Editing a recalled prompt makes it the working line rather than a view of history,
-            // so the position indicator goes away as soon as a key is pressed.
-            self.history.leave();
-            self.input.push(c);
-        }
+        // Editing a recalled prompt makes it the working line rather than a view of history,
+        // so the position indicator goes away as soon as a key is pressed.
+        self.history.leave();
+        self.input.push(c);
     }
 
     /// Fill the transcript from a conversation resumed off disk.
@@ -449,19 +451,14 @@ impl Session {
     /// newlines are kept rather than flattened, since a pasted paragraph was written with them
     /// and the box draws them.
     pub fn paste(&mut self, text: &str) {
-        if self.status != Status::Idle {
-            return;
-        }
         self.history.leave();
         self.input
             .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
     pub fn backspace(&mut self) {
-        if self.status == Status::Idle {
-            self.history.leave();
-            self.input.pop();
-        }
+        self.history.leave();
+        self.input.pop();
     }
 
     /// Put a submitted prompt back for editing after its turn was cancelled.
@@ -495,7 +492,11 @@ impl Session {
         if self.persist {
             crate::store::save_history(self.history.entries());
         }
-        self.input = prompt.into();
+        // Only where the box is empty. A user who typed while the turn ran meant those words,
+        // and putting the old prompt over the top of them would lose the newer of the two.
+        if self.input.trim().is_empty() {
+            self.input = prompt.into();
+        }
         // Discarded rather than kept: the prompt is going back into the box as though it had never
         // been sent, so a plan for a turn that is being un-sent has nothing to describe.
         self.todos.clear();
@@ -659,17 +660,18 @@ mod tests {
         assert_eq!(s.input, "> pasted");
     }
 
-    /// Pasting mid-turn is refused for the same reason typing is: the turn in flight owns the
-    /// session, and there is no second one to start.
+    /// A paste mid-turn is kept for the same reason typing is: it is the user's own words, and
+    /// the only thing that must wait is sending them.
     #[test]
-    fn a_paste_is_refused_while_a_turn_is_running() {
+    fn a_paste_during_a_turn_is_kept() {
         let mut s = session();
         s.type_char('x');
         s.submit();
         assert_eq!(s.status, Status::Working);
 
         s.paste("more");
-        assert!(s.input.is_empty(), "a paste was accepted mid-turn");
+        assert_eq!(s.input, "more", "a paste was dropped mid-turn");
+        assert!(s.submit().is_none(), "a second turn was allowed to start");
     }
 
     #[test]
@@ -694,10 +696,13 @@ mod tests {
         assert_eq!(s.status, Status::Idle);
     }
 
-    /// A second turn must not start while one is in flight, since each turn owns its own
-    /// policy and interleaving them would blur that boundary.
+    /// What a user types during a turn is kept, and still cannot start a second one.
+    ///
+    /// The typing used to be dropped, so a user writing during a slow turn watched their words
+    /// go nowhere and had nothing on the screen to tell them why. Refusing to *send* is what
+    /// keeps two turns from ever being in flight; refusing to accept the letters bought nothing.
     #[test]
-    fn input_is_refused_while_a_turn_is_running() {
+    fn typing_during_a_turn_is_kept_but_cannot_send() {
         let mut s = session();
         for c in "first".chars() {
             s.type_char(c);
@@ -705,9 +710,31 @@ mod tests {
         s.submit();
         assert_eq!(s.status, Status::Working);
 
-        s.type_char('x');
-        assert!(s.input.is_empty(), "typing was accepted mid-turn");
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.input, "second", "typing was dropped mid-turn");
         assert!(s.submit().is_none(), "a second turn was allowed to start");
+        assert_eq!(s.input, "second", "a refused send took the line with it");
+    }
+
+    /// A cancelled turn puts its prompt back, but not over the top of something the user typed
+    /// while it ran. The newer of the two is the one they meant.
+    #[test]
+    fn a_cancelled_turn_does_not_overwrite_what_was_typed_meanwhile() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        let prompt = s.submit().expect("a prompt");
+
+        for c in "wait".chars() {
+            s.type_char(c);
+        }
+        s.restore(&prompt);
+
+        assert_eq!(s.input, "wait", "the restored prompt overwrote the typing");
+        assert_eq!(s.status, Status::Idle);
     }
 
     #[test]
