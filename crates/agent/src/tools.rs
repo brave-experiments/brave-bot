@@ -717,7 +717,7 @@ fn read_file<S: Sink>(
     // What the reference that comes back is said to be of. The planner's own path where it
     // typed one, and the reference's name where it did not: a read through a reference must not
     // hand back the filename the reference exists to hold.
-    let (proposed, shown_path) = (found.path, found.shown);
+    let (proposed, destination, shown_path) = (found.path, found.destination, found.shown);
 
     // The promotion the model's own choice of file already gets. A name out of a listing is
     // promoted on the same grounds and no others: the read is confined to the workspace and
@@ -747,6 +747,23 @@ fn read_file<S: Sink>(
     // limit describe a slice, and there is nothing to slice until something reads it, so those
     // are still read now.
     let whole_file = arguments.get("offset").is_none() && arguments.get("limit").is_none();
+
+    // A reference to a file the planner may not read already is that file, so reading it has
+    // nothing to hand back but another name for the same thing. A planner given one reads that
+    // too: the message says "not read yet" either way, which reads as the read having failed.
+    // One went four deep and gave up. Nothing to do here but say so.
+    if whole_file && destination == Destination::Reference && policy.read_is_quarantined(&proposed_path)
+    {
+        return confirmed(
+            format!(
+                "{shown_path} already names that file, and nothing will show you what is in \
+                 it. Give {shown_path} to spawn_processor to work on, and name {shown_path} as \
+                 path_ref to write what comes back to the same file."
+            ),
+            "already a reference",
+        );
+    }
+
     if whole_file && policy.read_is_quarantined(&proposed_path) {
         return match workspace.survey(&proposed_path) {
             Ok(bytes) => Produced::deferring(path, shown_path, bytes),

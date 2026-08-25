@@ -3333,6 +3333,56 @@ fn a_read_through_a_reference_still_withholds_the_name() {
     }
 }
 
+/// Reading a reference to a file must not hand back another reference to the same file.
+///
+/// This is what the loop looked like from the planner's side: it read ref:1, got ref:4 saying
+/// "not read yet", read that, got ref:6 saying the same, and concluded that reading was broken.
+/// A reference to a file already is the file, so there is nothing to do but say so.
+#[test]
+fn reading_a_reference_does_not_mint_another_one() {
+    let scratch = Scratch::new("read-reference-again");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request("read_file", r#"{"path_ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let reserved = sink
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::SlotDeferred { .. }))
+        .count();
+    assert_eq!(
+        reserved, 1,
+        "reading the reference reserved a second name for the same file"
+    );
+
+    let told = received
+        .try_iter()
+        .find(|body| body.contains("already names that file"))
+        .expect("the planner was not told it already has the file");
+    assert!(
+        told.contains("spawn_processor"),
+        "the planner was not told what to do instead: {told}"
+    );
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.
