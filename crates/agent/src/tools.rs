@@ -257,9 +257,10 @@ pub fn available() -> Vec<Tool> {
                     },
                     "instruction": {
                         "type": "string",
-                        "description": "What to do with them and what to produce. Say that you \
-                                        want the whole document back where you do, since \
-                                        anything shorter is what gets written out. Include the \
+                        "description": "What to do with them and what to produce. Where the \
+                                        result is going into a file, ask for the whole document \
+                                        and nothing else: no explanation, no summary, no code \
+                                        fence. Whatever comes back is what gets written. Include the \
                                         file's name and language if that matters, because the \
                                         processor knows nothing but what you tell it and what \
                                         the references hold. May be conditional: say what the \

@@ -91,6 +91,13 @@ references is the file you want, do not guess: process each of them with an inst
 says what to do if it is the right file and to return the document unchanged if it is not, then \
 write each result back to its own reference.
 
+An instruction whose result you are going to write into a file must ask for the file and \
+nothing else: the whole document, no explanation, no summary of what was changed, no code fence. \
+Whatever comes back is what gets written, and you will not be shown it, so there is nobody left \
+to notice that a file has an essay at the top of it. Never process what a processor produced and \
+then write that: each pass rewrites the whole document and each one drifts, so go back to the \
+reference for the file itself and ask again with a better instruction.
+
 A processor is a model reading the whole document, so ask it to work something out rather than \
 only to apply an edit you have already written. Give it the file's name and language, say what \
 the change is for, and let it find the place. Its instruction may be conditional: where you are \
