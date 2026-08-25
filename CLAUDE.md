@@ -147,6 +147,33 @@ file to read next, because a read cannot change anything and is confined to the 
 must never be used for an effect. Effects need `before_granted_action` and a human
 endorsement.
 
+## A reference may be an address
+
+A filename is content, so a listing of a directory the planner may not read is quarantined like
+anything else. Quarantined as one document it is useless: a reference can only go to a processor,
+whose answer is a reference in its turn, and a reference is not a path. An agent that holds the
+names of the files it is working among and can do nothing with any of them is not confined, it is
+paralysed, and what came of it in practice was a planner guessing globs to see which came back
+empty.
+
+So `Policy::defer_entries` hands out one reference per entry, and the planner names the reference
+where it would have typed a path. The name never leaves the kernel: `Policy::path_of_reference`
+is the only way out of it, and it authorises nothing by itself. What happens next decides what
+the name may be:
+
+- For a **read**, it is promoted exactly as the model's own choice of file is, on the same
+  grounds: confined to the workspace, and it changes nothing in it.
+- For a **write**, promotion is not enough and is not used. The name goes to a person, who is the
+  only party in the system that ever sees it, and the grant is issued for the path they saw. A
+  write whose destination came from a reference **always** asks, whatever the trust table would
+  say, because otherwise nobody at all would see where it landed. Never relax this to reduce
+  prompting.
+- A reference that names no file is refused as a destination. Everything a processor produces is
+  such a reference, and that refusal is what stops untrusted text choosing where an effect lands.
+
+What an attacker who controls the filenames gains is that one entry may look more inviting than
+another when nothing about any of them is shown. What they cannot gain is a destination.
+
 ## Layering
 
 - `bua-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every

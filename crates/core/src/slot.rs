@@ -116,17 +116,33 @@ impl Deferred {
 }
 
 /// What a slot holds: the bytes, or the promise of them.
+///
+/// A slot that came from a file keeps the path either way. That is what lets a reference be an
+/// address as well as a document: the planner can name the slot as somewhere to read from or
+/// write to without ever being told what the file is called, which is the only way to work in a
+/// directory whose filenames are themselves untrusted.
 #[derive(Debug, Clone)]
 enum Entry {
-    Read(Labelled<String>),
+    Read {
+        value: Labelled<String>,
+        /// The file it was read from, where it was read from one.
+        path: Option<String>,
+    },
     Unread(Deferred),
 }
 
 impl Entry {
     fn label(&self) -> Label {
         match self {
-            Self::Read(value) => value.label(),
+            Self::Read { value, .. } => value.label(),
             Self::Unread(deferred) => deferred.label,
+        }
+    }
+
+    fn path(&self) -> Option<&str> {
+        match self {
+            Self::Read { path, .. } => path.as_deref(),
+            Self::Unread(deferred) => Some(&deferred.path),
         }
     }
 }
@@ -151,6 +167,16 @@ impl SlotStore {
 
     pub fn label_of(&self, id: &SlotId) -> Option<Label> {
         self.slots.get(id).map(Entry::label)
+    }
+
+    /// The file a slot names, whether or not it has been read.
+    ///
+    /// The path itself, which for an entry out of a quarantined listing is untrusted content:
+    /// only the policy layer may ask, and only through the gates that decide what a name may
+    /// become. Kept after the bytes arrive, so processing a file does not lose the address it
+    /// came from.
+    pub(crate) fn path_of(&self, id: &SlotId) -> Option<&str> {
+        self.slots.get(id).and_then(Entry::path)
     }
 
     /// The file a slot is waiting on, where it is waiting on one.
@@ -187,7 +213,7 @@ impl SlotStore {
     /// empty document, and an effect would carry out the emptiness.
     pub fn take_for_effect(&self, id: &SlotId) -> Result<Labelled<String>, SlotError> {
         match self.slots.get(id) {
-            Some(Entry::Read(value)) => Ok(value.clone()),
+            Some(Entry::Read { value, .. }) => Ok(value.clone()),
             Some(Entry::Unread(_)) => Err(SlotError::Unread(id.clone())),
             None => Err(SlotError::NotWritten(id.clone())),
         }
@@ -228,7 +254,7 @@ impl SlotStore {
     ) -> Result<Measured, SlotError> {
         let deferred = match self.slots.get(id) {
             Some(Entry::Unread(deferred)) => deferred.clone(),
-            Some(Entry::Read(_)) => return Err(SlotError::AlreadyWritten(id.clone())),
+            Some(Entry::Read { .. }) => return Err(SlotError::AlreadyWritten(id.clone())),
             None => return Err(SlotError::NotWritten(id.clone())),
         };
 
@@ -244,8 +270,15 @@ impl SlotStore {
             bytes: text.len(),
         };
 
-        self.slots
-            .insert(id.clone(), Entry::Read(Labelled::new(text, label)));
+        // The path stays with the slot now that the bytes are here. A reference that stopped
+        // being an address the moment it was read could not be written back to.
+        self.slots.insert(
+            id.clone(),
+            Entry::Read {
+                value: Labelled::new(text, label),
+                path: Some(deferred.path),
+            },
+        );
         Ok(measured)
     }
 
@@ -325,7 +358,10 @@ impl SlotWriter<'_> {
         }
         self.store.slots.insert(
             self.id,
-            Entry::Read(Labelled::new(content.into(), self.label)),
+            Entry::Read {
+                value: Labelled::new(content.into(), self.label),
+                path: None,
+            },
         );
         Ok(())
     }
@@ -354,9 +390,13 @@ impl SlotWriter<'_> {
             bytes: text.len(),
         };
 
-        self.store
-            .slots
-            .insert(self.id, Entry::Read(Labelled::new(text, label)));
+        self.store.slots.insert(
+            self.id,
+            Entry::Read {
+                value: Labelled::new(text, label),
+                path: None,
+            },
+        );
         Ok(measured)
     }
 }
@@ -396,7 +436,7 @@ impl SlotReader<'_> {
             return Err(SlotError::OutOfScope(id.clone()));
         }
         let value = match self.store.slots.get(id) {
-            Some(Entry::Read(value)) => value,
+            Some(Entry::Read { value, .. }) => value,
             Some(Entry::Unread(_)) => return Err(SlotError::Unread(id.clone())),
             None => return Err(SlotError::NotWritten(id.clone())),
         };

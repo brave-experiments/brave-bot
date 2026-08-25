@@ -29,7 +29,7 @@ use crate::processor::{self, Chat};
 use crate::report::{Activity, Reporter};
 use bua_aichat::protocol::{Tool, ToolCall, Usage};
 use bua_core::event::Sink;
-use bua_core::policy::Policy;
+use bua_core::policy::{Destination, Policy};
 use bua_core::slot::{SlotId, SlotStore};
 use bua_core::todo::{self, Item, List, Status};
 use bua_core::value::Labelled;
@@ -47,13 +47,20 @@ pub fn available() -> Vec<Tool> {
             "read_file",
             "Read a UTF-8 text file from the workspace. Returns its lines. Long files come \
              back one page at a time; the result says so and gives the offset to continue \
-             from.",
+             from. Name the file with path, or with path_ref where a listing gave you a \
+             reference instead of a name.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative path, e.g. src/main.rs"
+                        "description": "Workspace-relative path, e.g. src/main.rs. Give this \
+                                        or path_ref, never both."
+                    },
+                    "path_ref": {
+                        "type": "string",
+                        "description": "A reference to a file whose name you were not shown, \
+                                        e.g. \"ref:2\" from a quarantined listing."
                     },
                     "offset": {
                         "type": "integer",
@@ -66,13 +73,16 @@ pub fn available() -> Vec<Tool> {
                                         fill the conversation."
                     }
                 },
-                "required": ["path"]
+                "required": []
             }),
         ),
         Tool::function(
             "list_files",
             "List files in the workspace, recursively, under a directory. Give a glob \
-             pattern to narrow the result rather than listing everything.",
+             pattern to narrow the result rather than listing everything. In a directory you \
+             may not read, the names are quarantined and you get one reference per file \
+             instead: use those as path_ref to read a file, process it, and write it back, \
+             without ever being told what it is called.",
             json!({
                 "type": "object",
                 "properties": {
@@ -92,15 +102,25 @@ pub fn available() -> Vec<Tool> {
         ),
         Tool::function(
             "write_file",
-            "Write a UTF-8 text file in the workspace. Give either the contents or a reference \
-             to quarantined content that becomes the contents. The user must approve each write \
-             before it happens, so explain what you are changing.",
+            "Write a UTF-8 text file in the workspace. Name the destination with path, or with \
+             path_ref to write back to a file a listing gave you a reference to. Give either \
+             the contents or a reference to quarantined content that becomes the contents. The \
+             user must approve each write before it happens, so explain what you are changing; \
+             a write to a path_ref is always shown, since the user is the only one who sees \
+             which file it is.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative path, e.g. src/main.rs"
+                        "description": "Workspace-relative path, e.g. src/main.rs. Give this \
+                                        or path_ref, never both."
+                    },
+                    "path_ref": {
+                        "type": "string",
+                        "description": "A reference to the file to write, e.g. \"ref:2\". Use \
+                                        the reference a listing gave you to write back to a \
+                                        file whose name you were never shown."
                     },
                     "contents": {
                         "type": "string",
@@ -115,7 +135,7 @@ pub fn available() -> Vec<Tool> {
                                         produced."
                     }
                 },
-                "required": ["path"]
+                "required": []
             }),
         ),
         Tool::function(
@@ -129,7 +149,14 @@ pub fn available() -> Vec<Tool> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative path, e.g. src/main.rs"
+                        "description": "Workspace-relative path, e.g. src/main.rs. Give this \
+                                        or path_ref, never both."
+                    },
+                    "path_ref": {
+                        "type": "string",
+                        "description": "A reference to the file to edit, e.g. \"ref:2\". Only \
+                                        useful where that file is trusted, since an edit \
+                                        locates a passage and that means reading it."
                     },
                     "old_text": {
                         "type": "string",
@@ -148,7 +175,7 @@ pub fn available() -> Vec<Tool> {
                                         exactly one. Defaults to false."
                     }
                 },
-                "required": ["path", "old_text", "new_text"]
+                "required": ["old_text", "new_text"]
             }),
         ),
         Tool::function(
@@ -257,7 +284,23 @@ pub fn available() -> Vec<Tool> {
 #[derive(Debug, Clone)]
 pub struct Deferral {
     pub path: Labelled<String>,
+    /// What the planner is told the reference is of. The path itself where the planner named
+    /// it, since it is its own words coming back.
+    pub origin: String,
     pub bytes: usize,
+}
+
+/// A listing the planner may not read, reserved one reference per entry.
+///
+/// The names stay wrapped: this crate carries them from the lister to the kernel and never
+/// looks. `count` is the number of them, which is released to the planner and the person alike,
+/// because how many files a directory holds is shape rather than content.
+#[derive(Debug)]
+pub struct Entries {
+    /// What to call each one to the planner, naming the directory and never the file.
+    pub origin: String,
+    pub paths: Labelled<Vec<String>>,
+    pub count: usize,
 }
 
 /// What a dispatched call produced, ready to send back as a tool message.
@@ -277,6 +320,8 @@ pub struct Output {
     /// A file this call reserved rather than read. `text` is empty where this is set: there is
     /// nothing to present, and the turn reserves the slot instead.
     pub deferred: Option<Deferral>,
+    /// The entries of a listing this call reserved, one reference each.
+    pub entries: Option<Entries>,
     /// What the call spent at the model, where it called one.
     ///
     /// Zero for every tool but the processor. A turn that reported only its own rounds would
@@ -311,6 +356,8 @@ struct Produced {
     failed: bool,
     /// Set by a read that reserved a file instead of opening it.
     deferred: Option<Deferral>,
+    /// Set by a listing the planner may not read.
+    entries: Option<Entries>,
     /// The change a write made, for showing under the line it belongs to.
     changes: Vec<crate::diff::Change>,
     /// What the tool spent at the model. Only a processor spends anything.
@@ -326,6 +373,7 @@ impl Produced {
             note: note.into(),
             failed: false,
             deferred: None,
+            entries: None,
             changes: Vec::new(),
             usage: Usage::default(),
         }
@@ -333,12 +381,22 @@ impl Produced {
 
     /// A read that reserved a file rather than opening it.
     fn deferring(path: Labelled<String>, origin: String, bytes: usize) -> Self {
-        Self::new(Labelled::trusted(String::new()), origin, "not read yet")
-            .with_deferral(Deferral { path, bytes })
+        Self::new(Labelled::trusted(String::new()), origin.clone(), "not read yet")
+            .with_deferral(Deferral {
+                path,
+                origin,
+                bytes,
+            })
     }
 
     fn with_deferral(mut self, deferral: Deferral) -> Self {
         self.deferred = Some(deferral);
+        self
+    }
+
+    /// A listing whose entries were reserved rather than shown.
+    fn with_entries(mut self, entries: Entries) -> Self {
+        self.entries = Some(entries);
         self
     }
 
@@ -399,6 +457,14 @@ fn target_of<S: Sink>(policy: &mut Policy<'_, S>, tool: &str, arguments: &Value)
 
     let Some(key) = target_key(tool) else {
         return String::new();
+    };
+
+    // A call that named a reference instead of a path says so on the line, rather than showing
+    // an empty pair of brackets. What file it turned out to be is on the note beside it.
+    let key = if arguments.get(key).is_none() && arguments.get("path_ref").is_some() {
+        "path_ref"
+    } else {
+        key
     };
 
     match argument(arguments, key) {
@@ -552,6 +618,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 text: produced.text,
                 origin: produced.origin,
                 deferred: produced.deferred,
+                entries: produced.entries,
                 usage: produced.usage,
             };
         }
@@ -563,11 +630,11 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     reporter.tool_started(Activity::running(verb, target.clone()));
 
     let produced = match name.as_str() {
-        "read_file" => read_file(policy, tools.workspace, &arguments),
+        "read_file" => read_file(policy, tools.workspace, tools.slots, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
-        "edit_file" => edit_file(policy, tools.workspace, confirmer, &arguments),
+        "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
@@ -586,6 +653,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         text: produced.text,
         origin: produced.origin,
         deferred: produced.deferred,
+        entries: produced.entries,
         usage: produced.usage,
     }
 }
@@ -602,6 +670,7 @@ fn problem(text: impl Into<String>) -> Produced {
         note: text,
         failed: true,
         deferred: None,
+        entries: None,
         changes: Vec::new(),
         usage: Usage::default(),
     }
@@ -638,12 +707,18 @@ fn references_in(arguments: &Value) -> Labelled<String> {
 fn read_file<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
+    slots: &SlotStore,
     arguments: &Value,
 ) -> Produced {
-    let Some(proposed) = argument(arguments, "path") else {
-        return problem("error: 'path' is required and must be a string");
+    let found = match path_argument(policy, "read_file", slots, arguments) {
+        Ok(found) => found,
+        Err(refusal) => return problem(refusal),
     };
+    let proposed = found.path;
 
+    // The promotion the model's own choice of file already gets. A name out of a listing is
+    // promoted on the same grounds and no others: the read is confined to the workspace and
+    // changes nothing in it.
     let path = match policy.promote_confined_read("read_file", "path", &proposed) {
         Ok(p) => p,
         Err(denial) => return problem(format!("refused: {denial}")),
@@ -723,6 +798,67 @@ pub(crate) fn materialise<S: Sink>(
     Ok(())
 }
 
+
+/// The path a call is about, from `path` or from a reference to a file.
+///
+/// A planner working in a directory it may not read has no filename to type, so it names the
+/// reference the listing gave it instead. What comes back is the same in both cases: the path,
+/// and how it was arrived at, which is what decides whether an approval can be skipped.
+fn path_argument<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tool: &'static str,
+    slots: &SlotStore,
+    arguments: &Value,
+) -> Result<PathArgument, String> {
+    let named = argument(arguments, "path");
+    let referenced = argument(arguments, "path_ref");
+
+    match (named, referenced) {
+        (Some(_), Some(_)) => Err(
+            "error: give 'path' or 'path_ref', not both. Use path_ref alone for a file you \
+             were never shown the name of."
+                .to_string(),
+        ),
+        (None, None) => Err("error: one of 'path' or 'path_ref' is required".to_string()),
+        (Some(path), None) => {
+            let shown = path.clone().into_parts_for_decoding().0;
+            Ok(PathArgument {
+                path,
+                destination: Destination::Named,
+                shown,
+            })
+        }
+        (None, Some(reference)) => {
+            let slot = policy
+                .accept_reference(tool, "path_ref", &reference)
+                .map_err(|denial| format!("refused: {denial}"))?;
+            let path = policy
+                .path_of_reference(tool, "path_ref", &slot, slots)
+                .map_err(|denial| format!("refused: {denial}"))?;
+            // Untrusted and public, which is what it is: a name out of a directory nobody
+            // vouched for. What may be done with it is decided by the gate that comes next,
+            // promotion for a read and a person's endorsement for a write.
+            Ok(PathArgument {
+                path: Labelled::new(path, bua_core::label::Label::untrusted_public()),
+                destination: Destination::Reference,
+                shown: slot.to_string(),
+            })
+        }
+    }
+}
+
+/// A path a call is about, and what the planner may be told about it.
+///
+/// `shown` is the difference. A path the planner typed is its own words coming back, and a path
+/// out of a reference is a name it has never seen: saying it in a result would hand over the
+/// thing the reference exists to keep, so what goes back is the reference's own name. The person
+/// watching is told the real path either way, on the line under it and in the approval.
+struct PathArgument {
+    path: Labelled<String>,
+    destination: Destination,
+    shown: String,
+}
+
 /// Render a page, saying what was left out.
 ///
 /// The counts matter more than they look: a model handed a silent window of a large file
@@ -795,6 +931,35 @@ fn list_files<S: Sink>(
             let note = note_for(policy, "list_files", &listing, |listing| {
                 tally(listing.files.len(), "file", "files")
             });
+
+            // A listing the planner may not read is handed over one reference per entry rather
+            // than as one document it can do nothing with. The names stay wrapped the whole way:
+            // this reshapes the listing into a list of them inside the kernel and carries it
+            // out, and the kernel is what turns each into a slot.
+            //
+            // The label decides, not the contents: whether the planner may see these names is
+            // the same question `present` would ask a moment later.
+            if !listing.label().is_trusted() {
+                let count = {
+                    let shaped =
+                        policy.render_in_place("list_files", &listing, |listing| listing.files.len());
+                    let proof = policy.authorise_display_release("how many entries a listing has");
+                    shaped.declassify(&proof)
+                };
+                let paths =
+                    policy.render_in_place("list_files", &listing, |listing| listing.files.clone());
+                return Produced::new(
+                    Labelled::trusted(String::new()),
+                    proposed_dir.clone(),
+                    note,
+                )
+                .with_entries(Entries {
+                    origin: format!("an entry in \"{proposed_dir}\""),
+                    paths,
+                    count,
+                });
+            }
+
             let rendered = policy.render_in_place("list_files", &listing, |listing| {
                 if listing.files.is_empty() {
                     "(no files)".to_string()
@@ -856,9 +1021,11 @@ fn write_file<S: Sink, C: Confirmer>(
     arguments: &Value,
 ) -> Produced {
     let workspace = tools.workspace;
-    let Some(path) = argument(arguments, "path") else {
-        return problem("error: 'path' is required and must be a string");
+    let found = match path_argument(policy, "write_file", tools.slots, arguments) {
+        Ok(found) => found,
+        Err(refusal) => return problem(refusal),
     };
+    let (path, destination, shown_path) = (found.path, found.destination, found.shown);
 
     // The path is routing, so naming a destination from it is not a content decision.
     let proposed_path = path.clone().into_parts_for_decoding().0;
@@ -912,7 +1079,7 @@ fn write_file<S: Sink, C: Confirmer>(
         Intent::Create
     };
 
-    if policy.write_needs_approval(&proposed_path, body_label) {
+    if policy.write_needs_approval(&proposed_path, body_label, destination) {
         let request = WriteRequest {
             intent,
             existing: existing.clone(),
@@ -922,7 +1089,7 @@ fn write_file<S: Sink, C: Confirmer>(
 
         if confirmer.confirm_write(&request) == Decision::Reject {
             return problem(format!(
-                "refused: the user did not approve writing {proposed_path}. Do not retry \
+                "refused: the user did not approve writing {shown_path}. Do not retry \
                  the same write; ask what they would prefer."
             ));
         }
@@ -936,12 +1103,19 @@ fn write_file<S: Sink, C: Confirmer>(
             // The file now holds this data, so the map must say what the path means.
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(intent, existing.as_deref(), &shown, replaced_age);
+            // The line the person reads names the file even where the planner's own words
+            // cannot. They are the only one who knows which file a reference is, and a write
+            // reported as happening to "ref:1" tells them nothing about their own workspace.
+            let note = match destination {
+                Destination::Reference => format!("{proposed_path}, {note}"),
+                Destination::Named => note,
+            };
             // What the model is told, which is what its own account of the turn will repeat. It
             // used to be told "wrote" either way, and would go on to say it had created a file
             // it had in fact replaced, which is the opposite of what the user needed to hear.
             let done = match intent {
-                Intent::Create => format!("created {proposed_path}"),
-                _ => format!("replaced {proposed_path}, which was already there"),
+                Intent::Create => format!("created {shown_path}"),
+                _ => format!("replaced {shown_path}, which was already there"),
             };
             confirmed(done, note).with_changes(changes)
         }
@@ -961,12 +1135,15 @@ fn write_file<S: Sink, C: Confirmer>(
 fn edit_file<S: Sink, C: Confirmer>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
+    slots: &SlotStore,
     confirmer: &mut C,
     arguments: &Value,
 ) -> Produced {
-    let Some(proposed) = argument(arguments, "path") else {
-        return problem("error: 'path' is required and must be a string");
+    let found = match path_argument(policy, "edit_file", slots, arguments) {
+        Ok(found) => found,
+        Err(refusal) => return problem(refusal),
     };
+    let (proposed, destination, shown_path) = (found.path, found.destination, found.shown);
     let Some(old_text) = argument(arguments, "old_text") else {
         return problem("error: 'old_text' is required and must be a string");
     };
@@ -1025,7 +1202,7 @@ fn edit_file<S: Sink, C: Confirmer>(
         body.clone().declassify(&proof)
     };
 
-    if policy.write_needs_approval(&proposed_path, body_label) {
+    if policy.write_needs_approval(&proposed_path, body_label, destination) {
         let request = WriteRequest {
             path: proposed_path.clone(),
             contents: shown.clone(),
@@ -1035,7 +1212,7 @@ fn edit_file<S: Sink, C: Confirmer>(
 
         if confirmer.confirm_write(&request) == Decision::Reject {
             return problem(format!(
-                "refused: the user did not approve editing {proposed_path}. Do not retry the \
+                "refused: the user did not approve editing {shown_path}. Do not retry the \
                  same edit; ask what they would prefer."
             ));
         }
@@ -1048,8 +1225,12 @@ fn edit_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(Intent::Edit, Some(&current), &shown, None);
+            let note = match destination {
+                Destination::Reference => format!("{proposed_path}, {note}"),
+                Destination::Named => note,
+            };
             confirmed(
-                format!("edited {proposed_path}: {occurrences} replacement(s)"),
+                format!("edited {shown_path}: {occurrences} replacement(s)"),
                 note,
             )
             .with_changes(changes)
