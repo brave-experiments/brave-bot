@@ -545,11 +545,41 @@ impl Session {
     ///
     /// Clears the field and records the prompt in the transcript, so the display reflects
     /// the submission even before a reply arrives.
+    /// Take the input as a local command rather than as a turn.
+    ///
+    /// A sibling of [`Session::submit`] that deliberately stops short of the two things that
+    /// make an input a turn: the status does not go to `Working` and the turn count does not
+    /// move. Everything else is the same, because a command is still something the user typed
+    /// and still belongs in the transcript and in the history the arrow keys walk.
+    pub fn submit_command(&mut self) -> Option<String> {
+        if self.status != Status::Idle {
+            return None;
+        }
+        let command = self.input.trim().to_string();
+        if command.is_empty() {
+            return None;
+        }
+        self.input.clear();
+        self.history.push(command.clone());
+        if self.persist {
+            crate::store::append_history(&command);
+        }
+        self.transcript.push(Entry::user(command.clone()));
+        self.scroll = 0;
+        Some(command)
+    }
+
     pub fn submit(&mut self) -> Option<String> {
         if self.status != Status::Idle {
             return None;
         }
-        let prompt = self.input.trim().to_string();
+        let typed = self.input.trim();
+        // `//` is how a prompt that must begin with a slash gets sent, now that a single slash
+        // means a command. One slash is removed, which is the one that did the escaping.
+        let prompt = match typed.strip_prefix('/') {
+            Some(rest) if rest.starts_with('/') => rest.to_string(),
+            _ => typed.to_string(),
+        };
         if prompt.is_empty() {
             return None;
         }
@@ -670,6 +700,54 @@ mod tests {
         s.note_once("another thing happened");
 
         assert_eq!(s.transcript.len(), 2);
+    }
+
+    /// A command is answered locally. If it flipped the session to Working it would sit there
+    /// with a spinner waiting for a turn that was never started.
+    #[test]
+    fn a_command_does_not_start_a_turn() {
+        let mut s = session();
+        for c in "/skills".chars() {
+            s.type_char(c);
+        }
+        let command = s.submit_command().expect("submitted");
+
+        assert_eq!(command, "/skills");
+        assert_eq!(s.status, Status::Idle, "the session went to work");
+        assert_eq!(s.turns, 0, "a command was counted as a turn");
+        assert!(s.input.is_empty());
+    }
+
+    /// A command is still something the user typed, so walking back through the input should
+    /// find it. Leaving it out would make the arrow keys skip over what was just done.
+    #[test]
+    fn a_command_is_still_recalled_by_the_arrow_keys() {
+        let mut s = session();
+        for c in "/skills".chars() {
+            s.type_char(c);
+        }
+        s.submit_command().expect("submitted");
+
+        s.recall_older();
+        assert_eq!(s.input, "/skills");
+    }
+
+    /// A single slash now means a command, so without an escape a prompt beginning with one
+    /// would be unreachable. `//` sends it, minus the slash that did the escaping.
+    #[test]
+    fn a_prompt_can_still_begin_with_a_slash() {
+        let mut s = session();
+        for c in "//usr/bin is on PATH".chars() {
+            s.type_char(c);
+        }
+        let prompt = s.submit().expect("submitted");
+
+        assert_eq!(prompt, "/usr/bin is on PATH");
+        assert_eq!(
+            s.status,
+            Status::Working,
+            "an escaped prompt is still a turn"
+        );
     }
 
     #[test]
