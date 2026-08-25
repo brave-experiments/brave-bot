@@ -6,7 +6,7 @@
 use bua_agent::skills;
 use bua_agent::workspace::Workspace;
 use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::RecordingSink;
+use bua_core::event::{Event, RecordingSink};
 use bua_core::policy::{Policy, ReleasePlan, Routing};
 use bua_core::trust::TrustStore;
 use std::path::{Path, PathBuf};
@@ -370,4 +370,218 @@ fn skills_are_offered_in_the_same_order_every_time() {
 
     let names: Vec<&str> = catalogue.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, vec!["alpha", "middle", "zebra"]);
+}
+
+// ---- the inventory: answering "what loaded, and what did not" ----
+
+/// The central property of the listing. A skill in a path nobody vouched for is named by where
+/// it is and how big it is, never by what it says about itself. Its frontmatter is the one
+/// string an attacker chooses, and showing it would put that on the user's screen for no
+/// diagnostic gain: such a skill is dropped before it is parsed, so the reason is always this
+/// one.
+#[test]
+fn an_untrusted_skill_is_listed_without_its_frontmatter() {
+    let scratch = Scratch::new("inv-untrusted");
+    let project = scratch.workspace();
+    write_skill(
+        &project.join(".bua"),
+        "hostile-dir",
+        "HOSTILE-NAME",
+        "HOSTILE-DESCRIPTION",
+        "HOSTILE-BODY",
+    );
+    let workspace = Workspace::new(project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let inventory = skills::inventory(&mut sink, &workspace, None, TrustStore::new());
+
+    assert!(
+        inventory.loaded.is_empty(),
+        "an untrusted skill was offered"
+    );
+    assert_eq!(inventory.skipped.len(), 1, "{:?}", inventory.skipped);
+
+    let rendered = format!("{inventory:?}");
+    for secret in ["HOSTILE-NAME", "HOSTILE-DESCRIPTION", "HOSTILE-BODY"] {
+        assert!(
+            !rendered.contains(secret),
+            "{secret} reached the listing: {rendered}"
+        );
+    }
+}
+
+/// "Not found" and "found but rejected" are different problems with different fixes, so the
+/// listing has to tell them apart. The shape does that without quoting the file.
+#[test]
+fn an_untrusted_skill_is_listed_with_its_shape() {
+    let scratch = Scratch::new("inv-shape");
+    let project = scratch.workspace();
+    write_skill(&project.join(".bua"), "rejected", "n", "d", "a body line");
+    let workspace = Workspace::new(project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let inventory = skills::inventory(&mut sink, &workspace, None, TrustStore::new());
+
+    let entry = &inventory.skipped[0];
+    assert!(entry.origin.contains("rejected"), "{}", entry.origin);
+    assert!(entry.reason.contains("not trusted"), "{}", entry.reason);
+    let shape = entry.shape.expect("a rejected file reports its size");
+    assert!(shape.lines > 0 && shape.bytes > 0, "{shape:?}");
+}
+
+/// Where the frontmatter is the diagnosis and the path is one the user vouched for, showing it
+/// is both safe and the whole point: this is the case where the fix is a typo.
+#[test]
+fn a_malformed_skill_in_a_trusted_path_says_what_is_wrong() {
+    let scratch = Scratch::new("inv-malformed");
+    let project = scratch.workspace();
+    let at = project.join(".bua/skills/half");
+    std::fs::create_dir_all(&at).expect("create");
+    std::fs::write(
+        at.join("SKILL.md"),
+        "---\nname: no-description\n---\nbody\n",
+    )
+    .expect("write");
+    let workspace = Workspace::new(project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut trust = TrustStore::new();
+    trust.trust(".");
+    let inventory = skills::inventory(&mut sink, &workspace, None, trust);
+
+    assert!(inventory.loaded.is_empty());
+    let entry = &inventory.skipped[0];
+    assert!(entry.reason.contains("frontmatter"), "{}", entry.reason);
+    assert!(
+        entry.shape.is_none(),
+        "a readable file needs no size to explain it"
+    );
+}
+
+/// A project skill silently replacing a global one is the kind of thing someone spends an
+/// afternoon on. The listing says it happened and names both sides.
+#[test]
+fn a_shadowed_skill_is_reported_rather_than_vanishing() {
+    let scratch = Scratch::new("inv-shadow");
+    let home = scratch.home();
+    let project = scratch.workspace();
+    write_skill(&home, "commit-style", "commit-style", "the global one", "g");
+    write_skill(
+        &project.join(".bua"),
+        "commit-style",
+        "commit-style",
+        "the project one",
+        "l",
+    );
+    let workspace = Workspace::new(project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut trust = TrustStore::new();
+    trust.trust(".");
+    let inventory = skills::inventory(&mut sink, &workspace, Some(&home), trust);
+
+    assert_eq!(inventory.loaded.len(), 1);
+    assert_eq!(inventory.shadowed.len(), 1, "{:?}", inventory.shadowed);
+    let shadowed = &inventory.shadowed[0];
+    assert_eq!(shadowed.name, "commit-style");
+    assert!(shadowed.hidden.starts_with("~/.bua"), "{}", shadowed.hidden);
+    assert!(shadowed.winner.starts_with(".bua"), "{}", shadowed.winner);
+}
+
+/// Two answers to "what would load" is one answer too many. The listing walks the same code a
+/// turn walks, so it cannot drift into describing a world the turn does not see.
+#[test]
+fn an_inventory_reports_the_same_skills_a_turn_would_load() {
+    let scratch = Scratch::new("inv-agrees");
+    let home = scratch.home();
+    let project = scratch.workspace();
+    write_skill(&home, "global", "global", "d", "b");
+    write_skill(&project.join(".bua"), "local", "local", "d", "b");
+    let workspace = Workspace::new(project).expect("workspace");
+
+    let mut trust = TrustStore::new();
+    trust.trust(".");
+
+    let mut sink = RecordingSink::new();
+    let inventory = skills::inventory(&mut sink, &workspace, Some(&home), trust.clone());
+
+    let mut sink = RecordingSink::new();
+    let (catalogue, _) = {
+        let mut policy = Policy::begin(
+            routing(),
+            ReleasePlan::new(),
+            CapabilitySet::from_iter([Capability::FileRead]),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(trust);
+        skills::discover(&mut policy, &workspace, Some(&home))
+    };
+
+    let listed: Vec<&str> = inventory.loaded.iter().map(|l| l.name.as_str()).collect();
+    let loaded: Vec<&str> = catalogue.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(listed, loaded);
+}
+
+/// Listing is a read. A command that could write would be a command whose worst outcome is
+/// worse than a wasted keystroke.
+#[test]
+fn listing_skills_never_asks_for_the_capability_to_write() {
+    let scratch = Scratch::new("inv-readonly");
+    let home = scratch.home();
+    write_skill(&home, "any", "any", "d", "b");
+    let workspace = Workspace::new(scratch.workspace()).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let _ = skills::inventory(&mut sink, &workspace, Some(&home), TrustStore::new());
+
+    assert!(
+        !sink.events().iter().any(|e| matches!(
+            e,
+            Event::Observed {
+                capability: Capability::FileWrite,
+                ..
+            }
+        )),
+        "listing observed a write capability"
+    );
+}
+
+/// The cost is what is actually sent, not an estimate of it, so it is measured from the composed
+/// preamble. A number that could disagree with the request would be worse than no number.
+#[test]
+fn the_reported_cost_is_the_size_of_what_is_sent() {
+    let scratch = Scratch::new("inv-cost");
+    let home = scratch.home();
+    write_skill(&home, "one", "one", "a description", "a body");
+    std::fs::write(home.join("AGENTS.md"), "some standing instructions").expect("write");
+    let workspace = Workspace::new(scratch.workspace()).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let inventory = skills::inventory(&mut sink, &workspace, Some(&home), TrustStore::new());
+
+    assert_eq!(inventory.agents, vec!["~/.bua/AGENTS.md".to_string()]);
+    assert!(inventory.preamble_bytes > 0);
+    assert_eq!(
+        inventory.approximate_tokens(),
+        inventory.preamble_bytes / 4,
+        "the estimate should be derived from the measurement, not guessed separately"
+    );
+}
+
+/// Nothing installed is the first-run case, and it must read as an empty answer rather than an
+/// error or a wall of nothing.
+#[test]
+fn an_inventory_with_nothing_installed_is_empty_and_quiet() {
+    let scratch = Scratch::new("inv-empty");
+    let workspace = Workspace::new(scratch.workspace()).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let inventory = skills::inventory(&mut sink, &workspace, None, TrustStore::new());
+
+    assert!(inventory.loaded.is_empty());
+    assert!(inventory.skipped.is_empty());
+    assert!(inventory.shadowed.is_empty());
+    assert!(inventory.agents.is_empty());
+    assert_eq!(inventory.preamble_bytes, 0);
 }
