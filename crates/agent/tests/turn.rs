@@ -2314,9 +2314,10 @@ fn token_usage_accumulates_across_rounds() {
     assert_eq!(outcome.tokens, 460, "rounds were not summed");
 }
 
-/// A server that reports no usage must not break a turn; the count is cosmetic.
+/// A server that reports no usage must not break a turn, and must not make it look free either.
+/// What comes back is the same estimate the interface was showing while the reply arrived.
 #[test]
-fn a_turn_without_reported_usage_reports_zero_tokens() {
+fn a_turn_without_reported_usage_reports_what_it_counted() {
     let scratch = Scratch::new("tokens-absent");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
@@ -2335,7 +2336,10 @@ fn a_turn_without_reported_usage_reports_zero_tokens() {
     )
     .expect("turn runs");
 
-    assert_eq!(outcome.tokens, 0);
+    assert!(
+        outcome.tokens > 0,
+        "a turn that streamed a reply reported costing nothing"
+    );
 }
 
 /// A user who changed their mind should not have to wait out a slow model.

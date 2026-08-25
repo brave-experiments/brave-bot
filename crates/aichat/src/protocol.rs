@@ -485,14 +485,23 @@ impl StreamAccumulator {
     }
 
     /// Everything the stream produced, in the shape a one-shot response would have had.
+    /// What the reply cost, or the same estimate the count on the screen was showing.
+    ///
+    /// A server that answers `include_usage` with nothing left this at zero, so a session whose
+    /// interface had been counting output all the way through recorded that it had cost nothing.
+    /// Zero is not a better answer than an approximate one: it is a wrong answer that reads as a
+    /// measurement, and the figure exists to tell somebody what a session cost them.
+    ///
+    /// The estimate is chunks of text rather than tokens. It is what
+    /// [`StreamAccumulator::output_tokens`] has always shown live for the same reason, and
+    /// [`StreamAccumulator::usage_is_reported`] is how a caller tells the two apart.
     pub fn finish(self) -> (String, Option<String>, Vec<ToolCall>, Usage) {
         let calls = self.tool_calls();
-        (
-            self.content,
-            self.model,
-            calls,
-            self.usage.unwrap_or_default(),
-        )
+        let usage = self.usage.unwrap_or(Usage {
+            prompt_tokens: 0,
+            completion_tokens: self.content_chunks,
+        });
+        (self.content, self.model, calls, usage)
     }
 }
 
@@ -663,6 +672,29 @@ mod tests {
 
         /// Until the server reports, the count is the number of text chunks: something has to move
         /// while the user waits.
+        /// A server that reports no usage used to end the turn at zero, so a session whose
+        /// screen had been counting output all along recorded that it had cost nothing. Zero
+        /// reads as a measurement, and it was not one.
+        #[test]
+        fn a_reply_with_no_usage_report_still_says_what_it_cost() {
+            let mut acc = StreamAccumulator::new();
+            for _ in 0..3 {
+                acc.push(
+                    serde_json::from_str(r#"{"choices":[{"delta":{"content":"word "}}]}"#)
+                        .expect("a chunk"),
+                );
+            }
+
+            assert!(!acc.usage_is_reported(), "the server reported nothing");
+            let live = acc.output_tokens();
+            let (_, _, _, usage) = acc.finish();
+            assert_eq!(
+                usage.completion_tokens, live,
+                "the turn ended with a different figure from the one on the screen"
+            );
+            assert!(usage.completion_tokens > 0);
+        }
+
         #[test]
         fn output_tokens_climb_as_text_arrives() {
             let mut acc = StreamAccumulator::new();
