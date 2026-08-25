@@ -16,9 +16,60 @@
 //! Nothing in here is content. Every field is a gate name, a capability, a label, a path or a
 //! slot id, which is the same reason the trail can be shown on a screen without a release.
 
-use bua_core::event::{Event, Role};
+use bua_core::event::{Event, Role, Sink};
 use bua_core::label::{Confidentiality, Integrity, Label};
 use serde_json::{Value, json};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// An event, and when it happened.
+#[derive(Debug, Clone)]
+pub struct Stamped {
+    /// Seconds since the epoch, taken as the event was emitted.
+    pub at: u64,
+    pub event: Event,
+}
+
+/// Collects a run's events, noting the time of each as it arrives.
+///
+/// The time has to be taken here because there is nowhere later to take it. The trail used to be
+/// stamped when it was written to disk, which happens once, at the end of a turn: every event in
+/// a turn therefore carried the same second, and a trail whose events all happened at once cannot
+/// say which came first, how long a step took, or when a turn ended. That is precisely what
+/// somebody reading a session back needs it for.
+///
+/// The clock is read in this crate rather than in the kernel, which has none and needs none.
+#[derive(Debug, Default)]
+pub struct Trail {
+    events: Vec<Stamped>,
+}
+
+impl Trail {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn events(&self) -> &[Stamped] {
+        &self.events
+    }
+
+    /// The events alone, for a reader that does not care when they happened.
+    pub fn bare(&self) -> Vec<Event> {
+        self.events.iter().map(|s| s.event.clone()).collect()
+    }
+}
+
+impl Sink for Trail {
+    fn emit(&mut self, event: Event) {
+        self.events.push(Stamped { at: now(), event });
+    }
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// One event as the transcript shows it: the words, and whether it is a refusal.
 ///

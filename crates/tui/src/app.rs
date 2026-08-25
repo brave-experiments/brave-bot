@@ -14,7 +14,6 @@ use bua_agent::conversation::Conversation;
 use bua_agent::turn::{self, Task};
 use bua_config::Config;
 use bua_core::cancel::Cancel;
-use bua_core::event::RecordingSink;
 use bua_core::trust::TrustStore;
 use bua_net::Egress;
 use ratatui::Terminal;
@@ -32,6 +31,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::audit::{Stamped, Trail};
 use crate::render;
 use crate::select;
 use crate::state::{Session, Status};
@@ -494,7 +494,7 @@ fn run_turn_animated(
     prompt: &str,
     conversation: Conversation,
     trust: TrustStore,
-) -> io::Result<(Conversation, TrustStore, Vec<bua_core::event::Event>)> {
+) -> io::Result<(Conversation, TrustStore, Vec<Stamped>)> {
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
@@ -513,7 +513,7 @@ fn run_turn_animated(
     let fallback = trust.clone();
 
     let worker = thread::spawn(move || {
-        let mut sink = RecordingSink::new();
+        let mut sink = Trail::new();
         // Two handles over one channel back to the thread that owns the terminal: one asks about
         // writes and waits, the other reports progress and moves on.
         let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main.clone());
@@ -606,7 +606,7 @@ fn run_turn_animated(
                 "the turn ended unexpectedly".to_string(),
             )),
             Conversation::new(),
-            RecordingSink::new(),
+            Trail::new(),
         )
     });
 
@@ -639,12 +639,12 @@ fn wants_cancel(key: KeyEvent) -> bool {
 fn fold_outcome(
     session: &mut Session,
     outcome: Result<turn::Outcome, turn::TurnError>,
-    sink: RecordingSink,
+    sink: Trail,
     fallback: TrustStore,
 ) -> TrustStore {
     match outcome {
         Ok(outcome) => {
-            let trail = sink.events().to_vec();
+            let trail = sink.bare();
             session.complete(
                 outcome.reply_for_display().to_string(),
                 trail,
@@ -660,7 +660,11 @@ fn fold_outcome(
         Err(error) => {
             // The trail is kept on failure too: a refusal is exactly when a user wants
             // to see what happened.
-            let trail = sink.events().iter().map(crate::audit::as_line).collect();
+            let trail = sink
+                .events()
+                .iter()
+                .map(|stamped| crate::audit::as_line(&stamped.event))
+                .collect();
             session.fail(format!("error: {error}"));
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;

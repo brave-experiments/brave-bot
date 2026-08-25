@@ -89,6 +89,19 @@ fn a_conversation() -> Conversation {
     conversation
 }
 
+/// Events as the trail records them, with a time on each. The times themselves do not matter to
+/// these tests; what matters is that the writer takes the event's own rather than its own.
+fn stamped(events: Vec<Event>) -> Vec<bua_tui::audit::Stamped> {
+    events
+        .into_iter()
+        .enumerate()
+        .map(|(n, event)| bua_tui::audit::Stamped {
+            at: 1_700_000_000 + n as u64,
+            event,
+        })
+        .collect()
+}
+
 #[test]
 fn sessions_are_written_read_back_and_kept_per_directory() {
     let scratch = Scratch::new("round-trip");
@@ -110,7 +123,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     );
     handle.append_audit(
         1,
-        &[
+        &stamped(vec![
             Event::Observed {
                 capability: Capability::FileRead,
                 label: Label::untrusted_private(),
@@ -120,7 +133,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
                 detail: "edit_file".to_string(),
                 reason: "content is untrusted".to_string(),
             },
-        ],
+        ]),
     );
 
     // It is in the list, described the way the picker shows it.
@@ -155,10 +168,10 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     // A second turn appends rather than starting the file again: the audit is the whole session.
     handle.append_audit(
         2,
-        &[Event::GatePassed {
+        &stamped(vec![Event::GatePassed {
             gate: "capability",
             detail: "file_read granted".to_string(),
-        }],
+        }]),
     );
     let written = std::fs::read_to_string(&audit).expect("the audit is still there");
     assert_eq!(written.lines().count(), 3);
@@ -288,5 +301,60 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
         trails.keys().copied().collect::<Vec<_>>(),
         vec![1, 2],
         "a truncated line took the readable ones with it"
+    );
+}
+
+/// A trail whose events all share one timestamp cannot say which came first, how long a step
+/// took, or when a turn ended. It used to: the file was stamped as it was written, which happens
+/// once per turn.
+#[test]
+fn the_audit_keeps_the_time_each_event_happened() {
+    let scratch = Scratch::new("audit-times");
+    let mut handle = sessions::Handle::begin(&scratch.project);
+    handle.save(
+        "a task",
+        Standing {
+            conversation: &a_conversation().snapshot(),
+            turns: 1,
+            tokens: 0,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+        },
+    );
+
+    handle.append_audit(
+        1,
+        &[
+            bua_tui::audit::Stamped {
+                at: 1_700_000_000,
+                event: Event::GatePassed {
+                    gate: "capability",
+                    detail: "file_read granted".to_string(),
+                },
+            },
+            bua_tui::audit::Stamped {
+                at: 1_700_000_042,
+                event: Event::GatePassed {
+                    gate: "capability",
+                    detail: "file_write granted".to_string(),
+                },
+            },
+        ],
+    );
+
+    let audit = sessions::project_directory(&scratch.project)
+        .map(|dir| dir.join(format!("{}.audit.jsonl", handle.id())))
+        .expect("an audit path");
+    let written = std::fs::read_to_string(&audit).expect("the audit was written");
+    let times: Vec<u64> = written
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json"))
+        .map(|line| line["at"].as_u64().expect("a time"))
+        .collect();
+
+    assert_eq!(
+        times,
+        vec![1_700_000_000, 1_700_000_042],
+        "the events were stamped when they were written down rather than when they happened"
     );
 }

@@ -30,7 +30,6 @@
 //! the list rather than taken as a reason to fail.
 
 use bua_agent::conversation::Snapshot;
-use bua_core::event::Event;
 use bua_core::label::Integrity;
 use bua_core::todo::{self, Item, List, Row, Status};
 use bua_core::trust::TrustStore;
@@ -295,18 +294,20 @@ impl Handle {
     /// One JSON object per line, so the file can be grown a turn at a time and read with
     /// ordinary tools. What goes in it is gate names, labels and paths: the audit says what was
     /// allowed and why, never what the content was.
-    pub fn append_audit(&self, turn: usize, events: &[Event]) {
+    pub fn append_audit(&self, turn: usize, events: &[crate::audit::Stamped]) {
         let Some(directory) = self.directory() else {
             return;
         };
-        let at = now();
 
         let mut body = String::new();
-        for event in events {
+        for stamped in events {
+            // The event's own time, not this moment. A turn is written down once, at the end, so
+            // stamping here made every event in it share a second and left the trail unable to
+            // say which came first or how long anything took.
             let line = serde_json::json!({
-                "at": at,
+                "at": stamped.at,
                 "turn": turn,
-                "event": crate::audit::as_json(event),
+                "event": crate::audit::as_json(&stamped.event),
             });
             body.push_str(&line.to_string());
             body.push('\n');
