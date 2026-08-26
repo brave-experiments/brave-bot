@@ -3684,7 +3684,7 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
     std::fs::write(scratch.path.join("server.py"), original).unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
+    let (endpoint, received) = serve_sequence(vec![
         tool_request("list_files", r#"{"directory":"."}"#),
         // No unchanged_ref: with one file in front of it, a processor can say so anyway.
         tool_request(
@@ -3730,6 +3730,18 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
         confirmer.seen.is_empty(),
         "a write that changes nothing was put to the user: {:?}",
         confirmer.seen
+    );
+
+    // Nor was a reference handed out for a copy of a file that is already in a slot: a slot is
+    // written once and read by whatever the planner points at it, and there is nothing here for
+    // it to point at.
+    let told = received
+        .try_iter()
+        .find(|body: &String| body.contains("needs no change"))
+        .expect("the planner was not told there is nothing to write");
+    assert!(
+        !told.contains("[ref:3]"),
+        "a slot was minted for a document nobody needs: {told}"
     );
 }
 

@@ -1694,6 +1694,24 @@ fn spawn_processor<S: Sink>(
 
     match processor::run(policy, &mut tools.chat, tools.slots, &spec) {
         Ok(done) => {
+            // Nothing to keep. A slot is written once and read by whatever the planner points
+            // at it, and a slot holding a copy of a document that is already in a slot has
+            // nothing for anyone to point at: the file it stands for is the file it came from,
+            // and that file needs no writing. So none is minted, and the planner is told there
+            // is nothing to write rather than handed a name for a copy.
+            if let Some(from) = &done.unchanged_from {
+                let mut produced = confirmed(
+                    format!(
+                        "{from} needs no change, so there is nothing to write for it. Do not \
+                         write it, and do not process it again."
+                    ),
+                    "left it alone",
+                )
+                .costing(done.usage);
+                produced.said = done.note;
+                return produced;
+            }
+
             let wrote = note_for(policy, "spawn_processor", &done.text, |text: String| {
                 tally(text.lines().count(), "line", "lines")
             });
