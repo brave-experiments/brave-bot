@@ -71,6 +71,22 @@ impl ProcessorSpec {
     /// Safe by construction: a document whose entire content is this word is replaced by itself.
     pub const UNCHANGED: &'static str = "UNCHANGED";
 
+    /// The line that separates what a processor wants to say from what it produced.
+    ///
+    /// A processor has one output and has always wanted two: the document, and a word about what
+    /// it did with it. With nowhere to put the second it put it in the first, and the sentences
+    /// became the file. Twice.
+    ///
+    /// Everything before the line is a note for the person watching. Everything after it is the
+    /// document. An answer without the line at all is a document, which is what it always was, so
+    /// a processor that says nothing loses nothing.
+    ///
+    /// A document that contains this line splits at it, and the part before goes to a screen
+    /// instead of into the file. That is a reshaping of untrusted content by untrusted content:
+    /// what it can reach is which bytes land in a slot nobody reads, and a person sees both
+    /// halves either way.
+    pub const NOTE_MARKER: &'static str = "===== the document starts here =====";
+
     /// The processor's name in the audit trail. Driver-chosen, never derived from content.
     pub fn id(&self) -> &str {
         &self.id

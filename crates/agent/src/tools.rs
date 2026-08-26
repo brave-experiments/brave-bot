@@ -357,6 +357,8 @@ pub struct Output {
     pub entries: Option<Entries>,
     /// The slot this result stands for unchanged, where there is one.
     pub unchanged_from: Option<SlotId>,
+    /// What an isolated processor said about what it did. For the person watching only.
+    pub said: Option<Labelled<String>>,
     /// Whether the text is workspace content rather than the driver's own words about the call.
     pub content: bool,
     /// What the call spent at the model, where it called one.
@@ -405,6 +407,11 @@ struct Produced {
     /// change. The turn records it against the slot it mints, so a write of it can be
     /// recognised as changing nothing.
     unchanged_from: Option<SlotId>,
+    /// What an isolated processor said about what it did, for the person watching.
+    ///
+    /// Never part of `text`, which is what the planner is told about: this half of a processor's
+    /// answer reaches a screen and stops there.
+    said: Option<Labelled<String>>,
     /// Whether `text` is workspace content rather than the driver's own words about the call.
     ///
     /// What the kernel does with a result is worth reporting only where the result is content:
@@ -428,6 +435,7 @@ impl Produced {
             changes: Vec::new(),
             untrusted: false,
             unchanged_from: None,
+            said: None,
             content: false,
             usage: Usage::default(),
         }
@@ -707,6 +715,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 deferred: produced.deferred,
                 entries: produced.entries,
                 unchanged_from: produced.unchanged_from,
+                said: produced.said,
                 content: produced.content,
                 usage: produced.usage,
             };
@@ -747,6 +756,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         deferred: produced.deferred,
         entries: produced.entries,
         unchanged_from: produced.unchanged_from,
+        said: produced.said,
         content: produced.content,
         usage: produced.usage,
     }
@@ -768,6 +778,7 @@ fn problem(text: impl Into<String>) -> Produced {
         changes: Vec::new(),
         untrusted: false,
         unchanged_from: None,
+        said: None,
         content: false,
         usage: Usage::default(),
     }
@@ -1698,6 +1709,7 @@ fn spawn_processor<S: Sink>(
                 .costing(done.usage)
                 .of_content();
             produced.unchanged_from = done.unchanged_from;
+            produced.said = done.note;
             produced
         }
         Err(error) => problem(format!("error: {error}")),

@@ -115,6 +115,11 @@ The properties this rests on, none of which may be relaxed:
 - **One call, no loop.** There is no round for a reply to steer.
 - **The output is never shown to the planner.** It is presented like any other untrusted
   content: a reference, and nothing else.
+- **What it says about what it did is a second output**, split off at
+  `ProcessorSpec::NOTE_MARKER` and shown to the person watching. It reaches a screen and stops:
+  no model reads it, it is not part of any file, and it cannot be another processor's input. A
+  processor has one output and has always wanted two, and with nowhere to put the second it put
+  it in the first, where it became the file.
 
 The confinement is the capability set, not an operating system boundary. `bua-sandbox` confines
 processes running code we did not write; a processor's caller is our own code, and putting it in

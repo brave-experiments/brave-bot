@@ -3818,6 +3818,78 @@ fn each_result_says_whether_the_model_can_read_it() {
     );
 }
 
+/// A processor has always wanted to say something about what it did, and with nowhere to put it
+/// it put it in the file: two sessions ended with a paragraph of reasoning at the top of a Python
+/// script. It has somewhere to put it now, and that somewhere reaches the person and nothing else.
+#[test]
+fn what_a_processor_says_reaches_the_person_and_no_model() {
+    let scratch = Scratch::new("processor-note");
+    std::fs::write(scratch.path.join("server.py"), "print('serving')\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"fix the speed bug"}"#,
+        ),
+        reply_with(&format!(
+            "This is a server, not the game.\n{}\nprint('serving faster')\n",
+            bua_core::processor::ProcessorSpec::NOTE_MARKER
+        )),
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    // The person is shown it, and told it is the processor speaking.
+    let said = reporter
+        .shown
+        .iter()
+        .find(|shown| shown.origin.contains("isolated processor said"))
+        .expect("what the processor said was not shown to anybody");
+    assert!(
+        said.preview.join("\n").contains("not the game"),
+        "the remark was not shown: {:?}",
+        said.preview
+    );
+
+    // The file got the document and none of the remark.
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        "print('serving faster')\n",
+        "what the processor said ended up in the file"
+    );
+
+    // And no model was told any of it.
+    for body in received.try_iter() {
+        assert!(
+            !body.contains("not the game"),
+            "the remark reached a model: {body}"
+        );
+    }
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.

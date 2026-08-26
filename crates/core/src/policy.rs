@@ -130,6 +130,11 @@ impl ReleasePlan {
 pub struct Processed {
     /// The output, labelled by taint over the inputs.
     pub text: Labelled<String>,
+    /// What the processor wanted to say about what it did, where it said anything.
+    ///
+    /// Quarantined exactly as the output is, and shown to nobody but the person watching: it is
+    /// in no model's context, which is the point of it existing separately at all.
+    pub note: Option<Labelled<String>>,
     /// The input this stands for, where the processor answered that it should not change.
     ///
     /// The driver carries it back so the new slot can be recorded as holding the same file. It
@@ -1255,11 +1260,49 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             .relabel(tainted)
             .expect("taint over the inputs can only degrade the reply's label");
 
+        // The note comes off first: what follows the line is the document, and everything the
+        // rest of this does is about the document.
+        let (note, reply) = self.split_note(spec.id(), reply);
         let (reply, unchanged_from) = self.leave_unchanged(spec, reply, slots);
         Processed {
             text: self.unfence(spec.id(), reply),
+            note,
             unchanged_from,
         }
+    }
+
+    /// Take what a processor wanted to say off the front of what it produced.
+    ///
+    /// See [`crate::processor::ProcessorSpec::NOTE_MARKER`]. Reads the reply to find the line,
+    /// which is the standing [`Policy::unfence`] already has: content in, content out, both
+    /// halves still quarantined, and no branch outside these lines.
+    fn split_note(
+        &mut self,
+        id: &str,
+        reply: Labelled<String>,
+    ) -> (Option<Labelled<String>>, Labelled<String>) {
+        let label = reply.label();
+        let proof = Declassification::authorise("split into a note and a document");
+        let text = reply.declassify(&proof);
+
+        let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
+        let Some(at) = text.find(marker) else {
+            return (None, Labelled::new(text, label));
+        };
+
+        let note = text[..at].trim().to_string();
+        let document = text[at + marker.len()..]
+            .trim_start_matches('\n')
+            .to_string();
+        self.allow(
+            "processor",
+            format!(
+                "{id}: said something about what it did, which goes to a screen and nowhere else"
+            ),
+        );
+
+        let note = (!note.is_empty()).then(|| Labelled::new(note, label));
+        (note, Labelled::new(document, label))
     }
 
     /// Answer with the input where the processor said the document should not change.
@@ -1991,6 +2034,75 @@ mod tests {
             write.contains("a person must approve"),
             "the write did not say who decides: {write}"
         );
+    }
+
+    /// A processor with one output and two things to say put the second in the first, and the
+    /// sentences became the file. The line gives the remark somewhere to go.
+    #[test]
+    fn what_a_processor_says_is_split_from_what_it_produced() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+            .unwrap()
+            .write("the original")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1")],
+                &Labelled::trusted("rewrite it".to_string()),
+                None,
+                &slots,
+            )
+            .expect("a spec");
+
+        let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
+        let reply = Labelled::new(
+            format!("I left the imports alone.\n{marker}\nthe document\n"),
+            Label::untrusted_private(),
+        );
+
+        let produced = policy.label_processor_output(&spec, reply, &slots);
+        let proof = Declassification::authorise("test");
+        assert_eq!(produced.text.declassify(&proof), "the document\n");
+        let note = produced.note.expect("it said something");
+        assert_eq!(note.declassify(&proof), "I left the imports alone.");
+    }
+
+    /// An answer with no line in it is a document, which is what every answer was before there
+    /// was a line: a processor that says nothing loses nothing.
+    #[test]
+    fn an_answer_without_the_line_is_all_document() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+            .unwrap()
+            .write("the original")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1")],
+                &Labelled::trusted("rewrite it".to_string()),
+                None,
+                &slots,
+            )
+            .expect("a spec");
+
+        let produced = policy.label_processor_output(
+            &spec,
+            Labelled::new("just the file\n".to_string(), Label::untrusted_private()),
+            &slots,
+        );
+        assert!(produced.note.is_none(), "a note was invented");
+        let proof = Declassification::authorise("test");
+        assert_eq!(produced.text.declassify(&proof), "just the file\n");
     }
 
     /// A reference that came from a processor names no file, so it cannot be a destination.

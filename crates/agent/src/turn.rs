@@ -788,6 +788,20 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             // A read of a file the planner may not see reserves the slot instead of filling
             // it. The planner is told the same thing either way, a reference and a size, and
             // the file is opened when a processor or a write finally needs the bytes.
+            // What an isolated processor wanted to say about what it did. It goes to the
+            // person and stops: not into the planner's context, not into a file, not into
+            // another processor's input. Reported before the result, because it is about to
+            // explain what the result is.
+            if let Some(said) = &output.said {
+                let shown = preview_for(&mut policy, &output.tool, said);
+                reporter.quarantined(crate::report::Shown {
+                    origin: "what the isolated processor said".to_string(),
+                    label: said.label().to_string(),
+                    lines: shown.lines,
+                    preview: shown.preview,
+                });
+            }
+
             // Three shapes, and which one a result takes was decided by the tool that
             // produced it and the kernel that labelled it, never here.
             let body = if let Some(entries) = &output.entries {

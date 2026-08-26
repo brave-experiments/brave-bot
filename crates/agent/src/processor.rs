@@ -48,6 +48,16 @@ Do exactly what the instruction asks and output the result and nothing else: no 
 explanation, no code fences unless the instruction calls for them. What you output is used \
 verbatim.
 
+If you want to say something about what you did, put it first, then a line reading exactly
+
+===== the document starts here =====
+
+and then the document. Everything before that line goes to the person watching and to nobody \
+else: no model reads it, and it is not part of any file. Everything after it is the document. \
+Leave the line out and the whole of your answer is the document, which is what it is for.
+
+That is where a remark belongs. Not in the document: whatever is in the document is the file.
+
 This includes the case where the answer is that nothing should change. Whatever you output is \
 the file, so an explanation of why you are leaving a document alone is what replaces it. There \
 is nobody to explain yourself to and nowhere for the explanation to go except into the document \
@@ -72,6 +82,8 @@ pub struct Chat<'a> {
 pub struct Processed {
     /// The output, labelled by taint over the inputs. Never read on the way past.
     pub text: Labelled<String>,
+    /// What it wanted to say about what it did. Goes to the person watching and no further.
+    pub note: Option<Labelled<String>>,
     /// The input it stands for, where it answered that the document should not change.
     pub unchanged_from: Option<bua_core::slot::SlotId>,
     /// The model the server reported using, which may differ from the one asked for.
@@ -166,6 +178,7 @@ pub fn run<S: Sink>(
     let produced = policy.label_processor_output(spec, completion.content, slots);
     Ok(Processed {
         text: produced.text,
+        note: produced.note,
         unchanged_from: produced.unchanged_from,
         model: completion.model,
         usage: completion.usage,
