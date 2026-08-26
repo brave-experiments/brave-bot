@@ -3655,9 +3655,11 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
         .iter()
         .find(|activity| activity.verb == "Read")
         .expect("a read was reported");
+    // The reference, its label and the file: the planner has only the first of the three, and a
+    // bare filename would read as something it knows.
     assert_eq!(
-        read.target, "game.js",
-        "the line named a reference rather than the file"
+        read.target, "ref:1(U,priv):game.js",
+        "the line did not say which file, or implied the planner knew its name"
     );
 
     let processed = reporter
@@ -3665,10 +3667,14 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
         .iter()
         .find(|activity| activity.verb == "Isolated processor")
         .expect("a processor was reported");
-    assert_eq!(processed.target, "game.js", "{:?}", processed.target);
+    assert_eq!(
+        processed.target, "ref:1(U,priv):game.js",
+        "{:?}",
+        processed.target
+    );
     let note = processed.note.clone().unwrap_or_default();
     assert!(
-        note.contains("isolated processor read game.js"),
+        note.contains("isolated processor read ref:1(U,priv):game.js"),
         "the line did not say who opened the file: {note}"
     );
 }

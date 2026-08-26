@@ -848,8 +848,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     .filter_map(|id| {
                         named
                             .iter()
-                            .find(|(slot, _)| slot == id)
-                            .map(|(slot, path)| format!("{slot}  {path}"))
+                            .find(|(slot, _, _)| slot == id)
+                            .map(|(slot, label, path)| format!("{slot}{label}  {path}"))
                     })
                     .collect();
                 reporter.landed(crate::report::Landing::Quarantined);

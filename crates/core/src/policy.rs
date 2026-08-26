@@ -794,14 +794,17 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// which is why it is a display release and not a promotion: nothing here may become a path
     /// an effect uses. Only [`Policy::destination_from_reference`] does that, and only with a
     /// person's endorsement behind it.
-    pub fn names_for_display(&mut self, slots: &crate::slot::SlotStore) -> Vec<(SlotId, String)> {
-        let named: Vec<(SlotId, String)> = slots
+    pub fn names_for_display(
+        &mut self,
+        slots: &crate::slot::SlotStore,
+    ) -> Vec<(SlotId, Label, String)> {
+        let named: Vec<(SlotId, Label, String)> = slots
             .inventory()
             .into_iter()
-            .filter_map(|(slot, _)| {
+            .filter_map(|(slot, label)| {
                 slots
                     .path_of(&slot)
-                    .map(|path| (slot.clone(), path.to_string()))
+                    .map(|path| (slot.clone(), label, path.to_string()))
             })
             .collect();
 

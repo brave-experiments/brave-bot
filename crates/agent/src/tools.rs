@@ -29,6 +29,7 @@ use crate::processor::{self, Chat};
 use crate::report::{Activity, Reporter};
 use bua_aichat::protocol::{Tool, ToolCall, Usage};
 use bua_core::event::Sink;
+use bua_core::label::Label;
 use bua_core::policy::{Destination, Policy};
 use bua_core::slot::{SlotId, SlotStore};
 use bua_core::todo::{self, Item, List, Status};
@@ -992,8 +993,8 @@ pub(crate) fn materialise<S: Sink>(
         .map(|slot| {
             named
                 .iter()
-                .find(|(id, _)| id == slot)
-                .map(|(_, path)| path.clone())
+                .find(|(id, _, _)| id == slot)
+                .map(|(slot, label, path)| format!("{slot}{label}:{path}"))
                 .unwrap_or_else(|| slot.to_string())
         })
         .collect())
@@ -1086,7 +1087,7 @@ struct PathArgument {
 /// them out itself, and a regular expression over text a model wrote is attack surface for no
 /// gain. A name that has no file behind it, which is anything a processor produced, is left as
 /// the model wrote it.
-pub(crate) fn name_references(text: &str, named: &[(SlotId, String)]) -> String {
+pub(crate) fn name_references(text: &str, named: &[(SlotId, Label, String)]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
 
@@ -1098,8 +1099,13 @@ pub(crate) fn name_references(text: &str, named: &[(SlotId, String)]) -> String 
 
         // A name with no file behind it, which is anything a processor produced, stays as the
         // planner wrote it: there is nothing truer to put in its place.
-        match named.iter().find(|(slot, _)| slot.as_str() == name) {
-            Some((_, path)) if digits > 0 => out.push_str(path),
+        // The reference, its label, and the file: all three, because the planner has only the
+        // first of them. A bare filename on a line about a call the planner made reads as
+        // though it knew the name, and the whole arrangement is that it does not.
+        match named.iter().find(|(slot, _, _)| slot.as_str() == name) {
+            Some((slot, label, path)) if digits > 0 => {
+                out.push_str(&format!("{slot}{label}:{path}"))
+            }
             _ => out.push_str(&name),
         }
         rest = &after[digits..];
@@ -1905,19 +1911,22 @@ mod tests {
     /// filename has to be the half that reaches the screen.
     #[test]
     fn a_task_list_names_the_file_a_reference_stands_for() {
+        let untrusted = bua_core::label::Label::untrusted_private();
         let named = vec![
-            (SlotId::new("ref:1"), "src/game.js".to_string()),
-            (SlotId::new("ref:10"), "server.py".to_string()),
+            (SlotId::new("ref:1"), untrusted, "src/game.js".to_string()),
+            (SlotId::new("ref:10"), untrusted, "server.py".to_string()),
         ];
 
+        // The reference and its label come with the name: a bare filename would read as
+        // something the planner knows, and it does not.
         assert_eq!(
             name_references("Write the fixed ref:1 back to its file", &named),
-            "Write the fixed src/game.js back to its file"
+            "Write the fixed ref:1(U,priv):src/game.js back to its file"
         );
         // A longer name is not the shorter one with something after it.
         assert_eq!(
             name_references("ref:10 and ref:1.", &named),
-            "server.py and src/game.js."
+            "ref:10(U,priv):server.py and ref:1(U,priv):src/game.js."
         );
         // A reference with no file behind it is left as the planner wrote it: a processor's
         // output is content, and there is nothing truer to put in its place.
