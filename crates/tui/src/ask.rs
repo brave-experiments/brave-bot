@@ -29,6 +29,13 @@ const MAX_TYPED: usize = 500;
 /// Columns the marker occupies, and so the indent a detail line sits at to align under its label.
 const MARKER_WIDTH: usize = 4;
 
+/// What the row offering the free-text field says.
+///
+/// An entry in the list rather than only a key, because an affordance nobody can see is one most
+/// people never find, and answering in your own words is the way out of a set of options that
+/// does not contain the answer.
+const OWN_WORDS: &str = "Answer in my own words";
+
 /// Widest a tag is drawn, in characters.
 ///
 /// Capped here rather than in the kernel because it is a fact about the box, not about the
@@ -134,6 +141,15 @@ impl<'a> Picker<'a> {
         &self.asking.prompts[self.at]
     }
 
+    /// Where the free-text row sits: one past the last option.
+    fn own_words(&self) -> usize {
+        self.prompt().rows.len()
+    }
+
+    fn on_own_words(&self) -> bool {
+        self.here.cursor == self.own_words()
+    }
+
     /// Take this question's answer and move on, finishing when there is nothing left to ask.
     ///
     /// One place decides the series is over, and it decides on the number of questions, never on
@@ -184,18 +200,25 @@ impl<'a> Picker<'a> {
                     Step::Waiting
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.here.cursor =
-                        (self.here.cursor + 1).min(self.prompt().rows.len().saturating_sub(1));
+                    // Past the last option sits the free-text row, so the range is one longer
+                    // than the list.
+                    self.here.cursor = (self.here.cursor + 1).min(self.own_words());
                     Step::Waiting
                 }
                 // Marks in both kinds of question. A key that works on one and silently does
                 // nothing on the other reads as broken, and the person presses it again rather
                 // than reaching for enter.
-                KeyCode::Char(' ') => {
+                KeyCode::Char(' ') if !self.on_own_words() => {
                     self.toggle(self.here.cursor);
                     Step::Waiting
                 }
-                KeyCode::Char('o') => {
+                // On the free-text row both keys mean the same thing, which is what the row is
+                // for: there is nothing there to mark.
+                KeyCode::Char(' ') | KeyCode::Char('o') => {
+                    self.here.typed = Some(String::new());
+                    Step::Waiting
+                }
+                KeyCode::Enter if self.on_own_words() => {
                     self.here.typed = Some(String::new());
                     Step::Waiting
                 }
@@ -263,15 +286,31 @@ impl<'a> Picker<'a> {
         )));
         lines.push(Line::raw(""));
 
-        // The field or the keys, the hint under them, a spacer, and the borders.
-        let reserved = lines.len() + 5;
-        let budget = (area.height as usize).saturating_sub(reserved).max(1);
-
         // An option costs a line for its label and another for its detail. Where any option has
         // one, the list is spaced out as well, since two unspaced options each carrying a second
         // line read as four options rather than two.
         let spaced = self.prompt().rows.iter().any(|row| row.detail.is_some());
         let gap = usize::from(spaced);
+
+        // Everything drawn below the list: the two borders, the spacer above the tail, and the
+        // tail itself. With the field open that is the field and its own keys; otherwise it is
+        // the free-text row, whatever space is kept above it, and the key hints.
+        //
+        // The hints are measured rather than assumed to be one line. On a narrow box they wrap,
+        // and the line they wrap onto has to be counted or the way out is drawn off the bottom.
+        let inside = (area.width as usize).saturating_sub(2).max(1);
+        let hint: usize = self
+            .keys()
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum();
+        let tail = if self.here.typed.is_some() {
+            2
+        } else {
+            hint.div_ceil(inside).max(1) + 1 + gap
+        };
+        let reserved = lines.len() + 3 + tail;
+        let budget = (area.height as usize).saturating_sub(reserved).max(1);
         let height = |row: &Row, first: bool| {
             1 + usize::from(row.detail.is_some()) + if first { 0 } else { gap }
         };
@@ -281,15 +320,12 @@ impl<'a> Picker<'a> {
         let tallest = 1 + gap + gap;
         self.scroll_to_cursor((budget / tallest).max(1));
 
-        let mut used = 0;
-        let mut visible = 0;
-        for (nth, row) in self.prompt().rows.iter().skip(self.here.offset).enumerate() {
-            let cost = height(row, nth == 0);
-            if visible > 0 && used + cost > budget {
-                break;
-            }
-            used += cost;
-            visible += 1;
+        // Twice, because the line saying how many options were cut is itself a line, and it
+        // exists only once something has been cut. Fitting the list first and then discovering
+        // there is no room left to say so is how an option ends up silently off the bottom.
+        let mut visible = self.fitting(budget, height);
+        if visible < self.prompt().rows.len() {
+            visible = self.fitting(budget.saturating_sub(1), height);
         }
 
         for (nth, row) in self
@@ -347,6 +383,36 @@ impl<'a> Picker<'a> {
                 format!("    … {hidden} more, use the arrow keys"),
                 Style::default().fg(Color::DarkGray),
             )));
+        }
+
+        // Last in the list, and drawn only while the field it opens is closed: with the field on
+        // screen the person is already answering in their own words, and a row inviting them to
+        // do what they are doing is one more thing to read.
+        //
+        // No mark of its own in either kind of question, because it is a way in rather than a
+        // choice: a checkbox beside it would say it could be picked alongside the options.
+        if self.here.typed.is_none() {
+            if spaced {
+                lines.push(Line::raw(""));
+            }
+            let style = if self.on_own_words() {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if self.on_own_words() {
+                        "  › "
+                    } else {
+                        "    "
+                    },
+                    style,
+                ),
+                Span::styled(OWN_WORDS, style),
+            ]));
         }
 
         lines.push(Line::raw(""));
@@ -414,8 +480,8 @@ impl<'a> Picker<'a> {
         }));
         spans.push(Span::styled("enter", bold));
         spans.push(Span::raw(" answer   "));
-        spans.push(Span::styled("o", bold));
-        spans.push(Span::raw(" type   "));
+        // No hint for the free-text field: it is a row in the list now, and a line this short
+        // cannot afford to say twice what the person can already read.
         spans.push(Span::styled(
             "esc",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -445,14 +511,35 @@ impl<'a> Picker<'a> {
         ]
     }
 
+    /// How many options fit in this many lines, counting from the first one drawn.
+    ///
+    /// At least one, always: a box too small for even one option should show the option and be
+    /// cut off, rather than show an empty list and say everything is hidden.
+    fn fitting(&self, budget: usize, height: impl Fn(&Row, bool) -> usize) -> usize {
+        let mut used = 0;
+        let mut visible = 0;
+        for (nth, row) in self.prompt().rows.iter().skip(self.here.offset).enumerate() {
+            let cost = height(row, nth == 0);
+            if visible > 0 && used + cost > budget {
+                break;
+            }
+            used += cost;
+            visible += 1;
+        }
+        visible
+    }
+
     fn scroll_to_cursor(&mut self, visible: usize) {
         if visible == 0 {
             return;
         }
-        if self.here.cursor < self.here.offset {
-            self.here.offset = self.here.cursor;
-        } else if self.here.cursor >= self.here.offset + visible {
-            self.here.offset = self.here.cursor + 1 - visible;
+        // The free-text row is drawn below the list rather than in it, so a cursor resting there
+        // scrolls the list to its end and no further.
+        let cursor = self.here.cursor.min(self.own_words().saturating_sub(1));
+        if cursor < self.here.offset {
+            self.here.offset = cursor;
+        } else if cursor >= self.here.offset + visible {
+            self.here.offset = cursor + 1 - visible;
         }
     }
 }
@@ -604,7 +691,7 @@ mod tests {
     }
 
     /// The cursor must not run off either end, or Enter would confirm nothing and the picker
-    /// would look stuck.
+    /// would look stuck. Its last stop is the free-text row, one past the options.
     #[test]
     fn the_cursor_stops_at_the_ends_of_the_list() {
         let up = [KeyCode::Up, KeyCode::Up, KeyCode::Enter];
@@ -612,11 +699,11 @@ mod tests {
 
         let down = [KeyCode::Down; 9];
         let mut keys = down.to_vec();
-        keys.push(KeyCode::Enter);
+        keys.extend([KeyCode::Up, KeyCode::Enter]);
         assert_eq!(
             answer(&prompt(false), &keys),
             Some(Answer::Chosen(vec![2])),
-            "the cursor ran past the last option"
+            "the cursor ran past the free-text row"
         );
     }
 
@@ -838,6 +925,89 @@ mod tests {
         let screen = later.join("\n");
         assert!(screen.contains("Which platforms?"), "{screen}");
         assert!(!screen.contains("Which cache layer?"), "{screen}");
+    }
+
+    /// A way in that nobody can see is one most people never find, and answering in your own
+    /// words is the way out of a set of options that does not contain the answer.
+    #[test]
+    fn answering_in_your_own_words_is_offered_in_the_list() {
+        let rows = screen_rows(&prompt(false), 80, 24);
+        assert!(
+            rows.iter().any(|row| row.contains(OWN_WORDS)),
+            "the free-text row is not on screen: {rows:?}"
+        );
+    }
+
+    /// It sits after the options rather than among them, because it is a way in rather than a
+    /// choice and putting it in the middle would read as one of the answers.
+    #[test]
+    fn the_free_text_row_sits_below_every_option() {
+        let rows = screen_rows(&prompt(false), 80, 24);
+        assert!(
+            row_holding(&rows, OWN_WORDS) > row_holding(&rows, "Neither"),
+            "the free-text row was drawn among the options: {rows:?}"
+        );
+    }
+
+    /// The cursor has to reach it, or it is a row the person can read and not use.
+    #[test]
+    fn the_cursor_reaches_the_free_text_row_past_the_last_option() {
+        let keys = [
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Enter,
+            KeyCode::Char('h'),
+            KeyCode::Char('i'),
+            KeyCode::Enter,
+        ];
+        assert_eq!(
+            answer(&prompt(false), &keys),
+            Some(Answer::Typed("hi".into()))
+        );
+    }
+
+    /// Space on that row means what enter means. There is nothing there to mark, so a key that
+    /// marks elsewhere and does nothing here would read as broken.
+    #[test]
+    fn space_on_the_free_text_row_opens_the_field_rather_than_marking() {
+        let keys = [
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Char(' '),
+            KeyCode::Char('n'),
+            KeyCode::Char('o'),
+            KeyCode::Enter,
+        ];
+        assert_eq!(
+            answer(&prompt(true), &keys),
+            Some(Answer::Typed("no".into()))
+        );
+    }
+
+    /// With the field open the person is already answering in their own words, so a row inviting
+    /// them to do what they are doing is one more thing to read.
+    #[test]
+    fn the_free_text_row_makes_way_for_the_field_it_opens() {
+        let rows = rows_after(&one(&prompt(false)), &[KeyCode::Char('o')], 80, 24);
+        assert!(
+            !rows.iter().any(|row| row.contains(OWN_WORDS)),
+            "the row was still drawn under the open field: {rows:?}"
+        );
+    }
+
+    /// Marks survive a look at the field: escape comes back to the list, and what was picked
+    /// before opening it is still picked.
+    #[test]
+    fn opening_the_field_and_leaving_it_keeps_what_was_marked() {
+        let keys = [
+            KeyCode::Char(' '),
+            KeyCode::Char('o'),
+            KeyCode::Esc,
+            KeyCode::Enter,
+        ];
+        assert_eq!(answer(&prompt(true), &keys), Some(Answer::Chosen(vec![0])));
     }
 
     /// Pressing space has to show, or it reads as a key that does nothing.
