@@ -204,7 +204,7 @@ impl Landing {
     /// How it reads at the end of a line about a call.
     pub fn describe(self) -> &'static str {
         match self {
-            Self::Context => "the model has read it",
+            Self::Context => "read into the model's context",
             Self::Quarantined => "quarantined: only an isolated processor can be sent to read it",
             Self::Reserved => "not opened: only its name is known",
         }

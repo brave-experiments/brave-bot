@@ -116,8 +116,13 @@ fn activity_lines(activity: &Activity, landing: Option<Landing>) -> Vec<Line<'st
     // Where it went, which is the thing "Read(index.html)" does not say. Whether the model can
     // now read that file is the difference the whole design turns on, and it was invisible.
     if let Some(landing) = landing {
+        // Blue on a black terminal is the one colour in the palette a reader has to squint at:
+        // the ANSI blue most terminals ship is nearly the background. The three that are used
+        // elsewhere here are legible on both kinds of terminal, and the difference between them
+        // carries the meaning: cyan for what the model has, yellow for what is kept from it, and
+        // the dim grey the rest of the detail lines already use for what has not happened.
         let colour = match landing {
-            Landing::Context => Style::default().fg(Color::Blue),
+            Landing::Context => Style::default().fg(Color::Cyan),
             Landing::Quarantined => Style::default().fg(Color::Yellow),
             Landing::Reserved => dim(),
         };

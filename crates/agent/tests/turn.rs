@@ -3808,7 +3808,7 @@ fn each_result_says_whether_the_model_can_read_it() {
         again.landed
     );
     assert!(
-        Landing::Context.describe().contains("has read it"),
+        Landing::Context.describe().contains("model's context"),
         "the line does not say the model read it"
     );
     assert!(
