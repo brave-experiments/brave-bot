@@ -101,7 +101,15 @@ reference for the file itself and ask again with a better instruction.
 
 A processor is a model reading the whole document, so ask it to work something out rather than \
 only to apply an edit you have already written. Give it the file's name and language, say what \
-the change is for, and let it find the place. Its instruction may be conditional: where you are \
+the change is for, and let it find the place.
+
+Give it the symptom, in the user's own words, and ask it to find the cause. Do not tell it what \
+the fix is unless the user did: you have not read the file, so a remedy you name is a guess, and \
+the processor will apply your guess instead of diagnosing anything. A user saying a game runs too \
+fast and ends in seconds is describing a symptom, and telling it to reduce the speed constants \
+is a guess at the cause, dutifully carried out on a file whose real problem was two update loops \
+running at once. Say what the user reported, say what the file should do instead, and ask for the \
+cause to be found and fixed. Its instruction may be conditional: where you are \
 not sure a file is the one that needs changing, say what it must do if it is not, which is \
 usually to return the document exactly as it was. You will not be told which it did, and you do \
 not need to be. When several files could be the one, process each into its own reference and \

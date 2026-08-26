@@ -260,7 +260,10 @@ pub fn available() -> Vec<Tool> {
                         "description": "What to do with them and what to produce. Where the \
                                         result is going into a file, ask for the whole document \
                                         and nothing else: no explanation, no summary, no code \
-                                        fence. Whatever comes back is what gets written. Include the \
+                                        fence. Whatever comes back is what gets written. Give \
+                                        the symptom the user reported and ask for the cause to \
+                                        be found; naming a remedy you have not verified makes \
+                                        it apply your guess rather than diagnose. Include the \
                                         file's name and language if that matters, because the \
                                         processor knows nothing but what you tell it and what \
                                         the references hold. May be conditional: say what the \
