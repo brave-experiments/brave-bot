@@ -3902,6 +3902,106 @@ fn what_a_processor_says_reaches_the_person_and_no_model() {
     }
 }
 
+/// A processor produces one document however many it was given, and that document is for one
+/// file. A planner that gave one processor two files, ran it twice, and assumed the second
+/// answer was about the second file wrote eleven kilobytes of a game's HTML into a Python
+/// script, and every gate passed on the way: the destination was a path it named, a person
+/// approved it, and the body was a slot it was entitled to use.
+#[test]
+fn an_answer_about_nothing_in_particular_can_be_written_nowhere() {
+    let scratch = Scratch::new("answer-with-no-home");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    std::fs::write(scratch.path.join("server.py"), "print('serving')\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        // Both files, and nothing saying which one the answer is for.
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1","ref:2"],"instruction":"fix the speed bug"}"#,
+        ),
+        reply_with("const SPEED = 50;"),
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:2","contents_ref":"ref:4"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        "print('serving')\n",
+        "an answer for no file in particular was written to one anyway"
+    );
+    assert!(
+        confirmer.seen.is_empty(),
+        "a write that could not be allowed was put to the user first: {:?}",
+        confirmer.seen
+    );
+}
+
+/// An answer about one document goes to that document and to no other file.
+#[test]
+fn an_answer_cannot_be_written_to_a_file_it_is_not_about() {
+    let scratch = Scratch::new("answer-elsewhere");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    std::fs::write(scratch.path.join("server.py"), "print('serving')\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1","ref:2"],"about":"ref:1","instruction":"fix the speed bug"}"#,
+        ),
+        reply_with("const SPEED = 50;"),
+        // ref:2 is not what it was about.
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:2","contents_ref":"ref:4"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        "print('serving')\n",
+        "an answer about one file was written to another"
+    );
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.

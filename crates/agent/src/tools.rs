@@ -263,15 +263,16 @@ pub fn available() -> Vec<Tool> {
                                         which. It still returns one document.",
                         "items": {"type": "string"}
                     },
-                    "unchanged_ref": {
+                    "about": {
                         "type": "string",
-                        "description": "Optional. One of the references in reads, whose \
-                                        contents become the result if the instruction's \
-                                        condition means that document must not change. Use it \
-                                        whenever the instruction is conditional: the processor \
-                                        then answers in one word instead of reproducing a file \
-                                        it was told to leave alone, which is a thing models get \
-                                        wrong by explaining themselves into the file."
+                        "description": "Which of the references in reads this call is about. \
+                                        The answer replaces that document and may be written to \
+                                        no other file, and where nothing should change that \
+                                        document stands as the answer, so the processor says so \
+                                        in a word rather than reproducing a file it was told to \
+                                        leave alone. Required when reads names more than one \
+                                        file: one answer has one destination, and nothing else \
+                                        can say which."
                     },
                     "instruction": {
                         "type": "string",
@@ -360,6 +361,8 @@ pub struct Output {
     pub entries: Option<Entries>,
     /// The slot this result stands for unchanged, where there is one.
     pub unchanged_from: Option<SlotId>,
+    /// Which document a processor's answer is about, where it produced one.
+    pub answers_for: Option<Option<SlotId>>,
     /// What an isolated processor said about what it did. For the person watching only.
     pub said: Option<Labelled<String>>,
     /// Whether the text is workspace content rather than the driver's own words about the call.
@@ -410,6 +413,12 @@ struct Produced {
     /// change. The turn records it against the slot it mints, so a write of it can be
     /// recognised as changing nothing.
     unchanged_from: Option<SlotId>,
+    /// Which document a processor's answer is about, where it produced one.
+    ///
+    /// `Some(None)` is a processor that was given several documents and told which of them it
+    /// was about by nobody: its answer is for no file in particular, and the turn records that
+    /// so a write of it is refused rather than guessed at.
+    answers_for: Option<Option<SlotId>>,
     /// What an isolated processor said about what it did, for the person watching.
     ///
     /// Never part of `text`, which is what the planner is told about: this half of a processor's
@@ -438,6 +447,7 @@ impl Produced {
             changes: Vec::new(),
             untrusted: false,
             unchanged_from: None,
+            answers_for: None,
             said: None,
             content: false,
             usage: Usage::default(),
@@ -718,6 +728,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 deferred: produced.deferred,
                 entries: produced.entries,
                 unchanged_from: produced.unchanged_from,
+                answers_for: produced.answers_for,
                 said: produced.said,
                 content: produced.content,
                 usage: produced.usage,
@@ -759,6 +770,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         deferred: produced.deferred,
         entries: produced.entries,
         unchanged_from: produced.unchanged_from,
+        answers_for: produced.answers_for,
         said: produced.said,
         content: produced.content,
         usage: produced.usage,
@@ -781,6 +793,7 @@ fn problem(text: impl Into<String>) -> Produced {
         changes: Vec::new(),
         untrusted: false,
         unchanged_from: None,
+        answers_for: None,
         said: None,
         content: false,
         usage: Usage::default(),
@@ -1221,6 +1234,11 @@ fn quarantined_body<S: Sink>(
         "write_file",
         std::slice::from_ref(&slot),
     )?;
+
+    // Where an answer belongs, decided when the processor was asked and not now.
+    policy
+        .write_belongs_here(path, &slot, slots)
+        .map_err(|denial| format!("refused: {denial}"))?;
 
     // Asked before the bytes are taken, and answered from where the slot came from rather than
     // from what it holds.
@@ -1676,18 +1694,18 @@ fn spawn_processor<S: Sink>(
         Err(refusal) => return problem(refusal),
     };
 
-    // Which reference the answer falls back to where the instruction's condition says the
-    // document must not change. The planner's own choice, out of the references it named.
-    let unchanged = match argument(arguments, "unchanged_ref") {
-        Some(named) => match policy.accept_reference("spawn_processor", "unchanged_ref", &named) {
+    // Which document the call is about: the answer replaces that one, and where nothing should
+    // change it stands as the answer. The planner's own choice, out of the references it named,
+    // fixed before the processor exists.
+    let about = match argument(arguments, "about") {
+        Some(named) => match policy.accept_reference("spawn_processor", "about", &named) {
             Ok(slot) => Some(slot),
             Err(denial) => return problem(format!("refused: {denial}")),
         },
         None => None,
     };
 
-    let spec = match policy.before_processor(&origin, &reads, &instruction, unchanged, tools.slots)
-    {
+    let spec = match policy.before_processor(&origin, &reads, &instruction, about, tools.slots) {
         Ok(spec) => spec,
         Err(denial) => return problem(format!("refused: {denial}")),
     };
@@ -1730,6 +1748,7 @@ fn spawn_processor<S: Sink>(
                 .costing(done.usage)
                 .of_content();
             produced.unchanged_from = done.unchanged_from;
+            produced.answers_for = Some(spec.about().cloned());
             produced.said = done.note;
             produced
         }

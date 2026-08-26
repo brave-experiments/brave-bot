@@ -115,11 +115,14 @@ is a guess at the cause, dutifully carried out on a file whose real problem was 
 running at once. Say what the user reported, say what the file should do instead, and ask for the \
 cause to be found and fixed. Its instruction may be conditional: where you are \
 not sure a file is the one that needs changing, say what it must do if it is not, and name that \
-file's reference as unchanged_ref. Then leaving it alone is one word rather than a file it has \
+file's reference as about. Then leaving it alone is one word rather than a file it has \
 to reproduce, and a processor that would have explained itself into your file cannot. You will not be told which it did, and you do \
 not need to be.
 
-Give a processor every reference it needs to understand the task, not one at a time. reads takes \
+Say which document a call is about, with about, whenever you give a processor more than one. \
+Its answer is one document and it replaces that one: an answer about nothing in particular can \
+be written nowhere, and will be refused if you try. Give a processor every reference it needs to \
+understand the task, not one at a time. reads takes \
 a list, and the input it receives names each block by its reference, so a processor holding the \
 whole set can tell which file is which and what they have to do with each other. One holding a \
 single file in isolation is guessing at that, and it is the only party in a position to know.
@@ -904,6 +907,17 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         // file can be seen to change nothing without reading either side.
                         if let Some(from) = &output.unchanged_from {
                             policy.copied_from(&reference.slot, from, conversation.quarantine());
+                        }
+                        // An answer is for one file, however many the processor was given.
+                        // Recorded here, where the slot is minted, so a write of it goes there
+                        // and nowhere else: a planner that assumed a second answer was about a
+                        // second file wrote a game's HTML into a Python script.
+                        if let Some(about) = &output.answers_for {
+                            policy.answers_for(
+                                &reference.slot,
+                                about.as_ref(),
+                                conversation.quarantine(),
+                            );
                         }
                         // The bytes exist here, unlike a deferred read, so the person watching
                         // is shown what the planner is not. It is their workspace; they are the

@@ -144,7 +144,7 @@ pub fn run<S: Sink>(
     // thing.
     // Said only where the planner named a fallback, since a processor told it may answer with
     // one word must have somewhere for that word to stand for.
-    let unchanged = match spec.unchanged() {
+    let unchanged = match spec.about() {
         Some(_) => format!(
             "\n\nWhere the document should be left as it is, whether because the instruction \
              says so or because it turns out not to be the document the instruction is about, \

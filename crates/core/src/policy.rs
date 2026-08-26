@@ -1080,7 +1080,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         id: &str,
         reads: &[SlotId],
         instruction: &Labelled<String>,
-        unchanged: Option<SlotId>,
+        about: Option<SlotId>,
         slots: &crate::slot::SlotStore,
     ) -> Gated<crate::processor::ProcessorSpec> {
         if reads.is_empty() {
@@ -1135,7 +1135,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // The fallback has to be one of the inputs. Anything else would let the answer stand for
         // a document the processor was never given, and the planner chooses it before the
         // processor exists either way.
-        if let Some(slot) = &unchanged
+        if let Some(slot) = &about
             && !reads.contains(slot)
         {
             return Err(self.deny(
@@ -1151,7 +1151,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // instead, several sentences of reasoning about the instruction, and the sentences
         // became the file. There is nothing for the planner to opt into here: an answer that
         // stands for the one document it was given is the document it was given.
-        let unchanged = unchanged.or_else(|| {
+        let about = about.or_else(|| {
             let mut files = reads
                 .iter()
                 .filter(|slot| slots.verbatim_of(slot).is_some());
@@ -1159,13 +1159,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             files.next().is_none().then(|| only.clone())
         });
 
-        let spec = crate::processor::ProcessorSpec::new(
-            id,
-            reads.to_vec(),
-            instruction,
-            out_label,
-            unchanged,
-        );
+        let spec =
+            crate::processor::ProcessorSpec::new(id, reads.to_vec(), instruction, out_label, about);
 
         self.allow(
             "processor",
@@ -1323,7 +1318,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         reply: Labelled<String>,
         slots: &crate::slot::SlotStore,
     ) -> (Labelled<String>, Option<SlotId>) {
-        let Some(slot) = spec.unchanged() else {
+        let Some(slot) = spec.about() else {
             return (reply, None);
         };
 
@@ -1348,6 +1343,64 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             Labelled::new(original.declassify(&proof), label),
             Some(slot.clone()),
         )
+    }
+
+    /// Say which file an answer is for, so a write of it can go nowhere else.
+    ///
+    /// The file is the one the planner said the call was about, taken from that slot's own
+    /// record: a slot id in, a slot id in, and the path copied between them inside here. Where
+    /// it said nothing and the processor was given more than one document, the answer is for
+    /// nothing in particular and may be written nowhere until the planner says which.
+    pub fn answers_for(
+        &mut self,
+        slot: &SlotId,
+        about: Option<&SlotId>,
+        slots: &mut crate::slot::SlotStore,
+    ) {
+        let home = match about.and_then(|about| slots.path_of(about).map(str::to_string)) {
+            Some(path) => crate::slot::Home::Only(path),
+            None => crate::slot::Home::Unsaid,
+        };
+        let said = match &home {
+            crate::slot::Home::Only(path) => format!("{slot} answers for {path}"),
+            _ => format!("{slot} answers for no file in particular, so it may be written nowhere"),
+        };
+        slots.set_home(slot, home);
+        self.allow("slot", said);
+    }
+
+    /// Whether an answer may be written to this path.
+    ///
+    /// A processor produces one document however many it was given, and a planner that assumed a
+    /// second answer was about a second file wrote a game's HTML into a Python script. What the
+    /// document is for is fixed when the processor is asked, by the planner, before it runs.
+    pub fn write_belongs_here(
+        &mut self,
+        path: &str,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<()> {
+        match slots.home_of(slot) {
+            crate::slot::Home::Anywhere => Ok(()),
+            crate::slot::Home::Only(home) if home == path => Ok(()),
+            crate::slot::Home::Only(home) => Err(self.deny(
+                "write",
+                Principle::IntegrityGate,
+                format!(
+                    "{slot} is the answer for {home}, so it cannot be written to {path}. Ask a \
+                     processor about {path} if that is the file you mean."
+                ),
+            )),
+            crate::slot::Home::Unsaid => Err(self.deny(
+                "write",
+                Principle::IntegrityGate,
+                format!(
+                    "{slot} came from a processor given more than one document, and nothing said \
+                     which of them it was for, so it may be written nowhere. Name that reference \
+                     as 'about' when you ask, and one answer will have one destination."
+                ),
+            )),
+        }
     }
 
     /// Record that one slot holds exactly what another does, so a write of it can be recognised

@@ -115,6 +115,12 @@ The properties this rests on, none of which may be relaxed:
 - **One call, no loop.** There is no round for a reply to steer.
 - **The output is never shown to the planner.** It is presented like any other untrusted
   content: a reference, and nothing else.
+- **An answer is for one document.** A processor produces one however many it was given, and
+  `Policy::write_belongs_here` refuses a write of it anywhere but the file the planner said the
+  call was about. Where the planner said nothing and there was more than one, the answer belongs
+  nowhere and may be written nowhere. This is not a label rule and cannot be one: every gate
+  passed when a planner wrote a game's HTML into a Python script, because the destination was a
+  path it named and a person approved.
 - **What it says about what it did is a second output**, split off at
   `ProcessorSpec::NOTE_MARKER` and shown to the person watching. It reaches a screen and stops:
   no model reads it, it is not part of any file, and it cannot be another processor's input. A

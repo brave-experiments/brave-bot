@@ -115,6 +115,25 @@ impl Deferred {
     }
 }
 
+/// Where the contents of a slot may be written.
+///
+/// A processor produces one document however many it was given, and nothing used to say which
+/// file that document was for. A planner that gave one processor two files, ran it twice, and
+/// assumed the second answer was about the second file wrote eleven kilobytes of HTML into a
+/// Python script, and every gate passed: the destination was a path the planner named and a
+/// person approved, and the body was a slot it was entitled to use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Home {
+    /// No constraint. Content that a processor did not produce: a file read, a listing, the
+    /// planner's own words.
+    Anywhere,
+    /// The answer is for this file and may be written to no other.
+    Only(String),
+    /// The answer came from a processor given more than one document, and nothing said which of
+    /// them it was for. It may be written nowhere until something does.
+    Unsaid,
+}
+
 /// What a slot holds: the bytes, or the promise of them.
 ///
 /// A slot that came from a file keeps the path either way. That is what lets a reference be an
@@ -134,6 +153,8 @@ enum Entry {
         /// as it is be recognised as changing nothing, from bookkeeping rather than by comparing
         /// bytes: the driver never reads either side.
         verbatim: Option<String>,
+        /// Where an answer produced by a processor may be written.
+        home: Home,
     },
     Unread(Deferred),
 }
@@ -158,6 +179,14 @@ impl Entry {
             Self::Read { verbatim, .. } => verbatim.as_deref(),
             // Nothing has been read, so nothing is a copy of anything.
             Self::Unread(_) => None,
+        }
+    }
+
+    fn home(&self) -> Home {
+        match self {
+            Self::Read { home, .. } => home.clone(),
+            // A file that has not been read is not an answer to anything.
+            Self::Unread(_) => Home::Anywhere,
         }
     }
 }
@@ -200,6 +229,21 @@ impl SlotStore {
     /// file back exactly as it is, and that is a decision.
     pub(crate) fn verbatim_of(&self, id: &SlotId) -> Option<&str> {
         self.slots.get(id).and_then(Entry::verbatim)
+    }
+
+    /// Where the contents of a slot may be written.
+    pub(crate) fn home_of(&self, id: &SlotId) -> Home {
+        self.slots
+            .get(id)
+            .map(Entry::home)
+            .unwrap_or(Home::Anywhere)
+    }
+
+    /// Say where an answer may be written.
+    pub(crate) fn set_home(&mut self, id: &SlotId, home: Home) {
+        if let Some(Entry::Read { home: slot, .. }) = self.slots.get_mut(id) {
+            *slot = home;
+        }
     }
 
     /// Record that one slot holds exactly what another does.
@@ -314,6 +358,7 @@ impl SlotStore {
                 value: Labelled::new(text, label),
                 verbatim: Some(deferred.path.clone()),
                 path: Some(deferred.path),
+                home: Home::Anywhere,
             },
         );
         Ok(measured)
@@ -399,6 +444,7 @@ impl SlotWriter<'_> {
                 value: Labelled::new(content.into(), self.label),
                 path: None,
                 verbatim: None,
+                home: Home::Anywhere,
             },
         );
         Ok(())
@@ -434,6 +480,7 @@ impl SlotWriter<'_> {
                 value: Labelled::new(text, label),
                 path: None,
                 verbatim: None,
+                home: Home::Anywhere,
             },
         );
         Ok(measured)

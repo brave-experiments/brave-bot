@@ -36,7 +36,7 @@ pub struct ProcessorSpec {
     reads: Vec<SlotId>,
     instruction: String,
     out_label: Label,
-    unchanged: Option<SlotId>,
+    about: Option<SlotId>,
 }
 
 impl ProcessorSpec {
@@ -45,25 +45,27 @@ impl ProcessorSpec {
         reads: Vec<SlotId>,
         instruction: impl Into<String>,
         out_label: Label,
-        unchanged: Option<SlotId>,
+        about: Option<SlotId>,
     ) -> Self {
         Self {
             id: id.into(),
             reads,
             instruction: instruction.into(),
             out_label,
-            unchanged,
+            about,
         }
     }
 
-    /// Which input the answer falls back to when the processor says nothing should change.
+    /// Which document this call is about.
     ///
-    /// Chosen by the planner out of the slots it named, before the processor exists. A processor
-    /// asked to leave a document alone otherwise has to reproduce it byte for byte, and one that
-    /// explains itself instead destroys the file: the words become the file, and nobody
-    /// downstream is allowed to read them and notice.
-    pub fn unchanged(&self) -> Option<&SlotId> {
-        self.unchanged.as_ref()
+    /// Chosen by the planner out of the slots it named, before the processor exists, and it
+    /// decides two things. The answer replaces that document and may be written to no other
+    /// file: a processor produces one document however many it was given, and a planner that
+    /// assumed otherwise wrote a game's HTML into a Python script. And where nothing should
+    /// change, that document stands as the answer, so the processor says so in a word rather
+    /// than reproducing a file it was told to leave alone.
+    pub fn about(&self) -> Option<&SlotId> {
+        self.about.as_ref()
     }
 
     /// What a processor says when the document should be left as it is.
