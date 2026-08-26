@@ -544,6 +544,22 @@ impl<'a> Picker<'a> {
     }
 }
 
+/// Put remembered answers back beside the fresh ones, in the order the questions were asked.
+///
+/// The picker is only shown the questions nobody has settled yet, so what it hands back is
+/// shorter than the series and lines up with nothing. This is where the two are woven together.
+///
+/// A fresh answer that never arrived leaves a decline rather than pulling the next one forward.
+/// Shifting answers up would report the person as having said, about one question, what they
+/// said about another.
+pub(crate) fn in_order(known: Vec<Option<Answer>>, fresh: Vec<Answer>) -> Vec<Answer> {
+    let mut fresh = fresh.into_iter();
+    known
+        .into_iter()
+        .map(|earlier| earlier.or_else(|| fresh.next()).unwrap_or(Answer::Declined))
+        .collect()
+}
+
 /// The tag a question is shown under, or nothing where it has none.
 ///
 /// Reversed rather than merely coloured so it reads as a tag at a glance, which is the whole
@@ -1008,6 +1024,59 @@ mod tests {
             KeyCode::Enter,
         ];
         assert_eq!(answer(&prompt(true), &keys), Some(Answer::Chosen(vec![0])));
+    }
+
+    /// The weave the main loop depends on. Fresh answers fill the gaps the remembered ones left,
+    /// and every question keeps its own place.
+    #[test]
+    fn remembered_answers_keep_their_places_beside_the_fresh_ones() {
+        let known = vec![
+            Some(Answer::Chosen(vec![1])),
+            None,
+            Some(Answer::Declined),
+            None,
+        ];
+        let fresh = vec![Answer::Typed("second".into()), Answer::Chosen(vec![0])];
+        assert_eq!(
+            in_order(known, fresh),
+            vec![
+                Answer::Chosen(vec![1]),
+                Answer::Typed("second".into()),
+                Answer::Declined,
+                Answer::Chosen(vec![0]),
+            ]
+        );
+    }
+
+    /// A series everyone has already answered asks nothing, and still reports every answer.
+    #[test]
+    fn a_series_answered_entirely_from_memory_asks_nothing() {
+        let known = vec![Some(Answer::Chosen(vec![0])), Some(Answer::Declined)];
+        assert_eq!(
+            in_order(known, Vec::new()),
+            vec![Answer::Chosen(vec![0]), Answer::Declined]
+        );
+    }
+
+    /// An interface that answered fewer than it was shown leaves the rest declined. Pulling the
+    /// next answer forward would report the person as having said, about one question, what they
+    /// said about another.
+    #[test]
+    fn an_interface_that_answered_fewer_leaves_the_rest_declined() {
+        let known = vec![None, None, None];
+        let fresh = vec![Answer::Chosen(vec![0])];
+        assert_eq!(
+            in_order(known, fresh),
+            vec![Answer::Chosen(vec![0]), Answer::Declined, Answer::Declined]
+        );
+    }
+
+    /// A picker shown nothing draws nothing and answers nothing, which is what lets the main
+    /// loop call it unconditionally.
+    #[test]
+    fn a_series_with_no_questions_in_it_is_not_drawn() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        assert!(ask(&mut terminal, &Asking::default()).is_empty());
     }
 
     /// Pressing space has to show, or it reads as a key that does nothing.
