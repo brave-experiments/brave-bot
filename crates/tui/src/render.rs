@@ -322,18 +322,18 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
 
 fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
     let lines = transcript_lines(session);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
-    // Scroll counts up from the bottom, so new output stays in view by default.
-    let total = lines.len() as u16;
+    // Scroll counts up from the bottom, so new output stays in view by default. The count has to
+    // be of *drawn* rows rather than of lines: the paragraph wraps, so one line of a reply can
+    // occupy three rows, and counting the lines put the bottom of the transcript exactly that
+    // many rows below the screen. The end of a wrapped reply was therefore never shown, and
+    // appeared only once the next message pushed it up.
+    let total = paragraph.line_count(area.width) as u16;
     let max_offset = total.saturating_sub(area.height);
     let offset = max_offset.saturating_sub(session.scroll.min(max_offset));
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((offset, 0)),
-        area,
-    );
+    frame.render_widget(paragraph.scroll((offset, 0)), area);
 }
 
 /// Render one line of the audit trail.
@@ -910,6 +910,41 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &session))
             .expect("draw must not panic on a small area");
+    }
+
+    /// The end of a reply that wraps must be on the screen when it arrives.
+    ///
+    /// The offset used to be computed from the number of lines rather than the number of rows
+    /// they occupy once wrapped, so a reply with long lines ended that many rows below the
+    /// bottom of the window. It appeared only when the next message pushed it up, which is
+    /// exactly how it was reported: "they only showed up after I said are you done now?".
+    #[test]
+    fn the_end_of_a_wrapped_reply_is_visible_when_it_arrives() {
+        let mut session = Session::new("test");
+        // Enough turns to fill the window, each reply long enough to wrap several times: the
+        // gap between lines and rows is what used to push the end off the bottom.
+        for turn in 0..6 {
+            session.type_char('x');
+            session.submit();
+            session.complete(
+                format!("reply {turn}: {}", "wrapping words ".repeat(12)),
+                Vec::new(),
+                0,
+            );
+        }
+        session.type_char('x');
+        session.submit();
+        session.complete(
+            format!("{}\nTHE LAST LINE", "more wrapping words ".repeat(12)),
+            Vec::new(),
+            0,
+        );
+
+        let drawn = rendered_at(&session, 60, 20);
+        assert!(
+            drawn.contains("THE LAST LINE"),
+            "the end of the reply was below the window: {drawn}"
+        );
     }
 
     /// Scrolling back must actually change what is shown, or the binding is decorative.

@@ -28,7 +28,13 @@ libc = "0.2"
 # OsRng is the same type both crates expect.
 rand = "0.8"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-ratatui = { version = "0.30", features = ["crossterm"] }
+# `unstable-rendered-line-info` is `Paragraph::line_count`, which is how the transcript knows
+# how tall it will be once wrapped. Counting logical lines instead loses the bottom of any reply
+# that wraps, and counting wrapped rows by hand means guessing at the widget's own rules.
+ratatui = { version = "0.30", features = [
+    "crossterm",
+    "unstable-rendered-line-info",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
