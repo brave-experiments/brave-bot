@@ -1140,6 +1140,20 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ));
         }
 
+        // Where the planner named none and there is exactly one file in front of the processor,
+        // that file is what "leave it alone" can only mean, so the way to say it is offered
+        // whether or not the planner thought to. One that had no way to say it said it in prose
+        // instead, several sentences of reasoning about the instruction, and the sentences
+        // became the file. There is nothing for the planner to opt into here: an answer that
+        // stands for the one document it was given is the document it was given.
+        let unchanged = unchanged.or_else(|| {
+            let mut files = reads
+                .iter()
+                .filter(|slot| slots.verbatim_of(slot).is_some());
+            let only = files.next()?;
+            files.next().is_none().then(|| only.clone())
+        });
+
         let spec = crate::processor::ProcessorSpec::new(
             id,
             reads.to_vec(),

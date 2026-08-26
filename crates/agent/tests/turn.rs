@@ -3686,9 +3686,10 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
 
     let (endpoint, _received) = serve_sequence(vec![
         tool_request("list_files", r#"{"directory":"."}"#),
+        // No unchanged_ref: with one file in front of it, a processor can say so anyway.
         tool_request(
             "spawn_processor",
-            r#"{"reads":["ref:1"],"unchanged_ref":"ref:1","instruction":"fix the speed bug if this is the game, otherwise leave it"}"#,
+            r#"{"reads":["ref:1"],"instruction":"fix the speed bug if this is the game, otherwise leave it"}"#,
         ),
         // What a processor says when there is nothing to change.
         reply_with("UNCHANGED"),
