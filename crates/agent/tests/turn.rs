@@ -3532,6 +3532,84 @@ fn a_fenced_answer_is_unwrapped_before_it_becomes_a_file() {
     );
 }
 
+/// The whole rule in one test: the person watching sees the filenames, and the planner does not.
+///
+/// Quarantine is about what reaches a model's context. The user owns the directory, and telling
+/// them only "2 files, quarantined" left them unable to say whether their agent was about to work
+/// on the right file, or on their private keys.
+#[test]
+fn quarantined_content_reaches_the_person_and_not_the_planner() {
+    let scratch = Scratch::new("shown-to-the-person");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"halve the speed"}"#,
+        ),
+        reply_with("const SPEED = 50;"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("halve the speed"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let shown: String = reporter
+        .shown
+        .iter()
+        .flat_map(|shown| shown.preview.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        shown.contains("game.js"),
+        "the person was not shown the filename: {shown}"
+    );
+    assert!(
+        shown.contains("const SPEED = 50;"),
+        "the person was not shown what the processor produced: {shown}"
+    );
+    for shown in &reporter.shown {
+        assert!(
+            shown.label.contains("U"),
+            "the block did not say the content is untrusted: {:?}",
+            shown
+        );
+    }
+
+    for body in received.try_iter() {
+        if body.contains("isolated processor") {
+            continue;
+        }
+        assert!(
+            !body.contains("game.js"),
+            "a filename reached the planner: {body}"
+        );
+        assert!(
+            !body.contains("SPEED"),
+            "file contents reached the planner: {body}"
+        );
+    }
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.

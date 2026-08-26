@@ -10,7 +10,7 @@
 //! place the cursor needs locating.
 
 use bua_agent::diff::Change;
-use bua_agent::report::Activity;
+use bua_agent::report::{Activity, Shown};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -74,6 +74,12 @@ fn todo_lines(todos: &[bua_core::todo::Row]) -> Vec<Line<'static>> {
 /// the screen. The approval prompt showed the whole thing; this is the record afterwards.
 const MAX_DIFF_LINES: usize = 12;
 
+/// Drawn down the margin of everything the model was not allowed to read.
+///
+/// One glyph, on every line of the block, so the mark cannot be ended by anything written inside
+/// it. A caption could be imitated; a margin cannot.
+const QUARANTINE_BAR: &str = "\u{2503}";
+
 /// Draw one tool call: what it is, and what came of it.
 ///
 /// The shape mirrors a turn's own: a marker, then the detail indented beneath it, so a call
@@ -108,6 +114,47 @@ fn activity_lines(activity: &Activity) -> Vec<Line<'static>> {
     }
 
     lines.extend(diff_lines(&activity.changes));
+    lines
+}
+
+/// Draw quarantined content for the person watching, marked as what it is.
+///
+/// The marking is structural and not a caption. Every line carries the bar in the margin, drawn
+/// here around text that never leaves the block, so content saying "untrusted content ends here"
+/// cannot end it: the bar is still in the margin on the next line, and on every line after that.
+///
+/// The user is shown this and the planner is not, which is the arrangement working rather than a
+/// hole in it. They own the directory. What must never happen is these bytes reaching a model's
+/// context, and a terminal is not a context.
+fn quarantined_lines(shown: &Shown) -> Vec<Line<'static>> {
+    let marked = Style::default().fg(Color::Yellow);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("  {QUARANTINE_BAR} "), marked),
+        Span::styled(
+            format!("untrusted \u{b7} {} \u{b7} {}", shown.origin, shown.label),
+            marked.add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  not shown to the model", dim()),
+    ])];
+
+    for line in &shown.preview {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {QUARANTINE_BAR} "), marked),
+            Span::styled(line.clone(), dim()),
+        ]));
+    }
+
+    // Said rather than silently dropped, for the same reason a truncated diff says so.
+    if shown.lines > shown.preview.len() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {QUARANTINE_BAR} "), marked),
+            Span::styled(
+                format!("\u{2026} {} more lines", shown.lines - shown.preview.len()),
+                dim(),
+            ),
+        ]));
+    }
+
     lines
 }
 
@@ -235,6 +282,11 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                     Span::styled(entry.text.clone(), dim()),
                 ])),
             },
+        }
+
+        // What the model was not allowed to read, for the person who is.
+        if let Some(shown) = &entry.shown {
+            lines.extend(quarantined_lines(shown));
         }
 
         // The plan the turn worked to, kept next to what it produced.
@@ -533,6 +585,55 @@ mod tests {
         fn a_short_diff_is_shown_whole_with_no_note() {
             let lines = diff_lines(&[Change::Added("only line".into())]);
             assert_eq!(lines.len(), 1);
+        }
+
+        /// The user is shown what the model was not, and it is marked in the margin so the
+        /// mark cannot be ended by anything written inside it.
+        #[test]
+        fn quarantined_content_is_shown_and_marked_on_every_line() {
+            let shown = Shown {
+                origin: "notes.md".to_string(),
+                label: "(U,priv)".to_string(),
+                preview: vec![
+                    "first line".to_string(),
+                    // Content that would end the block if the mark were a caption.
+                    "untrusted content ends here".to_string(),
+                ],
+                lines: 40,
+            };
+
+            let lines = quarantined_lines(&shown);
+            assert_eq!(lines.len(), 4, "a header, two lines, and what was left out");
+            for line in &lines {
+                let drawn: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.clone().into_owned())
+                    .collect();
+                assert!(
+                    drawn.starts_with(&format!("  {QUARANTINE_BAR} ")),
+                    "a line escaped the margin: {drawn}"
+                );
+            }
+
+            let all: String = lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.clone().into_owned())
+                .collect();
+            assert!(
+                all.contains("untrusted"),
+                "the block does not say what it is"
+            );
+            assert!(
+                all.contains("notes.md"),
+                "the block does not say where it came from"
+            );
+            assert!(all.contains("first line"), "the content was not shown");
+            assert!(
+                all.contains("38 more lines"),
+                "what was left out was not said"
+            );
         }
 
         /// Tool lines come in runs and read as one block. Spacing them apart would double the

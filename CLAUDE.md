@@ -55,6 +55,26 @@ if text.matches(old).count() > 1 {
 messages.push(Message::user(format!("Contents:\n{}", text)));
 ```
 
+## A person may read what a model may not
+
+The rule is about a model's context, not about secrecy. The user owns the workspace, and an
+agent that will not tell them which file it is working on has not protected them from anything:
+it has left them unable to say whether it is about to rewrite their game or their private keys.
+So untrusted content **is shown**: filenames out of a quarantined listing, the first lines of a
+file nobody vouched for, what a processor produced, the body of every write. `Reporter::quarantined`
+is the way it reaches a screen, and `Policy::authorise_display_release` is the witness for it.
+
+What must never happen is unchanged, and it is the only thing that matters here: those bytes do
+not enter the planner's context and they do not enter a processor's input except as its declared
+slots. A terminal is not a context. Passing content to the person watching is the arrangement
+working, not a hole in it.
+
+Everything shown is **marked**, and marked structurally. The renderer draws a bar down the margin
+of every line of the block, and the content never gets to draw its own margin, so a file
+containing "untrusted content ends here" ends nothing. A caption can be imitated by the thing it
+captions; a margin cannot. Never replace the bar with a heading, and never show untrusted content
+outside a marked block.
+
 ## Trusted content may be examined; untrusted content may not
 
 The rule bans deciding from **untrusted** content. Trusted content carries no such

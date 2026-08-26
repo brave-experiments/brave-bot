@@ -15,7 +15,7 @@
 //!   let the display outrank the work.
 
 use bua_agent::confirm::{Confirmer, Decision, WriteRequest};
-use bua_agent::report::{Activity, Phase, Reporter};
+use bua_agent::report::{Activity, Phase, Reporter, Shown};
 use bua_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -36,6 +36,8 @@ pub enum ToMain {
     Started(Activity),
     /// The tool call last announced has finished. No reply.
     Finished(Activity),
+    /// Quarantined content, for the person watching to read. No reply.
+    Quarantined(Shown),
 }
 
 /// The worker's end for questions: sends a write, waits for the answer.
@@ -102,6 +104,9 @@ impl Reporter for RemoteReporter {
 
     fn tool_finished(&mut self, activity: Activity) {
         let _ = self.outbound.send(ToMain::Finished(activity));
+    }
+    fn quarantined(&mut self, shown: Shown) {
+        let _ = self.outbound.send(ToMain::Quarantined(shown));
     }
 }
 
@@ -249,6 +254,7 @@ mod tests {
                     ToMain::Narration(_) => seen.push("narration"),
                     ToMain::Started(_) => seen.push("started"),
                     ToMain::Finished(_) => seen.push("finished"),
+                    ToMain::Quarantined(_) => seen.push("quarantined"),
                     ToMain::Write(_) => {
                         seen.push("write");
                         answer_tx.send(Decision::Approve).expect("answered");

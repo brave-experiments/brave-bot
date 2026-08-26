@@ -5,7 +5,7 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use crate::audit::TrailLine;
-use bua_agent::report::{Activity, Phase};
+use bua_agent::report::{Activity, Phase, Shown};
 use bua_core::event::Event;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,12 @@ pub struct Entry {
     /// Carries the note and the hunks separately from `text` so the interface can style them
     /// without parsing anything back out of a formatted line.
     pub activity: Option<Activity>,
+    /// Quarantined content this call produced, for the person watching.
+    ///
+    /// Kept apart from `text` because it is drawn apart: it is the one thing on the screen the
+    /// model was not allowed to read, and it is marked as such by the renderer rather than by
+    /// anything in the bytes, which could say whatever they liked.
+    pub shown: Option<Shown>,
 }
 
 impl Entry {
@@ -52,6 +58,7 @@ impl Entry {
             text: text.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            shown: None,
             activity: None,
         }
     }
@@ -62,6 +69,7 @@ impl Entry {
             text: text.into(),
             trail,
             todos: Vec::new(),
+            shown: None,
             activity: None,
         }
     }
@@ -72,6 +80,7 @@ impl Entry {
             text: text.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            shown: None,
             activity: None,
         }
     }
@@ -86,6 +95,7 @@ impl Entry {
             text: activity.line(),
             trail: Vec::new(),
             todos: Vec::new(),
+            shown: None,
             activity: Some(activity),
         }
     }
@@ -102,6 +112,7 @@ impl Entry {
             text: line.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            shown: None,
             activity: None,
         }
     }
@@ -343,6 +354,26 @@ impl Session {
     /// the end of the transcript is necessarily the one that just finished. A finish with no
     /// start before it is appended rather than dropped, since losing the record of a call that
     /// happened is worse than an unpaired line.
+    /// Show the person quarantined content the planner was not shown.
+    ///
+    /// Attached to the call that produced it, so it reads as part of that line rather than as
+    /// something the session said. Where there is no such line, which should not happen, it goes
+    /// on its own rather than being dropped: content released for a screen and then not drawn is
+    /// the worst of both.
+    pub fn show(&mut self, shown: Shown) {
+        self.scroll = 0;
+        match self.transcript.last_mut() {
+            Some(entry) if entry.speaker == Speaker::Tool && entry.shown.is_none() => {
+                entry.shown = Some(shown);
+            }
+            _ => {
+                let mut entry = Entry::system("");
+                entry.shown = Some(shown);
+                self.transcript.push(entry);
+            }
+        }
+    }
+
     pub fn finish_activity(&mut self, activity: Activity) {
         self.running = None;
         match self.transcript.last_mut() {

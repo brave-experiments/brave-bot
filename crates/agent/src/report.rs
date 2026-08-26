@@ -151,6 +151,27 @@ pub fn how_long_ago(age: std::time::Duration) -> String {
 ///
 /// A trait so a turn does not depend on a terminal: the interactive session draws, a one-shot run
 /// ignores, and tests record.
+/// Quarantined content, released so the person watching can see it.
+///
+/// The planner is never shown this and neither is a processor: it goes to a screen and stops
+/// there. That is not a hole in the confinement, it is what the confinement is for. The user owns
+/// the directory and is entitled to know what their agent is working on; what must not happen is
+/// those bytes reaching a model's context, and a screen is not a context.
+///
+/// Marked wherever it is drawn, and marked structurally rather than by a line of text the content
+/// could imitate. See the renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shown {
+    /// Where it came from, in words a person can act on: a path, or what produced it.
+    pub origin: String,
+    /// The label it carries, in the same short form the trail uses.
+    pub label: String,
+    /// The first lines of it, each already trimmed to a sensible width.
+    pub preview: Vec<String>,
+    /// How many lines there are altogether, so a preview can say what it left out.
+    pub lines: usize,
+}
+
 pub trait Reporter {
     /// The task list changed. Rows are already shaped for display and released.
     fn todos(&mut self, rows: Vec<Row>);
@@ -178,6 +199,14 @@ pub trait Reporter {
     /// driver taking a decision from untrusted bytes, and an empty line is the interface's to
     /// leave undrawn.
     fn narration(&mut self, _text: String) {}
+
+    /// Untrusted content, for the person watching to read.
+    ///
+    /// Sent whenever a result is quarantined, which is exactly when the planner is told a
+    /// reference and nothing else. The user is not the planner: they own the workspace, they are
+    /// the one who can tell whether the agent is working on the right file, and leaving them with
+    /// "2 files, quarantined" told them nothing they could use.
+    fn quarantined(&mut self, _shown: Shown) {}
 
     /// A tool call has begun.
     ///
@@ -220,6 +249,8 @@ pub struct RecordingReporter {
     pub phases: Vec<Phase>,
     /// Everything the model said between tool calls, in order.
     pub narration: Vec<String>,
+    /// Quarantined content released for the screen.
+    pub shown: Vec<Shown>,
 }
 
 impl Reporter for RecordingReporter {
@@ -245,6 +276,10 @@ impl Reporter for RecordingReporter {
 
     fn tool_finished(&mut self, activity: Activity) {
         self.finished.push(activity);
+    }
+
+    fn quarantined(&mut self, shown: Shown) {
+        self.shown.push(shown);
     }
 }
 

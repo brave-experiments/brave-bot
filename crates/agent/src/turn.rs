@@ -169,6 +169,54 @@ impl From<bua_aichat::ChatError> for TurnError {
     }
 }
 
+/// How much of a quarantined result to put in front of the person watching.
+///
+/// Enough to tell what it is, not so much that a long file buries the transcript. What is left
+/// out is said, since a preview that stops without saying so reads as the whole thing.
+const PREVIEW_LINES: usize = 12;
+
+/// The width a previewed line is trimmed to. A minified file is one line and would otherwise
+/// wrap across the whole screen.
+const PREVIEW_WIDTH: usize = 160;
+
+/// The first lines of some quarantined content, released for a screen.
+struct Preview {
+    preview: Vec<String>,
+    lines: usize,
+}
+
+/// Shape quarantined content into a few lines and release those.
+///
+/// The shaping happens inside the kernel, so the driver never holds the whole of it, and what
+/// comes out is released for display and for nothing else: it goes to a terminal, and no part of
+/// it reaches the planner's context or a processor's input.
+fn preview_for<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tool: &str,
+    content: &Labelled<String>,
+) -> Preview {
+    let shaped = policy.render_in_place(tool, content, |text| {
+        let lines = text.lines().count();
+        let preview: Vec<String> = text
+            .lines()
+            .take(PREVIEW_LINES)
+            .map(|line| {
+                let mut line = line.to_string();
+                if line.chars().count() > PREVIEW_WIDTH {
+                    line = line.chars().take(PREVIEW_WIDTH).collect::<String>();
+                    line.push('…');
+                }
+                line
+            })
+            .collect();
+        (preview, lines)
+    });
+
+    let proof = policy.authorise_display_release("quarantined content, for the person watching");
+    let (preview, lines) = shaped.declassify(&proof);
+    Preview { preview, lines }
+}
+
 /// What a turn is asked to do.
 #[derive(Debug, Clone)]
 pub struct Task {
@@ -737,6 +785,29 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     .iter()
                     .map(bua_core::reference::Reference::describe)
                     .collect();
+                // The planner gets names it cannot read. The person watching gets the
+                // opposite, and needs it: they own the directory, and "2 files, quarantined"
+                // does not tell them whether their agent is about to work on the right one.
+                let named = policy.names_for_display(conversation.quarantine());
+                let preview: Vec<String> = ids
+                    .iter()
+                    .filter_map(|id| {
+                        named
+                            .iter()
+                            .find(|(slot, _)| slot == id)
+                            .map(|(slot, path)| format!("{slot}  {path}"))
+                    })
+                    .collect();
+                reporter.quarantined(crate::report::Shown {
+                    origin: entries.origin.clone(),
+                    label: references
+                        .first()
+                        .map(|r| r.label.to_string())
+                        .unwrap_or_default(),
+                    lines: preview.len(),
+                    preview,
+                });
+
                 format!(
                     "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are \
                      quarantined, one reference each.\n\n{}",
@@ -774,11 +845,25 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     Presentation::Visible(text) => {
                         format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
                     }
-                    Presentation::Quarantined(reference) => format!(
-                        "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}",
-                        output.tool,
-                        reference.describe()
-                    ),
+                    Presentation::Quarantined(reference) => {
+                        // The bytes exist here, unlike a deferred read, so the person watching
+                        // is shown what the planner is not. It is their workspace; they are the
+                        // only party who can tell whether this is the right file at all.
+                        if output.deferred.is_none() {
+                            let shown = preview_for(&mut policy, &output.tool, &output.text);
+                            reporter.quarantined(crate::report::Shown {
+                                origin: reference.origin.clone(),
+                                label: reference.label.to_string(),
+                                lines: shown.lines,
+                                preview: shown.preview,
+                            });
+                        }
+                        format!(
+                            "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}",
+                            output.tool,
+                            reference.describe()
+                        )
+                    }
                 }
             };
 
