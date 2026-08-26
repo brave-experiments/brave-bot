@@ -341,6 +341,11 @@ fn parse(source: &str) -> Result<Draft, PlanError> {
         let mut parsed = DraftStep::new(capability);
         if let Some(args) = step.get("args").and_then(Value::as_object) {
             for (key, value) in args {
+                // An optional argument the planner declined. Absent and null say the same
+                // thing, and a model writing null is being idiomatic rather than wrong.
+                if value.is_null() {
+                    continue;
+                }
                 let arg = read_arg(value).ok_or_else(|| {
                     PlanError::Malformed(format!(
                         "step {index}: '{key}' is not text, a whole number, or a list of names"
@@ -1383,6 +1388,15 @@ mod tests {
         ] {
             assert!(parse(text).is_ok(), "'{text}' was refused");
         }
+    }
+
+    /// The plan `llama-3-8b-instruct` returned, refused for writing null where it meant to
+    /// leave an optional argument out.
+    #[test]
+    fn a_null_optional_argument_is_the_same_as_an_absent_one() {
+        let plan = r#"{"steps": [{"capability": "FILE_LIST", "args": {"directory": ".", "pattern": null, "out_slot": "file_list"}}]}"#;
+        let draft = parse(plan).expect("null is an argument declined, not a malformed one");
+        assert_eq!(draft.steps.len(), 1);
     }
 
     /// A reply that is prose containing a fenced block is not a fenced plan, and salvaging the
