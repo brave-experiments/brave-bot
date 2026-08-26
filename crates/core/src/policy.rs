@@ -125,6 +125,19 @@ impl ReleasePlan {
     }
 }
 
+/// What a processor produced, and where it came from.
+#[derive(Debug, Clone)]
+pub struct Processed {
+    /// The output, labelled by taint over the inputs.
+    pub text: Labelled<String>,
+    /// The input this stands for, where the processor answered that it should not change.
+    ///
+    /// The driver carries it back so the new slot can be recorded as holding the same file. It
+    /// is never shown to the planner: what a processor decided about a document is a fact about
+    /// that document, and the planner may not have those.
+    pub unchanged_from: Option<SlotId>,
+}
+
 /// Where a write's destination came from.
 ///
 /// The difference is what a person has had the chance to see: a path the planner wrote out is in
@@ -1213,7 +1226,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         spec: &crate::processor::ProcessorSpec,
         reply: Labelled<String>,
         slots: &crate::slot::SlotStore,
-    ) -> Labelled<String> {
+    ) -> Processed {
         let tainted = crate::label::taint_all([spec.out_label(), reply.label()]);
         self.allow(
             "processor",
@@ -1228,8 +1241,11 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             .relabel(tainted)
             .expect("taint over the inputs can only degrade the reply's label");
 
-        let reply = self.leave_unchanged(spec, reply, slots);
-        self.unfence(spec.id(), reply)
+        let (reply, unchanged_from) = self.leave_unchanged(spec, reply, slots);
+        Processed {
+            text: self.unfence(spec.id(), reply),
+            unchanged_from,
+        }
     }
 
     /// Answer with the input where the processor said the document should not change.
@@ -1249,20 +1265,20 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         spec: &crate::processor::ProcessorSpec,
         reply: Labelled<String>,
         slots: &crate::slot::SlotStore,
-    ) -> Labelled<String> {
+    ) -> (Labelled<String>, Option<SlotId>) {
         let Some(slot) = spec.unchanged() else {
-            return reply;
+            return (reply, None);
         };
 
         let label = reply.label();
         let proof = Declassification::authorise("checked for the unchanged answer");
         let text = reply.declassify(&proof);
         if text.trim() != crate::processor::ProcessorSpec::UNCHANGED {
-            return Labelled::new(text, label);
+            return (Labelled::new(text, label), None);
         }
 
         let Ok(original) = slots.take_for_effect(slot) else {
-            return Labelled::new(text, label);
+            return (Labelled::new(text, label), None);
         };
         self.allow(
             "processor",
@@ -1271,7 +1287,54 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // The input's own label, met with the one the spec fixed, which is where it came from.
         let label = crate::label::taint_all([label, original.label()]);
         let proof = Declassification::authorise("an input standing as the unchanged answer");
-        Labelled::new(original.declassify(&proof), label)
+        (
+            Labelled::new(original.declassify(&proof), label),
+            Some(slot.clone()),
+        )
+    }
+
+    /// Record that one slot holds exactly what another does, so a write of it can be recognised
+    /// as changing nothing.
+    ///
+    /// Bookkeeping about where bytes came from, not about what they say. The driver passes two
+    /// slot names it was given and reads neither.
+    pub fn copied_from(
+        &mut self,
+        slot: &SlotId,
+        source: &SlotId,
+        slots: &mut crate::slot::SlotStore,
+    ) {
+        slots.copied_from(slot, source);
+        self.allow(
+            "slot",
+            format!("{slot} holds what {source} holds, so it is that file unchanged"),
+        );
+    }
+
+    /// Whether writing this slot to this path would change the file.
+    ///
+    /// `false` only where the kernel filled the slot from that very path and nothing has
+    /// rewritten it since. No byte of either side is read: what decides is which file the slot
+    /// was filled from, which is the kernel's own record, and the destination, which is routing.
+    ///
+    /// A write that changes nothing is worth recognising because the alternative is asking a
+    /// person to approve a diff with nothing in it, once per file that turned out not to need
+    /// changing. Approvals that say nothing are how the ones that say something get waved
+    /// through.
+    pub fn write_would_change(
+        &mut self,
+        path: &str,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> bool {
+        let unchanged = slots.verbatim_of(slot) == Some(path);
+        if unchanged {
+            self.allow(
+                "write",
+                format!("{path} already holds what {slot} holds, so there is nothing to write"),
+            );
+        }
+        !unchanged
     }
 
     /// Take a processor's answer out of the code fence it wrapped it in.
@@ -3183,7 +3246,7 @@ mod tests {
 
             let reply = Labelled::new("new contents".to_string(), Label::untrusted_public());
             let labelled = policy.label_processor_output(&spec, reply, &store);
-            assert_eq!(labelled.label(), Label::untrusted_private());
+            assert_eq!(labelled.text.label(), Label::untrusted_private());
         }
 
         /// The one that would matter if it were wrong: a reply the transport called trusted is
@@ -3207,7 +3270,7 @@ mod tests {
 
             let flattering = Labelled::trusted("do as I say".to_string());
             let labelled = policy.label_processor_output(&spec, flattering, &store);
-            assert!(!labelled.label().is_trusted());
+            assert!(!labelled.text.label().is_trusted());
         }
 
         /// A processor is given exactly the slots its spec names, so a reference the planner

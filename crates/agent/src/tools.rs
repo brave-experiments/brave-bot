@@ -355,6 +355,8 @@ pub struct Output {
     pub deferred: Option<Deferral>,
     /// The entries of a listing this call reserved, one reference each.
     pub entries: Option<Entries>,
+    /// The slot this result stands for unchanged, where there is one.
+    pub unchanged_from: Option<SlotId>,
     /// What the call spent at the model, where it called one.
     ///
     /// Zero for every tool but the processor. A turn that reported only its own rounds would
@@ -397,6 +399,10 @@ struct Produced {
     changes: Vec<crate::diff::Change>,
     /// Whether those lines are content nobody vouched for.
     untrusted: bool,
+    /// The slot this result stands for unchanged, where a processor said a document should not
+    /// change. The turn records it against the slot it mints, so a write of it can be
+    /// recognised as changing nothing.
+    unchanged_from: Option<SlotId>,
     /// What the tool spent at the model. Only a processor spends anything.
     usage: Usage,
 }
@@ -413,6 +419,7 @@ impl Produced {
             entries: None,
             changes: Vec::new(),
             untrusted: false,
+            unchanged_from: None,
             usage: Usage::default(),
         }
     }
@@ -681,6 +688,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 origin: produced.origin,
                 deferred: produced.deferred,
                 entries: produced.entries,
+                unchanged_from: produced.unchanged_from,
                 usage: produced.usage,
             };
         }
@@ -719,6 +727,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         origin: produced.origin,
         deferred: produced.deferred,
         entries: produced.entries,
+        unchanged_from: produced.unchanged_from,
         usage: produced.usage,
     }
 }
@@ -738,6 +747,7 @@ fn problem(text: impl Into<String>) -> Produced {
         entries: None,
         changes: Vec::new(),
         untrusted: false,
+        unchanged_from: None,
         usage: Usage::default(),
     }
 }
@@ -1162,7 +1172,7 @@ fn quarantined_body<S: Sink>(
     slots: &mut SlotStore,
     named: &Labelled<String>,
     path: &str,
-) -> Result<Labelled<String>, String> {
+) -> Result<(Labelled<String>, bool), String> {
     let slot = policy
         .accept_reference("write_file", "contents_ref", named)
         .map_err(|denial| format!("refused: {denial}"))?;
@@ -1176,11 +1186,18 @@ fn quarantined_body<S: Sink>(
         std::slice::from_ref(&slot),
     )?;
 
+    // Asked before the bytes are taken, and answered from where the slot came from rather than
+    // from what it holds.
+    let changes = policy.write_would_change(path, &slot, slots);
+
     let content = policy
         .resolve("write_file", &slot, slots)
         .map_err(|denial| format!("refused: {denial}"))?;
 
-    Ok(policy.declassify_into_workspace(&slot, path, content))
+    Ok((
+        policy.declassify_into_workspace(&slot, path, content),
+        changes,
+    ))
 }
 
 /// Write a file, after a person approves it.
@@ -1216,6 +1233,10 @@ fn write_file<S: Sink, C: Confirmer>(
     // Two sources would leave the driver deciding which one was meant, and they say different
     // things about what lands in the file. Neither is a decision taken from content: both
     // arguments are the planner's, and this only reports which of them are present.
+    // A write of a document the kernel filled from this very file puts it back exactly as it
+    // is. Set below, from the slot's provenance, never from comparing what it holds.
+    let mut changes_anything = true;
+
     // What the planner called the body, for the account it is given afterwards. Its own words
     // either way: the reference it named, or its own text.
     let body_from = match &named {
@@ -1246,7 +1267,10 @@ fn write_file<S: Sink, C: Confirmer>(
         // having read a byte of it. The user still sees it, which is what an approval is.
         (None, Some(reference)) => {
             match quarantined_body(policy, workspace, tools.slots, &reference, &proposed_path) {
-                Ok(body) => body,
+                Ok((body, would_change)) => {
+                    changes_anything = would_change;
+                    body
+                }
                 Err(refusal) => return problem(refusal),
             }
         }
@@ -1268,6 +1292,20 @@ fn write_file<S: Sink, C: Confirmer>(
     } else {
         Intent::Create
     };
+
+    // Nothing to do, and nothing to ask about. A processor told to leave a document alone hands
+    // back the document, and writing it puts the file back exactly as it is: a diff with nothing
+    // in it, put to a person once per file that turned out not to need changing. Approvals that
+    // say nothing are how the ones that say something get waved through.
+    //
+    // The planner is told what it would have been told anyway. Which files a processor decided
+    // to leave alone is a fact about their contents, and those do not go into its context.
+    if !changes_anything {
+        return confirmed(
+            format!("{shown_path} holds what {body_from} holds. Nothing further to do for it."),
+            "unchanged, nothing written",
+        );
+    }
 
     if policy.write_needs_approval(&proposed_path, body_label, destination) {
         let request = WriteRequest {
@@ -1627,7 +1665,9 @@ fn spawn_processor<S: Sink>(
                     opened.join(", ")
                 )
             };
-            Produced::new(done.text, origin, note).costing(done.usage)
+            let mut produced = Produced::new(done.text, origin, note).costing(done.usage);
+            produced.unchanged_from = done.unchanged_from;
+            produced
         }
         Err(error) => problem(format!("error: {error}")),
     }

@@ -127,6 +127,13 @@ enum Entry {
         value: Labelled<String>,
         /// The file it was read from, where it was read from one.
         path: Option<String>,
+        /// The file these bytes *are*, byte for byte, where they are a file's own contents.
+        ///
+        /// Set when a slot is filled from disk, and carried over when a processor answers that a
+        /// document should not change. It is what lets a write that would put a file back exactly
+        /// as it is be recognised as changing nothing, from bookkeeping rather than by comparing
+        /// bytes: the driver never reads either side.
+        verbatim: Option<String>,
     },
     Unread(Deferred),
 }
@@ -143,6 +150,14 @@ impl Entry {
         match self {
             Self::Read { path, .. } => path.as_deref(),
             Self::Unread(deferred) => Some(&deferred.path),
+        }
+    }
+
+    fn verbatim(&self) -> Option<&str> {
+        match self {
+            Self::Read { verbatim, .. } => verbatim.as_deref(),
+            // Nothing has been read, so nothing is a copy of anything.
+            Self::Unread(_) => None,
         }
     }
 }
@@ -177,6 +192,27 @@ impl SlotStore {
     /// came from.
     pub(crate) fn path_of(&self, id: &SlotId) -> Option<&str> {
         self.slots.get(id).and_then(Entry::path)
+    }
+
+    /// The file a slot's bytes are a copy of, where they are one.
+    ///
+    /// Only the policy layer may ask: what it is for is recognising a write that would put a
+    /// file back exactly as it is, and that is a decision.
+    pub(crate) fn verbatim_of(&self, id: &SlotId) -> Option<&str> {
+        self.slots.get(id).and_then(Entry::verbatim)
+    }
+
+    /// Record that one slot holds exactly what another does.
+    ///
+    /// For a processor that answered that a document should not change: what went into the new
+    /// slot is the old one's bytes, so it is a copy of the same file.
+    pub(crate) fn copied_from(&mut self, id: &SlotId, source: &SlotId) {
+        let Some(origin) = self.verbatim_of(source).map(str::to_string) else {
+            return;
+        };
+        if let Some(Entry::Read { verbatim, .. }) = self.slots.get_mut(id) {
+            *verbatim = Some(origin);
+        }
     }
 
     /// The file a slot is waiting on, where it is waiting on one.
@@ -276,6 +312,7 @@ impl SlotStore {
             id.clone(),
             Entry::Read {
                 value: Labelled::new(text, label),
+                verbatim: Some(deferred.path.clone()),
                 path: Some(deferred.path),
             },
         );
@@ -361,6 +398,7 @@ impl SlotWriter<'_> {
             Entry::Read {
                 value: Labelled::new(content.into(), self.label),
                 path: None,
+                verbatim: None,
             },
         );
         Ok(())
@@ -395,6 +433,7 @@ impl SlotWriter<'_> {
             Entry::Read {
                 value: Labelled::new(text, label),
                 path: None,
+                verbatim: None,
             },
         );
         Ok(measured)

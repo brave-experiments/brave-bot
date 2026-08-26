@@ -3701,14 +3701,19 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
     let config = config_for(&endpoint);
     let egress = bua_net::Egress::new();
     let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
 
-    turn::run(
+    turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3716,6 +3721,14 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
         std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
         original,
         "the file the processor was told to leave alone did not survive"
+    );
+
+    // And nobody was asked about it. A diff with nothing in it, put to a person once per file
+    // that turned out not to need changing, is how the approvals that matter get waved through.
+    assert!(
+        confirmer.seen.is_empty(),
+        "a write that changes nothing was put to the user: {:?}",
+        confirmer.seen
     );
 }
 

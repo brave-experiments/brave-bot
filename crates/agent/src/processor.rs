@@ -74,6 +74,8 @@ pub struct Chat<'a> {
 pub struct Processed {
     /// The output, labelled by taint over the inputs. Never read on the way past.
     pub text: Labelled<String>,
+    /// The input it stands for, where it answered that the document should not change.
+    pub unchanged_from: Option<bua_core::slot::SlotId>,
     /// The model the server reported using, which may differ from the one asked for.
     pub model: String,
     /// What the run cost, so a turn can report the whole of what it spent.
@@ -162,8 +164,10 @@ pub fn run<S: Sink>(
     // showing.
     let completion = client.complete_streaming(policy, &request, |_| {})?;
 
+    let produced = policy.label_processor_output(spec, completion.content, slots);
     Ok(Processed {
-        text: policy.label_processor_output(spec, completion.content, slots),
+        text: produced.text,
+        unchanged_from: produced.unchanged_from,
         model: completion.model,
         usage: completion.usage,
     })

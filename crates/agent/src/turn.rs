@@ -866,6 +866,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
                     }
                     Presentation::Quarantined(reference) => {
+                        // A processor that answered "leave it alone" produced the document it
+                        // was given, so the new slot holds that file byte for byte. Recorded
+                        // here, where the slot is minted, so a write of it back to the same
+                        // file can be seen to change nothing without reading either side.
+                        if let Some(from) = &output.unchanged_from {
+                            policy.copied_from(&reference.slot, from, conversation.quarantine());
+                        }
                         // The bytes exist here, unlike a deferred read, so the person watching
                         // is shown what the planner is not. It is their workspace; they are the
                         // only party who can tell whether this is the right file at all.
