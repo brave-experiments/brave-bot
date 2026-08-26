@@ -487,33 +487,45 @@ fn target_key(tool: &str) -> Option<&'static str> {
 /// Which argument names the target depends on the tool, so the key is chosen from the tool's
 /// own name. The value is the model's word for it, released to a screen and nowhere else: it
 /// goes on a line a person reads and is never compared, matched, or routed anywhere.
-fn target_of<S: Sink>(policy: &mut Policy<'_, S>, tool: &str, arguments: &Value) -> String {
+fn target_of<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tool: &str,
+    slots: &SlotStore,
+    arguments: &Value,
+) -> String {
     // A processor has no single argument naming a target: what it is working on is the set of
     // references it was given, which are names the driver handed out and can read back.
-    if tool == "spawn_processor" {
+    let named = if tool == "spawn_processor" {
         let proof = policy.authorise_display_release("what a tool is working on");
-        return references_in(arguments).declassify(&proof);
-    }
-
-    let Some(key) = target_key(tool) else {
-        return String::new();
-    };
-
-    // A call that named a reference instead of a path says so on the line, rather than showing
-    // an empty pair of brackets. What file it turned out to be is on the note beside it.
-    let key = if arguments.get(key).is_none() && arguments.get("path_ref").is_some() {
-        "path_ref"
+        references_in(arguments).declassify(&proof)
     } else {
-        key
+        let Some(key) = target_key(tool) else {
+            return String::new();
+        };
+
+        // A call that named a reference instead of a path says so with the reference, which is
+        // then resolved below: it is the planner that cannot know the name, not the person.
+        let key = if arguments.get(key).is_none() && arguments.get("path_ref").is_some() {
+            "path_ref"
+        } else {
+            key
+        };
+
+        match argument(arguments, key) {
+            Some(value) => {
+                let proof = policy.authorise_display_release("what a tool is working on");
+                value.declassify(&proof)
+            }
+            None => return String::new(),
+        }
     };
 
-    match argument(arguments, key) {
-        Some(value) => {
-            let proof = policy.authorise_display_release("what a tool is working on");
-            value.declassify(&proof)
-        }
-        None => String::new(),
+    // The line a person reads says which file, always. A reference means something to the
+    // planner and nothing at all to the person watching their own workspace being worked on.
+    if named.contains("ref:") {
+        return name_references(&named, &policy.names_for_display(slots));
     }
+    named
 }
 
 /// How a call reads in the transcript of a session read back off disk.
@@ -666,7 +678,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
 
     // Announced before the call runs, so a slow one is visible while it is slow. This is the
     // difference between a turn that looks stuck and one that is plainly working.
-    let target = target_of(policy, &name, &arguments);
+    let target = target_of(policy, &name, tools.slots, &arguments);
     reporter.tool_started(Activity::running(verb, target.clone()));
 
     let produced = match name.as_str() {
@@ -809,7 +821,7 @@ fn read_file<S: Sink>(
                  it. Give {shown_path} to spawn_processor to work on, and name {shown_path} as \
                  path_ref to write what comes back to the same file."
             ),
-            "already a reference",
+            format!("nothing to read: {shown_path} already holds it"),
         );
     }
 
@@ -858,13 +870,35 @@ pub(crate) fn materialise<S: Sink>(
     slots: &mut SlotStore,
     tool: &str,
     wanted: &[SlotId],
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    // The files this actually opened, for the line the person reads. A read deferred until a
+    // processor needed it is still a read of their workspace, and until it was reported the only
+    // reads on the screen were the planner's, which are the ones that read nothing.
+    let mut opened = Vec::new();
     for slot in wanted {
+        let was_unread = slots.deferred(slot).is_some();
         policy
             .materialise(tool, slot, slots, |path| read_into_slot(workspace, path))
             .map_err(|denial| format!("refused: {denial}"))?;
+        if was_unread {
+            opened.push(slot.clone());
+        }
     }
-    Ok(())
+
+    if opened.is_empty() {
+        return Ok(Vec::new());
+    }
+    let named = policy.names_for_display(slots);
+    Ok(opened
+        .iter()
+        .map(|slot| {
+            named
+                .iter()
+                .find(|(id, _)| id == slot)
+                .map(|(_, path)| path.clone())
+                .unwrap_or_else(|| slot.to_string())
+        })
+        .collect())
 }
 
 /// The path a call is about, from `path` or from a reference to a file.
@@ -1241,13 +1275,7 @@ fn write_file<S: Sink, C: Confirmer>(
             // The file now holds this data, so the map must say what the path means.
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(intent, existing.as_deref(), &shown, replaced_age);
-            // The line the person reads names the file even where the planner's own words
-            // cannot. They are the only one who knows which file a reference is, and a write
-            // reported as happening to "ref:1" tells them nothing about their own workspace.
-            let note = match destination {
-                Destination::Reference => format!("{proposed_path}, {note}"),
-                Destination::Named => note,
-            };
+
             // What the model is told, which is what its own account of the turn will repeat. It
             // used to be told "wrote" either way, and would go on to say it had created a file
             // it had in fact replaced, which is the opposite of what the user needed to hear.
@@ -1384,10 +1412,6 @@ fn edit_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(Intent::Edit, Some(&current), &shown, None);
-            let note = match destination {
-                Destination::Reference => format!("{proposed_path}, {note}"),
-                Destination::Named => note,
-            };
             confirmed(
                 format!("edited {shown_path}: {occurrences} replacement(s)"),
                 note,
@@ -1540,15 +1564,16 @@ fn spawn_processor<S: Sink>(
     // the inputs, and a slot that reads its file here may come back untrusted where the trust
     // map fell after the slot was reserved. A spec built first would carry the label the inputs
     // used to have.
-    if let Err(refusal) = materialise(
+    let opened = match materialise(
         policy,
         tools.workspace,
         tools.slots,
         "spawn_processor",
         &reads,
     ) {
-        return problem(refusal);
-    }
+        Ok(opened) => opened,
+        Err(refusal) => return problem(refusal),
+    };
 
     let spec = match policy.before_processor(&origin, &reads, &instruction, tools.slots) {
         Ok(spec) => spec,
@@ -1557,9 +1582,20 @@ fn spawn_processor<S: Sink>(
 
     match processor::run(policy, &mut tools.chat, tools.slots, &spec) {
         Ok(done) => {
-            let note = note_for(policy, "spawn_processor", &done.text, |text: String| {
+            let wrote = note_for(policy, "spawn_processor", &done.text, |text: String| {
                 tally(text.lines().count(), "line", "lines")
             });
+            // Says who did what. The planner's own reads read nothing, since a reference to a
+            // file already is the file; the processor is what opens them, and until this said
+            // so the only reads on the screen were the ones that did not happen.
+            let note = if opened.is_empty() {
+                format!("an isolated processor wrote {wrote}")
+            } else {
+                format!(
+                    "an isolated processor read {} and wrote {wrote}",
+                    opened.join(", ")
+                )
+            };
             Produced::new(done.text, origin, note).costing(done.usage)
         }
         Err(error) => problem(format!("error: {error}")),

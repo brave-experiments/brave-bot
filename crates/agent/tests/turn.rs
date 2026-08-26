@@ -3610,6 +3610,69 @@ fn quarantined_content_reaches_the_person_and_not_the_planner() {
     }
 }
 
+/// Every line a person reads names the file, even where the planner named a reference.
+///
+/// A terminal saying "Read(ref:1)" tells the owner of the workspace nothing about their own
+/// workspace, and the reads it does show are the ones that read nothing: a reference to a file
+/// already is the file. What opens files is the processor, and the line for it says so.
+#[test]
+fn the_terminal_names_the_file_and_says_who_read_it() {
+    let scratch = Scratch::new("who-read-what");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request("read_file", r#"{"path_ref":"ref:1"}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"halve the speed"}"#,
+        ),
+        reply_with("const SPEED = 50;"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("halve the speed"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let read = reporter
+        .finished
+        .iter()
+        .find(|activity| activity.verb == "Read")
+        .expect("a read was reported");
+    assert_eq!(
+        read.target, "game.js",
+        "the line named a reference rather than the file"
+    );
+
+    let processed = reporter
+        .finished
+        .iter()
+        .find(|activity| activity.verb == "Process")
+        .expect("a processor was reported");
+    assert_eq!(processed.target, "game.js", "{:?}", processed.target);
+    let note = processed.note.clone().unwrap_or_default();
+    assert!(
+        note.contains("isolated processor read game.js"),
+        "the line did not say who opened the file: {note}"
+    );
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.
