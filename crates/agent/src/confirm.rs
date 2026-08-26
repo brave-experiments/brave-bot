@@ -45,6 +45,12 @@ pub struct WriteRequest {
     /// would be lost.
     pub existing: Option<String>,
     pub intent: Intent,
+    /// Whether the body came from somewhere nobody vouched for.
+    ///
+    /// Shown to the reviewer as untrusted wherever it is drawn. Reading a diff of a file the
+    /// model never saw is a different act from reviewing the model's own work, and the screen
+    /// should not make the two look alike.
+    pub untrusted: bool,
 }
 
 impl WriteRequest {
@@ -142,6 +148,7 @@ mod tests {
             contents: "one\ntwo\n".into(),
             existing: None,
             intent: Intent::Create,
+            untrusted: false,
         }
     }
 

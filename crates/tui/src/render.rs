@@ -113,7 +113,7 @@ fn activity_lines(activity: &Activity) -> Vec<Line<'static>> {
         )));
     }
 
-    lines.extend(diff_lines(&activity.changes));
+    lines.extend(diff_lines(&activity.changes, activity.untrusted));
     lines
 }
 
@@ -159,24 +159,33 @@ fn quarantined_lines(shown: &Shown) -> Vec<Line<'static>> {
 }
 
 /// The hunks of a write, trimmed to what fits without burying the rest of the transcript.
-fn diff_lines(changes: &[Change]) -> Vec<Line<'static>> {
+fn diff_lines(changes: &[Change], untrusted: bool) -> Vec<Line<'static>> {
+    // The same margin the transcript draws down everything the model was not allowed to read. A
+    // body that came out of a quarantined file is that, and the person reading the hunks should
+    // not have to work out which kind of change they are looking at.
+    let margin = if untrusted {
+        Span::styled(
+            format!("  {QUARANTINE_BAR}  "),
+            Style::default().fg(Color::Yellow),
+        )
+    } else {
+        Span::raw("     ")
+    };
     let mut lines: Vec<Line> = changes
         .iter()
         .take(MAX_DIFF_LINES)
-        .map(|change| match change {
-            Change::Added(text) => Line::from(Span::styled(
-                format!("     + {text}"),
-                Style::default().fg(Color::Green),
-            )),
-            Change::Removed(text) => Line::from(Span::styled(
-                format!("     - {text}"),
-                Style::default().fg(Color::Red),
-            )),
-            Change::Kept(text) => Line::from(Span::styled(format!("       {text}"), dim())),
-            Change::Elided(count) => Line::from(Span::styled(
-                format!("     … {count} unchanged lines"),
-                dim(),
-            )),
+        .map(|change| {
+            let body = match change {
+                Change::Added(text) => {
+                    Span::styled(format!("+ {text}"), Style::default().fg(Color::Green))
+                }
+                Change::Removed(text) => {
+                    Span::styled(format!("- {text}"), Style::default().fg(Color::Red))
+                }
+                Change::Kept(text) => Span::styled(format!("  {text}"), dim()),
+                Change::Elided(count) => Span::styled(format!("… {count} unchanged lines"), dim()),
+            };
+            Line::from(vec![margin.clone(), body])
         })
         .collect();
 
@@ -184,10 +193,13 @@ fn diff_lines(changes: &[Change]) -> Vec<Line<'static>> {
     // whole change, which is how a reviewer misses half of it. Worded for both kinds of write,
     // since a new file's lines were never a diff of anything.
     if changes.len() > MAX_DIFF_LINES {
-        lines.push(Line::from(Span::styled(
-            format!("     … {} more lines", changes.len() - MAX_DIFF_LINES),
-            dim(),
-        )));
+        lines.push(Line::from(vec![
+            margin.clone(),
+            Span::styled(
+                format!("… {} more lines", changes.len() - MAX_DIFF_LINES),
+                dim(),
+            ),
+        ]));
     }
 
     lines
@@ -573,7 +585,7 @@ mod tests {
             let changes: Vec<Change> = (0..MAX_DIFF_LINES + 5)
                 .map(|n| Change::Added(format!("line {n}")))
                 .collect();
-            let lines = diff_lines(&changes);
+            let lines = diff_lines(&changes, false);
 
             assert_eq!(lines.len(), MAX_DIFF_LINES + 1);
             let last = lines.last().expect("a line").to_string();
@@ -583,7 +595,7 @@ mod tests {
         /// A short diff is shown whole, with nothing appended to suggest otherwise.
         #[test]
         fn a_short_diff_is_shown_whole_with_no_note() {
-            let lines = diff_lines(&[Change::Added("only line".into())]);
+            let lines = diff_lines(&[Change::Added("only line".into())], false);
             assert_eq!(lines.len(), 1);
         }
 

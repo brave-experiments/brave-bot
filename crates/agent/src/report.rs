@@ -38,6 +38,11 @@ pub struct Activity {
     pub failed: bool,
     /// The change a write made, for showing beneath the line. Empty for everything else.
     pub changes: Vec<Change>,
+    /// Whether those lines are content nobody vouched for.
+    ///
+    /// Drawn with the same mark the transcript puts on everything the model was not allowed to
+    /// read, so one convention covers every place untrusted bytes reach a screen.
+    pub untrusted: bool,
 }
 
 impl Activity {
@@ -49,6 +54,7 @@ impl Activity {
             note: None,
             failed: false,
             changes: Vec::new(),
+            untrusted: false,
         }
     }
 
@@ -68,6 +74,12 @@ impl Activity {
     /// Attach the change a write made.
     pub fn with_changes(mut self, changes: Vec<Change>) -> Self {
         self.changes = changes;
+        self
+    }
+
+    /// Say that the lines beneath this call are content nobody vouched for.
+    pub fn marked_untrusted(mut self, untrusted: bool) -> Self {
+        self.untrusted = untrusted;
         self
     }
 

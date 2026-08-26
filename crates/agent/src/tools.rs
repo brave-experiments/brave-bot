@@ -377,6 +377,8 @@ struct Produced {
     entries: Option<Entries>,
     /// The change a write made, for showing under the line it belongs to.
     changes: Vec<crate::diff::Change>,
+    /// Whether those lines are content nobody vouched for.
+    untrusted: bool,
     /// What the tool spent at the model. Only a processor spends anything.
     usage: Usage,
 }
@@ -392,6 +394,7 @@ impl Produced {
             deferred: None,
             entries: None,
             changes: Vec::new(),
+            untrusted: false,
             usage: Usage::default(),
         }
     }
@@ -423,6 +426,12 @@ impl Produced {
 
     fn with_changes(mut self, changes: Vec<crate::diff::Change>) -> Self {
         self.changes = changes;
+        self
+    }
+
+    /// Say that the change came from content nobody vouched for.
+    fn marked_untrusted(mut self, untrusted: bool) -> Self {
+        self.untrusted = untrusted;
         self
     }
 
@@ -664,7 +673,9 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         other => problem(format!("error: no such tool '{other}'")),
     };
 
-    let finished = Activity::running(verb, target).with_changes(produced.changes);
+    let finished = Activity::running(verb, target)
+        .with_changes(produced.changes)
+        .marked_untrusted(produced.untrusted);
     reporter.tool_finished(if produced.failed {
         finished.failed(produced.note)
     } else {
@@ -696,6 +707,7 @@ fn problem(text: impl Into<String>) -> Produced {
         deferred: None,
         entries: None,
         changes: Vec::new(),
+        untrusted: false,
         usage: Usage::default(),
     }
 }
@@ -1201,6 +1213,8 @@ fn write_file<S: Sink, C: Confirmer>(
             existing: existing.clone(),
             path: proposed_path.clone(),
             contents: shown.clone(),
+            // The reviewer is the only one who will read this. Say what they are reading.
+            untrusted: !body_label.is_trusted(),
         };
 
         if confirmer.confirm_write(&request) == Decision::Reject {
@@ -1251,7 +1265,9 @@ fn write_file<S: Sink, C: Confirmer>(
                     body_from
                 ),
             };
-            confirmed(done, note).with_changes(changes)
+            confirmed(done, note)
+                .with_changes(changes)
+                .marked_untrusted(!body_label.is_trusted())
         }
         Err(e) => problem(format!("error: {e}")),
     }
@@ -1342,6 +1358,7 @@ fn edit_file<S: Sink, C: Confirmer>(
             contents: shown.clone(),
             existing: Some(current.clone()),
             intent: Intent::Edit,
+            untrusted: !body_label.is_trusted(),
         };
 
         if confirmer.confirm_write(&request) == Decision::Reject {
@@ -1368,6 +1385,7 @@ fn edit_file<S: Sink, C: Confirmer>(
                 note,
             )
             .with_changes(changes)
+            .marked_untrusted(!body_label.is_trusted())
         }
         Err(e) => problem(format!("error: {e}")),
     }

@@ -168,26 +168,39 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
         .saturating_sub(reserved);
     let shown = PREVIEW_LINES.min(budget);
 
+    // The same margin the transcript draws down everything the model was not allowed to read.
+    // A body out of a quarantined file is that, and the person about to approve it is the only
+    // one who will ever see it: they should be able to tell which kind of review this is.
+    let marked = Style::default().fg(Color::Yellow);
+    let margin = if request.untrusted { "┃ " } else { "  " };
+    if request.untrusted {
+        lines.push(Line::from(Span::styled(
+            format!("{margin}untrusted: nobody has read this, and the model never saw it"),
+            marked,
+        )));
+    }
+
     let changes = diff.condensed(CONTEXT_LINES);
     for change in changes.iter().take(shown) {
-        lines.push(match change {
-            Change::Added(text) => Line::from(Span::styled(
-                format!("  +{text}"),
-                Style::default().fg(Color::Green),
-            )),
-            Change::Removed(text) => Line::from(Span::styled(
-                format!("  -{text}"),
-                Style::default().fg(Color::Red),
-            )),
-            Change::Kept(text) => Line::from(Span::styled(
-                format!("   {text}"),
+        let body = match change {
+            Change::Added(text) => {
+                Span::styled(format!("+{text}"), Style::default().fg(Color::Green))
+            }
+            Change::Removed(text) => {
+                Span::styled(format!("-{text}"), Style::default().fg(Color::Red))
+            }
+            Change::Kept(text) => {
+                Span::styled(format!(" {text}"), Style::default().fg(Color::DarkGray))
+            }
+            Change::Elided(count) => Span::styled(
+                format!(" … {count} unchanged lines"),
                 Style::default().fg(Color::DarkGray),
-            )),
-            Change::Elided(count) => Line::from(Span::styled(
-                format!("   … {count} unchanged lines"),
-                Style::default().fg(Color::DarkGray),
-            )),
-        });
+            ),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(margin.to_string(), marked),
+            body,
+        ]));
     }
 
     if changes.len() > shown {
@@ -270,6 +283,7 @@ mod tests {
                 Intent::Create
             },
             existing: existing.map(str::to_string),
+            untrusted: false,
         }
     }
 
@@ -352,6 +366,7 @@ mod tests {
             contents: after,
             existing: Some(before),
             intent: Intent::Edit,
+            untrusted: false,
         });
 
         assert!(output.contains("Edit"));
@@ -367,6 +382,33 @@ mod tests {
         assert!(output.contains("write it"), "the question was pushed off");
     }
 
+    /// A body out of a quarantined file is the one thing on the screen nobody has read. The
+    /// person approving it is the only party who ever will, so the prompt says so and marks the
+    /// hunks the same way the transcript marks everything else the model was not shown.
+    #[test]
+    fn an_untrusted_body_is_marked_in_the_prompt() {
+        let output = rendered(&WriteRequest {
+            path: "game.js".into(),
+            contents: "const SPEED = 50;\n".into(),
+            existing: Some("const SPEED = 100;\n".into()),
+            intent: Intent::Overwrite,
+            untrusted: true,
+        });
+
+        assert!(
+            output.contains("untrusted"),
+            "the reviewer was not told what they are reading: {output}"
+        );
+        assert!(output.contains("┃"), "the hunks were not marked: {output}");
+
+        // A write of the model's own words is not marked, or the mark would mean nothing.
+        let ordinary = rendered(&request("new\n", Some("old\n")));
+        assert!(
+            !ordinary.contains("┃"),
+            "an ordinary write was marked as untrusted: {ordinary}"
+        );
+    }
+
     /// A diff too large to compute must not render as an empty change.
     #[test]
     fn an_uncomputable_diff_says_so() {
@@ -378,6 +420,7 @@ mod tests {
             contents: after,
             existing: Some(before),
             intent: Intent::Overwrite,
+            untrusted: false,
         });
 
         assert!(

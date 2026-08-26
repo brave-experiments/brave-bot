@@ -124,6 +124,7 @@ mod tests {
             contents: "body\n".into(),
             existing: None,
             intent: Intent::Create,
+            untrusted: false,
         }
     }
 
