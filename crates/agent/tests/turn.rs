@@ -489,6 +489,10 @@ fn serve_sequence_losing_the_first(
 /// that carries an explanation the user should see.
 fn tool_request_saying(content: &str, tool: &str, arguments: &str) -> String {
     let escaped = arguments.replace('"', "\\\"");
+    let content = content
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
     format!(
         r#"{{"model":"test-model","choices":[{{"message":{{"role":"assistant","content":"{content}","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"{tool}","arguments":"{escaped}"}}}}]}}}}]}}"#
     )
@@ -3192,7 +3196,8 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
     // The file now holds what the processor produced, which nothing else ever read.
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("config.py")).unwrap(),
-        "PROCESSED CONTENTS"
+        // The file had a last newline, so what replaces it does too.
+        "PROCESSED CONTENTS\n"
     );
     // The canary: the injected line asked for this file and never got it.
     assert!(!scratch.path.join("evil.txt").exists());
@@ -3279,7 +3284,7 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
     // The write landed on the file the reference named, which the planner never learned.
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("game.js")).unwrap(),
-        "const SPEED = 50;"
+        "const SPEED = 50;\n"
     );
 
     // The person approving is the one who is told which file it is.
@@ -4395,7 +4400,8 @@ fn a_reference_write_is_reviewed_as_a_diff() {
 
     let reviewed = confirmer.seen.last().expect("a write was reviewed");
     assert_eq!(reviewed.path, "config.py");
-    assert_eq!(reviewed.contents, "REPLACEMENT");
+    // The file it replaces ended with a newline, so what the reviewer sees does too.
+    assert_eq!(reviewed.contents, "REPLACEMENT\n");
     assert_eq!(reviewed.existing.as_deref(), Some("original\n"));
 }
 
@@ -4449,7 +4455,7 @@ fn a_tool_call_from_a_processor_does_nothing() {
     // What it said still becomes the reference, since text is all a processor produces.
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("config.py")).unwrap(),
-        "SAFE OUTPUT"
+        "SAFE OUTPUT\n"
     );
 }
 

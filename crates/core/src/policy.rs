@@ -1204,7 +1204,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             // the second's file: eleven kilobytes of a game's HTML into a Python script. The
             // planner's prose is one sentence among two documents; this is on the document.
             let role = match spec.about() {
-                Some(about) if about == slot => " (return this one, changed or not)",
+                Some(about) if about == slot => " (the document to answer about)",
                 Some(_) => " (context only, do not return this one)",
                 None => "",
             };
@@ -1274,11 +1274,52 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // rest of this does is about the document.
         let (note, reply) = self.split_note(spec.id(), reply);
         let (reply, unchanged_from) = self.leave_unchanged(spec, reply, slots);
+        let reply = self.unfence(spec.id(), reply);
         Processed {
-            text: self.unfence(spec.id(), reply),
+            text: self.keep_the_last_newline(spec, reply, slots),
             note,
             unchanged_from,
         }
+    }
+
+    /// Give back the last newline where the document had one and the answer does not.
+    ///
+    /// A model handing back a file it was asked to return unchanged returns it without the final
+    /// newline, because that is where its answer stopped. One byte, and it is the difference
+    /// between a file that was left alone and a file that was rewritten: the write happens, a
+    /// person is asked to approve a diff that looks like nothing, and the file on disk now ends
+    /// mid-line for whatever reads it next.
+    ///
+    /// A reshape and not a decision, with the standing [`Policy::unfence`] has. The write happens
+    /// either way; what changes is one byte of a document, in the direction of the document it
+    /// came from.
+    fn keep_the_last_newline(
+        &mut self,
+        spec: &crate::processor::ProcessorSpec,
+        reply: Labelled<String>,
+        slots: &crate::slot::SlotStore,
+    ) -> Labelled<String> {
+        let Some(about) = spec.about() else {
+            return reply;
+        };
+        let Ok(original) = slots.take_for_effect(about) else {
+            return reply;
+        };
+
+        let label = reply.label();
+        let proof = Declassification::authorise("checked for the last newline");
+        let had_one = original.declassify(&proof).ends_with('\n');
+        let text = reply.declassify(&proof);
+
+        if !had_one || text.is_empty() || text.ends_with('\n') {
+            return Labelled::new(text, label);
+        }
+
+        self.allow(
+            "processor",
+            format!("{}: the answer lost the document's last newline", spec.id()),
+        );
+        Labelled::new(format!("{text}\n"), label)
     }
 
     /// Take what a processor wanted to say off the front of what it produced.
@@ -2248,13 +2289,78 @@ mod tests {
         let input = input.declassify(&proof);
 
         assert!(
-            input.contains("--- begin ref:2 (return this one, changed or not) ---"),
+            input.contains("--- begin ref:2 (the document to answer about) ---"),
             "the document to return was not marked: {input}"
         );
         assert!(
             input.contains("--- begin ref:1 (context only, do not return this one) ---"),
             "the context was not marked as context: {input}"
         );
+    }
+
+    /// A model returning a file it was asked to leave alone returns it without the final
+    /// newline, because that is where its answer stopped. One byte, and it turns a file that was
+    /// left alone into a file that was rewritten and now ends mid-line.
+    #[test]
+    fn an_answer_keeps_the_last_newline_the_document_had() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+            .unwrap()
+            .write("print('serving')\n")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1")],
+                &Labelled::trusted("leave it alone".to_string()),
+                Some(SlotId::new("ref:1")),
+                &slots,
+            )
+            .expect("a spec");
+
+        let produced = policy.label_processor_output(
+            &spec,
+            Labelled::new("print('serving')".to_string(), Label::untrusted_private()),
+            &slots,
+        );
+        let proof = Declassification::authorise("test");
+        assert_eq!(produced.text.declassify(&proof), "print('serving')\n");
+    }
+
+    /// A document that never had one does not gain one: the answer is the document's shape, not
+    /// a shape this thinks documents should have.
+    #[test]
+    fn an_answer_gains_no_newline_the_document_never_had() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+            .unwrap()
+            .write("no newline here")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1")],
+                &Labelled::trusted("leave it alone".to_string()),
+                Some(SlotId::new("ref:1")),
+                &slots,
+            )
+            .expect("a spec");
+
+        let produced = policy.label_processor_output(
+            &spec,
+            Labelled::new("still no newline".to_string(), Label::untrusted_private()),
+            &slots,
+        );
+        let proof = Declassification::authorise("test");
+        assert_eq!(produced.text.declassify(&proof), "still no newline");
     }
 
     /// A reference that came from a processor names no file, so it cannot be a destination.
