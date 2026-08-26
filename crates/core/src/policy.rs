@@ -2072,6 +2072,48 @@ mod tests {
         assert_eq!(note.declassify(&proof), "I left the imports alone.");
     }
 
+    /// The two halves compose: a processor that leaves a document alone still says why, and the
+    /// word it answers with is what is left after its account is taken off the front.
+    #[test]
+    fn a_processor_can_say_why_it_left_a_document_alone() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+            .unwrap()
+            .write("the original")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1")],
+                &Labelled::trusted("fix it if it is the game".to_string()),
+                Some(SlotId::new("ref:1")),
+                &slots,
+            )
+            .expect("a spec");
+
+        let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
+        let produced = policy.label_processor_output(
+            &spec,
+            Labelled::new(
+                format!("This is a server, not the game.\n{marker}\nUNCHANGED"),
+                Label::untrusted_private(),
+            ),
+            &slots,
+        );
+
+        assert_eq!(produced.unchanged_from, Some(SlotId::new("ref:1")));
+        let proof = Declassification::authorise("test");
+        assert_eq!(
+            produced.note.expect("it said why").declassify(&proof),
+            "This is a server, not the game."
+        );
+        assert_eq!(produced.text.declassify(&proof), "the original");
+    }
+
     /// An answer with no line in it is a document, which is what every answer was before there
     /// was a line: a processor that says nothing loses nothing.
     #[test]

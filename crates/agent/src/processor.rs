@@ -48,7 +48,8 @@ Do exactly what the instruction asks and output the result and nothing else: no 
 explanation, no code fences unless the instruction calls for them. What you output is used \
 verbatim.
 
-If you want to say something about what you did, put it first, then a line reading exactly
+Always begin by saying what you did, in two or three sentences: what you found, what you \
+changed, and anything you deliberately left as it was. Then a line reading exactly
 
 ===== the document starts here =====
 
@@ -56,7 +57,11 @@ and then the document. Everything before that line goes to the person watching a
 else: no model reads it, and it is not part of any file. Everything after it is the document. \
 Leave the line out and the whole of your answer is the document, which is what it is for.
 
-That is where a remark belongs. Not in the document: whatever is in the document is the file.
+Say it even when you are sure, and especially when the change was larger than the instruction \
+implied. That account is the only description of the change anybody gets: the person approving \
+it has your diff and your words and nothing else, and they are the only one who can tell you \
+have moved something that was load-bearing somewhere else. Do not put any of it in the document. \
+Whatever is in the document is the file.
 
 This includes the case where the answer is that nothing should change. Whatever you output is \
 the file, so an explanation of why you are leaving a document alone is what replaces it. There \
