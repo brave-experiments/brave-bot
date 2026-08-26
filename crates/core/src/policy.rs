@@ -17,6 +17,7 @@
 //! run with its own routing precommit, rather than one long-lived policy whose routing
 //! drifts as untrusted content accumulates.
 
+use crate::ask::{self, Answer};
 use crate::capability::{Capability, CapabilitySet};
 use crate::event::{Event, Principle, Role, Sink};
 use crate::label::{Integrity, Label};
@@ -439,6 +440,57 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             format!("{tool}: model output labelled {label} from its context"),
         );
         Labelled::new(value, label)
+    }
+
+    /// Turn a person's replies to a series of questions into text the planner may read.
+    ///
+    /// The one place a value's first label comes from a human rather than from a capability or
+    /// from the context. Bytes a person typed came from the keyboard of the user who owns the
+    /// session, the same source as the task in [`Routing`], so `(T,pub)` is the first label they
+    /// have ever carried rather than an upgrade of an earlier one. There is no capability for
+    /// this, and there must not be: `Capability::output_label` may never yield `(T,pub)`, and a
+    /// person answering a question is not an observation of the world.
+    ///
+    /// **Refuses unless the series itself was `(T,pub)`.** A person cannot vouch for a question
+    /// an attacker may have written, so a selection among untrusted strings stays untrusted, and
+    /// the honest answer is to refuse rather than to launder it through a keypress. The refusal
+    /// covers the series whole, matching the one gate [`crate::ask::canonical_series`] is checked
+    /// by: a series with one untrusted question is not a series with some good answers in it.
+    ///
+    /// Lining the answers up against the questions happens here, inside the kernel, so no driver
+    /// decides which answer belongs to which question. It is total, so a confirmer that returns
+    /// the wrong number of answers cannot stall a turn: see [`crate::ask::describe_series`].
+    ///
+    /// It absorbs [`Integrity::Trusted`], which cannot raise a context that has already fallen,
+    /// so answering a question never restores integrity the turn had lost.
+    pub fn record_answers(
+        &mut self,
+        tool: &str,
+        series: &Labelled<crate::ask::Series>,
+        answers: &[Answer],
+    ) -> Gated<Labelled<String>> {
+        let label = series.label();
+        if label != Label::trusted_public() {
+            return Err(self.deny(
+                "answer",
+                Principle::IntegrityGate,
+                format!(
+                    "'{tool}' asked questions labelled {label}; a person cannot vouch for a \
+                     question they did not write, so the reply cannot be trusted either"
+                ),
+            ));
+        }
+
+        let proof = Declassification::authorise("questions the user answered");
+        let asked = series.clone().declassify(&proof);
+        let text = ask::describe_series(&asked, answers);
+
+        self.allow(
+            "answer",
+            format!("{tool}: the user replied, recorded (T,pub)"),
+        );
+        self.absorb(Integrity::Trusted);
+        Ok(Labelled::new(text, Label::trusted_public()))
     }
 
     /// Label input piped into the process on stdin.
@@ -4068,6 +4120,167 @@ mod tests {
                 ),
                 "the release was not recorded"
             );
+        }
+    }
+
+    mod questions {
+        use super::*;
+        use crate::ask::{Choice, Question, Series};
+
+        fn a_series() -> Series {
+            Series::new(vec![
+                Question::new(
+                    "Cache layer",
+                    "Which cache layer?",
+                    vec![Choice::new("HTTP", None), Choice::new("Query", None)],
+                    false,
+                ),
+                Question::new(
+                    "Platforms",
+                    "Which platforms?",
+                    vec![Choice::new("Linux", None), Choice::new("macOS", None)],
+                    true,
+                ),
+            ])
+        }
+
+        /// The property the whole tool rests on. Once the context has met something untrusted,
+        /// everything the model writes afterwards is attacker-influenceable, and a person picking
+        /// among strings an attacker wrote does not make those strings trusted. Asking at all
+        /// would launder them.
+        #[test]
+        fn a_series_from_an_untrusted_context_cannot_be_put_to_the_user() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &[]).resuming(Integrity::Untrusted);
+            assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+
+            let series = policy.label_model_output("ask_user", a_series());
+            let canonical =
+                policy.render_in_place("ask_user", &series, |s| crate::ask::canonical_series(&s));
+            policy
+                .before_action("ask_user", "questions", Role::Routing, &canonical)
+                .expect_err("questions written from an untrusted context are not routing-safe");
+        }
+
+        /// And the kernel refuses the replies too, not only the questions, so a caller that
+        /// skipped the routing gate cannot get a trusted answer out anyway.
+        #[test]
+        fn answers_to_an_untrusted_series_are_refused() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &[]).resuming(Integrity::Untrusted);
+
+            let series = policy.label_model_output("ask_user", a_series());
+            policy
+                .record_answers("ask_user", &series, &[Answer::Chosen(vec![0])])
+                .expect_err("a reply to questions nobody can vouch for must be refused");
+        }
+
+        /// The refusal covers the series whole. A series with one untrusted question is not a
+        /// series with some usable answers in it, and letting the good ones through would mean
+        /// the driver deciding which half of a batch the person is asked.
+        #[test]
+        fn a_refused_series_yields_no_answer_at_all() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &[]).resuming(Integrity::Untrusted);
+
+            let series = policy.label_model_output("ask_user", a_series());
+            let denial = policy
+                .record_answers(
+                    "ask_user",
+                    &series,
+                    &[Answer::Chosen(vec![0]), Answer::Chosen(vec![1])],
+                )
+                .expect_err("refused");
+            assert_eq!(denial.principle, Principle::IntegrityGate);
+        }
+
+        /// Typed text has no earlier label to upgrade: the person at the keyboard is the same
+        /// source the task itself came from, so this is the first label it has ever had.
+        #[test]
+        fn a_typed_answer_is_trusted_because_a_person_wrote_it() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &["."]);
+            let series = policy.label_model_output("ask_user", a_series());
+
+            let answer = policy
+                .record_answers(
+                    "ask_user",
+                    &series,
+                    &[Answer::Typed("neither".into()), Answer::Declined],
+                )
+                .expect("a trusted series may be answered");
+            assert_eq!(answer.label(), Label::trusted_public());
+        }
+
+        /// Answering must not be a way back up the lattice. If it were, a turn resuming a
+        /// conversation that had already met something untrusted could ask a question and carry
+        /// on as though nothing had happened.
+        #[test]
+        fn answering_never_raises_a_context_that_has_already_fallen() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &["safe"]).resuming(Integrity::Untrusted);
+
+            let series = policy.label_model_output("ask_user", a_series());
+            policy
+                .record_answers("ask_user", &series, &[Answer::Typed("still no".into())])
+                .expect_err("the context has fallen, so no question may be asked");
+            assert_eq!(policy.context_integrity(), Integrity::Untrusted);
+        }
+
+        /// A decline is an answer, not a failure: the turn has to be able to continue without one.
+        #[test]
+        fn declining_is_an_answer_rather_than_a_refusal() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &["."]);
+            let series = policy.label_model_output("ask_user", a_series());
+            let answer = policy
+                .record_answers("ask_user", &series, &[Answer::Declined, Answer::Declined])
+                .expect("declining is not a gate failure");
+            assert_eq!(answer.label(), Label::trusted_public());
+            assert!(policy.finish(), "a decline must not record a denial");
+        }
+
+        /// An interface that answered fewer questions than were asked did not answer the rest.
+        /// Reporting the shortfall as declines is what stops an answer sliding onto the wrong
+        /// question.
+        #[test]
+        fn fewer_answers_than_questions_are_read_as_declines() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &["."]);
+            let series = policy.label_model_output("ask_user", a_series());
+            let answer = policy
+                .record_answers("ask_user", &series, &[Answer::Chosen(vec![0])])
+                .expect("answered");
+
+            let proof = policy.authorise_display_release("test inspects the reply");
+            let text = answer.declassify(&proof);
+            assert!(text.contains("Which cache layer?"), "{text}");
+            assert!(text.contains("Which platforms?"), "{text}");
+            assert!(text.contains("declined"), "{text}");
+        }
+
+        /// And an answer past the last question names nothing, so it is dropped rather than
+        /// reported as something the person said.
+        #[test]
+        fn more_answers_than_questions_are_dropped() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_trusting(&mut sink, &["."]);
+            let series = policy.label_model_output("ask_user", a_series());
+            let answer = policy
+                .record_answers(
+                    "ask_user",
+                    &series,
+                    &[
+                        Answer::Chosen(vec![0]),
+                        Answer::Chosen(vec![0]),
+                        Answer::Typed("nobody asked".into()),
+                    ],
+                )
+                .expect("answered");
+
+            let proof = policy.authorise_display_release("test inspects the reply");
+            let text = answer.declassify(&proof);
+            assert!(!text.contains("nobody asked"), "{text}");
         }
     }
 }
