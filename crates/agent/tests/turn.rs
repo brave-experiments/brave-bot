@@ -3821,12 +3821,15 @@ fn each_result_says_whether_the_model_can_read_it() {
         again.landed
     );
     assert!(
-        Landing::Context.describe().contains("model's context"),
-        "the line does not say the model read it"
+        Landing::Context.describe().contains("planner's context"),
+        "the line does not say whose context it went into"
     );
     assert!(
-        Landing::Quarantined.describe().contains("processor"),
-        "the line does not say who can be sent to read it"
+        Landing::Quarantined
+            .describe()
+            .contains("planner's context")
+            && Landing::Quarantined.describe().contains("processor"),
+        "the line does not say whose context it is out of, or who may be sent to read it"
     );
 }
 

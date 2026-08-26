@@ -810,6 +810,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 let shown = preview_for(&mut policy, &output.tool, said);
                 reporter.quarantined(crate::report::Shown {
                     origin: "what the isolated processor said".to_string(),
+                    reach: crate::report::Reach::NoModel,
                     label: said.label().to_string(),
                     lines: shown.lines,
                     preview: shown.preview,
@@ -854,6 +855,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 reporter.landed(crate::report::Landing::Quarantined);
                 reporter.quarantined(crate::report::Shown {
                     origin: entries.origin.clone(),
+                    reach: crate::report::Reach::NotThePlanner,
                     label: references
                         .first()
                         .map(|r| r.label.to_string())
@@ -944,6 +946,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                             );
                             reporter.quarantined(crate::report::Shown {
                                 origin,
+                                reach: crate::report::Reach::NotThePlanner,
                                 label: reference.label.to_string(),
                                 lines: shown.lines,
                                 preview: shown.preview,

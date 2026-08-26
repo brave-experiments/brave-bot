@@ -163,6 +163,32 @@ pub fn how_long_ago(age: std::time::Duration) -> String {
 ///
 /// A trait so a turn does not depend on a terminal: the interactive session draws, a one-shot run
 /// ignores, and tests record.
+/// How far the content in a [`Shown`] block reaches.
+///
+/// There is more than one model in a turn, so "not shown to the model" says nothing useful. The
+/// driver is not a model at all: it carries bytes it may not read, and has no context to put
+/// them in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Never in the planner's context. An isolated processor can be sent to read it, if the
+    /// planner names it.
+    NotThePlanner,
+    /// In no model's context at all: nothing can be sent to read it, and it is not part of any
+    /// file. What a processor says about its own work is this.
+    NoModel,
+}
+
+impl Reach {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::NotThePlanner => {
+                "not in the planner's context; a processor can be sent to read it"
+            }
+            Self::NoModel => "in no model's context: nothing can be sent to read this",
+        }
+    }
+}
+
 /// Quarantined content, released so the person watching can see it.
 ///
 /// The planner is never shown this and neither is a processor: it goes to a screen and stops
@@ -176,6 +202,8 @@ pub fn how_long_ago(age: std::time::Duration) -> String {
 pub struct Shown {
     /// Where it came from, in words a person can act on: a path, or what produced it.
     pub origin: String,
+    /// Which contexts this is kept out of.
+    pub reach: Reach,
     /// The label it carries, in the same short form the trail uses.
     pub label: String,
     /// The first lines of it, each already trimmed to a sensible width.
@@ -202,11 +230,18 @@ pub enum Landing {
 
 impl Landing {
     /// How it reads at the end of a line about a call.
+    ///
+    /// Names which context, because there is more than one kind of model here and the driver is
+    /// not one of them: the planner is the model holding the conversation, and a processor is an
+    /// isolated model that is handed slots and nothing else. "The model" answers neither
+    /// question a person is asking.
     pub fn describe(self) -> &'static str {
         match self {
-            Self::Context => "read into the model's context",
-            Self::Quarantined => "quarantined: only an isolated processor can be sent to read it",
-            Self::Reserved => "not opened: only its name is known",
+            Self::Context => "read into the planner's context",
+            Self::Quarantined => {
+                "not in the planner's context; only an isolated processor can be sent to read it"
+            }
+            Self::Reserved => "read by nothing: only its name is known",
         }
     }
 }

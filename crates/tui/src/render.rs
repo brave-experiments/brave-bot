@@ -153,7 +153,7 @@ fn quarantined_lines(shown: &Shown) -> Vec<Line<'static>> {
             format!("untrusted \u{b7} {} \u{b7} {}", shown.origin, shown.label),
             marked.add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  not shown to the model", dim()),
+        Span::styled(format!("  {}", shown.reach.describe()), dim()),
     ])];
 
     for line in &shown.preview {
@@ -624,6 +624,7 @@ mod tests {
         fn quarantined_content_is_shown_and_marked_on_every_line() {
             let shown = Shown {
                 origin: "notes.md".to_string(),
+                reach: bua_agent::report::Reach::NotThePlanner,
                 label: "(U,priv)".to_string(),
                 preview: vec![
                     "first line".to_string(),
