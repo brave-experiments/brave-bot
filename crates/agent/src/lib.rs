@@ -19,7 +19,7 @@ pub mod tools;
 pub mod turn;
 pub mod workspace;
 
-pub use confirm::{Confirmer, Decision, Intent, RefuseWrites, WriteRequest};
+pub use confirm::{Confirmer, Decision, Intent, Unattended, WriteRequest};
 pub use conversation::Conversation;
 pub use processor::ProcessorError;
 pub use report::{Activity, IgnoreReports, Reporter};

@@ -1,4 +1,10 @@
-//! Asking the user to approve a write.
+//! Asking the user to approve a write, and putting the planner's questions to them.
+//!
+//! Two questions travel this way, and they differ in what is at stake. A write asks for
+//! permission, and the answer decides whether an effect happens. A question the planner posed
+//! asks for information, and the answer decides nothing on its own: it is text the model reads.
+//! What they share is consent, so both live here rather than in [`crate::report`], which
+//! announces and expects no reply.
 //!
 //! A model-proposed write path cannot be promoted the way a read path can: a read that
 //! goes to the wrong file wastes a step, while a write to the wrong file destroys work.
@@ -12,6 +18,7 @@
 //! decorative, and a whole-file body asks them to spot the difference themselves.
 
 use crate::diff::Diff;
+use bua_core::ask::{Answer, Asking};
 use std::fmt;
 
 /// How a proposed write came about.
@@ -96,36 +103,85 @@ pub enum Decision {
     Reject,
 }
 
-/// Something that can ask a person about a write.
+/// Something that can put a question to a person.
 ///
 /// A trait so the kernel and the agent never depend on a terminal: the interactive session
 /// prompts, a one-shot run refuses, and tests decide without either.
+///
+/// Neither method has a default body. Failing closed is the behaviour that matters most here, so
+/// it is written out at every implementation rather than inherited from a trait an implementor
+/// never read.
 pub trait Confirmer {
     /// Ask about a write. Implementations must default to refusal when they cannot ask.
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision;
+
+    /// Put a series of questions to the person, one answer per question in the order they were
+    /// asked.
+    ///
+    /// Implementations that cannot ask must return **no answers at all**, rather than a decline
+    /// for each question. The kernel reads a missing answer as a decline anyway, and saying
+    /// nothing is the one reply that cannot be wrong about how many questions there were.
+    ///
+    /// The questions arrive already shaped and released by the kernel, so an implementation
+    /// draws what it was handed rather than formatting anything itself.
+    fn ask_user(&mut self, asking: &Asking) -> Vec<Answer>;
 }
 
-/// Refuses every write.
+/// Nobody to ask: refuses every write and answers no question.
 ///
-/// The right behaviour where no one can be asked: a one-shot command, a pipeline, a cron
-/// job. Silently approving in a non-interactive context would make the confirmation
-/// decorative exactly where it matters most.
+/// The right behaviour where no one is there: a one-shot command, a pipeline, a cron job.
+/// Silently approving in a non-interactive context would make the confirmation decorative
+/// exactly where it matters most, and answering a question on the user's behalf would put words
+/// in their mouth that the planner would then treat as theirs.
 #[derive(Debug, Default)]
-pub struct RefuseWrites;
+pub struct Unattended;
 
-impl Confirmer for RefuseWrites {
+impl Confirmer for Unattended {
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
+    }
+
+    fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+        Vec::new()
     }
 }
 
 /// Approves every write. Test-only, and named so its use is conspicuous.
+///
+/// Answers no question even so: approving a write is a yes to something the test set up, while
+/// choosing an option would be inventing an answer no test asked for.
 #[derive(Debug, Default)]
 pub struct ApproveWrites;
 
 impl Confirmer for ApproveWrites {
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Approve
+    }
+
+    fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+        Vec::new()
+    }
+}
+
+/// Takes the first option of every question, and refuses writes. Test-only.
+#[derive(Debug, Default)]
+pub struct ChoosesFirst;
+
+impl Confirmer for ChoosesFirst {
+    fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
+        asking
+            .prompts
+            .iter()
+            .map(|prompt| match prompt.rows.first() {
+                Some(row) => Answer::Chosen(vec![row.index]),
+                // Nothing to choose. Inventing text here would test the wrong thing.
+                None => Answer::Declined,
+            })
+            .collect()
     }
 }
 
@@ -141,6 +197,46 @@ impl fmt::Display for Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_series() -> Asking {
+        bua_core::ask::asking(&bua_core::ask::Series::new(vec![
+            bua_core::ask::Question::new(
+                "Cache",
+                "Which cache layer?",
+                vec![
+                    bua_core::ask::Choice::new("HTTP", None),
+                    bua_core::ask::Choice::new("Query", None),
+                ],
+                false,
+            ),
+            bua_core::ask::Question::new("Branch", "Which branch?", Vec::new(), false),
+        ]))
+    }
+
+    /// Nobody is there, so nothing is answered. Saying nothing rather than a decline per
+    /// question is the reply that cannot be wrong about how many questions there were.
+    #[test]
+    fn an_unattended_run_answers_no_question() {
+        assert!(Unattended.ask_user(&a_series()).is_empty());
+    }
+
+    /// Approving a write is a yes to something the test set up. Choosing an option would be
+    /// inventing an answer no test asked for.
+    #[test]
+    fn approving_writes_does_not_imply_answering_questions() {
+        assert!(ApproveWrites.ask_user(&a_series()).is_empty());
+    }
+
+    /// One answer per question, in the order they were asked, so a test double cannot quietly
+    /// shift an answer onto the wrong question.
+    #[test]
+    fn a_chooser_answers_every_question_in_the_series() {
+        assert_eq!(
+            ChoosesFirst.ask_user(&a_series()),
+            vec![Answer::Chosen(vec![0]), Answer::Declined],
+            "a question with no options was answered with an option"
+        );
+    }
 
     fn request() -> WriteRequest {
         WriteRequest {
@@ -223,7 +319,7 @@ mod tests {
     #[test]
     fn the_non_interactive_confirmer_refuses() {
         assert_eq!(
-            RefuseWrites.confirm_write(&request()),
+            Unattended.confirm_write(&request()),
             Decision::Reject,
             "a non-interactive run must not approve writes"
         );

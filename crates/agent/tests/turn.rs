@@ -835,7 +835,7 @@ fn a_refused_write_does_not_happen() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -875,7 +875,7 @@ fn a_refused_overwrite_leaves_the_original() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -982,6 +982,11 @@ impl bua_agent::Confirmer for RecordingConfirmer {
     fn confirm_write(&mut self, request: &bua_agent::WriteRequest) -> bua_agent::Decision {
         self.seen.push(request.clone());
         self.decision
+    }
+
+    /// These tests are about writes. A question they did not set up gets no answer.
+    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+        Vec::new()
     }
 }
 
@@ -1495,7 +1500,7 @@ fn a_truncated_search_tells_the_model_it_is_incomplete() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1531,7 +1536,7 @@ fn a_complete_search_makes_no_truncation_claim() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -1567,7 +1572,7 @@ fn a_paged_read_tells_the_model_there_is_more() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1607,7 +1612,7 @@ fn the_model_can_ask_for_a_later_page() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1646,7 +1651,7 @@ fn a_small_read_has_no_paging_notice() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1682,7 +1687,7 @@ fn a_binary_read_tells_the_model_it_is_binary() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -1727,7 +1732,7 @@ fn a_binary_file_does_not_break_search() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1764,7 +1769,7 @@ fn the_model_can_narrow_a_listing_by_glob() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -1803,7 +1808,7 @@ fn the_model_can_limit_a_search_to_matching_files() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -2097,7 +2102,7 @@ fn untrusted_file_content_never_reaches_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2140,7 +2145,7 @@ fn untrusted_file_context_never_reaches_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2175,7 +2180,7 @@ fn piped_input_is_never_shown_to_the_planner() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2213,7 +2218,7 @@ fn trusted_file_content_is_shown_to_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -2251,7 +2256,7 @@ fn untrusted_search_results_never_reach_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2286,7 +2291,7 @@ fn untrusted_listings_never_reach_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2321,7 +2326,7 @@ fn token_usage_accumulates_across_rounds() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -2347,7 +2352,7 @@ fn a_turn_without_reported_usage_reports_what_it_counted() {
         &egress,
         &workspace,
         &Task::new("hello"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2377,7 +2382,7 @@ fn a_cancelled_turn_stops_before_the_first_request() {
         &egress,
         &workspace,
         &Task::new("do something"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut bua_agent::IgnoreReports,
         &mut sink,
         bua_core::trust::TrustStore::new(),
@@ -2407,6 +2412,10 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.cancel.cancel();
             bua_agent::Decision::Approve
+        }
+
+        fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+            Vec::new()
         }
     }
 
@@ -2477,7 +2486,7 @@ fn an_uncancelled_turn_completes_normally() {
         &egress,
         &workspace,
         &Task::new("ask"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut bua_agent::IgnoreReports,
         &mut sink,
         bua_core::trust::TrustStore::new(),
@@ -2507,7 +2516,7 @@ fn output_tokens_are_reported_as_the_reply_arrives() {
         &egress,
         &workspace,
         &Task::new("hello"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
@@ -2553,7 +2562,7 @@ fn output_tokens_accumulate_across_tool_rounds() {
         &egress,
         &workspace,
         &Task::new("read it"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
@@ -2598,7 +2607,7 @@ fn a_context_file_and_a_tool_result_get_distinct_slots() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
     )
     .expect("a turn that quarantines a file and then a tool result must still run");
@@ -2625,7 +2634,7 @@ fn a_turn_survives_a_connection_that_died_mid_request() {
         &egress,
         &workspace,
         &Task::new("what is 2 + 2?"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
@@ -3076,7 +3085,7 @@ fn a_round_is_sent_in_the_shape_the_api_defines() {
         &egress,
         &workspace,
         &Task::new("look around"),
-        &mut bua_agent::RefuseWrites,
+        &mut bua_agent::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4417,7 +4426,7 @@ fn a_refused_reference_write_does_not_happen() {
         &egress,
         &workspace,
         &Task::new("rewrite the config"),
-        &mut bua_agent::confirm::RefuseWrites,
+        &mut bua_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");

@@ -9,6 +9,7 @@
 
 use bua_agent::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use bua_agent::diff::Change;
+use bua_core::ask::{Answer as UserAnswer, Asking};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -34,6 +35,10 @@ impl<'t, B: Backend> TerminalConfirmer<'t, B> {
 impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
         ask(self.terminal, request).decision()
+    }
+
+    fn ask_user(&mut self, asking: &Asking) -> Vec<UserAnswer> {
+        crate::ask::ask(self.terminal, asking)
     }
 }
 

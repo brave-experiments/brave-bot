@@ -171,7 +171,7 @@ fn run_task(args: &[String]) -> ExitCode {
 
     // A one-shot run has nobody to ask about a write, so writes are refused rather than
     // silently applied.
-    let mut confirmer = bua_agent::RefuseWrites;
+    let mut confirmer = bua_agent::Unattended;
 
     // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes
     // the command pipeable. Without it a long turn prints nothing until it is over.

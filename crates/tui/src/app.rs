@@ -720,7 +720,7 @@ fn run_turn_animated(
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
-    let (answer_tx, answer_rx) = mpsc::channel::<bua_agent::Decision>();
+    let (answer_tx, answer_rx) = mpsc::channel::<crate::remote_confirm::Reply>();
 
     // A fresh token per turn: reusing one could cancel a turn before it started.
     let cancel = Cancel::new();
@@ -806,7 +806,11 @@ fn run_turn_animated(
                 }
                 // A closed channel means the worker is already gone, so there is nothing to
                 // answer and the loop below will collect its result.
-                let _ = answer_tx.send(answer.decision());
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Write(answer.decision()));
+            }
+            Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
+                let answers = crate::ask::ask(terminal, &asking);
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Ask(answers));
             }
             // No reply: each of these is recorded and the next redraw, one iteration away,
             // shows it. That is what makes a long turn legible while it runs.

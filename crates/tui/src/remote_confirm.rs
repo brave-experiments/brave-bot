@@ -5,17 +5,23 @@
 //! nor update a display itself. Both travel over one channel, because the main thread waits on
 //! exactly one thing and `mpsc` has no way to select across two.
 //!
-//! The two messages behave oppositely, and the difference is consent:
+//! The messages behave in two ways, and the difference is consent:
 //!
-//! - A write **asks**. The worker blocks until an answer arrives, which is what a write must do
-//!   anyway, and every failure resolves to refusal: a channel that cannot carry the question
-//!   cannot carry consent either.
+//! - A write and a question **ask**. The worker blocks until an answer arrives, and every
+//!   failure resolves to the negative one: a channel that cannot carry the question cannot carry
+//!   consent either, and a reply that never came is not an answer to report as the user's.
 //! - Progress **announces**. There is no reply to wait for and nothing to refuse, so a listener
 //!   that has gone away is simply not drawing. Failing a turn because nobody was watching would
 //!   let the display outrank the work.
+//!
+//! Replies come back over one channel too, tagged with what they answer. The worker asks one
+//! thing at a time and blocks, so a reply of the wrong kind means the two ends have lost step
+//! with each other; that resolves to the negative answer rather than to a retry, because a
+//! decision taken against a question nobody matched is worse than no decision at all.
 
 use bua_agent::confirm::{Confirmer, Decision, WriteRequest};
 use bua_agent::report::{Activity, Landing, Phase, Reporter, Shown};
+use bua_core::ask::{Answer, Asking};
 use bua_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -25,6 +31,8 @@ pub enum ToMain {
     /// A write needs approval. The main thread must reply.
     Write(WriteRequest),
     /// The task list changed. No reply.
+    /// The planner is asking the user something. The main thread must reply.
+    Ask(Asking),
     Todos(Vec<Row>),
     /// The model has written this many output tokens so far. No reply.
     Written(u64),
@@ -42,26 +50,46 @@ pub enum ToMain {
     Landed(Landing),
 }
 
-/// The worker's end for questions: sends a write, waits for the answer.
+/// What the main thread sends back, tagged with what it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    Write(Decision),
+    Ask(Vec<Answer>),
+}
+
+/// The worker's end for questions: sends one, waits for the answer.
 pub struct RemoteConfirmer {
     outbound: Sender<ToMain>,
-    answers: Receiver<Decision>,
+    answers: Receiver<Reply>,
 }
 
 impl RemoteConfirmer {
-    pub fn new(outbound: Sender<ToMain>, answers: Receiver<Decision>) -> Self {
+    pub fn new(outbound: Sender<ToMain>, answers: Receiver<Reply>) -> Self {
         Self { outbound, answers }
+    }
+
+    /// Send a question and block for its reply.
+    fn exchange(&mut self, message: ToMain) -> Option<Reply> {
+        // A channel that cannot carry the question cannot carry consent either.
+        self.outbound.send(message).ok()?;
+        self.answers.recv().ok()
     }
 }
 
 impl Confirmer for RemoteConfirmer {
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
-        // A channel that cannot carry the question cannot carry consent either.
-        if self.outbound.send(ToMain::Write(request.clone())).is_err() {
-            return Decision::Reject;
+        match self.exchange(ToMain::Write(request.clone())) {
+            Some(Reply::Write(decision)) => decision,
+            // No reply, or a reply to something else. Neither is consent.
+            _ => Decision::Reject,
         }
-        // Blocks until the main thread answers, which is what a write must wait for.
-        self.answers.recv().unwrap_or(Decision::Reject)
+    }
+
+    fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
+        match self.exchange(ToMain::Ask(asking.clone())) {
+            Some(Reply::Ask(answers)) => answers,
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -145,12 +173,107 @@ mod tests {
                 ToMain::Write(asked) => assert_eq!(asked.path, "notes.md"),
                 other => panic!("expected a write question, got {other:?}"),
             }
-            answer_tx.send(Decision::Approve).expect("answered");
+            answer_tx
+                .send(Reply::Write(Decision::Approve))
+                .expect("answered");
         });
 
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
         assert_eq!(confirmer.confirm_write(&request()), Decision::Approve);
         responder.join().expect("responder finished");
+    }
+
+    fn a_series() -> Asking {
+        bua_core::ask::asking(&bua_core::ask::Series::new(vec![
+            bua_core::ask::Question::new(
+                "Cache",
+                "Which cache layer?",
+                vec![bua_core::ask::Choice::new("HTTP", None)],
+                false,
+            ),
+        ]))
+    }
+
+    #[test]
+    fn every_answer_in_a_series_travels_back_to_the_worker() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (answer_tx, answer_rx) = channel();
+
+        let responder = thread::spawn(move || {
+            match inbound.recv().expect("a message arrived") {
+                ToMain::Ask(asked) => assert_eq!(asked.prompts.len(), 1),
+                other => panic!("expected a question, got {other:?}"),
+            }
+            answer_tx
+                .send(Reply::Ask(vec![Answer::Chosen(vec![0]), Answer::Declined]))
+                .expect("answered");
+        });
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert_eq!(
+            confirmer.ask_user(&a_series()),
+            vec![Answer::Chosen(vec![0]), Answer::Declined]
+        );
+        responder.join().expect("responder finished");
+    }
+
+    /// An interface that has gone away cannot be asked, so nothing is reported as its answer.
+    #[test]
+    fn a_closed_channel_answers_no_question() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (_answer_tx, answer_rx) = channel::<Reply>();
+        drop(inbound);
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert!(confirmer.ask_user(&a_series()).is_empty());
+    }
+
+    /// And an answer channel that closes without replying answers nothing, rather than hanging.
+    #[test]
+    fn a_dropped_answer_channel_answers_no_question() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (answer_tx, answer_rx) = channel::<Reply>();
+        thread::spawn(move || {
+            inbound.recv().expect("a message arrived");
+            drop(answer_tx);
+        });
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert!(confirmer.ask_user(&a_series()).is_empty());
+    }
+
+    /// The two ends ask one thing at a time, so a reply of the wrong kind means they have lost
+    /// step with each other. Taking it as the answer would report a decision against a question
+    /// nobody matched.
+    #[test]
+    fn a_write_approval_is_not_taken_as_an_answer_to_a_question() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (answer_tx, answer_rx) = channel::<Reply>();
+        thread::spawn(move || {
+            inbound.recv().expect("a message arrived");
+            answer_tx
+                .send(Reply::Write(Decision::Approve))
+                .expect("answered");
+        });
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert!(confirmer.ask_user(&a_series()).is_empty());
+    }
+
+    /// And the other way round: an answer to a question is not consent to a write.
+    #[test]
+    fn an_answer_to_a_question_is_not_taken_as_consent_to_a_write() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (answer_tx, answer_rx) = channel::<Reply>();
+        thread::spawn(move || {
+            inbound.recv().expect("a message arrived");
+            answer_tx
+                .send(Reply::Ask(vec![Answer::Chosen(vec![0])]))
+                .expect("answered");
+        });
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert_eq!(confirmer.confirm_write(&request()), Decision::Reject);
     }
 
     #[test]
@@ -160,7 +283,9 @@ mod tests {
 
         thread::spawn(move || {
             inbound.recv().expect("a message arrived");
-            answer_tx.send(Decision::Reject).expect("answered");
+            answer_tx
+                .send(Reply::Write(Decision::Reject))
+                .expect("answered");
         });
 
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
@@ -172,7 +297,7 @@ mod tests {
     #[test]
     fn a_closed_channel_refuses_a_write() {
         let (outbound, inbound) = channel::<ToMain>();
-        let (_answer_tx, answer_rx) = channel::<Decision>();
+        let (_answer_tx, answer_rx) = channel::<Reply>();
         drop(inbound);
 
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
@@ -183,7 +308,7 @@ mod tests {
     #[test]
     fn a_dropped_answer_channel_refuses() {
         let (outbound, inbound) = channel::<ToMain>();
-        let (answer_tx, answer_rx) = channel::<Decision>();
+        let (answer_tx, answer_rx) = channel::<Reply>();
 
         thread::spawn(move || {
             inbound.recv().expect("a message arrived");
@@ -204,7 +329,7 @@ mod tests {
         thread::spawn(move || {
             for decision in [Decision::Approve, Decision::Reject, Decision::Approve] {
                 inbound.recv().expect("a message arrived");
-                answer_tx.send(decision).expect("answered");
+                answer_tx.send(Reply::Write(decision)).expect("answered");
             }
         });
 
@@ -246,7 +371,7 @@ mod tests {
     #[test]
     fn questions_and_reports_share_the_channel() {
         let (outbound, inbound) = channel::<ToMain>();
-        let (answer_tx, answer_rx) = channel::<Decision>();
+        let (answer_tx, answer_rx) = channel::<Reply>();
 
         let mut reporter = RemoteReporter::new(outbound.clone());
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
@@ -255,6 +380,7 @@ mod tests {
             let mut seen = Vec::new();
             while let Ok(message) = inbound.recv() {
                 match message {
+                    ToMain::Ask(_) => seen.push("ask"),
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),
                     ToMain::Phase(_) => seen.push("phase"),
@@ -265,7 +391,9 @@ mod tests {
                     ToMain::Landed(_) => seen.push("landed"),
                     ToMain::Write(_) => {
                         seen.push("write");
-                        answer_tx.send(Decision::Approve).expect("answered");
+                        answer_tx
+                            .send(Reply::Write(Decision::Approve))
+                            .expect("answered");
                         return seen;
                     }
                 }
