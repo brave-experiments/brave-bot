@@ -241,18 +241,23 @@ pub fn available() -> Vec<Tool> {
             "Transform quarantined content you were not shown. Spawns an isolated model with no \
              tools, no memory and nothing to read but the references you name; it follows your \
              instruction and its output is quarantined as a new reference. This is how to \
-             change a file you cannot see: read the file, process the reference it gave you \
-             into the contents you want, then pass the new reference to write_file as \
-             contents_ref. You are not shown its output either, and nobody reads it before \
-             it is written, so say exactly what it must be. It reads the whole document, so it \
-             can be asked to work out where a change goes, and to leave the document alone if \
-             it turns out not to be the one you are after.",
+             change a file you cannot see: name the file's reference, say what has to be true \
+             of it afterwards, then pass the reference that comes back to write_file as \
+             contents_ref. You are not shown its output either, and nobody reads it before it \
+             is written, so be exact about the shape of the answer: the complete document and \
+             nothing else. What the change should be is its decision, not yours. It reads the \
+             whole document, so it can work out what is wrong and where the fix goes, and leave \
+             a file alone if it turns out not to be the one you are after.",
             json!({
                 "type": "object",
                 "properties": {
                     "reads": {
                         "type": "array",
-                        "description": "The references to give it, e.g. [\"ref:0\"]. At least one.",
+                        "description": "The references to give it, e.g. [\"ref:0\", \"ref:1\"]. \
+                                        At least one, and usually every reference that bears on \
+                                        the task: the input names each block by its reference, \
+                                        so one that can see the whole set can tell which file is \
+                                        which. It still returns one document.",
                         "items": {"type": "string"}
                     },
                     "instruction": {
