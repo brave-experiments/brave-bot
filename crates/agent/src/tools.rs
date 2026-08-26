@@ -502,6 +502,21 @@ impl Produced {
     }
 }
 
+/// A tool name without the group some models put in front of it.
+///
+/// Only the one prefix, and only where something is left after it: this is for a name that means
+/// one of ours, not a general invitation to guess.
+fn strip_namespace(name: &str) -> &str {
+    for prefix in ["functions.", "functions_"] {
+        if let Some(rest) = name.strip_prefix(prefix)
+            && !rest.is_empty()
+        {
+            return rest;
+        }
+    }
+    name
+}
+
 /// The driver's word for what a tool does.
 ///
 /// Chosen from the tool's name, which dispatch already matches on, so this decides nothing new.
@@ -710,7 +725,12 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     reporter: &mut R,
     call: &ToolCall,
 ) -> Output {
-    let name = call.function.name.clone();
+    // Some models namespace a tool by the group it was offered in: "functions_todo_write" and
+    // "functions.todo_write" both mean todo_write, and answering "no such tool" to those spends
+    // a round on a typo of our own making. The prefix is stripped before the name is matched
+    // against the table, which is the driver's own list of literals: nothing the model writes
+    // reaches anything but that comparison.
+    let name = strip_namespace(&call.function.name).to_string();
     let verb = verb_for(&name);
 
     let arguments = match call.arguments() {
@@ -1867,6 +1887,18 @@ fn search<S: Sink>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A model that namespaces a tool by the group it was offered in means the tool. Answering
+    /// "no such tool" to that spends a round on a difference in spelling.
+    #[test]
+    fn a_namespaced_tool_name_means_the_tool() {
+        assert_eq!(strip_namespace("functions_todo_write"), "todo_write");
+        assert_eq!(strip_namespace("functions.write_file"), "write_file");
+        assert_eq!(strip_namespace("todo_write"), "todo_write");
+        // Not an invitation to guess at anything else.
+        assert_eq!(strip_namespace("tools.todo_write"), "tools.todo_write");
+        assert_eq!(strip_namespace("functions."), "functions.");
+    }
 
     /// A task list is written by the planner, which has only reference names, and read by the
     /// person whose directory it is, who has only filenames. The line has to carry both, and the
