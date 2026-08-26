@@ -3732,6 +3732,60 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
     );
 }
 
+/// A line saying "Read(index.html)" does not say whether the model can now read that file, and
+/// that difference is the whole design. Each result says where it went.
+#[test]
+fn each_result_says_whether_the_model_can_read_it() {
+    let scratch = Scratch::new("where-it-went");
+    std::fs::write(scratch.path.join("vouched.md"), "trusted notes\n").unwrap();
+    std::fs::write(scratch.path.join("fetched.md"), "untrusted notes\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // The directory is vouched for, one file in it is not: both kinds in one turn.
+    let mut trust = bua_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("fetched.md");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"vouched.md"}"#),
+        tool_request("read_file", r#"{"path":"fetched.md"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read both"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trust,
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    use bua_agent::report::Landing;
+    assert_eq!(
+        reporter.landed,
+        vec![Landing::Context, Landing::Reserved],
+        "a person could not tell which read the model can see"
+    );
+    assert!(
+        Landing::Context.describe().contains("has read it"),
+        "the line does not say the model read it"
+    );
+    assert!(
+        Landing::Quarantined.describe().contains("processor"),
+        "the line does not say who can be sent to read it"
+    );
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.

@@ -10,7 +10,7 @@
 //! place the cursor needs locating.
 
 use bua_agent::diff::Change;
-use bua_agent::report::{Activity, Shown};
+use bua_agent::report::{Activity, Landing, Shown};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -84,7 +84,7 @@ const QUARANTINE_BAR: &str = "\u{2503}";
 ///
 /// The shape mirrors a turn's own: a marker, then the detail indented beneath it, so a call
 /// and its result read as one thing rather than two unrelated lines.
-fn activity_lines(activity: &Activity) -> Vec<Line<'static>> {
+fn activity_lines(activity: &Activity, landing: Option<Landing>) -> Vec<Line<'static>> {
     let head = if activity.is_running() {
         // Hollow while it runs, filled when it is over, so the eye finds the live one.
         Style::default().fg(Color::Yellow)
@@ -110,6 +110,20 @@ fn activity_lines(activity: &Activity) -> Vec<Line<'static>> {
             } else {
                 dim()
             },
+        )));
+    }
+
+    // Where it went, which is the thing "Read(index.html)" does not say. Whether the model can
+    // now read that file is the difference the whole design turns on, and it was invisible.
+    if let Some(landing) = landing {
+        let colour = match landing {
+            Landing::Context => Style::default().fg(Color::Blue),
+            Landing::Quarantined => Style::default().fg(Color::Yellow),
+            Landing::Reserved => dim(),
+        };
+        lines.push(Line::from(Span::styled(
+            format!("    {}", landing.describe()),
+            colour,
         )));
     }
 
@@ -285,7 +299,7 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
             }
             // What the turn did, kept in the scrollback next to what it said about it.
             Speaker::Tool => match &entry.activity {
-                Some(activity) => lines.extend(activity_lines(activity)),
+                Some(activity) => lines.extend(activity_lines(activity, entry.landing)),
                 // A call read back out of a stored session, which records that it happened and
                 // not what came of it. Drawn without the coloured marker a live call earns,
                 // since green would claim an outcome the record does not have.

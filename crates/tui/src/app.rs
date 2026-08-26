@@ -633,6 +633,7 @@ fn run_turn_animated(
                 session.finish_activity(activity)
             }
             Ok(crate::remote_confirm::ToMain::Quarantined(shown)) => session.show(shown),
+            Ok(crate::remote_confirm::ToMain::Landed(landing)) => session.landed(landing),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // The worker dropped its senders, so the turn is over.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,

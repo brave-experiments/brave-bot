@@ -5,7 +5,7 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use crate::audit::TrailLine;
-use bua_agent::report::{Activity, Phase, Shown};
+use bua_agent::report::{Activity, Landing, Phase, Shown};
 use bua_core::event::Event;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,11 @@ pub struct Entry {
     /// Carries the note and the hunks separately from `text` so the interface can style them
     /// without parsing anything back out of a formatted line.
     pub activity: Option<Activity>,
+    /// Where this call's result went: into the model's context, into a slot, or nowhere.
+    ///
+    /// The line says what was read; this says who can read it, which is the part a person
+    /// cannot work out from the outside and the part the whole design turns on.
+    pub landing: Option<Landing>,
     /// Quarantined content this call produced, for the person watching.
     ///
     /// Kept apart from `text` because it is drawn apart: it is the one thing on the screen the
@@ -58,6 +63,7 @@ impl Entry {
             text: text.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            landing: None,
             shown: None,
             activity: None,
         }
@@ -69,6 +75,7 @@ impl Entry {
             text: text.into(),
             trail,
             todos: Vec::new(),
+            landing: None,
             shown: None,
             activity: None,
         }
@@ -80,6 +87,7 @@ impl Entry {
             text: text.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            landing: None,
             shown: None,
             activity: None,
         }
@@ -95,6 +103,7 @@ impl Entry {
             text: activity.line(),
             trail: Vec::new(),
             todos: Vec::new(),
+            landing: None,
             shown: None,
             activity: Some(activity),
         }
@@ -112,6 +121,7 @@ impl Entry {
             text: line.into(),
             trail: Vec::new(),
             todos: Vec::new(),
+            landing: None,
             shown: None,
             activity: None,
         }
@@ -360,6 +370,15 @@ impl Session {
     /// something the session said. Where there is no such line, which should not happen, it goes
     /// on its own rather than being dropped: content released for a screen and then not drawn is
     /// the worst of both.
+    /// Record where the last call's result went.
+    pub fn landed(&mut self, landing: Landing) {
+        if let Some(entry) = self.transcript.last_mut()
+            && entry.speaker == Speaker::Tool
+        {
+            entry.landing = Some(landing);
+        }
+    }
+
     pub fn show(&mut self, shown: Shown) {
         self.scroll = 0;
         match self.transcript.last_mut() {

@@ -184,6 +184,33 @@ pub struct Shown {
     pub lines: usize,
 }
 
+/// Where a tool's result went, which is the thing a person cannot otherwise tell.
+///
+/// "Read(index.html)" says nothing about whether the model can now read that file, and the
+/// difference is the whole design: one of these puts a file in front of the model, one puts it
+/// somewhere only an isolated processor can be sent, and one reads nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landing {
+    /// Into the planner's context. The model has read this.
+    Context,
+    /// Into a slot. Nothing has read it but the driver, and the only thing that can be sent to
+    /// read it is an isolated processor.
+    Quarantined,
+    /// Nowhere. The file is named and has not been opened.
+    Reserved,
+}
+
+impl Landing {
+    /// How it reads at the end of a line about a call.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Context => "the model has read it",
+            Self::Quarantined => "quarantined: only an isolated processor can be sent to read it",
+            Self::Reserved => "not opened: only its name is known",
+        }
+    }
+}
+
 pub trait Reporter {
     /// The task list changed. Rows are already shaped for display and released.
     fn todos(&mut self, rows: Vec<Row>);
@@ -219,6 +246,12 @@ pub trait Reporter {
     /// the one who can tell whether the agent is working on the right file, and leaving them with
     /// "2 files, quarantined" told them nothing they could use.
     fn quarantined(&mut self, _shown: Shown) {}
+
+    /// Where the result of the call just finished ended up.
+    ///
+    /// Sent after the kernel has decided, which is why it is not part of the finished call: what
+    /// happens to a result is settled by its label, after the tool that produced it has returned.
+    fn landed(&mut self, _landing: Landing) {}
 
     /// A tool call has begun.
     ///
@@ -263,6 +296,8 @@ pub struct RecordingReporter {
     pub narration: Vec<String>,
     /// Quarantined content released for the screen.
     pub shown: Vec<Shown>,
+    /// Where each result went.
+    pub landed: Vec<Landing>,
 }
 
 impl Reporter for RecordingReporter {
@@ -292,6 +327,10 @@ impl Reporter for RecordingReporter {
 
     fn quarantined(&mut self, shown: Shown) {
         self.shown.push(shown);
+    }
+
+    fn landed(&mut self, landing: Landing) {
+        self.landed.push(landing);
     }
 }
 
