@@ -1194,7 +1194,19 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 message: format!("{}: {e}", spec.id()),
             })?;
             let proof = Declassification::authorise("assembled into a processor's input");
-            body.push_str(&format!("--- begin {slot} ---\n"));
+
+            // Which document the answer is, marked on the document itself rather than left to
+            // the instruction to describe. A processor given two files and told in prose that
+            // the answer was for the second returned the first, and the first was written to
+            // the second's file: eleven kilobytes of a game's HTML into a Python script. The
+            // planner's prose is one sentence among two documents; this is on the document.
+            let role = match spec.about() {
+                Some(about) if about == slot => " (return this one, changed or not)",
+                Some(_) => " (context only, do not return this one)",
+                None => "",
+            };
+
+            body.push_str(&format!("--- begin {slot}{role} ---\n"));
             body.push_str(&content.declassify(&proof));
             body.push_str(&format!("\n--- end {slot} ---\n\n"));
         }
@@ -2198,6 +2210,48 @@ mod tests {
         assert!(produced.note.is_none(), "a note was invented");
         let proof = Declassification::authorise("test");
         assert_eq!(produced.text.declassify(&proof), "just the file\n");
+    }
+
+    /// Which document a processor is meant to return is marked on the document, not left to the
+    /// instruction to describe. One given two files and told in prose the answer was for the
+    /// second returned the first, and the first went into the second's file.
+    #[test]
+    fn the_document_to_return_is_marked_on_the_document() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        for (id, body) in [("ref:1", "the game"), ("ref:2", "the server")] {
+            slots
+                .writer_for(SlotId::new(id), Label::untrusted_private())
+                .unwrap()
+                .write(body)
+                .unwrap();
+        }
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1"), SlotId::new("ref:2")],
+                &Labelled::trusted("fix the speed bug".to_string()),
+                Some(SlotId::new("ref:2")),
+                &slots,
+            )
+            .expect("a spec");
+
+        let input = policy
+            .compose_processor_input(&spec, &slots)
+            .expect("composed");
+        let proof = Declassification::authorise("test");
+        let input = input.declassify(&proof);
+
+        assert!(
+            input.contains("--- begin ref:2 (return this one, changed or not) ---"),
+            "the document to return was not marked: {input}"
+        );
+        assert!(
+            input.contains("--- begin ref:1 (context only, do not return this one) ---"),
+            "the context was not marked as context: {input}"
+        );
     }
 
     /// A reference that came from a processor names no file, so it cannot be a destination.

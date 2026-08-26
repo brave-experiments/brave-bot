@@ -48,6 +48,11 @@ Do exactly what the instruction asks and output the result and nothing else: no 
 explanation, no code fences unless the instruction calls for them. What you output is used \
 verbatim.
 
+Where the documents below are marked, one of them says to return it and the others say they are \
+context. Return that one. Its whole content is your answer, changed or not, and the others exist \
+only so you can understand it: answering with one of them, however much more relevant it seemed, \
+puts it in the marked one's file, where it is not a file of that kind at all.
+
 Always begin by saying what you did, in two or three sentences: what you found, what you \
 changed, and anything you deliberately left as it was. Then a line reading exactly
 
