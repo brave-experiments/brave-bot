@@ -783,14 +783,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             // A read of a file the planner may not see reserves the slot instead of filling
             // it. The planner is told the same thing either way, a reference and a size, and
             // the file is opened when a processor or a write finally needs the bytes.
-            // Only for the tools whose result is workspace content. A write's result is the
-            // driver's own sentence about what it did, and saying that the model has read it
-            // would be true and useless.
-            let carries_content = matches!(
-                output.tool.as_str(),
-                "read_file" | "list_files" | "search" | "spawn_processor"
-            );
-
             // Three shapes, and which one a result takes was decided by the tool that
             // produced it and the kernel that labelled it, never here.
             let body = if let Some(entries) = &output.entries {
@@ -870,7 +862,11 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 }
                 .map_err(|d| TurnError::Precommit(d.to_string()))?;
 
-                if carries_content {
+                // Only where the result is workspace content. A read of a file the planner
+                // already holds a reference to answers with a sentence the driver wrote, and
+                // reporting that the model has read *that* is true, useless, and read by a
+                // person as a claim about their file.
+                if output.content {
                     reporter.landed(match (&presented, &output.deferred) {
                         (_, Some(_)) => crate::report::Landing::Reserved,
                         (Presentation::Visible(_), _) => crate::report::Landing::Context,

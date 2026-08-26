@@ -3776,6 +3776,37 @@ fn each_result_says_whether_the_model_can_read_it() {
         vec![Landing::Context, Landing::Reserved],
         "a person could not tell which read the model can see"
     );
+
+    // And nothing is said about a result that is the driver's own words: a read of a file the
+    // planner already holds a reference to answers with a sentence, and "the model has read it"
+    // about that sentence reads as a claim about the file.
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request("read_file", r#"{"path_ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let mut again = bua_agent::report::RecordingReporter::default();
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look again"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut again,
+        &mut RecordingSink::new(),
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        again.landed,
+        vec![Landing::Quarantined],
+        "a read that read nothing reported where something went: {:?}",
+        again.landed
+    );
     assert!(
         Landing::Context.describe().contains("has read it"),
         "the line does not say the model read it"

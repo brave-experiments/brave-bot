@@ -357,6 +357,8 @@ pub struct Output {
     pub entries: Option<Entries>,
     /// The slot this result stands for unchanged, where there is one.
     pub unchanged_from: Option<SlotId>,
+    /// Whether the text is workspace content rather than the driver's own words about the call.
+    pub content: bool,
     /// What the call spent at the model, where it called one.
     ///
     /// Zero for every tool but the processor. A turn that reported only its own rounds would
@@ -403,6 +405,12 @@ struct Produced {
     /// change. The turn records it against the slot it mints, so a write of it can be
     /// recognised as changing nothing.
     unchanged_from: Option<SlotId>,
+    /// Whether `text` is workspace content rather than the driver's own words about the call.
+    ///
+    /// What the kernel does with a result is worth reporting only where the result is content:
+    /// saying "the model has read it" about a sentence the driver wrote to explain a refusal is
+    /// true, useless, and read by the person as a claim about their file.
+    content: bool,
     /// What the tool spent at the model. Only a processor spends anything.
     usage: Usage,
 }
@@ -420,8 +428,15 @@ impl Produced {
             changes: Vec::new(),
             untrusted: false,
             unchanged_from: None,
+            content: false,
             usage: Usage::default(),
         }
+    }
+
+    /// Say that what this produced is workspace content, not the driver's words about it.
+    fn of_content(mut self) -> Self {
+        self.content = true;
+        self
     }
 
     /// A read that reserved a file rather than opening it.
@@ -692,6 +707,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 deferred: produced.deferred,
                 entries: produced.entries,
                 unchanged_from: produced.unchanged_from,
+                content: produced.content,
                 usage: produced.usage,
             };
         }
@@ -731,6 +747,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         deferred: produced.deferred,
         entries: produced.entries,
         unchanged_from: produced.unchanged_from,
+        content: produced.content,
         usage: produced.usage,
     }
 }
@@ -751,6 +768,7 @@ fn problem(text: impl Into<String>) -> Produced {
         changes: Vec::new(),
         untrusted: false,
         unchanged_from: None,
+        content: false,
         usage: Usage::default(),
     }
 }
@@ -850,7 +868,7 @@ fn read_file<S: Sink>(
 
     if whole_file && policy.read_is_quarantined(&proposed_path) {
         return match workspace.survey(&proposed_path) {
-            Ok(bytes) => Produced::deferring(path, shown_path, bytes),
+            Ok(bytes) => Produced::deferring(path, shown_path, bytes).of_content(),
             // A path that names nothing is said so now, exactly as an eager read would have.
             Err(e) => problem(format!("error: {e}")),
         };
@@ -864,7 +882,7 @@ fn read_file<S: Sink>(
                 tally(p.lines.len(), "line", "lines")
             });
             let rendered = policy.render_in_place("read_file", &page, |p| render_page(&p));
-            Produced::new(rendered, shown_path, note)
+            Produced::new(rendered, shown_path, note).of_content()
         }
         Err(e) => problem(format!("error: {e}")),
     }
@@ -1134,6 +1152,7 @@ fn list_files<S: Sink>(
                 let paths =
                     policy.render_in_place("list_files", &listing, |listing| listing.files.clone());
                 return Produced::new(Labelled::trusted(String::new()), proposed_dir.clone(), note)
+                    .of_content()
                     .with_entries(Entries {
                         origin: format!("an entry in \"{proposed_dir}\""),
                         paths,
@@ -1157,7 +1176,7 @@ fn list_files<S: Sink>(
                     listing.files.join("\n")
                 }
             });
-            Produced::new(rendered, proposed_dir, note)
+            Produced::new(rendered, proposed_dir, note).of_content()
         }
         Err(e) => problem(format!("error: {e}")),
     }
@@ -1675,7 +1694,9 @@ fn spawn_processor<S: Sink>(
                     opened.join(", ")
                 )
             };
-            let mut produced = Produced::new(done.text, origin, note).costing(done.usage);
+            let mut produced = Produced::new(done.text, origin, note)
+                .costing(done.usage)
+                .of_content();
             produced.unchanged_from = done.unchanged_from;
             produced
         }
@@ -1786,7 +1807,7 @@ fn search<S: Sink>(
                     lines
                 }
             });
-            Produced::new(rendered, proposed_where, note)
+            Produced::new(rendered, proposed_where, note).of_content()
         }
         Err(e) => problem(format!("error: {e}")),
     }
