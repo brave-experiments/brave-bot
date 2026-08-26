@@ -895,8 +895,15 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         // only party who can tell whether this is the right file at all.
                         if output.deferred.is_none() {
                             let shown = preview_for(&mut policy, &output.tool, &output.text);
+                            // The person's copy says which files, where the planner's says which
+                            // references. Same line, two audiences, and only one of them is
+                            // being kept from the names.
+                            let origin = crate::tools::name_references(
+                                &reference.origin,
+                                &policy.names_for_display(conversation.quarantine()),
+                            );
                             reporter.quarantined(crate::report::Shown {
-                                origin: reference.origin.clone(),
+                                origin,
                                 label: reference.label.to_string(),
                                 lines: shown.lines,
                                 preview: shown.preview,

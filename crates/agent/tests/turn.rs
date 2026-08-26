@@ -3206,7 +3206,7 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
 
     let (processor, planner): (Vec<&String>, Vec<&String>) = bodies
         .iter()
-        .partition(|body| body.contains("isolated processor"));
+        .partition(|body| body.contains("You are an isolated processor"));
     assert_eq!(processor.len(), 1, "exactly one processor ran");
 
     // The processor is the only thing that saw the file, injected line and all.
@@ -3289,7 +3289,7 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
     let bodies: Vec<String> = received.try_iter().collect();
     let (processor, planner): (Vec<&String>, Vec<&String>) = bodies
         .iter()
-        .partition(|body| body.contains("isolated processor"));
+        .partition(|body| body.contains("You are an isolated processor"));
     assert_eq!(processor.len(), 1, "exactly one processor ran");
 
     for body in planner {
@@ -3596,7 +3596,7 @@ fn quarantined_content_reaches_the_person_and_not_the_planner() {
     }
 
     for body in received.try_iter() {
-        if body.contains("isolated processor") {
+        if body.contains("You are an isolated processor") {
             continue;
         }
         assert!(
@@ -3663,7 +3663,7 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
     let processed = reporter
         .finished
         .iter()
-        .find(|activity| activity.verb == "Process")
+        .find(|activity| activity.verb == "Isolated processor")
         .expect("a processor was reported");
     assert_eq!(processed.target, "game.js", "{:?}", processed.target);
     let note = processed.note.clone().unwrap_or_default();

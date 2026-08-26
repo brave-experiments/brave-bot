@@ -479,7 +479,10 @@ fn verb_for(tool: &str) -> &'static str {
         "write_file" => "Write",
         "edit_file" => "Update",
         "todo_write" => "Plan",
-        "spawn_processor" => "Process",
+        // Named for what it is rather than for what it does: every one of these is a model
+        // with no tools, no memory and one round, and a person watching a line go by should not
+        // have to remember which of the verbs meant that.
+        "spawn_processor" => "Isolated processor",
         "load_skill" => "Skill",
         _ => "Tool",
     }
@@ -1018,7 +1021,7 @@ struct PathArgument {
 /// them out itself, and a regular expression over text a model wrote is attack surface for no
 /// gain. A name that has no file behind it, which is anything a processor produced, is left as
 /// the model wrote it.
-fn name_references(text: &str, named: &[(SlotId, String)]) -> String {
+pub(crate) fn name_references(text: &str, named: &[(SlotId, String)]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
 
@@ -1610,10 +1613,17 @@ fn spawn_processor<S: Sink>(
     // Named for the audit trail from the slots it reads, which are the driver's own names for
     // things. Two processors reading the same references in one turn share a name, and that is
     // the honest description of them.
+    //
+    // "Isolated" is said every time because it is true every time: the request carries no tool
+    // list, no history and no second round, and nothing about a call can change that. The word
+    // is not "sandboxed": there is no operating-system boundary here, and there is no untrusted
+    // *code* for one to hold. What confines a processor is that it has no capabilities at all.
+    // Reference names, not filenames: this is the planner's copy, and it is the one thing it
+    // may not have. The person's copy of the same line is resolved where it is drawn.
     let origin = {
         let proof = policy.authorise_display_release("which references a processor was given");
         format!(
-            "processor over {}",
+            "an isolated processor over {}",
             references_in(arguments).declassify(&proof)
         )
     };
