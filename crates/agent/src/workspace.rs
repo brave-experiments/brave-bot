@@ -263,6 +263,7 @@ impl Workspace {
             first_line: start + 1,
             total_lines: total,
             long_lines,
+            ends_with_newline: contents.ends_with('\n'),
         })
     }
 
@@ -552,6 +553,13 @@ fn looks_binary(bytes: &[u8]) -> bool {
 pub struct Page {
     /// The lines in this window, each capped at [`MAX_LINE`].
     pub lines: Vec<String>,
+    /// Whether the file ends with a newline.
+    ///
+    /// Lost otherwise: the lines are joined back together with newlines between them and none
+    /// after, so a file that went through a slot came back a byte shorter than it went in. That
+    /// is a change to every file processed this way, and it shows up in the next diff somebody
+    /// reads as "no newline at end of file".
+    pub ends_with_newline: bool,
     /// 1-based number of the first line returned.
     pub first_line: usize,
     /// Lines in the whole file, so a caller can tell there is more to ask for.

@@ -36,6 +36,7 @@ pub struct ProcessorSpec {
     reads: Vec<SlotId>,
     instruction: String,
     out_label: Label,
+    unchanged: Option<SlotId>,
 }
 
 impl ProcessorSpec {
@@ -44,14 +45,31 @@ impl ProcessorSpec {
         reads: Vec<SlotId>,
         instruction: impl Into<String>,
         out_label: Label,
+        unchanged: Option<SlotId>,
     ) -> Self {
         Self {
             id: id.into(),
             reads,
             instruction: instruction.into(),
             out_label,
+            unchanged,
         }
     }
+
+    /// Which input the answer falls back to when the processor says nothing should change.
+    ///
+    /// Chosen by the planner out of the slots it named, before the processor exists. A processor
+    /// asked to leave a document alone otherwise has to reproduce it byte for byte, and one that
+    /// explains itself instead destroys the file: the words become the file, and nobody
+    /// downstream is allowed to read them and notice.
+    pub fn unchanged(&self) -> Option<&SlotId> {
+        self.unchanged.as_ref()
+    }
+
+    /// What a processor says when the document should be left as it is.
+    ///
+    /// Safe by construction: a document whose entire content is this word is replaced by itself.
+    pub const UNCHANGED: &'static str = "UNCHANGED";
 
     /// The processor's name in the audit trail. Driver-chosen, never derived from content.
     pub fn id(&self) -> &str {
@@ -104,6 +122,7 @@ mod tests {
             vec![SlotId::new("ref:0"), SlotId::new("ref:1")],
             "rewrite the function and output the whole file",
             Label::untrusted_private(),
+            None,
         );
 
         let described = spec.describe();

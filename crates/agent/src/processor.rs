@@ -125,8 +125,20 @@ pub fn run<S: Sink>(
     // The instruction goes in the system prompt rather than beside the documents, so what the
     // processor was asked to do and what it was asked to do it to arrive as different kinds of
     // thing.
+    // Said only where the planner named a fallback, since a processor told it may answer with
+    // one word must have somewhere for that word to stand for.
+    let unchanged = match spec.unchanged() {
+        Some(_) => format!(
+            "\n\nIf the instruction's condition means the document must not change, reply with \
+             exactly {} and nothing else. Do not reproduce the document and do not explain: the \
+             document you were given is what will be used.",
+            bua_core::processor::ProcessorSpec::UNCHANGED
+        ),
+        None => String::new(),
+    };
+
     let system = format!(
-        "{SYSTEM_PROMPT}\n\nYour instruction, from the operator:\n\n{}",
+        "{SYSTEM_PROMPT}{unchanged}\n\nYour instruction, from the operator:\n\n{}",
         spec.instruction()
     );
 
@@ -151,7 +163,7 @@ pub fn run<S: Sink>(
     let completion = client.complete_streaming(policy, &request, |_| {})?;
 
     Ok(Processed {
-        text: policy.label_processor_output(spec, completion.content),
+        text: policy.label_processor_output(spec, completion.content, slots),
         model: completion.model,
         usage: completion.usage,
     })

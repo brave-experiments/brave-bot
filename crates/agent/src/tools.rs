@@ -260,6 +260,16 @@ pub fn available() -> Vec<Tool> {
                                         which. It still returns one document.",
                         "items": {"type": "string"}
                     },
+                    "unchanged_ref": {
+                        "type": "string",
+                        "description": "Optional. One of the references in reads, whose \
+                                        contents become the result if the instruction's \
+                                        condition means that document must not change. Use it \
+                                        whenever the instruction is conditional: the processor \
+                                        then answers in one word instead of reproducing a file \
+                                        it was told to leave alone, which is a thing models get \
+                                        wrong by explaining themselves into the file."
+                    },
                     "instruction": {
                         "type": "string",
                         "description": "What to do with them and what to produce. Where the \
@@ -855,7 +865,17 @@ fn read_file<S: Sink>(
 pub(crate) fn read_into_slot(workspace: &Workspace, path: &str) -> Result<String, String> {
     workspace
         .page(path, 1, usize::MAX)
-        .map(|page| render_page(&page))
+        .map(|page| {
+            let mut text = render_page(&page);
+            // A file that went through a slot used to come back a byte shorter than it went in,
+            // because the lines are joined with newlines between them and none after. Every
+            // processed file lost its last newline, which the next diff anybody reads calls
+            // "no newline at end of file".
+            if page.ends_with_newline && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -1575,7 +1595,18 @@ fn spawn_processor<S: Sink>(
         Err(refusal) => return problem(refusal),
     };
 
-    let spec = match policy.before_processor(&origin, &reads, &instruction, tools.slots) {
+    // Which reference the answer falls back to where the instruction's condition says the
+    // document must not change. The planner's own choice, out of the references it named.
+    let unchanged = match argument(arguments, "unchanged_ref") {
+        Some(named) => match policy.accept_reference("spawn_processor", "unchanged_ref", &named) {
+            Ok(slot) => Some(slot),
+            Err(denial) => return problem(format!("refused: {denial}")),
+        },
+        None => None,
+    };
+
+    let spec = match policy.before_processor(&origin, &reads, &instruction, unchanged, tools.slots)
+    {
         Ok(spec) => spec,
         Err(denial) => return problem(format!("refused: {denial}")),
     };

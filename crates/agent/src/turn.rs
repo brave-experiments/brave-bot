@@ -109,8 +109,9 @@ fast and ends in seconds is describing a symptom, and telling it to reduce the s
 is a guess at the cause, dutifully carried out on a file whose real problem was two update loops \
 running at once. Say what the user reported, say what the file should do instead, and ask for the \
 cause to be found and fixed. Its instruction may be conditional: where you are \
-not sure a file is the one that needs changing, say what it must do if it is not, which is \
-usually to return the document exactly as it was. You will not be told which it did, and you do \
+not sure a file is the one that needs changing, say what it must do if it is not, and name that \
+file's reference as unchanged_ref. Then leaving it alone is one word rather than a file it has \
+to reproduce, and a processor that would have explained itself into your file cannot. You will not be told which it did, and you do \
 not need to be.
 
 Give a processor every reference it needs to understand the task, not one at a time. reads takes \

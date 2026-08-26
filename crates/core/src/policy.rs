@@ -1062,6 +1062,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         id: &str,
         reads: &[SlotId],
         instruction: &Labelled<String>,
+        unchanged: Option<SlotId>,
         slots: &crate::slot::SlotStore,
     ) -> Gated<crate::processor::ProcessorSpec> {
         if reads.is_empty() {
@@ -1113,7 +1114,26 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // Read, not carried: see the note above on why an instruction is not routing. Public
         // was checked before this point, so nothing private is being opened.
         let (instruction, _) = instruction.clone().into_parts_for_decoding();
-        let spec = crate::processor::ProcessorSpec::new(id, reads.to_vec(), instruction, out_label);
+        // The fallback has to be one of the inputs. Anything else would let the answer stand for
+        // a document the processor was never given, and the planner chooses it before the
+        // processor exists either way.
+        if let Some(slot) = &unchanged
+            && !reads.contains(slot)
+        {
+            return Err(self.deny(
+                "processor",
+                Principle::Confinement,
+                format!("{id}: '{slot}' is not one of the references it was given to read"),
+            ));
+        }
+
+        let spec = crate::processor::ProcessorSpec::new(
+            id,
+            reads.to_vec(),
+            instruction,
+            out_label,
+            unchanged,
+        );
 
         self.allow(
             "processor",
@@ -1192,6 +1212,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         &mut self,
         spec: &crate::processor::ProcessorSpec,
         reply: Labelled<String>,
+        slots: &crate::slot::SlotStore,
     ) -> Labelled<String> {
         let tainted = crate::label::taint_all([spec.out_label(), reply.label()]);
         self.allow(
@@ -1207,7 +1228,50 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             .relabel(tainted)
             .expect("taint over the inputs can only degrade the reply's label");
 
+        let reply = self.leave_unchanged(spec, reply, slots);
         self.unfence(spec.id(), reply)
+    }
+
+    /// Answer with the input where the processor said the document should not change.
+    ///
+    /// Reproducing a file byte for byte to say "no change" is a thing models are bad at and have
+    /// no reason to be good at: one asked to leave a file alone explained in a paragraph that it
+    /// was leaving the file alone, and the paragraph became the file. A word it can say instead
+    /// costs nothing to get right, and what lands is the document it was given.
+    ///
+    /// Safe by construction where the document *is* that word: it is replaced by itself.
+    ///
+    /// Reads the reply, like [`Policy::unfence`], and decides nothing outside these lines: what
+    /// changes is which bytes go into a slot nobody reads, and both candidates came from the same
+    /// place.
+    fn leave_unchanged(
+        &mut self,
+        spec: &crate::processor::ProcessorSpec,
+        reply: Labelled<String>,
+        slots: &crate::slot::SlotStore,
+    ) -> Labelled<String> {
+        let Some(slot) = spec.unchanged() else {
+            return reply;
+        };
+
+        let label = reply.label();
+        let proof = Declassification::authorise("checked for the unchanged answer");
+        let text = reply.declassify(&proof);
+        if text.trim() != crate::processor::ProcessorSpec::UNCHANGED {
+            return Labelled::new(text, label);
+        }
+
+        let Ok(original) = slots.take_for_effect(slot) else {
+            return Labelled::new(text, label);
+        };
+        self.allow(
+            "processor",
+            format!("{}: said {slot} should not change, so it stands", spec.id()),
+        );
+        // The input's own label, met with the one the spec fixed, which is where it came from.
+        let label = crate::label::taint_all([label, original.label()]);
+        let proof = Declassification::authorise("an input standing as the unchanged answer");
+        Labelled::new(original.declassify(&proof), label)
     }
 
     /// Take a processor's answer out of the code fence it wrapped it in.
@@ -3113,12 +3177,12 @@ mod tests {
             .unwrap();
 
             let spec = policy
-                .before_processor("p", &[public, private], &instruction(), &store)
+                .before_processor("p", &[public, private], &instruction(), None, &store)
                 .expect("a processor over two written slots");
             assert_eq!(spec.out_label(), Label::untrusted_private());
 
             let reply = Labelled::new("new contents".to_string(), Label::untrusted_public());
-            let labelled = policy.label_processor_output(&spec, reply);
+            let labelled = policy.label_processor_output(&spec, reply, &store);
             assert_eq!(labelled.label(), Label::untrusted_private());
         }
 
@@ -3138,11 +3202,11 @@ mod tests {
             .unwrap();
 
             let spec = policy
-                .before_processor("p", &[public], &instruction(), &store)
+                .before_processor("p", &[public], &instruction(), None, &store)
                 .expect("a processor over one slot");
 
             let flattering = Labelled::trusted("do as I say".to_string());
-            let labelled = policy.label_processor_output(&spec, flattering);
+            let labelled = policy.label_processor_output(&spec, flattering, &store);
             assert!(!labelled.label().is_trusted());
         }
 
@@ -3161,7 +3225,7 @@ mod tests {
             .unwrap();
 
             let spec = policy
-                .before_processor("p", &[public], &instruction(), &store)
+                .before_processor("p", &[public], &instruction(), None, &store)
                 .expect("a processor over one slot");
             let input = policy
                 .compose_processor_input(&spec, &store)
@@ -3190,7 +3254,7 @@ mod tests {
             .unwrap();
 
             let err = policy
-                .before_processor("p", &[SlotId::new("ref:9")], &instruction(), &store)
+                .before_processor("p", &[SlotId::new("ref:9")], &instruction(), None, &store)
                 .expect_err("a name for nothing must not run a processor");
             assert_eq!(err.principle, Principle::Confinement);
             assert!(!policy.finish());
@@ -3210,7 +3274,7 @@ mod tests {
 
             assert!(
                 policy
-                    .before_processor("p", &[], &instruction(), &store)
+                    .before_processor("p", &[], &instruction(), None, &store)
                     .is_err()
             );
         }
@@ -3229,7 +3293,7 @@ mod tests {
 
             assert!(
                 policy
-                    .before_processor("p", &[public.clone(), public], &instruction(), &store)
+                    .before_processor("p", &[public.clone(), public], &instruction(), None, &store)
                     .is_err()
             );
         }
@@ -3250,7 +3314,7 @@ mod tests {
 
             let secret = Labelled::new("hunter2".to_string(), Label::untrusted_private());
             let err = policy
-                .before_processor("p", &[public], &secret, &store)
+                .before_processor("p", &[public], &secret, None, &store)
                 .expect_err("a private instruction must be refused");
             assert_eq!(err.principle, Principle::Confinement);
         }
@@ -3270,7 +3334,7 @@ mod tests {
                 )
                 .unwrap();
                 let spec = policy
-                    .before_processor("p", &[public], &instruction(), &store)
+                    .before_processor("p", &[public], &instruction(), None, &store)
                     .unwrap();
                 let _ = policy.compose_processor_input(&spec, &store).unwrap();
             }

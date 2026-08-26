@@ -3673,6 +3673,52 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
     );
 }
 
+/// A processor told to leave a file alone says so in a word, and the file it was given is what
+/// lands. One that explained itself instead put the explanation in the file: "this is a simple
+/// HTTP server, it contains no game logic, returning the file contents unchanged", followed by
+/// the file in a code fence, all of it written to server.py.
+#[test]
+fn a_file_left_alone_is_written_back_exactly_as_it_was() {
+    let scratch = Scratch::new("unchanged-answer");
+    let original = "#!/usr/bin/env python3\nprint('serving')\n";
+    std::fs::write(scratch.path.join("server.py"), original).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"unchanged_ref":"ref:1","instruction":"fix the speed bug if this is the game, otherwise leave it"}"#,
+        ),
+        // What a processor says when there is nothing to change.
+        reply_with("UNCHANGED"),
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        original,
+        "the file the processor was told to leave alone did not survive"
+    );
+}
+
 /// A reference to something a processor wrote is content and nothing else. If it could name a
 /// destination, untrusted text would be choosing where an effect lands, which is the one thing
 /// none of this may permit.
