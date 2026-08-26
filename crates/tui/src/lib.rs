@@ -16,6 +16,7 @@ pub mod render;
 pub mod resume;
 pub mod select;
 pub mod sessions;
+pub mod skills_view;
 pub mod state;
 pub mod store;
 pub mod trust_prompt;

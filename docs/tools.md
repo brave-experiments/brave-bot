@@ -87,6 +87,10 @@ path component, it only selects from a set the driver enumerated before the turn
 holding a traversal matches nothing, because there is no lookup for it to reach. See
 [skills.md](skills.md).
 
+`/skills` and `bua skills` list what is on offer without running a turn. They are not tools: the
+planner cannot call them, nothing they print reaches its context, and no model is involved. See
+[skills.md](skills.md).
+
 `todo_write` has no routing at all: it records the model's own plan, which is shown to the user
 and touches nothing.
 

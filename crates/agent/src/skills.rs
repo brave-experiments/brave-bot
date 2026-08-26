@@ -27,9 +27,10 @@
 //! planner's context.
 
 use crate::workspace::Workspace;
-use bua_core::capability::Capability;
+use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::Sink;
-use bua_core::policy::Policy;
+use bua_core::policy::{Policy, ReleasePlan, Routing};
+use bua_core::trust::TrustStore;
 use bua_core::value::Labelled;
 use std::path::Path;
 
@@ -130,6 +131,11 @@ pub struct Skill {
     pub description: String,
     /// Where it came from, for the audit trail and for what the user is told.
     pub origin: String,
+    /// The size of the whole `SKILL.md`, for reporting what it costs.
+    ///
+    /// Trusted metadata about trusted content: a byte count carries nothing that was written in
+    /// the file, so it may be shown wherever the origin may be.
+    pub bytes: usize,
     /// The instructions themselves, still carrying the label they were read with.
     ///
     /// Kept labelled rather than as bare text so the planner is shown them through
@@ -198,14 +204,21 @@ impl Catalogue {
         self.entries.iter().find(|s| s.name == name)
     }
 
-    /// Add a skill, replacing one of the same name.
+    /// Add a skill, replacing one of the same name, and hand back whatever it replaced.
     ///
     /// Later wins, and discovery visits the home directory before the workspace, so a project's
     /// own skill shadows a global one. That is the same "most specific wins" the trust map uses.
-    fn insert(&mut self, skill: Skill) {
+    ///
+    /// The replaced skill is returned rather than dropped so a caller can say it happened. A
+    /// project silently overriding a global skill is the kind of thing someone spends an
+    /// afternoon on when nothing tells them.
+    fn insert(&mut self, skill: Skill) -> Option<Skill> {
         match self.entries.iter_mut().find(|s| s.name == skill.name) {
-            Some(existing) => *existing = skill,
-            None => self.entries.push(skill),
+            Some(existing) => Some(std::mem::replace(existing, skill)),
+            None => {
+                self.entries.push(skill);
+                None
+            }
         }
     }
 
@@ -219,6 +232,146 @@ impl Catalogue {
             out.push_str(&format!("- {}: {}\n", skill.name, skill.description));
         }
         out
+    }
+}
+
+/// What discovery is being asked for.
+///
+/// The two differ in one place only: what happens to a skill in a path nobody vouched for.
+/// Building a prompt, it is counted and never named, because a directory in an untrusted project
+/// can be named to read like an instruction and a notice arrives unbidden. Answering the user's
+/// own question about what loaded, it is named by origin and shape, because that is the question
+/// and because a path and two numbers carry nothing that was written in the file.
+///
+/// One walk and one gate sequence serve both, so the answer to "what would load" cannot drift
+/// from what does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Prompt,
+    Inventory,
+}
+
+/// The size of a file nobody may read.
+///
+/// Origin, lines and bytes, which is the same shape a [`bua_core::reference::Reference`] offers
+/// the planner for quarantined content, and for the same reason: it says the file is there and
+/// how big it is without saying a word of what is in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    pub lines: usize,
+    pub bytes: usize,
+}
+
+/// A skill that is on offer this turn.
+///
+/// Plain data. The interfaces render this rather than a [`Skill`], so nothing outside this crate
+/// has to hold a `Labelled` or know what to do with one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Loaded {
+    pub name: String,
+    pub description: String,
+    pub origin: String,
+    pub bytes: usize,
+}
+
+/// A skill that another of the same name replaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shadowed {
+    pub name: String,
+    /// Where the one that lost came from.
+    pub hidden: String,
+    /// Where the one that won came from.
+    pub winner: String,
+}
+
+/// A skill that was found and not offered, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub origin: String,
+    pub reason: String,
+    /// Present when the file could not be read, which is the case where its size is all there
+    /// is to say about it.
+    pub shape: Option<Shape>,
+}
+
+/// Where the project's skills would come from, and whether they could.
+///
+/// Reported whether or not anything was found, because "nothing here" and "nothing shown" look
+/// identical otherwise, and telling them apart is the question a listing exists to answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Project {
+    /// The workspace root, with the home directory abbreviated.
+    pub root: String,
+    /// Whether the trust map vouches for `.bua/skills`.
+    pub trusted: bool,
+    /// Whether there is a `.bua/skills` directory at all.
+    pub has_skills_directory: bool,
+}
+
+/// Everything a person needs to answer "what standing context am I sending, and what was left
+/// out".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Inventory {
+    pub loaded: Vec<Loaded>,
+    pub shadowed: Vec<Shadowed>,
+    pub skipped: Vec<Skipped>,
+    /// The `AGENTS.md` files that made it into the preamble, least specific first.
+    pub agents: Vec<String>,
+    /// What the whole preamble adds to every request.
+    ///
+    /// Measured from the text `preamble::compose` actually produced rather than re-derived, so
+    /// this cannot disagree with what is sent.
+    pub preamble_bytes: usize,
+    /// Where the project's own skills would come from, and whether they could.
+    pub project: Project,
+}
+
+impl Inventory {
+    /// Roughly what the preamble costs in tokens.
+    ///
+    /// Four bytes to the token, which is a rule of thumb and nothing better: bua does not
+    /// tokenise locally, and the only honest way to present this is as an estimate. Callers say
+    /// "roughly" for that reason.
+    pub fn approximate_tokens(&self) -> usize {
+        self.preamble_bytes / 4
+    }
+}
+
+/// What discovery accumulated, before it is shaped for one audience or the other.
+#[derive(Default)]
+struct Found {
+    catalogue: Catalogue,
+    notices: Vec<Notice>,
+    shadowed: Vec<Shadowed>,
+    skipped: Vec<Skipped>,
+}
+
+impl Found {
+    /// Record a skill, and note it if it displaced one.
+    fn keep(&mut self, skill: Skill) {
+        let name = skill.name.clone();
+        let winner = skill.origin.clone();
+        if let Some(replaced) = self.catalogue.insert(skill) {
+            self.shadowed.push(Shadowed {
+                name,
+                hidden: replaced.origin,
+                winner,
+            });
+        }
+    }
+
+    /// Record a skill that was found and not offered.
+    ///
+    /// The notice is the sentence a person reads mid-session; the `Skipped` is the same fact in
+    /// a form a listing can lay out in columns. Both come from here so they cannot say different
+    /// things.
+    fn skip(&mut self, origin: String, reason: String, shape: Option<Shape>) {
+        self.notices.push(Notice::new(format!("{origin} {reason}")));
+        self.skipped.push(Skipped {
+            origin,
+            reason,
+            shape,
+        });
     }
 }
 
@@ -245,24 +398,95 @@ pub fn discover<S: Sink>(
     workspace: &Workspace,
     home: Option<&Path>,
 ) -> (Catalogue, Vec<Notice>) {
-    let mut catalogue = Catalogue::default();
-    let mut notices = Vec::new();
+    let found = walk(policy, workspace, home, Mode::Prompt);
+    (found.catalogue, found.notices)
+}
 
+/// Answer "what standing context am I sending, and what was left out".
+///
+/// A read the user asked for: it builds its own policy, grants only [`Capability::FileRead`],
+/// runs the same walk a turn runs, and calls no model. The trust map is passed in rather than
+/// assumed, because without it every skill in the workspace reports as untrusted and the answer
+/// would be wrong in exactly the case someone is trying to debug.
+///
+/// The policy lives here rather than in the interfaces on purpose. `bua-agent` is what talks to
+/// the kernel; `bua-tui` and `bua-cli` render what it returns and have never constructed a
+/// policy.
+pub fn inventory<S: Sink>(
+    sink: &mut S,
+    workspace: &Workspace,
+    home: Option<&Path>,
+    trust: TrustStore,
+) -> Inventory {
+    let mut routing = Routing::new();
+    // Precommitted because a policy refuses to begin without routing, and named for what this
+    // is. Nothing here is a destination: no effect fires.
+    routing.insert_trusted("task", "list skills");
+
+    let Ok(policy) = Policy::begin(
+        routing,
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::FileRead]),
+        sink,
+    ) else {
+        return Inventory::default();
+    };
+    let mut policy = policy.with_trust(trust);
+
+    let mut found = walk(&mut policy, workspace, home, Mode::Inventory);
+    let preamble = crate::preamble::compose(&mut policy, workspace, home, &found.catalogue);
+    found
+        .skipped
+        .extend(preamble.notices.iter().map(|n| Skipped {
+            origin: String::new(),
+            reason: n.message.clone(),
+            shape: None,
+        }));
+
+    let loaded = found
+        .catalogue
+        .iter()
+        .map(|s| Loaded {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            origin: s.origin.clone(),
+            bytes: s.bytes,
+        })
+        .collect();
+
+    let inventory = Inventory {
+        loaded,
+        shadowed: found.shadowed,
+        skipped: found.skipped,
+        agents: preamble.agents,
+        preamble_bytes: preamble.text.len(),
+        project: Project {
+            root: abbreviate_home(workspace.root(), home),
+            trusted: policy.trust().is_trusted(WORKSPACE_SKILLS),
+            has_skills_directory: workspace.root().join(WORKSPACE_SKILLS).is_dir(),
+        },
+    };
+    policy.finish();
+    inventory
+}
+
+/// The walk both callers share.
+fn walk<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    workspace: &Workspace,
+    home: Option<&Path>,
+    mode: Mode,
+) -> Found {
+    let mut found = Found::default();
     if let Some(home) = home {
-        discover_home(policy, &home.join(SKILLS), &mut catalogue, &mut notices);
+        discover_home(policy, &home.join(SKILLS), &mut found);
     }
-    discover_workspace(policy, workspace, &mut catalogue, &mut notices);
-
-    (catalogue, notices)
+    discover_workspace(policy, workspace, &mut found, mode);
+    found
 }
 
 /// Skills from `~/.bua/skills`, labelled from where they sit.
-fn discover_home<S: Sink>(
-    policy: &mut Policy<'_, S>,
-    root: &Path,
-    catalogue: &mut Catalogue,
-    notices: &mut Vec<Notice>,
-) {
+fn discover_home<S: Sink>(policy: &mut Policy<'_, S>, root: &Path, found: &mut Found) {
     if policy.before_capability(Capability::FileRead).is_err() {
         return;
     }
@@ -288,16 +512,19 @@ fn discover_home<S: Sink>(
                 let body = policy.render_in_place("skills", &labelled, |whole| {
                     body_after_frontmatter(&whole).to_string()
                 });
-                catalogue.insert(Skill {
+                found.keep(Skill {
                     name: front.name,
                     description: front.description,
                     body,
+                    bytes: text.len(),
                     origin,
                 });
             }
-            None => notices.push(Notice::new(format!(
-                "{origin} was skipped: it needs a name and a description in its frontmatter"
-            ))),
+            None => found.skip(
+                origin,
+                "was skipped: it needs a name and a description in its frontmatter".to_string(),
+                None,
+            ),
         }
     }
 }
@@ -306,8 +533,8 @@ fn discover_home<S: Sink>(
 fn discover_workspace<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
-    catalogue: &mut Catalogue,
-    notices: &mut Vec<Notice>,
+    found: &mut Found,
+    mode: Mode,
 ) {
     let root = workspace.root().join(WORKSPACE_SKILLS);
     let names = skill_directories(&root);
@@ -317,11 +544,15 @@ fn discover_workspace<S: Sink>(
 
     // Checked before anything is enumerated, and checked on the label rather than on any
     // content. A directory name is content too: a skill directory in a project nobody vouched
-    // for could be named to read like an instruction, and it would reach the user's screen in a
-    // notice even if it never reached the prompt.
-    if !policy.trust().is_trusted(WORKSPACE_SKILLS) {
+    // for could be named to read like an instruction, and a notice arrives on the user's screen
+    // unbidden, reading as though the driver had written it. So the prompt path counts them.
+    //
+    // A listing is the other case. The user asked this question, the answer is laid out under a
+    // heading that says these were not loaded, and each entry is a path and two numbers. That is
+    // the same shape a quarantined reference offers, and it carries no more than one does.
+    if !policy.trust().is_trusted(WORKSPACE_SKILLS) && mode == Mode::Prompt {
         let (count, verb) = counted(names.len());
-        notices.push(Notice::new(format!(
+        found.notices.push(Notice::new(format!(
             "{count} in {WORKSPACE_SKILLS} {verb} not loaded: this directory is not trusted"
         )));
         return;
@@ -340,9 +571,22 @@ fn discover_workspace<S: Sink>(
         // every turn in an untrusted directory as one where something was refused and teach the
         // user to ignore the times it means something.
         if !contents.label().is_trusted() {
-            notices.push(Notice::new(format!(
-                "{relative} was not loaded: it is not trusted"
-            )));
+            // The shape, and nothing else. Counting lines is a reshape the kernel performs on
+            // content the driver never holds, and two numbers say the file is there and how big
+            // it is without saying a word of what is in it. Its frontmatter is refused, and it
+            // would add nothing: a skill here is dropped before it is parsed, so the reason is
+            // always this one and never "your frontmatter is wrong".
+            let measured = policy.render_in_place("skills", &contents, |whole: String| Shape {
+                lines: whole.lines().count(),
+                bytes: whole.len(),
+            });
+            let proof = policy.authorise_display_release("the size of a skill nobody vouched for");
+            let shape = measured.declassify(&proof);
+            found.skip(
+                relative,
+                "was not loaded: it is not trusted".to_string(),
+                Some(shape),
+            );
             continue;
         }
         let Ok(text) = policy.read_trusted_content("skills", &contents) else {
@@ -354,17 +598,43 @@ fn discover_workspace<S: Sink>(
                 let body = policy.render_in_place("skills", &contents, |whole| {
                     body_after_frontmatter(&whole).to_string()
                 });
-                catalogue.insert(Skill {
+                found.keep(Skill {
                     name: front.name,
                     description: front.description,
                     body,
+                    bytes: text.len(),
                     origin: relative,
                 });
             }
-            None => notices.push(Notice::new(format!(
-                "{relative} was skipped: it needs a name and a description in its frontmatter"
-            ))),
+            None => found.skip(
+                relative,
+                "was skipped: it needs a name and a description in its frontmatter".to_string(),
+                None,
+            ),
         }
+    }
+}
+
+/// A path with the user's home abbreviated to `~`, which is how they refer to it.
+///
+/// The home root arrives as `~/.bua`, so its parent is the home directory. Derived from what the
+/// caller passed rather than read from the environment, for the same reason nothing else here
+/// reads it: a library that reaches for `$HOME` makes its own output depend on the machine.
+fn abbreviate_home(path: &Path, home: Option<&Path>) -> String {
+    let shown = path.display().to_string();
+    let Some(parent) = home.and_then(Path::parent) else {
+        return shown;
+    };
+    // Resolved before comparing, because a workspace root already is: `Workspace::new`
+    // canonicalises, and on macOS that turns /var into /private/var. Comparing the two as typed
+    // would fail to match on any machine whose home sits behind a symlink.
+    let resolved = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    let prefix = resolved.display().to_string();
+    match shown.strip_prefix(&prefix) {
+        Some(rest) => format!("~{rest}"),
+        None => shown,
     }
 }
 

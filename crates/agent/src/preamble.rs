@@ -39,6 +39,11 @@ pub struct Preamble {
     pub text: String,
     /// Lines for the person watching: what loaded, and what did not and why.
     pub notices: Vec<Notice>,
+    /// The `AGENTS.md` files whose contents are in `text`, least specific first.
+    ///
+    /// Origins only. A listing needs to say which files are steering the run, and a path the
+    /// driver constructed says that without quoting a line of what is in them.
+    pub agents: Vec<String>,
 }
 
 /// Build the preamble for one turn.
@@ -62,10 +67,12 @@ pub fn compose<S: Sink>(
             "From ~/.bua/{AGENTS_FILE}:\n\n{}\n\n",
             text.trim()
         ));
+        preamble.agents.push(format!("~/.bua/{AGENTS_FILE}"));
     }
     match read_workspace_agents(policy, workspace) {
         Ok(Some(text)) => {
             standing.push_str(&format!("From {AGENTS_FILE}:\n\n{}\n\n", text.trim()));
+            preamble.agents.push(AGENTS_FILE.to_string());
         }
         Ok(None) => {}
         Err(notice) => preamble.notices.push(notice),

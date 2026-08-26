@@ -65,7 +65,53 @@ pub enum Action {
     Cancel,
     /// Take what the selection covers, which needs the screen as it was last drawn.
     Copy,
+    /// Run a local command. Never a turn: nothing is sent and no model is called.
+    Command(String),
     Quit,
+}
+
+/// Whether an input is a local command rather than something to send.
+///
+/// A single leading slash, and `//` escapes it. Without the escape, a prompt that has to begin
+/// with a slash would be unreachable, and an interface that cannot express a thing at all is
+/// worse than one that asks for a second keystroke.
+pub fn is_command(input: &str) -> bool {
+    let trimmed = input.trim_start();
+    trimmed.starts_with('/') && !trimmed.starts_with("//")
+}
+
+/// Run a local command and write the answer into the transcript.
+///
+/// Nothing here starts a turn, reaches the network, or writes a file. An unknown command says so
+/// rather than being sent to the model: a typo should cost a line, not a round trip.
+fn run_command(session: &mut Session, command: &str, workspace: &Workspace, trust: &TrustStore) {
+    let name = command
+        .trim_start()
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+
+    match name {
+        "skills" => {
+            // The session's own trust map, so the answer describes this session rather than a
+            // hypothetical one. That is the whole reason to ask in here rather than from the
+            // command line.
+            let mut sink = bua_core::event::NullSink;
+            let inventory = bua_agent::skills::inventory(
+                &mut sink,
+                workspace,
+                bua_agent::home::directory().as_deref(),
+                trust.clone(),
+            );
+            session.note(crate::skills_view::lines(&inventory).join("\n"));
+        }
+        "help" => session
+            .note("commands: /skills, /help. Begin a prompt with // to send a literal slash."),
+        other => session.note(format!(
+            "unknown command: /{other}. Try /help, or begin with // to send this as a prompt."
+        )),
+    }
 }
 
 /// Interpret a key press against the session.
@@ -100,6 +146,12 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.quit();
             Action::Quit
         }
+        // A command is settled before submit, because submit is what makes an input a turn.
+        // Deciding afterwards would mean starting a turn and then trying to take it back.
+        KeyCode::Enter if is_command(&session.input) => match session.submit_command() {
+            Some(command) => Action::Command(command),
+            None => Action::None,
+        },
         KeyCode::Enter => match session.submit() {
             Some(prompt) => Action::Submit(prompt),
             None => Action::None,
@@ -444,6 +496,9 @@ fn event_loop(
         match action {
             Action::Quit => return Ok(()),
             Action::Copy => copy_selection(terminal, &mut session)?,
+            Action::Command(command) => {
+                run_command(&mut session, &command, workspace, &trust);
+            }
             Action::Submit(prompt) => {
                 // Both are threaded through: a turn that writes untrusted data into a trusted
                 // path records that, and the next turn must honour it, and a turn that has been
@@ -1150,5 +1205,20 @@ mod tests {
 
         handle_key(&mut session, key(KeyCode::Char('b')));
         assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::None);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::is_command;
+
+    /// A single slash is a command; two is an escape for a prompt that has to start with one.
+    #[test]
+    fn a_single_slash_is_a_command_and_a_double_slash_is_not() {
+        assert!(is_command("/skills"));
+        assert!(is_command("  /skills"));
+        assert!(!is_command("//usr/bin"));
+        assert!(!is_command("what is /etc for?"));
+        assert!(!is_command(""));
     }
 }

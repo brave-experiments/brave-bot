@@ -79,6 +79,81 @@ started, so a name holding `../` or an absolute path matches nothing and the cal
 there is no lookup for it to reach. A name that is merely close to a real one is refused too,
 rather than guessed at, since guessing would load instructions nobody asked for.
 
+## Seeing what loaded
+
+Ask, rather than guessing from whether the agent obeyed:
+
+```
+/skills          in a session
+bua skills       from the command line
+```
+
+Both print the same thing: what is on offer, what a project skill shadowed, what was found and
+not loaded, and what the whole preamble costs.
+
+```
+Skills
+
+  loaded
+    commit-style                  .bua/skills/commit-style/SKILL.md
+      The PROJECT version, which should shadow the global one.
+    project-only                  .bua/skills/project-only/SKILL.md
+      Only exists in this project.
+
+  shadowed
+    commit-style                  ~/.bua/skills/commit-style/SKILL.md
+      replaced by .bua/skills/commit-style/SKILL.md
+
+  not loaded
+    .bua/skills/broken/SKILL.md
+      it needs a name and a description in its frontmatter
+
+  standing instructions           ~/.bua/AGENTS.md, AGENTS.md
+  preamble                        587 bytes, roughly 146 tokens per request
+```
+
+The `project` line is always there, even when the project holds nothing:
+
+```
+  project                         ~/repos/thing
+      not trusted, and no .bua/skills directory
+```
+
+It says where the search looked and whether that directory is trusted, which is what separates
+"there is nothing here" from "there is something here you are not being shown". Without it an
+empty listing means both, and the one question this command exists to answer goes unanswered.
+
+**Use `/skills` for the real answer.** A one-shot `bua skills` vouches for nothing, so it runs
+with an empty trust map and everything in the project comes back under "not loaded". They are
+still listed, by path and size, so you can tell "not trusted" from "not found". Only a session
+that you answered yes to shows what that session actually loads.
+
+A skill in an untrusted path is listed by **where it is and how big it is**, never by what it
+says about itself:
+
+```
+  not loaded
+    .bua/skills/broken/SKILL.md
+      4 lines, 62 bytes, it is not trusted
+```
+
+That is not coyness. Its frontmatter is refused by the same gate that keeps it out of the prompt,
+and it would tell you nothing anyway: a skill there is dropped before it is parsed, so the reason
+is always this one and never "your frontmatter is wrong". Where the path *is* trusted, the
+frontmatter is the diagnosis and it is shown in full.
+
+The token figure is bytes over four. bua does not tokenise locally, which is why the line says
+"roughly".
+
+## Commands
+
+`/skills` is the first of them, and a leading `/` in a session now means a command rather than a
+prompt. `/help` lists what there is. An unknown command says so instead of being sent, so a typo
+costs a line rather than a round trip.
+
+To send a prompt that has to begin with a slash, begin it with two: `//usr/bin is on PATH`
+reaches the model as `/usr/bin is on PATH`.
+
 ## When changes take effect
 
 Skills and AGENTS.md are looked for afresh **every turn**, so writing one mid-session works, and
