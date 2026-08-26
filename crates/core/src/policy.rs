@@ -1273,7 +1273,24 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // The note comes off first: what follows the line is the document, and everything the
         // rest of this does is about the document.
         let (note, reply) = self.split_note(spec.id(), reply);
-        let (reply, unchanged_from) = self.leave_unchanged(spec, reply, slots);
+        let (reply, unchanged_from, said) = self.leave_unchanged(spec, reply, slots);
+        // A processor that explained itself and then said the word said both things in one
+        // answer. The explanation is a note, whether or not it remembered the line.
+        let note = match (note, said) {
+            (Some(first), Some(second)) => {
+                let label = crate::label::taint_all([first.label(), second.label()]);
+                let proof = Declassification::authorise("two halves of one remark");
+                Some(Labelled::new(
+                    format!(
+                        "{}\n\n{}",
+                        first.declassify(&proof),
+                        second.declassify(&proof)
+                    ),
+                    label,
+                ))
+            }
+            (first, second) => first.or(second),
+        };
         let reply = self.unfence(spec.id(), reply);
         Processed {
             text: self.keep_the_last_newline(spec, reply, slots),
@@ -1373,20 +1390,37 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         spec: &crate::processor::ProcessorSpec,
         reply: Labelled<String>,
         slots: &crate::slot::SlotStore,
-    ) -> (Labelled<String>, Option<SlotId>) {
+    ) -> (Labelled<String>, Option<SlotId>, Option<Labelled<String>>) {
         let Some(slot) = spec.about() else {
-            return (reply, None);
+            return (reply, None, None);
         };
 
         let label = reply.label();
         let proof = Declassification::authorise("checked for the unchanged answer");
         let text = reply.declassify(&proof);
-        if text.trim() != crate::processor::ProcessorSpec::UNCHANGED {
-            return (Labelled::new(text, label), None);
+
+        // The word, wherever the sentence explaining it ended. A processor that had decided a
+        // file should be left alone wrote a paragraph saying why and then the word, without the
+        // line that would have separated them, and the paragraph became the file. The verdict
+        // is the last thing it says; what came before it is what it wanted to tell somebody.
+        let said = crate::processor::ProcessorSpec::UNCHANGED;
+        let ends_with_it = text
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .is_some_and(|last| last.trim() == said);
+        if !ends_with_it {
+            return (Labelled::new(text, label), None, None);
         }
 
+        let before = match text.rfind(said) {
+            Some(at) => text[..at].trim().to_string(),
+            None => String::new(),
+        };
+        let explained = (!before.is_empty()).then(|| Labelled::new(before, label));
+
         let Ok(original) = slots.take_for_effect(slot) else {
-            return (Labelled::new(text, label), None);
+            return (Labelled::new(text, label), None, None);
         };
         self.allow(
             "processor",
@@ -1398,6 +1432,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         (
             Labelled::new(original.declassify(&proof), label),
             Some(slot.clone()),
+            explained,
         )
     }
 
@@ -2296,6 +2331,94 @@ mod tests {
             input.contains("--- begin ref:1 (context only, do not return this one) ---"),
             "the context was not marked as context: {input}"
         );
+    }
+
+    /// A processor that had decided a file should be left alone wrote a paragraph saying why
+    /// and then the word, without the line that separates them, and the paragraph became the
+    /// file: seven hundred bytes of explanation where a Python script had been. The verdict is
+    /// the last thing it says, and what came before it is what it wanted somebody to know.
+    #[test]
+    fn the_word_is_read_wherever_the_sentence_explaining_it_ended() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:6"), Label::untrusted_private())
+            .unwrap()
+            .write("print('serving')\n")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:6")],
+                &Labelled::trusted("fix the speed bug".to_string()),
+                Some(SlotId::new("ref:6")),
+                &slots,
+            )
+            .expect("a spec");
+
+        let produced = policy.label_processor_output(
+            &spec,
+            Labelled::new(
+                "This is a server, not the game, so I am returning it unchanged.\n\nUNCHANGED\n"
+                    .to_string(),
+                Label::untrusted_private(),
+            ),
+            &slots,
+        );
+
+        assert_eq!(produced.unchanged_from, Some(SlotId::new("ref:6")));
+        let proof = Declassification::authorise("test");
+        assert_eq!(produced.text.declassify(&proof), "print('serving')\n");
+        assert!(
+            produced
+                .note
+                .expect("the explanation was kept")
+                .declassify(&proof)
+                .contains("not the game"),
+            "what it wanted to say was thrown away"
+        );
+    }
+
+    /// A document that merely mentions the word is not a verdict: the verdict is the whole of
+    /// the last thing it says.
+    #[test]
+    fn a_document_mentioning_the_word_is_still_a_document() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        slots
+            .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+            .unwrap()
+            .write("the original\n")
+            .unwrap();
+
+        let spec = policy
+            .before_processor(
+                "p",
+                &[SlotId::new("ref:1")],
+                &Labelled::trusted("rewrite it".to_string()),
+                Some(SlotId::new("ref:1")),
+                &slots,
+            )
+            .expect("a spec");
+
+        let produced = policy.label_processor_output(
+            &spec,
+            Labelled::new(
+                "# UNCHANGED is a status in this file\nstatus = UNCHANGED_OK\n".to_string(),
+                Label::untrusted_private(),
+            ),
+            &slots,
+        );
+
+        assert_eq!(
+            produced.unchanged_from, None,
+            "a document was read as a verdict"
+        );
+        let proof = Declassification::authorise("test");
+        assert!(produced.text.declassify(&proof).contains("status ="));
     }
 
     /// A model returning a file it was asked to leave alone returns it without the final
