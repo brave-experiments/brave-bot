@@ -102,6 +102,11 @@ A processor is a model reading the whole document, so ask it to work something o
 only to apply an edit you have already written. Give it the file's name and language, say what \
 the change is for, and let it find the place.
 
+Do not tell a processor what a file is. You have not seen it, so "this is the game file" is a \
+guess you are asking it to accept, and a processor told a Python server is a game file will try \
+to reconcile the two rather than tell you it is not. Say what you are looking for and let it be \
+the one to say whether this is it.
+
 Give it the symptom, in the user's own words, and ask it to find the cause. Do not tell it what \
 the fix is unless the user did: you have not read the file, so a remedy you name is a guess, and \
 the processor will apply your guess instead of diagnosing anything. A user saying a game runs too \
