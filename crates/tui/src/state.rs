@@ -178,6 +178,13 @@ pub struct Session {
     /// write the developer's own history, and one that ran twice would see the first run's
     /// prompts. The real session turns it on with [`Session::with_stored_history`].
     persist: bool,
+    /// Notes already said once, so a standing condition is not repeated every turn.
+    ///
+    /// Skills and standing instructions are looked for afresh each turn, which is what lets one
+    /// written mid-session take effect. The reasons a file was left out therefore recur every
+    /// turn as well, and saying them each time would bury the work in a condition the user
+    /// already knows about and cannot fix from here.
+    said: Vec<String>,
     /// When the turn in flight started. `None` when idle.
     ///
     /// An `Instant` rather than a stored elapsed value so the display advances between redraws
@@ -204,6 +211,7 @@ impl Session {
             phase: None,
             running: None,
             persist: false,
+            said: Vec::new(),
             started: None,
         }
     }
@@ -601,6 +609,16 @@ impl Session {
         self.transcript.push(Entry::system(message));
     }
 
+    /// Say something once for the whole session, ignoring it if it has been said already.
+    pub fn note_once(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if self.said.iter().any(|said| said == &message) {
+            return;
+        }
+        self.said.push(message.clone());
+        self.note(message);
+    }
+
     pub fn toggle_trail(&mut self) {
         self.show_trail = !self.show_trail;
     }
@@ -629,6 +647,29 @@ mod tests {
 
     fn session() -> Session {
         Session::new("kernel-enforced")
+    }
+
+    /// Skills and standing instructions are looked for afresh every turn, so the reason one was
+    /// left out recurs every turn too. Repeating it would bury the work in a condition the user
+    /// already knows about and cannot fix from here.
+    #[test]
+    fn a_note_said_once_is_not_said_again() {
+        let mut s = session();
+        s.note_once("AGENTS.md was not loaded: this directory is not trusted");
+        s.note_once("AGENTS.md was not loaded: this directory is not trusted");
+        s.note_once("AGENTS.md was not loaded: this directory is not trusted");
+
+        assert_eq!(s.transcript.len(), 1, "the same note was repeated");
+    }
+
+    /// Once per message, not once ever. A second condition still needs saying.
+    #[test]
+    fn a_different_note_is_still_said() {
+        let mut s = session();
+        s.note_once("one thing happened");
+        s.note_once("another thing happened");
+
+        assert_eq!(s.transcript.len(), 2);
     }
 
     #[test]

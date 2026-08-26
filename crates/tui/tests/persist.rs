@@ -3,15 +3,18 @@
 //! Uses a temporary HOME so the developer's own history is never read or written.
 
 use bua_tui::store;
+use std::sync::Mutex;
+
+/// One lock for the whole file, not one per test.
+///
+/// `HOME` is process-wide, so every test here contends for the same thing. A mutex declared
+/// inside each function would be a different mutex, and two tests would then be free to run at
+/// once and see each other's HOME.
+static HOME_LOCK: Mutex<()> = Mutex::new(());
 
 /// Point HOME at a scratch directory for the duration of the closure.
-///
-/// Serialised through a mutex because the environment is process-wide: two of these running at
-/// once would each see the other's HOME.
 fn with_temp_home<T>(name: &str, body: impl FnOnce() -> T) -> T {
-    use std::sync::Mutex;
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let dir = std::env::temp_dir().join(format!("bua-home-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -120,9 +123,7 @@ fn a_corrupt_file_reads_as_no_history() {
 /// With nowhere to store anything, every operation is a no-op rather than a failure.
 #[test]
 fn no_home_directory_is_not_an_error() {
-    use std::sync::Mutex;
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let previous = std::env::var_os("HOME");
     unsafe { std::env::remove_var("HOME") };
@@ -183,5 +184,16 @@ fn a_cancelled_prompt_is_removed_from_the_stored_history() {
             store::load_history().is_empty(),
             "the cancelled prompt stayed on disk"
         );
+    });
+}
+
+/// History, session records, and the user's skills all live in one directory. Two definitions of
+/// where that is would drift, and the interface would write its state somewhere the agent never
+/// looks.
+#[test]
+fn the_interface_and_the_agent_agree_on_where_home_is() {
+    with_temp_home("agreement", || {
+        assert_eq!(store::directory(), bua_agent::home::directory());
+        assert!(store::directory().is_some(), "no home was found at all");
     });
 }

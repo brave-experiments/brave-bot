@@ -156,7 +156,7 @@ fn run_task(args: &[String]) -> ExitCode {
     let egress = bua_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let mut task = Task::new(prompt);
+    let mut task = Task::new(prompt).with_home(bua_agent::home::directory());
     for file in files {
         task = task.with_file(file);
     }
@@ -184,6 +184,11 @@ fn run_task(args: &[String]) -> ExitCode {
         &Cancel::new(),
     ) {
         Ok(outcome) => {
+            // To stderr with the rest of the progress, so stdout stays the reply and nothing
+            // else. These are the driver's own words about what loaded, never file contents.
+            for notice in &outcome.notices {
+                eprintln!("note: {notice}");
+            }
             // The reply is untrusted model output. Printing it is safe, since the
             // terminal is not a decision, so it is released explicitly for display.
             println!("{}", outcome.reply_for_display());

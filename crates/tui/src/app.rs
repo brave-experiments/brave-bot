@@ -544,7 +544,7 @@ fn run_turn_animated(
     // are cheap handles; Egress builds its own connection pool.
     let worker_config = config.clone();
     let worker_workspace = workspace.clone();
-    let task = Task::new(prompt);
+    let task = Task::new(prompt).with_home(bua_agent::home::directory());
     // Kept so a failed turn does not lose the user's decisions.
     let fallback = trust.clone();
 
@@ -684,6 +684,12 @@ fn fold_outcome(
 ) -> TrustStore {
     match outcome {
         Ok(outcome) => {
+            // Said before the reply, since they explain what the turn did and did not have to
+            // work with. Once per session: the reasons recur every turn and repeating them would
+            // bury the work.
+            for notice in &outcome.notices {
+                session.note_once(notice.clone());
+            }
             let trail = sink.bare();
             session.complete(
                 outcome.reply_for_display().to_string(),

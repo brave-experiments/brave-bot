@@ -58,3 +58,22 @@ read as trusted again. Within a session, and across a resume of it, the second r
 holds. Across a fresh start it does not, because a fresh start has no memory to hold it in. If a
 file holds content you do not trust, the answer is to say no to the directory, or to not leave it
 there.
+
+## Your own directory is trusted, because it is yours
+
+The table above is about the working directory. `~/.bua` is different: it holds your history,
+your sessions, your standing instructions, and your skills, and everything in it is something you
+put there. It is read as trusted for that reason, on the same footing as the configuration that
+already picks your model and your endpoint.
+
+This is not trust assumed from silence, which is the thing the rest of this document refuses.
+An empty directory offers nothing at all. **Putting a file there is the grant**, exactly as
+answering yes to a working directory is.
+
+The consequence, worth stating rather than burying: a skill you downloaded into `~/.bua/skills`
+is trusted as far as a config file you pasted is. Read one before you install it. See
+[skills.md](skills.md).
+
+Files in a *project* get no such standing. A project's `AGENTS.md` and `.bua/skills` are read
+through the table above, so they load when you vouched for the directory and are left out when
+you did not.
