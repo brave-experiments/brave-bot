@@ -13,12 +13,33 @@ use bua_sandbox::policy::SandboxPolicy;
 use bua_sandbox::{Sandbox, Unavailable};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
+
+/// Serialises the tests in this binary, which all write a script and then execute it.
+///
+/// Linux refuses to execute a file any process still holds open for writing. These tests run on
+/// threads of one process and each spawns a child, and a child forked while another thread is
+/// part-way through writing its script inherits that write handle: the sibling's exec then fails
+/// with `Text file busy`, on whichever test happened to lose the race. It failed in CI on a
+/// commit that touched a prompt string, which is the tell.
+///
+/// One at a time closes the window, since no write is ever in flight while a fork happens.
+static SPAWNING: Mutex<()> = Mutex::new(());
+
+/// Hold this for the length of a test that spawns a server.
+///
+/// Poisoning is ignored on purpose: a test that panicked while holding it left nothing behind
+/// that the next one cannot overwrite.
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    SPAWNING.lock().unwrap_or_else(|held| held.into_inner())
+}
 
 /// Write a fake MCP server that replies to each request by id.
 fn fake_server(name: &str, script: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("bua-mcp-fake-{name}.sh"));
     let mut file = std::fs::File::create(&path).expect("create script");
     file.write_all(script.as_bytes()).expect("write script");
+    // Closed before the mode is set, and well before anything tries to execute it.
     drop(file);
 
     #[cfg(unix)]
@@ -91,6 +112,7 @@ fn sandbox_or_skip() -> Option<Box<dyn Sandbox>> {
 
 #[test]
 fn a_confined_server_completes_the_handshake_and_lists_tools() {
+    let _spawning = one_at_a_time();
     let Some(sandbox) = sandbox_or_skip() else {
         return;
     };
@@ -118,6 +140,7 @@ fn a_confined_server_completes_the_handshake_and_lists_tools() {
 /// A tool result is untrusted content, whatever the server says it is.
 #[test]
 fn a_tool_result_is_labelled_untrusted() {
+    let _spawning = one_at_a_time();
     let Some(sandbox) = sandbox_or_skip() else {
         return;
     };
@@ -155,6 +178,7 @@ fn a_tool_result_is_labelled_untrusted() {
 /// Without the capability the tool must not be callable.
 #[test]
 fn a_tool_call_without_the_capability_is_refused() {
+    let _spawning = one_at_a_time();
     let Some(sandbox) = sandbox_or_skip() else {
         return;
     };
@@ -190,6 +214,7 @@ fn a_tool_call_without_the_capability_is_refused() {
 /// The rule that matters most for stdio: no confinement means no server.
 #[test]
 fn a_server_is_not_launched_without_confinement() {
+    let _spawning = one_at_a_time();
     let script = fake_server("unconfined", WORKING_SERVER);
 
     let error = StdioServer::launch(
@@ -213,6 +238,7 @@ fn a_server_is_not_launched_without_confinement() {
 /// A JSON-RPC error must surface as an error rather than being read as a result.
 #[test]
 fn a_server_error_is_reported() {
+    let _spawning = one_at_a_time();
     let Some(sandbox) = sandbox_or_skip() else {
         return;
     };
@@ -255,6 +281,7 @@ done
 /// A server that dies must produce an error, not a hang.
 #[test]
 fn a_server_that_exits_early_is_an_error() {
+    let _spawning = one_at_a_time();
     let Some(sandbox) = sandbox_or_skip() else {
         return;
     };
