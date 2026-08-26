@@ -619,15 +619,14 @@ impl Attempt {
         ));
     }
 
-    /// How the whole attempt reads to a person, for a failure report.
+    /// How the attempt reads to a person, for a failure report.
+    ///
+    /// The goal is deliberately absent. Every caller narrates it as the run happens, so
+    /// repeating it here printed it twice on every path: under `--trace` on success, and
+    /// unconditionally on failure. What a reader still needs afterwards is the plan, or the
+    /// document that would not become one, and which steps ran.
     pub fn describe(&self) -> String {
         let mut out = String::new();
-        if let Some(shape) = &self.shape {
-            out.push_str("goal, as understood\n");
-            for line in shape.lines() {
-                out.push_str(&format!("  {line}\n"));
-            }
-        }
         match (&self.plan, &self.proposed) {
             (Some(plan), _) => out.push_str(plan),
             // No frozen plan means it never validated, so the model's own words are all there is.
