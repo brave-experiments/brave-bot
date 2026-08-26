@@ -262,17 +262,20 @@ impl Session {
     /// then the phase it is waiting in. `None` only before the first request goes out, when
     /// there is genuinely nothing to say yet and the turn's own word is all there is.
     fn what_is_happening(&self) -> Option<String> {
-        if let Some(running) = &self.running {
-            return Some(running.line());
+        // Only the phases that say something a person cannot see elsewhere. Planning is the
+        // first call, before any line has appeared, and reconnecting is a pause that looks
+        // exactly like thinking and is not: nothing is being worked out and what the model had
+        // written has been thrown away.
+        //
+        // Thinking is not one of them, and neither is the call in flight or the task in hand:
+        // both of those are already on their own lines in the transcript above, and repeating
+        // the running call here left the spinner reading "Isolated processor(index.html,
+        // server.py)…", which is a strange thing for a word beside a spinner to be. What that
+        // word is for is showing that the session is alive while the answer takes its time.
+        match self.phase {
+            Some(phase @ (Phase::Planning | Phase::Reconnecting)) => Some(phase.word().to_string()),
+            _ => None,
         }
-        if let Some(row) = self
-            .todos
-            .iter()
-            .find(|row| row.status == bua_core::todo::Status::Active)
-        {
-            return Some(row.content.clone());
-        }
-        self.phase.map(|phase| phase.word().to_string())
     }
 
     /// The indicator to show, or `None` when no turn is running.
@@ -1200,17 +1203,25 @@ mod tests {
             assert!(s.transcript.is_empty());
         }
 
-        /// The active task names the indicator, which is what makes the line say what is
-        /// happening rather than a generic word.
+        /// The active task is drawn in the list, under the turn it belongs to, so it does not
+        /// also take the word beside the spinner. That word is there to show the session is
+        /// alive, and a list already says what the work is.
         #[test]
-        fn the_active_task_names_the_indicator() {
+        fn the_active_task_is_shown_in_the_list_and_not_on_the_spinner() {
             let mut s = working();
+            let word = s.indicator().expect("working").verb.to_string();
             s.set_todos(list(&[
                 ("Escape cancels a turn", Status::Done),
                 ("Add prompt history", Status::Active),
             ]));
 
-            assert_eq!(s.indicator().expect("working").verb, "Add prompt history");
+            assert_eq!(s.indicator().expect("working").verb, word);
+            assert!(
+                s.todos
+                    .iter()
+                    .any(|row| row.content == "Add prompt history"),
+                "the task went nowhere at all"
+            );
         }
 
         /// With no list, or nothing active in it, the turn's own word is used: a session that
@@ -1370,25 +1381,17 @@ mod tests {
             assert_eq!(s.transcript.len(), before);
         }
 
-        /// The indicator names the call in flight, which is the most specific thing true at
-        /// that moment.
+        /// The call in flight has a line of its own in the transcript, so putting it beside the
+        /// spinner as well said it twice and made the word odd: "Isolated processor(index.html,
+        /// server.py)…" is a strange thing to read there. The word's job is showing the session
+        /// is alive while an answer takes its time.
         #[test]
-        fn a_running_call_names_the_indicator() {
+        fn a_running_call_leaves_the_turn_its_own_word() {
             let mut s = working();
             s.set_phase(Phase::Thinking);
+            let word = s.indicator().expect("working").verb.to_string();
             s.start_activity(Activity::running("Search", "MAX_STEPS"));
-            assert_eq!(s.indicator().expect("working").verb, "Search(MAX_STEPS)");
-        }
-
-        /// And gives the name back when it ends, rather than leaving a finished call on the
-        /// line as though it were still going.
-        #[test]
-        fn a_finished_call_stops_naming_the_indicator() {
-            let mut s = working();
-            s.set_phase(Phase::Thinking);
-            s.start_activity(Activity::running("Search", "MAX_STEPS"));
-            s.finish_activity(Activity::running("Search", "MAX_STEPS").done("2 matches"));
-            assert_eq!(s.indicator().expect("working").verb, "Thinking");
+            assert_eq!(s.indicator().expect("working").verb, word);
         }
 
         /// The first wait is the long one and has no call to show for it, so the phase word is
@@ -1402,16 +1405,28 @@ mod tests {
             assert_ne!(generic, "Planning");
         }
 
-        /// A task the model marked in progress beats the phase word: it says what the work is,
-        /// not merely what the turn is waiting on.
+        /// The task in hand is drawn under the turn, in the list, so it does not take the word
+        /// either.
         #[test]
-        fn an_active_task_beats_the_phase_word() {
+        fn an_active_task_leaves_the_turn_its_own_word() {
             let mut s = working();
             s.set_phase(Phase::Thinking);
+            let word = s.indicator().expect("working").verb.to_string();
             s.set_todos(bua_core::todo::rows(&bua_core::todo::List::new(vec![
                 bua_core::todo::Item::new("Add prompt history", bua_core::todo::Status::Active),
             ])));
-            assert_eq!(s.indicator().expect("working").verb, "Add prompt history");
+            assert_eq!(s.indicator().expect("working").verb, word);
+        }
+
+        /// Planning and reconnecting do take it. The first is the wait before anything at all
+        /// has appeared, and the second is a pause that looks exactly like thinking and is not.
+        #[test]
+        fn the_phases_worth_naming_name_the_indicator() {
+            let mut s = working();
+            s.set_phase(Phase::Planning);
+            assert_eq!(s.indicator().expect("working").verb, "Planning");
+            s.set_phase(Phase::Reconnecting);
+            assert_eq!(s.indicator().expect("working").verb, "Reconnecting");
         }
 
         /// One turn's calls must not appear under the next one's prompt.
