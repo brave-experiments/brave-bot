@@ -816,6 +816,10 @@ fn ask<S: Sink, R: Reporter>(
     *model = completion.model;
 
     let (spoken, _) = completion.content.into_parts_for_decoding();
+    // A reasoning block is the model thinking aloud rather than answering, and this is the one
+    // place a reply enters the module. Removed here so no later reader has to know about it:
+    // narration, the report, the history, and the parser all see the same text.
+    let spoken = without_leading_reasoning(&spoken).to_string();
     let labelled = policy.label_model_output(round, spoken);
     policy
         .read_trusted_content(round, &labelled)
@@ -1388,6 +1392,25 @@ mod tests {
         ] {
             assert!(parse(text).is_ok(), "'{text}' was refused");
         }
+    }
+
+    /// A reasoning block is stored and shown to a person, so it is removed at the source rather
+    /// than at each place that displays it.
+    #[test]
+    fn a_leading_reasoning_block_is_not_part_of_the_answer() {
+        assert_eq!(
+            without_leading_reasoning("<think>an aside</think>1. read the file"),
+            "1. read the file"
+        );
+        assert_eq!(
+            without_leading_reasoning("1. read the file"),
+            "1. read the file"
+        );
+        // Not leading, so inside the answer and not ours to edit.
+        assert_eq!(
+            without_leading_reasoning("1. mention <think> in a document"),
+            "1. mention <think> in a document"
+        );
     }
 
     /// The plan `llama-3-8b-instruct` returned, refused for writing null where it meant to
