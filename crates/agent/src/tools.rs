@@ -60,7 +60,10 @@ pub fn available() -> Vec<Tool> {
                     "path_ref": {
                         "type": "string",
                         "description": "A reference to a file whose name you were not shown, \
-                                        e.g. \"ref:2\" from a quarantined listing."
+                                        e.g. \"ref:2\" from a listing. Only useful where that \
+                                        file is one you may be shown: a reference to a \
+                                        quarantined file already is the file, so reading it \
+                                        returns nothing you do not have."
                     },
                     "offset": {
                         "type": "integer",

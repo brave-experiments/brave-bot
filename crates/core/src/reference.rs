@@ -121,10 +121,10 @@ impl Reference {
 
         let next = match self.kind {
             Kind::File => format!(
-                "Quarantined: you will not be shown what this file holds. Give {} to \
-                 spawn_processor to work on it, and name {} as path_ref to write what comes \
-                 back to the same file.",
-                self.slot, self.slot
+                "Quarantined: you will not be shown what this file holds, and read_file has \
+                 nothing to add: {} already is the file. Give it to spawn_processor to work on, \
+                 and name it as write_file's path_ref to put the result back.",
+                self.slot
             ),
             Kind::Content => format!(
                 "Quarantined: you will not be shown it. Give {} to spawn_processor to work on, \
