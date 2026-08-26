@@ -74,6 +74,44 @@ impl Question {
     }
 }
 
+/// The most questions one call may put to a person.
+///
+/// A limit rather than a target. Past a handful the person is being interviewed rather than
+/// consulted, and a planner that needs more than this has not finished thinking.
+pub const MOST_AT_ONCE: usize = 4;
+
+/// The questions, as the model asked them.
+///
+/// A series rather than a loose vector so there is one value to gate, one value to shape, and
+/// one value to report against. Nothing may ask half of it: see [`canonical_series`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Series {
+    pub questions: Vec<Question>,
+}
+
+impl Series {
+    pub fn new(questions: Vec<Question>) -> Self {
+        Self { questions }
+    }
+
+    pub fn len(&self) -> usize {
+        self.questions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.questions.is_empty()
+    }
+}
+
+/// A whole series, released for display.
+///
+/// One value rather than loose prompts, for the reason [`Prompt`] is one value: the interface
+/// receives everything it needs to draw in a single declassification.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Asking {
+    pub prompts: Vec<Prompt>,
+}
+
 /// What the person did.
 ///
 /// Not a label and not a gate, just the shape of a reply. Declining is a first-class answer
@@ -167,12 +205,76 @@ pub fn canonical(question: &Question) -> String {
     out
 }
 
+/// Shape a whole series for display.
+///
+/// Every question produces exactly one prompt, in order, for the same reason every choice
+/// produces exactly one row: what the model wrote must not be able to decide which questions
+/// the person is shown the existence of.
+pub fn asking(series: &Series) -> Asking {
+    Asking {
+        prompts: series.questions.iter().map(prompt).collect(),
+    }
+}
+
+/// One stable string standing for the whole series.
+///
+/// This is the value the routing gate checks, and it covers every question, because the gate
+/// runs once for the call. Gating question by question would mean deciding, per question,
+/// whether that one is put to the person, and which half of a series survives is exactly the
+/// sort of decision that must not be derived from what is in it. A series is asked whole or
+/// refused whole.
+///
+/// The count is part of the string, so two different ways of splitting the same questions are
+/// two different series and neither can be answered from the other's memory. The position is
+/// there to make the gated value legible in the audit trail and does no such work: the questions
+/// are already concatenated in order, so a reordering changes the string with or without it.
+pub fn canonical_series(series: &Series) -> String {
+    let mut out = format!("asking {} questions", series.len());
+    for (at, question) in series.questions.iter().enumerate() {
+        out.push_str(&format!("\nquestion {} of {}\n", at + 1, series.len()));
+        out.push_str(&canonical(question));
+    }
+    out
+}
+
+/// Put the replies to a whole series into words for the planner.
+///
+/// Walks the questions, never the answers, so the report has one paragraph per question the
+/// model asked and the interface cannot add one. Pairing is by position, and it is total:
+///
+/// - a question with no answer at its index reads as a decline, which is the honest report of
+///   an interface that did not answer it
+/// - an answer past the last question is dropped, since there is no question it could be about
+///   and attributing it to one would report the person as having said something about a
+///   question nobody asked
+///
+/// With more than one answer in one result the planner cannot tell which question each settled,
+/// so each is named. A series of one needs no such heading and gets none.
+pub fn describe_series(series: &Series, answers: &[Answer]) -> String {
+    let lone = series.len() == 1;
+    series
+        .questions
+        .iter()
+        .enumerate()
+        .map(|(at, question)| {
+            let answer = answers.get(at).unwrap_or(&Answer::Declined);
+            let said = describe(question, answer);
+            if lone {
+                said
+            } else {
+                format!("{}\n{said}", question.prompt)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Put a reply into words for the planner.
 ///
 /// Lives here so the driver never branches on what the person said. An index that names no
 /// choice is dropped rather than guessed at: the alternative is reporting an answer nobody gave.
 /// A selection that ends up empty reads as a decline, since that is what it is.
-pub fn describe(question: &Question, answer: &Answer) -> String {
+fn describe(question: &Question, answer: &Answer) -> String {
     match answer {
         Answer::Chosen(indices) => {
             let picked: Vec<&str> = indices
@@ -334,5 +436,150 @@ mod tests {
     #[test]
     fn a_shaped_question_carries_its_own_key() {
         assert_eq!(prompt(&question()).key, canonical(&question()));
+    }
+
+    fn platforms() -> Question {
+        Question::new(
+            "Platforms",
+            "Which platforms?",
+            vec![Choice::new("Linux", None), Choice::new("macOS", None)],
+            true,
+        )
+    }
+
+    fn series() -> Series {
+        Series::new(vec![question(), platforms()])
+    }
+
+    /// The same rule as an option list, one level up. A series that could lose a question on the
+    /// way to the screen would let what the model wrote decide what the person is asked.
+    #[test]
+    fn shaping_a_series_never_drops_a_question() {
+        let many = Series::new(
+            (0..20)
+                .map(|i| Question::new(format!("{i}"), format!("question {i}?"), Vec::new(), false))
+                .collect(),
+        );
+        let shaped = asking(&many);
+        assert_eq!(shaped.prompts.len(), 20);
+        assert!(
+            shaped
+                .prompts
+                .iter()
+                .enumerate()
+                .all(|(i, p)| p.question == format!("question {i}?")),
+            "the questions did not keep their order"
+        );
+    }
+
+    /// Each prompt keeps its own key beside the series key, because the two answer different
+    /// questions: the series key is what the gate checks, and the per-question key is what an
+    /// interface remembers an answer under.
+    #[test]
+    fn every_shaped_question_keeps_its_own_key() {
+        let shaped = asking(&series());
+        assert_eq!(shaped.prompts[0].key, canonical(&question()));
+        assert_eq!(shaped.prompts[1].key, canonical(&platforms()));
+    }
+
+    /// The gate runs once, so the value it checks has to cover everything the person will be
+    /// shown. A key that missed a question would let that question through ungated.
+    #[test]
+    fn a_series_key_covers_every_question_in_it() {
+        let key = canonical_series(&series());
+        assert!(key.contains("Which cache layer?"), "{key}");
+        assert!(key.contains("Which platforms?"), "{key}");
+        assert!(key.contains("macOS"), "{key}");
+    }
+
+    /// Order is part of what the person is asked, since they answer one question at a time and
+    /// each answer is given knowing the ones before it.
+    #[test]
+    fn two_series_holding_the_same_questions_in_a_different_order_have_different_keys() {
+        let forwards = Series::new(vec![question(), platforms()]);
+        let backwards = Series::new(vec![platforms(), question()]);
+        assert_ne!(
+            canonical_series(&forwards),
+            canonical_series(&backwards),
+            "reordering a series left it looking like the same series"
+        );
+    }
+
+    /// Splitting three questions into two calls must not produce a key one of them already has,
+    /// or the second would be answered from the first's memory.
+    #[test]
+    fn a_series_key_says_how_many_questions_are_in_it() {
+        let alone = Series::new(vec![question()]);
+        assert!(!canonical_series(&alone).contains(&canonical_series(&series())));
+        assert_ne!(canonical_series(&alone), canonical(&question()));
+    }
+
+    /// With several answers in one result, an unlabelled reply leaves the planner to guess which
+    /// question it settled.
+    #[test]
+    fn a_series_is_reported_question_by_question() {
+        let text = describe_series(
+            &series(),
+            &[Answer::Chosen(vec![1]), Answer::Chosen(vec![0, 1])],
+        );
+        assert_eq!(
+            text,
+            "Which cache layer?\nThe user chose: Query\n\n\
+             Which platforms?\nThe user chose:\n- Linux\n- macOS"
+        );
+    }
+
+    /// A lone question cannot be confused with another, so naming it is noise.
+    #[test]
+    fn a_lone_question_is_reported_without_repeating_itself() {
+        let alone = Series::new(vec![question()]);
+        assert_eq!(
+            describe_series(&alone, &[Answer::Chosen(vec![0])]),
+            "The user chose: HTTP"
+        );
+    }
+
+    /// The property skipping rests on. A question the person passed over must not cost them the
+    /// answers they did give.
+    #[test]
+    fn a_skipped_question_is_reported_as_declined_beside_its_answered_siblings() {
+        let text = describe_series(&series(), &[Answer::Declined, Answer::Chosen(vec![0])]);
+        assert!(
+            text.contains("Which cache layer?\nThe user declined"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Which platforms?\nThe user chose: Linux"),
+            "{text}"
+        );
+    }
+
+    /// An interface that answered fewer questions than were asked did not answer the rest, and
+    /// saying so is better than shifting the answers it did give onto the wrong questions.
+    #[test]
+    fn a_question_with_no_answer_at_all_reads_as_a_decline() {
+        let text = describe_series(&series(), &[Answer::Chosen(vec![0])]);
+        assert!(
+            text.contains("Which cache layer?\nThe user chose: HTTP"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Which platforms?\nThe user declined"),
+            "{text}"
+        );
+    }
+
+    /// And an answer past the end names no question, so reporting it would attribute words to
+    /// the person about something nobody asked.
+    #[test]
+    fn an_answer_with_no_question_is_dropped_rather_than_attributed_to_one() {
+        let alone = Series::new(vec![question()]);
+        assert_eq!(
+            describe_series(
+                &alone,
+                &[Answer::Chosen(vec![0]), Answer::Typed("hello".into())]
+            ),
+            "The user chose: HTTP"
+        );
     }
 }
