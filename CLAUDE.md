@@ -121,11 +121,16 @@ The properties this rests on, none of which may be relaxed:
   nowhere and may be written nowhere. This is not a label rule and cannot be one: every gate
   passed when a planner wrote a game's HTML into a Python script, because the destination was a
   path it named and a person approved.
-- **What it says about what it did is a second output**, split off at
-  `ProcessorSpec::NOTE_MARKER` and shown to the person watching. It reaches a screen and stops:
-  no model reads it, it is not part of any file, and it cannot be another processor's input. A
-  processor has one output and has always wanted two, and with nowhere to put the second it put
-  it in the first, where it became the file.
+- **Nothing a processor writes is a file unless it says where the file begins.** Everything
+  before `ProcessorSpec::NOTE_MARKER` is a remark for the person watching: it reaches a screen
+  and stops, no model reads it, it is not part of any file, and it cannot be another processor's
+  input. Everything after the line is the document. An answer with no line names no document and
+  can be written nowhere.
+
+  That way round on purpose. It was the other way, prose being the default and the line the
+  exception, and a processor explaining why it was leaving a Python script alone wrote the
+  explanation over the script. A processor has one output and has always wanted two, so forgetting
+  which is which has to fail towards changing nothing.
 
 The confinement is the capability set, not an operating system boundary. `bua-sandbox` confines
 processes running code we did not write; a processor's caller is our own code, and putting it in

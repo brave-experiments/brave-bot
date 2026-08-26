@@ -48,6 +48,12 @@ Do exactly what the instruction asks and output the result and nothing else: no 
 explanation, no code fences unless the instruction calls for them. What you output is used \
 verbatim.
 
+Nothing you write becomes a file unless you say where the file begins. Everything you write \
+before that line is read by a person and by nobody else, and is never written anywhere. So an \
+answer that forgets the line changes nothing, which is the safe way for you to be wrong: what \
+used to happen instead was that an explanation of why a file should be left alone was written \
+over that file.
+
 Where the documents below are marked, one of them says to return it and the others say they are \
 context. Return that one. Its whole content is your answer, changed or not, and the others exist \
 only so you can understand it: answering with one of them, however much more relevant it seemed, \
@@ -90,8 +96,11 @@ pub struct Chat<'a> {
 
 /// What one processor run produced.
 pub struct Processed {
-    /// The output, labelled by taint over the inputs. Never read on the way past.
-    pub text: Labelled<String>,
+    /// The document it produced, where it named one. Never read on the way past.
+    ///
+    /// `None` where the answer never said which part of it was a file. Nothing it wrote can be
+    /// written anywhere in that case, which is the safe direction to fail in.
+    pub document: Option<Labelled<String>>,
     /// What it wanted to say about what it did. Goes to the person watching and no further.
     pub note: Option<Labelled<String>>,
     /// The input it stands for, where it answered that the document should not change.
@@ -187,7 +196,7 @@ pub fn run<S: Sink>(
 
     let produced = policy.label_processor_output(spec, completion.content, slots);
     Ok(Processed {
-        text: produced.text,
+        document: produced.document,
         note: produced.note,
         unchanged_from: produced.unchanged_from,
         model: completion.model,

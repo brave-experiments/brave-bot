@@ -487,6 +487,18 @@ fn serve_sequence_losing_the_first(
 
 /// A round where the model says something on its way to calling a tool, which is the shape
 /// that carries an explanation the user should see.
+/// A processor's answer that names a document.
+///
+/// Everything a processor writes is a remark for the person watching unless it says where the
+/// document begins, so an answer meant to become a file says so, and these say it the way a real
+/// one has to.
+fn processor_reply(document: &str) -> String {
+    reply_with(&format!(
+        "{}\n{document}",
+        bua_core::processor::ProcessorSpec::NOTE_MARKER
+    ))
+}
+
 fn tool_request_saying(content: &str, tool: &str, arguments: &str) -> String {
     let escaped = arguments.replace('"', "\\\"");
     let content = content
@@ -3170,7 +3182,7 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
             r#"{"reads":["ref:1"],"instruction":"add error handling; return the whole file"}"#,
         ),
         // The processor's own reply, which is the new file and nothing else.
-        reply_with("PROCESSED CONTENTS"),
+        processor_reply("PROCESSED CONTENTS"),
         tool_request(
             "write_file",
             r#"{"path":"config.py","contents_ref":"ref:3"}"#,
@@ -3254,7 +3266,7 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"if this sets the speed, halve it; else return it unchanged"}"#,
         ),
-        reply_with("const SPEED = 50;"),
+        processor_reply("const SPEED = 50;"),
         tool_request(
             "write_file",
             r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
@@ -3454,7 +3466,7 @@ fn a_write_through_a_reference_says_what_landed_and_that_it_is_done() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"halve the speed"}"#,
         ),
-        reply_with("const SPEED = 50;"),
+        processor_reply("const SPEED = 50;"),
         tool_request(
             "write_file",
             r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
@@ -3509,7 +3521,7 @@ fn a_fenced_answer_is_unwrapped_before_it_becomes_a_file() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"return the whole file with the bug fixed"}"#,
         ),
-        reply_with("```python\nprint(2)\n```"),
+        processor_reply("```python\nprint(2)\n```"),
         tool_request(
             "write_file",
             r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
@@ -3554,7 +3566,7 @@ fn quarantined_content_reaches_the_person_and_not_the_planner() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"halve the speed"}"#,
         ),
-        reply_with("const SPEED = 50;"),
+        processor_reply("const SPEED = 50;"),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -3633,7 +3645,7 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"halve the speed"}"#,
         ),
-        reply_with("const SPEED = 50;"),
+        processor_reply("const SPEED = 50;"),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -3935,7 +3947,7 @@ fn an_answer_about_nothing_in_particular_can_be_written_nowhere() {
             "spawn_processor",
             r#"{"reads":["ref:1","ref:2"],"instruction":"fix the speed bug"}"#,
         ),
-        reply_with("const SPEED = 50;"),
+        processor_reply("const SPEED = 50;"),
         tool_request(
             "write_file",
             r#"{"path_ref":"ref:2","contents_ref":"ref:4"}"#,
@@ -3987,7 +3999,7 @@ fn an_answer_cannot_be_written_to_a_file_it_is_not_about() {
             "spawn_processor",
             r#"{"reads":["ref:1","ref:2"],"about":"ref:1","instruction":"fix the speed bug"}"#,
         ),
-        reply_with("const SPEED = 50;"),
+        processor_reply("const SPEED = 50;"),
         // ref:2 is not what it was about.
         tool_request(
             "write_file",
@@ -4014,6 +4026,60 @@ fn an_answer_cannot_be_written_to_a_file_it_is_not_about() {
         "print('serving')\n",
         "an answer about one file was written to another"
     );
+}
+
+/// An answer that never says where the file begins cannot become a file. A processor decided a
+/// Python script was not the game, said so in a paragraph, and the paragraph was written over the
+/// script: prose was the default and the line was the exception, so forgetting it destroyed a
+/// file. Forgetting it now changes nothing.
+#[test]
+fn an_answer_that_names_no_document_is_written_nowhere() {
+    let scratch = Scratch::new("no-document-named");
+    let original = "print('serving')\n";
+    std::fs::write(scratch.path.join("server.py"), original).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"fix the speed bug"}"#,
+        ),
+        // All prose, no line: exactly what one of them did.
+        reply_with("This is a server, not the game, so I am leaving it as it is."),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bua_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        original,
+        "an answer that named no document was written to a file anyway"
+    );
+
+    // And what it said is in front of the person, which is where prose was always meant to go.
+    let said = reporter
+        .shown
+        .iter()
+        .any(|shown| shown.preview.join(" ").contains("not the game"));
+    assert!(said, "what it said was thrown away: {:?}", reporter.shown);
 }
 
 /// A reference to something a processor wrote is content and nothing else. If it could name a
@@ -4256,7 +4322,7 @@ fn the_planner_is_told_the_shape_of_what_a_processor_produced() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"translate it"}"#,
         ),
-        reply_with("translated notes"),
+        processor_reply("translated notes"),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -4335,7 +4401,7 @@ fn a_refused_reference_write_does_not_happen() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"rewrite it"}"#,
         ),
-        reply_with("REPLACEMENT"),
+        processor_reply("REPLACEMENT"),
         tool_request(
             "write_file",
             r#"{"path":"config.py","contents_ref":"ref:3"}"#,
@@ -4376,7 +4442,7 @@ fn a_reference_write_is_reviewed_as_a_diff() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"rewrite it"}"#,
         ),
-        reply_with("REPLACEMENT"),
+        processor_reply("REPLACEMENT"),
         tool_request(
             "write_file",
             r#"{"path":"config.py","contents_ref":"ref:3"}"#,
@@ -4422,9 +4488,12 @@ fn a_tool_call_from_a_processor_does_nothing() {
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"rewrite it"}"#,
         ),
-        // The processor answers with text and a call for a file of its own.
+        // The processor answers with a document and a call for a file of its own.
         tool_request_saying(
-            "SAFE OUTPUT",
+            &format!(
+                "{}\nSAFE OUTPUT",
+                bua_core::processor::ProcessorSpec::NOTE_MARKER
+            ),
             "write_file",
             r#"{"path":"evil.txt","contents":"injected"}"#,
         ),

@@ -1756,7 +1756,24 @@ fn spawn_processor<S: Sink>(
                 return produced;
             }
 
-            let wrote = note_for(policy, "spawn_processor", &done.text, |text: String| {
+            // Nothing to write, and nothing minted for it. An answer that never said which part
+            // of itself was a file cannot become one: everything a processor writes is for a
+            // person to read unless it declares where the document begins, and this one
+            // declared nothing.
+            let Some(document) = done.document else {
+                let mut produced = confirmed(
+                    "that answer named no document, so there is nothing to write. What it said \
+                     is on the screen. Ask again, and say that the whole file must follow the \
+                     line that marks where the document begins."
+                        .to_string(),
+                    "said something, produced no document",
+                )
+                .costing(done.usage);
+                produced.said = done.note;
+                return produced;
+            };
+
+            let wrote = note_for(policy, "spawn_processor", &document, |text: String| {
                 tally(text.lines().count(), "line", "lines")
             });
             // Says who did what. The planner's own reads read nothing, since a reference to a
@@ -1770,7 +1787,7 @@ fn spawn_processor<S: Sink>(
                     opened.join(", ")
                 )
             };
-            let mut produced = Produced::new(done.text, origin, note)
+            let mut produced = Produced::new(document, origin, note)
                 .costing(done.usage)
                 .of_content();
             produced.unchanged_from = done.unchanged_from;

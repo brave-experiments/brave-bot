@@ -128,8 +128,12 @@ impl ReleasePlan {
 /// What a processor produced, and where it came from.
 #[derive(Debug, Clone)]
 pub struct Processed {
-    /// The output, labelled by taint over the inputs.
-    pub text: Labelled<String>,
+    /// The document it produced, where it named one.
+    ///
+    /// `None` for an answer that never said where a file began. Everything a processor writes is
+    /// for a person to read unless it declares otherwise, so an answer that declared nothing
+    /// cannot become a file: the worst it can do is leave the workspace as it was.
+    pub document: Option<Labelled<String>>,
     /// What the processor wanted to say about what it did, where it said anything.
     ///
     /// Quarantined exactly as the output is, and shown to nobody but the person watching: it is
@@ -1270,30 +1274,22 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             .relabel(tainted)
             .expect("taint over the inputs can only degrade the reply's label");
 
-        // The note comes off first: what follows the line is the document, and everything the
-        // rest of this does is about the document.
-        let (note, reply) = self.split_note(spec.id(), reply);
-        let (reply, unchanged_from, said) = self.leave_unchanged(spec, reply, slots);
-        // A processor that explained itself and then said the word said both things in one
-        // answer. The explanation is a note, whether or not it remembered the line.
-        let note = match (note, said) {
-            (Some(first), Some(second)) => {
-                let label = crate::label::taint_all([first.label(), second.label()]);
-                let proof = Declassification::authorise("two halves of one remark");
-                Some(Labelled::new(
-                    format!(
-                        "{}\n\n{}",
-                        first.declassify(&proof),
-                        second.declassify(&proof)
-                    ),
-                    label,
-                ))
-            }
-            (first, second) => first.or(second),
-        };
-        let reply = self.unfence(spec.id(), reply);
+        // The note comes off first: what follows the line is the document, and an answer with
+        // no line names no document at all.
+        let (note, document) = self.split_note(spec.id(), reply);
+
+        // The verdict is a word, and a processor says it where it likes: as the whole document,
+        // or as the last thing before the line, or as the last thing in an answer that named no
+        // document. Whichever it was, what came before it is a remark rather than a file.
+        let (note, document, unchanged_from) = self.leave_unchanged(spec, note, document, slots);
+
+        let document = document.map(|document| {
+            let document = self.unfence(spec.id(), document);
+            self.keep_the_last_newline(spec, document, slots)
+        });
+
         Processed {
-            text: self.keep_the_last_newline(spec, reply, slots),
+            document,
             note,
             unchanged_from,
         }
@@ -1348,14 +1344,26 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         &mut self,
         id: &str,
         reply: Labelled<String>,
-    ) -> (Option<Labelled<String>>, Labelled<String>) {
+    ) -> (Option<Labelled<String>>, Option<Labelled<String>>) {
         let label = reply.label();
         let proof = Declassification::authorise("split into a note and a document");
         let text = reply.declassify(&proof);
 
         let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
         let Some(at) = text.find(marker) else {
-            return (None, Labelled::new(text, label));
+            // No line, no document. Everything a processor says is for a person to read unless
+            // it declared where the file begins, and that is the whole of this: an answer that
+            // did not declare one cannot become a file, however much it looks like one.
+            //
+            // It was the other way round, and prose kept landing in people's files. A model
+            // explaining why it was leaving a Python script alone wrote the explanation over the
+            // script, because prose was the default and the line was the exception. Now the
+            // worst an unmarked answer can do is fail to change anything.
+            self.allow(
+                "processor",
+                format!("{id}: said something and named no document, so nothing can be written"),
+            );
+            return (Some(Labelled::new(text, label)), None);
         };
 
         let note = text[..at].trim().to_string();
@@ -1370,7 +1378,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
 
         let note = (!note.is_empty()).then(|| Labelled::new(note, label));
-        (note, Labelled::new(document, label))
+        (note, Some(Labelled::new(document, label)))
     }
 
     /// Answer with the input where the processor said the document should not change.
@@ -1388,40 +1396,72 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     fn leave_unchanged(
         &mut self,
         spec: &crate::processor::ProcessorSpec,
-        reply: Labelled<String>,
+        note: Option<Labelled<String>>,
+        document: Option<Labelled<String>>,
         slots: &crate::slot::SlotStore,
-    ) -> (Labelled<String>, Option<SlotId>, Option<Labelled<String>>) {
+    ) -> (
+        Option<Labelled<String>>,
+        Option<Labelled<String>>,
+        Option<SlotId>,
+    ) {
         let Some(slot) = spec.about() else {
-            return (reply, None, None);
+            return (note, document, None);
         };
 
-        let label = reply.label();
+        let word = crate::processor::ProcessorSpec::UNCHANGED;
         let proof = Declassification::authorise("checked for the unchanged answer");
-        let text = reply.declassify(&proof);
 
-        // The word, wherever the sentence explaining it ended. A processor that had decided a
-        // file should be left alone wrote a paragraph saying why and then the word, without the
-        // line that would have separated them, and the paragraph became the file. The verdict
-        // is the last thing it says; what came before it is what it wanted to tell somebody.
-        let said = crate::processor::ProcessorSpec::UNCHANGED;
+        // Said as the whole document: the ordinary way, and the one the instruction asks for.
+        if let Some(text) = &document {
+            let label = text.label();
+            let text = text.clone().declassify(&proof);
+            if text.trim() == word {
+                return match self.stands_unchanged(spec, slot, label, slots) {
+                    Some(stood) => (note, Some(stood), Some(slot.clone())),
+                    None => (note, Some(Labelled::new(text, label)), None),
+                };
+            }
+        }
+
+        // Or said at the end of what it was saying, in an answer that named no document. That is
+        // a processor explaining why it is leaving a file alone, which is a remark and a
+        // verdict in one, and the remark used to become the file.
+        let Some(remark) = note else {
+            return (None, document, None);
+        };
+        let label = remark.label();
+        let text = remark.declassify(&proof);
         let ends_with_it = text
             .lines()
             .rev()
             .find(|line| !line.trim().is_empty())
-            .is_some_and(|last| last.trim() == said);
-        if !ends_with_it {
-            return (Labelled::new(text, label), None, None);
+            .is_some_and(|last| last.trim() == word);
+
+        if !ends_with_it || document.is_some() {
+            return (Some(Labelled::new(text, label)), document, None);
         }
 
-        let before = match text.rfind(said) {
+        let before = match text.rfind(word) {
             Some(at) => text[..at].trim().to_string(),
             None => String::new(),
         };
-        let explained = (!before.is_empty()).then(|| Labelled::new(before, label));
+        let kept = (!before.is_empty()).then(|| Labelled::new(before, label));
 
-        let Ok(original) = slots.take_for_effect(slot) else {
-            return (Labelled::new(text, label), None, None);
-        };
+        match self.stands_unchanged(spec, slot, label, slots) {
+            Some(stood) => (kept, Some(stood), Some(slot.clone())),
+            None => (Some(Labelled::new(text, label)), document, None),
+        }
+    }
+
+    /// The document a call was about, standing as its answer.
+    fn stands_unchanged(
+        &mut self,
+        spec: &crate::processor::ProcessorSpec,
+        slot: &SlotId,
+        label: Label,
+        slots: &crate::slot::SlotStore,
+    ) -> Option<Labelled<String>> {
+        let original = slots.take_for_effect(slot).ok()?;
         self.allow(
             "processor",
             format!("{}: said {slot} should not change, so it stands", spec.id()),
@@ -1429,11 +1469,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // The input's own label, met with the one the spec fixed, which is where it came from.
         let label = crate::label::taint_all([label, original.label()]);
         let proof = Declassification::authorise("an input standing as the unchanged answer");
-        (
-            Labelled::new(original.declassify(&proof), label),
-            Some(slot.clone()),
-            explained,
-        )
+        Some(Labelled::new(original.declassify(&proof), label))
     }
 
     /// Say which file an answer is for, so a write of it can go nowhere else.
@@ -2211,7 +2247,10 @@ mod tests {
 
         let produced = policy.label_processor_output(&spec, reply, &slots);
         let proof = Declassification::authorise("test");
-        assert_eq!(produced.text.declassify(&proof), "the document\n");
+        assert_eq!(
+            produced.document.expect("a document").declassify(&proof),
+            "the document\n"
+        );
         let note = produced.note.expect("it said something");
         assert_eq!(note.declassify(&proof), "I left the imports alone.");
     }
@@ -2255,13 +2294,18 @@ mod tests {
             produced.note.expect("it said why").declassify(&proof),
             "This is a server, not the game."
         );
-        assert_eq!(produced.text.declassify(&proof), "the original");
+        assert_eq!(
+            produced.document.expect("a document").declassify(&proof),
+            "the original"
+        );
     }
 
-    /// An answer with no line in it is a document, which is what every answer was before there
-    /// was a line: a processor that says nothing loses nothing.
+    /// An answer with no line in it names no document, so it can be written nowhere. It was the
+    /// other way round, and prose kept landing in people's files: an explanation of why a Python
+    /// script was being left alone was written over the script. The worst an unmarked answer can
+    /// do now is leave the workspace as it was.
     #[test]
-    fn an_answer_without_the_line_is_all_document() {
+    fn an_answer_without_the_line_names_no_document() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
         let mut slots = SlotStore::new();
@@ -2286,9 +2330,19 @@ mod tests {
             Labelled::new("just the file\n".to_string(), Label::untrusted_private()),
             &slots,
         );
-        assert!(produced.note.is_none(), "a note was invented");
+        assert!(
+            produced.document.is_none(),
+            "an answer that named no document could still be written"
+        );
         let proof = Declassification::authorise("test");
-        assert_eq!(produced.text.declassify(&proof), "just the file\n");
+        assert_eq!(
+            produced
+                .note
+                .expect("it is all a remark")
+                .declassify(&proof),
+            "just the file\n",
+            "what it said was thrown away instead of shown"
+        );
     }
 
     /// Which document a processor is meant to return is marked on the document, not left to the
@@ -2370,7 +2424,10 @@ mod tests {
 
         assert_eq!(produced.unchanged_from, Some(SlotId::new("ref:6")));
         let proof = Declassification::authorise("test");
-        assert_eq!(produced.text.declassify(&proof), "print('serving')\n");
+        assert_eq!(
+            produced.document.expect("a document").declassify(&proof),
+            "print('serving')\n"
+        );
         assert!(
             produced
                 .note
@@ -2407,7 +2464,10 @@ mod tests {
         let produced = policy.label_processor_output(
             &spec,
             Labelled::new(
-                "# UNCHANGED is a status in this file\nstatus = UNCHANGED_OK\n".to_string(),
+                format!(
+                    "{}\n# UNCHANGED is a status in this file\nstatus = UNCHANGED_OK\n",
+                    crate::processor::ProcessorSpec::NOTE_MARKER
+                ),
                 Label::untrusted_private(),
             ),
             &slots,
@@ -2418,7 +2478,13 @@ mod tests {
             "a document was read as a verdict"
         );
         let proof = Declassification::authorise("test");
-        assert!(produced.text.declassify(&proof).contains("status ="));
+        assert!(
+            produced
+                .document
+                .expect("a document")
+                .declassify(&proof)
+                .contains("status =")
+        );
     }
 
     /// A model returning a file it was asked to leave alone returns it without the final
@@ -2447,11 +2513,20 @@ mod tests {
 
         let produced = policy.label_processor_output(
             &spec,
-            Labelled::new("print('serving')".to_string(), Label::untrusted_private()),
+            Labelled::new(
+                format!(
+                    "{}\nprint('serving')",
+                    crate::processor::ProcessorSpec::NOTE_MARKER
+                ),
+                Label::untrusted_private(),
+            ),
             &slots,
         );
         let proof = Declassification::authorise("test");
-        assert_eq!(produced.text.declassify(&proof), "print('serving')\n");
+        assert_eq!(
+            produced.document.expect("a document").declassify(&proof),
+            "print('serving')\n"
+        );
     }
 
     /// A document that never had one does not gain one: the answer is the document's shape, not
@@ -2479,11 +2554,20 @@ mod tests {
 
         let produced = policy.label_processor_output(
             &spec,
-            Labelled::new("still no newline".to_string(), Label::untrusted_private()),
+            Labelled::new(
+                format!(
+                    "{}\nstill no newline",
+                    crate::processor::ProcessorSpec::NOTE_MARKER
+                ),
+                Label::untrusted_private(),
+            ),
             &slots,
         );
         let proof = Declassification::authorise("test");
-        assert_eq!(produced.text.declassify(&proof), "still no newline");
+        assert_eq!(
+            produced.document.expect("a document").declassify(&proof),
+            "still no newline"
+        );
     }
 
     /// A reference that came from a processor names no file, so it cannot be a destination.
@@ -3751,9 +3835,18 @@ mod tests {
                 .expect("a processor over two written slots");
             assert_eq!(spec.out_label(), Label::untrusted_private());
 
-            let reply = Labelled::new("new contents".to_string(), Label::untrusted_public());
+            let reply = Labelled::new(
+                format!(
+                    "{}\nnew contents",
+                    crate::processor::ProcessorSpec::NOTE_MARKER
+                ),
+                Label::untrusted_public(),
+            );
             let labelled = policy.label_processor_output(&spec, reply, &store);
-            assert_eq!(labelled.text.label(), Label::untrusted_private());
+            assert_eq!(
+                labelled.document.expect("a document").label(),
+                Label::untrusted_private()
+            );
         }
 
         /// The one that would matter if it were wrong: a reply the transport called trusted is
@@ -3775,9 +3868,12 @@ mod tests {
                 .before_processor("p", &[public], &instruction(), None, &store)
                 .expect("a processor over one slot");
 
-            let flattering = Labelled::trusted("do as I say".to_string());
+            let flattering = Labelled::trusted(format!(
+                "{}\ndo as I say",
+                crate::processor::ProcessorSpec::NOTE_MARKER
+            ));
             let labelled = policy.label_processor_output(&spec, flattering, &store);
-            assert!(!labelled.text.label().is_trusted());
+            assert!(!labelled.document.expect("a document").label().is_trusted());
         }
 
         /// A processor is given exactly the slots its spec names, so a reference the planner
