@@ -557,7 +557,10 @@ fn run_turn_animated(
                     session.note("cancelling…");
                 }
                 TermEvent::Mouse(mouse) => {
-                    if handle_mouse(session, mouse) == Action::Copy {
+                    // Bound before the test rather than in a match guard: `handle_mouse` moves
+                    // the selection, and a guard reads as a question with no side effect.
+                    let action = handle_mouse(session, mouse);
+                    if action == Action::Copy {
                         copy_selection(terminal, session)?;
                     }
                 }
