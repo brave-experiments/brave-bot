@@ -17,12 +17,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
-/// How many diff lines to show.
-///
-/// Enough to judge a small edit; a reviewer who needs more can decline and ask to see the
-/// file. Showing an unbounded diff would push the question itself off screen.
-const PREVIEW_LINES: usize = 16;
-
 /// Unchanged lines shown either side of a change, for orientation.
 const CONTEXT_LINES: usize = 2;
 
@@ -68,21 +62,26 @@ impl Answer {
 /// Standalone as well as available through [`TerminalConfirmer`], because a turn running on a
 /// worker thread cannot hold the terminal: the main thread calls this on its behalf.
 pub fn ask<B: Backend>(terminal: &mut Terminal<B>, request: &WriteRequest) -> Answer {
-    // A terminal that cannot be drawn to cannot carry a question, so refuse rather
-    // than proceed unseen.
-    if terminal.draw(|frame| draw(frame, request)).is_err() {
-        return Answer::Reject;
-    }
-
-    read_answer()
-}
-
-/// Block until the user answers.
-fn read_answer() -> Answer {
+    let mut scroll = 0u16;
     loop {
+        // A terminal that cannot be drawn to cannot carry a question, so refuse rather
+        // than proceed unseen.
+        // How far the body can scroll is only knowable once it has been laid out at the width
+        // it will be drawn at, so it comes back out of the closure.
+        let mut most = 0u16;
+        if terminal
+            .draw(|frame| most = draw(frame, request, scroll))
+            .is_err()
+        {
+            return Answer::Reject;
+        }
+
         match event::read() {
             Ok(TermEvent::Key(key)) => match answer_for(key) {
-                Some(answer) => return answer,
+                Some(Response::Answer(answer)) => return answer,
+                Some(Response::Scroll(by)) => {
+                    scroll = scroll.saturating_add_signed(by).min(most);
+                }
                 None => continue,
             },
             Ok(_) => continue,
@@ -92,31 +91,51 @@ fn read_answer() -> Answer {
     }
 }
 
+/// What a key press did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Response {
+    Answer(Answer),
+    /// Move the body by this many rows, positive being further down.
+    Scroll(i16),
+}
+
 /// Interpret one key press, or `None` for a key that answers nothing.
 ///
 /// Separated from the loop so it can be tested without a terminal.
-fn answer_for(key: KeyEvent) -> Option<Answer> {
+fn answer_for(key: KeyEvent) -> Option<Response> {
     // The prompt blocks the whole interface, so without this Ctrl-C would do nothing at the one
     // moment a user is most likely to press it. It stops the turn as well as refusing, because
     // someone reaching for the interrupt wants the work to stop, not just this write.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
-            KeyCode::Char('c') => Some(Answer::Interrupt),
+            KeyCode::Char('c') => Some(Response::Answer(Answer::Interrupt)),
             _ => None,
         };
     }
 
     match key.code {
-        KeyCode::Char('y' | 'Y') => Some(Answer::Approve),
-        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Answer::Reject),
+        KeyCode::Char('y' | 'Y') => Some(Response::Answer(Answer::Approve)),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Response::Answer(Answer::Reject)),
+        // A diff longer than the box is the one most worth reading before answering.
+        KeyCode::Up => Some(Response::Scroll(-1)),
+        KeyCode::Down => Some(Response::Scroll(1)),
+        KeyCode::PageUp => Some(Response::Scroll(-10)),
+        KeyCode::PageDown => Some(Response::Scroll(10)),
+        KeyCode::Home => Some(Response::Scroll(i16::MIN)),
+        KeyCode::End => Some(Response::Scroll(i16::MAX)),
         // Enter is deliberately not an approval: it is the key most likely to
         // be pressed out of habit.
         _ => None,
     }
 }
 
-/// Draw the confirmation over the session.
-fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
+/// Draw the confirmation over the session, returning how far its body can be scrolled.
+///
+/// The keys are drawn as a row of their own rather than as the last line of the body. They used
+/// to be the last line, kept on screen by capping the diff, and the cap counted lines while the
+/// paragraph drew wrapped rows: a diff with long lines pushed the question off the bottom, so the
+/// prompt asked nothing and the answer went to a screen that never showed what it was for.
+fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 {
     let area = centred(frame.area());
     frame.render_widget(Clear, area);
 
@@ -159,15 +178,6 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
         )));
     }
 
-    // The preview is capped by the space actually available, not just by PREVIEW_LINES:
-    // the question and the keys must stay on screen, and a fixed cap taller than the box
-    // would push them off.
-    let reserved = lines.len() + 3;
-    let budget = (area.height as usize)
-        .saturating_sub(2) // borders
-        .saturating_sub(reserved);
-    let shown = PREVIEW_LINES.min(budget);
-
     // The same margin the transcript draws down everything the model was not allowed to read.
     // A body out of a quarantined file is that, and the person about to approve it is the only
     // one who will ever see it: they should be able to tell which kind of review this is.
@@ -180,8 +190,10 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
         )));
     }
 
+    // All of it. What does not fit is scrolled to, rather than dropped: the hunks nobody shows
+    // you are exactly the ones an approval is supposed to cover.
     let changes = diff.condensed(CONTEXT_LINES);
-    for change in changes.iter().take(shown) {
+    for change in changes.iter() {
         let body = match change {
             Change::Added(text) => {
                 Span::styled(format!("+{text}"), Style::default().fg(Color::Green))
@@ -203,15 +215,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
         ]));
     }
 
-    if changes.len() > shown {
-        lines.push(Line::from(Span::styled(
-            format!("  … {} more diff lines", changes.len() - shown),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
+    let keys = Line::from(vec![
         Span::styled(
             "  y",
             Style::default()
@@ -231,20 +235,48 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
-    ]));
+    ]);
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(" approve this write? "),
-            )
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" approve this write? ");
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+
+    // One row for the keys, the rest for the diff. Split before the body is laid out, so the
+    // question keeps its row whatever the body turns out to be.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inside);
+
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Rows, not lines: the paragraph wraps, and the difference between the two is what used to
+    // push the question off the screen.
+    let drawn = body.line_count(rows[0].width) as u16;
+    let furthest = drawn.saturating_sub(rows[0].height);
+    let offset = scroll.min(furthest);
+    frame.render_widget(body.scroll((offset, 0)), rows[0]);
+
+    let mut keys = keys;
+    if furthest > 0 {
+        let below = furthest - offset;
+        keys.push_span(Span::styled(
+            // Short, because the row is as wide as the box and the keys come first: a hint
+            // that gets clipped in half tells the reviewer less than no hint at all.
+            if below > 0 {
+                format!("   ↑↓ {below} more")
+            } else {
+                "   ↑↓ back".to_string()
+            },
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    frame.render_widget(Paragraph::new(keys), rows[1]);
+
+    furthest
 }
 
 /// A centred box, sized to the terminal but never larger than it.
@@ -289,7 +321,11 @@ mod tests {
 
     fn rendered(request: &WriteRequest) -> String {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-        terminal.draw(|frame| draw(frame, request)).expect("draw");
+        terminal
+            .draw(|frame| {
+                draw(frame, request, 0);
+            })
+            .expect("draw");
         terminal
             .backend()
             .buffer()
@@ -305,7 +341,7 @@ mod tests {
     #[test]
     fn ctrl_c_refuses_the_write_and_stops_the_turn() {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(answer_for(key), Some(Answer::Interrupt));
+        assert_eq!(answer_for(key), Some(Response::Answer(Answer::Interrupt)));
         assert_eq!(Answer::Interrupt.decision(), Decision::Reject);
     }
 
@@ -314,7 +350,7 @@ mod tests {
     #[test]
     fn saying_no_does_not_stop_the_turn() {
         let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
-        assert_eq!(answer_for(key), Some(Answer::Reject));
+        assert_eq!(answer_for(key), Some(Response::Answer(Answer::Reject)));
     }
 
     #[test]
@@ -342,16 +378,60 @@ mod tests {
         assert!(output.contains("+new"), "the new line was not shown");
     }
 
-    /// A large body must not push the question off screen.
+    /// A large body must not push the question off screen, and must not be cut short either.
+    ///
+    /// It used to be capped so the keys would fit, and the cap counted lines while the box drew
+    /// wrapped rows, so a diff with long lines pushed the question off anyway: the prompt asked
+    /// nothing, and a key pressed at it answered a question that was never on the screen.
     #[test]
-    fn a_long_body_is_truncated_and_says_so() {
+    fn a_long_body_keeps_the_question_on_screen_and_offers_the_rest() {
+        let body = (0..200)
+            .map(|n| format!("line {n} {}", "wrapping words ".repeat(8)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = rendered(&request(&body, None));
+
+        assert!(output.contains("write it"), "the question was pushed off");
+        assert!(
+            output.contains("more"),
+            "the reviewer was not told there is more to read: {output}"
+        );
+    }
+
+    /// Scrolling reaches what the box could not show, which is the whole point of having it.
+    #[test]
+    fn the_rest_of_a_long_body_can_be_scrolled_to() {
         let body = (0..200)
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let output = rendered(&request(&body, None));
-        assert!(output.contains("more diff lines"), "no truncation notice");
-        assert!(output.contains("write it"), "the question was pushed off");
+        let request = request(&body, None);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        let mut furthest = 0;
+        terminal
+            .draw(|frame| furthest = draw(frame, &request, 0))
+            .expect("draw");
+        assert!(furthest > 0, "a 200 line body reported nothing to scroll");
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &request, furthest);
+            })
+            .expect("draw");
+        let drawn: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(
+            drawn.contains("line 199"),
+            "the end of the diff could not be reached: {drawn}"
+        );
+        assert!(drawn.contains("write it"), "the question scrolled away");
     }
 
     /// The reason this exists: a one-line change to a large file must show that one line
@@ -433,7 +513,9 @@ mod tests {
     fn a_tiny_terminal_still_renders_the_prompt() {
         let mut terminal = Terminal::new(TestBackend::new(20, 8)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, &request("x", None)))
+            .draw(|frame| {
+                draw(frame, &request("x", None), 0);
+            })
             .expect("must not panic on a small area");
     }
 }
