@@ -806,6 +806,43 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(value.clone().declassify(&proof))
     }
 
+    /// Take a summary of the planner's own context back into that context.
+    ///
+    /// Compaction replaces the older part of a conversation with a summary of it, so that a long
+    /// session stops growing its own request until the server refuses it. The summary is written
+    /// by a model whose context held that conversation and nothing else, and every message in a
+    /// conversation has already been past [`Policy::present`]: either the kernel judged it trusted
+    /// and showed it, or what went in was a reference and the bytes stayed in quarantine. So the
+    /// summariser met exactly what the planner had met, and [`Policy::label_model_output`] gives
+    /// its answer the label the planner's own words would have had. That is the first label those
+    /// bytes have ever carried, not an upgrade of an earlier one.
+    ///
+    /// **Refuses once the conversation's integrity has fallen.** The summary is untrusted then,
+    /// and there is nowhere for it to go: quarantining it would hand the planner a reference to
+    /// its own history, which is not a history, and relabelling it would be laundering. So
+    /// compaction fails and its caller leaves the conversation exactly as it was. A conversation
+    /// that runs out of room is a worse session than one that compacts, and it is still the
+    /// honest outcome.
+    ///
+    /// A processor is not the way around that. Its output is quarantined by construction, so what
+    /// it can produce is a summary the planner may not read, which is not a summary the planner
+    /// can use. Do not route compaction through one.
+    ///
+    /// Kept apart from [`Policy::read_trusted_content`] although the check is the same: that gate
+    /// is for examining content in order to decide something, and nothing is decided here. One
+    /// name per reason is what keeps a call site readable.
+    pub fn adopt_summary(&mut self, summary: &Labelled<String>) -> Gated<String> {
+        let label = summary.label();
+        self.refuse_untrusted("compact", "a summary of the conversation", label)?;
+
+        self.allow(
+            "compact",
+            format!("the conversation was summarised into its own context at {label}"),
+        );
+        let proof = Declassification::authorise("a summary of the planner's own context");
+        Ok(summary.clone().declassify(&proof))
+    }
+
     /// Whether a read of `path` would be quarantined rather than shown.
     ///
     /// A question about the trust map, keyed by a path the planner named, which is routing and
@@ -4440,6 +4477,52 @@ mod tests {
                 .expect("trusted content may be examined"),
             "fn main() {}"
         );
+    }
+
+    /// Compaction only works because a summary of a trusted context is itself trusted, and the
+    /// planner may read it. Without this the feature would have nothing to put in the request.
+    #[test]
+    fn a_summary_of_a_trusted_conversation_is_adopted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let summary = policy.label_model_output("compact", "we were fixing the parser".to_string());
+        assert_eq!(
+            policy
+                .adopt_summary(&summary)
+                .expect("a summary of a trusted context may be read"),
+            "we were fixing the parser"
+        );
+        assert!(policy.finish(), "nothing should have been refused");
+    }
+
+    /// The one case the gate exists for. A summary of an untrusted context is untrusted, and there
+    /// is nowhere for it to go: quarantining it would hand the planner a reference to its own
+    /// history, and relabelling it would be laundering. So it is refused, and the caller keeps the
+    /// conversation it already had.
+    #[test]
+    fn a_summary_of_an_untrusted_conversation_is_refused_rather_than_adopted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "carry on"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .resuming(Integrity::Untrusted);
+
+        let summary = policy.label_model_output("compact", "we were fixing the parser".to_string());
+        let denial = policy
+            .adopt_summary(&summary)
+            .expect_err("a summary of an untrusted context must not be handed over");
+
+        assert_eq!(denial.principle, Principle::IntegrityGate);
+        assert!(
+            denial.to_string().contains("never enters the driver"),
+            "the refusal does not say why: {denial}"
+        );
+        assert!(!policy.finish(), "the refusal was not recorded");
     }
 
     mod command_output {
