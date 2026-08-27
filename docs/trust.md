@@ -59,6 +59,21 @@ holds. Across a fresh start it does not, because a fresh start has no memory to 
 file holds content you do not trust, the answer is to say no to the directory, or to not leave it
 there.
 
+## A path outside the working directory is a separate rule
+
+Trust rules come in two kinds, and neither says anything about the other. A **relative** rule is
+a path under the working directory. An **absolute** rule names a directory you added by its own
+name, which is what `/add-dir` records.
+
+They are kept apart because the same relative path can exist in both places. A rule about `src`
+would otherwise decide `src/main.rs` in a directory you added as well as in the project, and the
+two are different files.
+
+The separation is load-bearing rather than tidy. Rules are matched by prefix, and the working
+directory's own rule is the empty prefix that covers everything beneath it. Treat `/` as that same
+empty prefix and trusting one added directory would silently vouch for every file in the project,
+which is the laundering the rest of this document exists to prevent.
+
 ## Your own directory is trusted, because it is yours
 
 The table above is about the working directory. `~/.bua` is different: it holds your history,

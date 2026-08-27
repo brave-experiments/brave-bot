@@ -98,12 +98,29 @@ impl TrustStore {
     }
 }
 
-/// Normalise a workspace-relative path for comparison.
+/// Whether a normalised key names an absolute path rather than a workspace-relative one.
 ///
-/// Strips a leading `./` and any surrounding slashes so `./src/`, `src`, and `/src` are one
-/// rule rather than three that shadow each other confusingly.
+/// The two are separate namespaces, and nothing is a member of both. A relative key is a path
+/// under the primary root; an absolute key is a path in a directory the user added by name.
+fn is_absolute(key: &str) -> bool {
+    key.starts_with('/')
+}
+
+/// Normalise a path for comparison.
+///
+/// Relative paths lose a leading `./` and any surrounding slashes, so `./src/`, `src` and `src/`
+/// are one rule rather than three that shadow each other confusingly.
+///
+/// An absolute path **keeps** its leading slash, which is what makes it a different rule from the
+/// relative path spelled the same way. Collapsing the two would be a security bug rather than an
+/// inconvenience: stripping the slash turns `/` into the empty key, which is the primary root's own
+/// rule, so trusting one added directory would silently trust the entire workspace.
 fn normalise(path: &str) -> String {
     let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        let rest = rest.trim_end_matches('/');
+        return format!("/{rest}");
+    }
     let trimmed = trimmed.strip_prefix("./").unwrap_or(trimmed);
     let trimmed = trimmed.trim_matches('/');
     if trimmed == "." || trimmed.is_empty() {
@@ -118,8 +135,13 @@ fn normalise(path: &str) -> String {
 /// Segment-wise so `src` does not cover `srcfoo`, which a plain string prefix test would
 /// wrongly accept, and that mistake would hand trust to a path the user never named.
 fn covers(prefix: &str, path: &str) -> bool {
-    // The workspace root covers everything.
-    if prefix.is_empty() {
+    // Neither namespace says anything about the other: a rule about the workspace cannot decide a
+    // path in an added directory, and the reverse.
+    if is_absolute(prefix) != is_absolute(path) {
+        return false;
+    }
+    // The primary root covers every relative path; `/` covers every absolute one.
+    if prefix.is_empty() || prefix == "/" {
         return true;
     }
     if path == prefix {
@@ -129,12 +151,12 @@ fn covers(prefix: &str, path: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// How specific a rule is. Deeper rules win; the root is least specific.
+/// How specific a rule is. Deeper rules win; a namespace's own root is least specific.
 fn specificity(prefix: &str) -> usize {
-    if prefix.is_empty() {
+    if prefix.is_empty() || prefix == "/" {
         0
     } else {
-        prefix.split('/').count()
+        prefix.trim_start_matches('/').split('/').count()
     }
 }
 
@@ -270,5 +292,89 @@ mod tests {
         let mut store = TrustStore::new();
         store.trust("src");
         assert_eq!(store.integrity_of("docs/readme.md"), None);
+    }
+
+    /// An added directory is trusted by its absolute path, and that says nothing about the
+    /// workspace. Two files may be called `src/main.rs`, so a rule has to name which one it means.
+    #[test]
+    fn an_absolute_rule_does_not_decide_a_relative_path() {
+        let mut store = TrustStore::new();
+        store.trust("/Users/me/notes");
+
+        assert!(store.is_trusted("/Users/me/notes/todo.md"));
+        assert_eq!(
+            store.integrity_of("Users/me/notes/todo.md"),
+            None,
+            "an absolute rule leaked into the workspace"
+        );
+        assert_eq!(store.integrity_of("src/main.rs"), None);
+    }
+
+    /// And the reverse: vouching for the workspace must not vouch for a directory outside it.
+    #[test]
+    fn trusting_the_workspace_says_nothing_about_an_added_directory() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+
+        assert!(store.is_trusted("src/main.rs"));
+        assert_eq!(
+            store.integrity_of("/Users/me/notes/todo.md"),
+            None,
+            "the workspace rule reached outside it"
+        );
+    }
+
+    /// The bug this separation exists to prevent. Stripping the slash would make `/` the empty key,
+    /// which is the workspace's own rule, so trusting one added directory would hand trust to every
+    /// file in the project.
+    #[test]
+    fn trusting_the_filesystem_root_does_not_trust_the_workspace() {
+        let mut store = TrustStore::new();
+        store.trust("/");
+
+        assert!(store.is_trusted("/etc/hosts"));
+        assert_eq!(
+            store.integrity_of("src/main.rs"),
+            None,
+            "an absolute rule became the workspace root rule"
+        );
+    }
+
+    /// Most specific still wins inside the absolute namespace, so an added directory can hold an
+    /// untrusted subtree exactly as the workspace can.
+    #[test]
+    fn the_deepest_absolute_rule_wins() {
+        let mut store = TrustStore::new();
+        store.trust("/Users/me/notes");
+        store.distrust("/Users/me/notes/clipped");
+
+        assert!(store.is_trusted("/Users/me/notes/todo.md"));
+        assert!(!store.is_trusted("/Users/me/notes/clipped/from-the-web.md"));
+    }
+
+    /// Two added directories are separate rules, so one does not answer for the other.
+    #[test]
+    fn one_added_directory_does_not_cover_a_sibling() {
+        let mut store = TrustStore::new();
+        store.trust("/Users/me/notes");
+
+        assert!(store.is_trusted("/Users/me/notes/todo.md"));
+        assert_eq!(store.integrity_of("/Users/me/other/todo.md"), None);
+        // Whole segments only, here too: `notes` must not cover `notes-backup`.
+        assert_eq!(store.integrity_of("/Users/me/notes-backup/todo.md"), None);
+    }
+
+    /// A trailing slash is the same rule, as it is for a relative path.
+    #[test]
+    fn equivalent_absolute_spellings_are_the_same_rule() {
+        let mut store = TrustStore::new();
+        store.trust("/Users/me/notes/");
+        assert!(store.is_trusted("/Users/me/notes/todo.md"));
+
+        store.distrust("/Users/me/notes");
+        assert!(
+            !store.is_trusted("/Users/me/notes/todo.md"),
+            "a differently spelled path became a second rule"
+        );
     }
 }
