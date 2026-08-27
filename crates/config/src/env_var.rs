@@ -19,6 +19,14 @@ pub const PREMIUM_ENDPOINT: &str = "BRAVE_AI_CHAT_PREMIUM_ENDPOINT";
 /// unqualified `MODEL` in a shared shell profile collides with whatever else wanted the name.
 pub const DEFAULT_MODEL: &str = "BRAVE_AI_CHAT_DEFAULT_MODEL";
 
+/// How many prompt tokens a conversation may reach before it is compacted.
+///
+/// Deliberately absent from ALL, so it is never baked into a binary. The others are credentials
+/// and hosts, which belong to the build; this is a knob one person turns while working, and a
+/// value someone exported to debug a session would otherwise ship to everyone who used their
+/// release.
+pub const CONTEXT_BUDGET: &str = "BRAVEBOT_CONTEXT_BUDGET";
+
 /// Every name a build may bake in, in the order `doctor` reports them.
 pub const ALL: [&str; 5] = [SIGNING_KEY, KEY_ID, ENDPOINT, PREMIUM_ENDPOINT, DEFAULT_MODEL];
 
