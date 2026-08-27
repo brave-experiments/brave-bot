@@ -490,7 +490,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  drag to copy  ·  pgup/pgdn or scroll to look back  ·  \
+                "  {trail}  ·  drag to copy  ·  pgup/pgdn to look back  ·  \
                  /exit or ctrl-c to exit  ·  confinement {}",
                 session.confinement
             ),
@@ -731,12 +731,15 @@ mod tests {
         assert_ne!(buffer.cell((6, 0)).expect("cell").bg, Color::Blue);
     }
 
+    /// The confinement sits at the end of the hints, so it is the first thing a narrow terminal
+    /// cuts off. Asserted at a width where the whole line fits, because the heading happens to
+    /// name the confinement too: matching it anywhere on the screen says nothing about whether
+    /// the hint line still carries it.
     #[test]
     fn the_hint_line_reports_confinement() {
-        let session = Session::new("kernel-enforced");
-        let output = rendered(&session);
-        assert!(output.contains("kernel-enforced"));
-        assert!(output.contains("/exit or ctrl-c to exit"));
+        let output = rendered_at(&Session::new("kernel-enforced"), 130, 24);
+        assert!(output.contains("/exit or ctrl-c to exit"), "{output}");
+        assert!(output.contains("confinement kernel-enforced"), "{output}");
     }
 
     #[test]
