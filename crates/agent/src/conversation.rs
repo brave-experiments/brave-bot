@@ -178,27 +178,23 @@ impl Conversation {
 
     /// Where compaction would cut, or `None` when there is nothing worth summarising.
     ///
-    /// The index is always the start of an exchange, never the middle of one. That is not a
-    /// preference: [`Conversation::with_system`] answers a call nothing answered, and it looks
-    /// only at the run of results immediately after the call, so an assistant message separated
-    /// from its results would leave both halves malformed. The boundaries are found from roles
-    /// and call ids, which are the shape of the exchange rather than anything anyone wrote.
+    /// Whole exchanges are given up first, since the boundary between two of them is the one a
+    /// person would draw. A turn that has gone long on its own has no earlier exchange to give:
+    /// its history is one prompt and a great many rounds of tool calls, so the exchange count
+    /// never grows and that rule alone would decline exactly when the context is filling
+    /// fastest. Where it does, earlier **rounds** are given up instead.
     ///
-    /// [`RECENT_EXCHANGES_KEPT`] of them stay word for word. A summary is lossy, and what a
-    /// session is in the middle of is the part that can least afford to be paraphrased.
+    /// Both cut where a round is not in progress. That is not a preference:
+    /// [`Conversation::with_system`] answers a call nothing answered, and it looks only at the
+    /// run of results immediately after the call, so a cut between a call and its results leaves
+    /// the head claiming the call never ran and the tail holding an answer to a call that is not
+    /// there. Every boundary here is found from roles and call ids, which are the shape of the
+    /// exchange rather than anything anyone wrote.
     ///
     /// `None` where the head would be nothing but an earlier summary. There is nothing left to
     /// give up in that case, and saying so is better than spending a request to learn it.
     pub fn compaction_boundary(&self) -> Option<usize> {
-        let opens: Vec<usize> = self
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, message)| opens_an_exchange(message))
-            .map(|(index, _)| index)
-            .collect();
-
-        let cut = *opens.get(opens.len().checked_sub(RECENT_EXCHANGES_KEPT)?)?;
+        let cut = self.by_exchange().or_else(|| self.by_round())?;
         self.messages[..cut]
             .iter()
             .any(|message| {
@@ -208,6 +204,38 @@ impl Conversation {
                     .is_some_and(|text| text.starts_with(COMPACTED_PREFIX))
             })
             .then_some(cut)
+    }
+
+    /// The start of the last [`RECENT_EXCHANGES_KEPT`] exchanges.
+    ///
+    /// A summary is lossy, and what a session is in the middle of is the part that can least
+    /// afford to be paraphrased.
+    fn by_exchange(&self) -> Option<usize> {
+        let opens = self.boundaries(opens_an_exchange);
+        let cut = *opens.get(opens.len().checked_sub(RECENT_EXCHANGES_KEPT)?)?;
+        (cut > 0).then_some(cut)
+    }
+
+    /// The start of the last [`RECENT_ROUNDS_KEPT`] rounds.
+    ///
+    /// The fallback, for the turn that is long by itself. It may cut away the prompt the turn
+    /// began with, which is the point: that prompt is one of the things the summary is required
+    /// to carry, and a turn on its fortieth round has more history behind it than the sentence
+    /// that started it.
+    fn by_round(&self) -> Option<usize> {
+        let points = self.boundaries(|message| message.tool_call_id.is_none());
+        let cut = *points.get(points.len().checked_sub(RECENT_ROUNDS_KEPT)?)?;
+        (cut > 0).then_some(cut)
+    }
+
+    /// The indices a cut may fall on, by whatever rule is asking.
+    fn boundaries(&self, is_one: impl Fn(&Message) -> bool) -> Vec<usize> {
+        self.messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| is_one(message))
+            .map(|(index, _)| index)
+            .collect()
     }
 
     /// The part compaction would replace, as one request's messages.
@@ -489,6 +517,14 @@ fn answered(exchange: &[Message], index: usize, id: &str) -> bool {
 /// one before it: "do the same to the other file" is unanswerable from a paraphrase of what the
 /// other file was.
 const RECENT_EXCHANGES_KEPT: usize = 2;
+
+/// How many of the most recent rounds compaction leaves word for word, where it is giving up
+/// rounds rather than exchanges.
+///
+/// More than the exchange count, and for the opposite reason: a round is a much smaller thing
+/// than an exchange, and what a turn is doing on its thirtieth round is usually the work of the
+/// last several rather than of the last one.
+const RECENT_ROUNDS_KEPT: usize = 6;
 
 /// Whether a message begins an exchange, so compaction may cut in front of it.
 ///
@@ -897,6 +933,94 @@ mod tests {
             !sent.iter().any(|m| m.tool_call_id.is_some()),
             "an answer outlived the call it answered: {sent:?}"
         );
+    }
+
+    /// A turn goes long on its own: one prompt, then round after round of tool calls. The
+    /// exchange count never grows while that happens, so a rule that only gave up whole exchanges
+    /// would decline at exactly the moment the context is filling fastest.
+    #[test]
+    fn a_turn_that_is_long_by_itself_gives_up_its_earlier_rounds() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("find and fix the bug"));
+        for round in 0..10 {
+            conversation.push(Message::assistant_calling(
+                "looking",
+                vec![ToolCallRequest {
+                    id: format!("call-{round}"),
+                    kind: "function".to_string(),
+                    function: ToolCallRequestFunction {
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+                    },
+                }],
+            ));
+            conversation.push(Message::tool_result(format!("call-{round}"), "some lines"));
+        }
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("a long turn has rounds to give up");
+        conversation.compacted(boundary, "they are looking for a bug in src/main.rs");
+
+        assert!(
+            conversation.len() < 21,
+            "nothing was given up: {}",
+            conversation.len()
+        );
+        let sent = conversation.with_system("be careful");
+        assert!(
+            !sent
+                .iter()
+                .any(|m| m.content.text().contains("did not run")),
+            "a round was cut in half: {sent:?}"
+        );
+    }
+
+    /// The rule that makes the fallback safe. Cutting between a call and the results that answer
+    /// it leaves the head saying the call never ran and the tail holding an answer to a call that
+    /// is not there, which is a request the server refuses.
+    #[test]
+    fn a_round_in_progress_is_never_a_place_to_cut() {
+        // A round may answer one call or several, and where the cut lands in a run of answers
+        // depends on how many there are. Asserted over a family of shapes rather than one, so the
+        // property holds however the counts above are tuned.
+        for answers in 1..=5 {
+            let mut conversation = Conversation::new();
+            conversation.push(Message::user("fix it"));
+            for round in 0..10 {
+                conversation.push(Message::assistant_calling(
+                    "looking",
+                    vec![ToolCallRequest {
+                        id: format!("call-{round}"),
+                        kind: "function".to_string(),
+                        function: ToolCallRequestFunction {
+                            name: "search".to_string(),
+                            arguments: r#"{"pattern":"x"}"#.to_string(),
+                        },
+                    }],
+                ));
+                for _ in 0..answers {
+                    conversation.push(Message::tool_result(format!("call-{round}"), "a result"));
+                }
+            }
+
+            let boundary = conversation
+                .compaction_boundary()
+                .expect("something to give up");
+            assert!(
+                conversation.messages()[boundary].tool_call_id.is_none(),
+                "with {answers} answers to a call, the cut landed on one of them"
+            );
+
+            conversation.compacted(boundary, "they are looking for a bug");
+            let sent = conversation.with_system("be careful");
+            assert!(
+                !sent
+                    .iter()
+                    .any(|m| m.content.text().contains("did not run")),
+                "with {answers} answers to a call, a round was cut in half"
+            );
+        }
     }
 
     /// Compacting a conversation that is all recent would trade the exact words of what is being
