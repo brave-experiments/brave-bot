@@ -5,6 +5,7 @@
 //! conversation history can never become routing for a later one.
 
 pub mod app;
+pub mod ask;
 pub mod audit;
 pub mod clipboard;
 pub mod confirm;

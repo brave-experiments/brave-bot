@@ -28,7 +28,8 @@ use crate::diff::Diff;
 use crate::processor::{self, Chat};
 use crate::report::{Activity, Reporter};
 use bua_aichat::protocol::{Tool, ToolCall, Usage};
-use bua_core::event::Sink;
+use bua_core::ask::{self, Choice, Question, Series};
+use bua_core::event::{Role, Sink};
 use bua_core::label::Label;
 use bua_core::policy::{Destination, Policy};
 use bua_core::slot::{SlotId, SlotStore};
@@ -308,6 +309,79 @@ pub fn available() -> Vec<Tool> {
                 "required": ["name"]
             }),
         ),
+        Tool::function(
+            "ask_user",
+            "Ask the user up to four questions and wait for their answers. Use it while \
+             planning, when the work turns on something only they can tell you: which of two \
+             approaches to take, which file you were meant, whether something is in scope. Ask \
+             everything the plan turns on in one call rather than a question per turn; they are \
+             put to the user one at a time. Ask before you start reading, not after: a question \
+             can only be put to the user while nothing untrusted has reached your context, and \
+             it is refused afterwards. Offer concrete options where you can; the user may also \
+             answer in their own words or skip a question, and a skipped question is an answer \
+             to work with rather than a reason to ask again.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "description": "The questions to put, at most four. A limit rather than \
+                                        a target: ask what the work turns on and no more.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "header": {
+                                    "type": "string",
+                                    "description": "Two or three words naming what this asks \
+                                                    about, shown as a tag beside it, e.g. \
+                                                    \"Cache layer\". It is how the user tells \
+                                                    one question from the next."
+                                },
+                                "question": {
+                                    "type": "string",
+                                    "description": "The question, in one sentence."
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "description": "The choices to offer. Give them here rather \
+                                                    than listing them inside the question text: \
+                                                    only these are shown as choices. Each may \
+                                                    be a plain string, or an object with a \
+                                                    'label'. The user can always answer in \
+                                                    their own words instead, so there is no \
+                                                    need to offer an 'other'. Omit only for a \
+                                                    question that genuinely has no set answers.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {
+                                                "type": "string",
+                                                "description": "The option, in a few words."
+                                            },
+                                            "detail": {
+                                                "type": "string",
+                                                "description": "Optional line saying what \
+                                                                choosing it means."
+                                            }
+                                        },
+                                        "required": ["label"]
+                                    }
+                                },
+                                "multiple": {
+                                    "type": "boolean",
+                                    "description": "Set true when this question asks for more \
+                                                    than one answer, such as \"which of these\" \
+                                                    or \"pick any that apply\". Left false the \
+                                                    user can pick only one. Defaults to false."
+                                }
+                            },
+                            "required": ["header", "question"]
+                        }
+                    }
+                },
+                "required": ["questions"]
+            }),
+        ),
     ]
 }
 
@@ -536,6 +610,7 @@ fn verb_for(tool: &str) -> &'static str {
         // have to remember which of the verbs meant that.
         "spawn_processor" => "Isolated processor",
         "load_skill" => "Skill",
+        "ask_user" => "Ask",
         _ => "Tool",
     }
 }
@@ -565,6 +640,17 @@ fn target_of<S: Sink>(
     slots: &SlotStore,
     arguments: &Value,
 ) -> String {
+    // A question is about nothing in the workspace, and its subject is the question itself,
+    // which the person is about to read anyway. How many were asked is the useful thing on a
+    // line that goes by while they answer, and a count is structure rather than content, so
+    // nothing is released to say it.
+    if tool == "ask_user" {
+        return match arguments.get("questions").and_then(Value::as_array) {
+            Some(asked) if asked.len() > 1 => tally(asked.len(), "question", "questions"),
+            _ => String::new(),
+        };
+    }
+
     // A processor has no single argument naming a target: what it is working on is the set of
     // references it was given, which are names the driver handed out and can read back.
     let named = if tool == "spawn_processor" {
@@ -771,6 +857,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         "load_skill" => load_skill(policy, tools.skills, &arguments),
+        "ask_user" => ask_user(policy, confirmer, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
 
@@ -1844,6 +1931,139 @@ fn load_skill<S: Sink>(
     Produced::new(skill.body().clone(), skill.origin.clone(), note)
 }
 
+/// Read one option the model offered.
+///
+/// Two shapes, because a model that writes a bare string meant an option with no explanation and
+/// refusing it would cost the person a choice over punctuation.
+fn choice_from(option: &Value) -> Option<Choice> {
+    if let Value::String(label) = option {
+        return Some(Choice::new(label.clone(), None));
+    }
+    let label = option.get("label")?.as_str()?.to_string();
+    let detail = option
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(Choice::new(label, detail))
+}
+
+/// Read one question the model asked.
+///
+/// Total in the way `choice_from` is: it yields `None` for a question there is nothing to draw,
+/// and the count check at the call site turns that into a refusal of the whole call. Nothing
+/// here decides which questions exist, only whether the call as a whole is answerable.
+fn question_from(entry: &Value) -> Option<Question> {
+    let header = entry.get("header")?.as_str()?.to_string();
+    let prompt = entry.get("question")?.as_str()?.to_string();
+
+    let offered = match entry.get("options") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(options)) => Some(options),
+        // Present but not a list. Falling through to a bare text field here would throw away
+        // options the model meant to offer and leave the user staring at a question that names
+        // choices it does not show.
+        Some(_) => return None,
+    };
+
+    let choices: Vec<Choice> = offered
+        .map(|options| options.iter().filter_map(choice_from).collect())
+        .unwrap_or_default();
+    // An option with nothing to draw is the one thing skipped, and this is what says so rather
+    // than asking a question with a hole in it.
+    if choices.len() != offered.map_or(0, Vec::len) {
+        return None;
+    }
+
+    // Never silently falls back to one answer. A model that asked for several and was quietly
+    // given a single-answer picker leaves the user unable to say what they were asked for, with
+    // nothing on screen to suggest anything went wrong.
+    let multiple = match entry.get("multiple") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => *flag,
+        // Tool arguments arrive as JSON text, so the quoted spelling is common enough to accept.
+        Some(Value::String(text)) if text.eq_ignore_ascii_case("true") => true,
+        Some(Value::String(text)) if text.eq_ignore_ascii_case("false") => false,
+        Some(_) => return None,
+    };
+
+    Some(Question::new(header, prompt, choices, multiple))
+}
+
+/// Put the planner's questions to the person and hand back what they said.
+///
+/// The only tool whose result comes from a person rather than from the workspace, and the only
+/// one with no effect at all. It still has a destination, the user's screen, and that is what
+/// makes the questions and their options **routing**: they decide what the person is shown and
+/// therefore what they can answer. The routing field here is approved by being read, since what
+/// is drawn is exactly the bytes the gate checked and nothing re-parses them afterwards.
+///
+/// The gate runs once for the whole series. A series is asked whole or refused whole, because
+/// asking some of it would mean deciding which of the questions the person sees, and that
+/// decision would be taken from what is in them.
+///
+/// Note there is no hand-written check on the context here. The refusal is the ordinary routing
+/// gate doing its job, which is the point: relocating that decision into the driver would be the
+/// violation, not the safeguard.
+fn ask_user<S: Sink, C: Confirmer>(
+    policy: &mut Policy<'_, S>,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> Produced {
+    let Some(entries) = arguments.get("questions").and_then(Value::as_array) else {
+        return problem(
+            "error: 'questions' is required and must be an array of one to four questions",
+        );
+    };
+
+    if entries.is_empty() {
+        return problem("error: 'questions' must hold at least one question.");
+    }
+    // Refused rather than trimmed. A question dropped here is one the model is told the person
+    // was asked and the person never saw, which is worse than being made to send the call again.
+    if entries.len() > ask::MOST_AT_ONCE {
+        return problem(format!(
+            "error: at most {} questions can be asked at once; nobody was asked anything. Send \
+             the ones the work turns on.",
+            ask::MOST_AT_ONCE
+        ));
+    }
+
+    let asked: Vec<Question> = entries.iter().filter_map(question_from).collect();
+    if asked.len() != entries.len() {
+        return problem(
+            "error: every question needs a 'header' tag and a 'question' sentence, and every \
+             option needs a label; nobody was asked anything. Send the whole set again.",
+        );
+    }
+
+    let series = policy.label_model_output("ask_user", Series::new(asked));
+
+    // One string standing for every question, so the gate checks everything the person will be
+    // shown rather than the first question or the sentences alone.
+    let canonical = policy.render_in_place("ask_user", &series, |s| ask::canonical_series(&s));
+    if let Err(denial) = policy.before_action("ask_user", "questions", Role::Routing, &canonical) {
+        return problem(format!(
+            "refused: {denial}. Questions can only be put to the user before anything untrusted \
+             has reached your context. Continue without an answer, or say in your reply what you \
+             need to know."
+        ));
+    }
+
+    // Shaped inside the kernel for the same reason a task list is: laying out options means
+    // reading them. Every question yields a prompt and every choice a row, so nothing in the
+    // text decides what the person is shown the existence of.
+    let shaped = policy.render_in_place("ask_user", &series, |s| ask::asking(&s));
+    let proof = policy.authorise_display_release("questions for the user");
+    let answers = confirmer.ask_user(&shaped.declassify(&proof));
+
+    // The kernel puts the replies into words and lines them up against the questions, so nothing
+    // here branches on what the person said or counts what they answered.
+    match policy.record_answers("ask_user", &series, &answers) {
+        Ok(text) => Produced::new(text, "", tally(entries.len(), "answer", "answers")),
+        Err(denial) => problem(format!("refused: {denial}")),
+    }
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -1971,7 +2191,8 @@ mod tests {
                 "todo_write",
                 "search",
                 "spawn_processor",
-                "load_skill"
+                "load_skill",
+                "ask_user"
             ]
         );
     }
@@ -2185,6 +2406,410 @@ mod tests {
         fn an_edit_that_changes_nothing_says_nothing_changed() {
             let (note, _) = change_report(Intent::Edit, Some("same\n"), "same\n", None);
             assert_eq!(note, "added 0 lines, removed 0 lines");
+        }
+    }
+
+    mod questions {
+        use super::*;
+        use crate::confirm::{ApproveWrites, ChoosesFirst, Unattended};
+        use bua_core::ask::{Answer, Asking};
+        use bua_core::capability::{Capability, CapabilitySet};
+        use bua_core::event::RecordingSink;
+        use bua_core::label::{Integrity, Label};
+        use bua_core::policy::{ReleasePlan, Routing};
+        use bua_core::trust::TrustStore;
+
+        fn routing() -> Routing {
+            let mut r = Routing::new();
+            r.insert_trusted("task", "plan some work");
+            r
+        }
+
+        /// Records what it was shown, so a test can assert the person saw the whole series.
+        #[derive(Default)]
+        struct Watching {
+            seen: Vec<Asking>,
+            reply: Vec<Answer>,
+        }
+
+        impl Confirmer for Watching {
+            fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+                Decision::Reject
+            }
+
+            fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
+                self.seen.push(asking.clone());
+                self.reply.clone()
+            }
+        }
+
+        /// Run the tool against a fresh policy in a workspace the user vouched for.
+        fn call<C: Confirmer>(confirmer: &mut C, arguments: Value) -> Labelled<String> {
+            let mut sink = RecordingSink::new();
+            let mut trust = TrustStore::new();
+            trust.trust(".");
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy")
+            .with_trust(trust);
+            let produced = ask_user(&mut policy, confirmer, &arguments);
+            // A question has no source in the workspace, so there is nothing for an origin to
+            // name.
+            assert!(
+                produced.origin.is_empty(),
+                "a question named an origin: {}",
+                produced.origin
+            );
+            produced.text
+        }
+
+        fn released(text: &Labelled<String>) -> String {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy");
+            let proof = policy.authorise_display_release("test inspects the tool result");
+            text.clone().declassify(&proof)
+        }
+
+        fn one_question() -> Value {
+            json!({"questions": [{
+                "header": "Cache layer",
+                "question": "Which cache layer?",
+                "options": [{"label": "HTTP", "detail": "in front of the handler"},
+                            {"label": "Query"}]
+            }]})
+        }
+
+        fn three_questions() -> Value {
+            json!({"questions": [
+                {"header": "Cache", "question": "Which cache layer?",
+                 "options": [{"label": "HTTP"}, {"label": "Query"}]},
+                {"header": "Scope", "question": "Is the migration in scope?",
+                 "options": [{"label": "Yes"}, {"label": "No"}]},
+                {"header": "Branch", "question": "Which branch?",
+                 "options": [{"label": "main"}]}
+            ]})
+        }
+
+        /// The point of a series: one call settles everything the plan turns on, and the person
+        /// is shown all of it rather than one question per turn.
+        #[test]
+        fn the_person_is_shown_every_question_in_the_call() {
+            let mut confirmer = Watching::default();
+            call(&mut confirmer, three_questions());
+            let shown = confirmer.seen.first().expect("the user was asked");
+            assert_eq!(shown.prompts.len(), 3);
+            assert_eq!(shown.prompts[0].question, "Which cache layer?");
+            assert_eq!(shown.prompts[1].question, "Is the migration in scope?");
+            assert_eq!(shown.prompts[2].question, "Which branch?");
+        }
+
+        /// The tag reaches the screen, since it is the thing that tells one question from the
+        /// next when three arrive together.
+        #[test]
+        fn every_question_carries_its_tag_to_the_person() {
+            let mut confirmer = Watching::default();
+            call(&mut confirmer, three_questions());
+            let shown = confirmer.seen.first().expect("asked");
+            let tags: Vec<&str> = shown.prompts.iter().map(|p| p.header.as_str()).collect();
+            assert_eq!(tags, vec!["Cache", "Scope", "Branch"]);
+        }
+
+        /// A lone question is a series of one, so there is one path through the tool rather than
+        /// two that could drift apart.
+        #[test]
+        fn a_single_question_is_asked_as_a_series_of_one() {
+            let mut confirmer = Watching::default();
+            call(&mut confirmer, one_question());
+            assert_eq!(confirmer.seen.first().expect("asked").prompts.len(), 1);
+        }
+
+        /// The planner has to be able to read the reply, or asking was pointless.
+        #[test]
+        fn every_answer_reaches_the_planner_in_the_clear() {
+            let mut confirmer = ChoosesFirst;
+            let text = call(&mut confirmer, three_questions());
+            assert_eq!(text.label(), Label::trusted_public());
+            let told = released(&text);
+            assert!(told.contains("The user chose: HTTP"), "{told}");
+            assert!(told.contains("The user chose: Yes"), "{told}");
+            assert!(told.contains("The user chose: main"), "{told}");
+        }
+
+        /// And each answer has to say which question it settled, or the planner is guessing.
+        #[test]
+        fn each_answer_is_reported_under_the_question_it_answers() {
+            let mut confirmer = ChoosesFirst;
+            let told = released(&call(&mut confirmer, three_questions()));
+            assert!(
+                told.contains("Which cache layer?\nThe user chose: HTTP"),
+                "{told}"
+            );
+        }
+
+        /// Skipping one question must not cost the person the answers they did give.
+        #[test]
+        fn a_skipped_question_is_reported_beside_its_answered_siblings() {
+            let mut confirmer = Watching {
+                reply: vec![
+                    Answer::Chosen(vec![0]),
+                    Answer::Declined,
+                    Answer::Chosen(vec![0]),
+                ],
+                ..Default::default()
+            };
+            let told = released(&call(&mut confirmer, three_questions()));
+            assert!(told.contains("The user chose: HTTP"), "{told}");
+            assert!(told.contains("declined"), "{told}");
+            assert!(told.contains("The user chose: main"), "{told}");
+        }
+
+        /// An interface that answered nothing answered nothing, and every question is reported
+        /// as skipped rather than one answer sliding onto the wrong question.
+        #[test]
+        fn an_answer_the_interface_never_gave_is_reported_as_a_decline() {
+            let mut confirmer = Unattended;
+            let told = released(&call(&mut confirmer, three_questions()));
+            assert_eq!(told.matches("declined").count(), 3, "{told}");
+        }
+
+        #[test]
+        fn an_unattended_run_declines_rather_than_choosing() {
+            let mut confirmer = Unattended;
+            assert!(released(&call(&mut confirmer, one_question())).contains("declined"));
+        }
+
+        #[test]
+        fn approving_writes_does_not_answer_a_question() {
+            let mut confirmer = ApproveWrites;
+            assert!(released(&call(&mut confirmer, one_question())).contains("declined"));
+        }
+
+        /// The property the whole tool rests on. Once the context has met untrusted content the
+        /// questions may have been shaped by it, and a person picking among strings an attacker
+        /// wrote does not make those strings trusted.
+        #[test]
+        fn a_series_is_refused_once_the_context_has_met_something_untrusted() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy")
+            .resuming(Integrity::Untrusted);
+
+            let mut confirmer = Watching::default();
+            let text = ask_user(&mut policy, &mut confirmer, &three_questions()).text;
+
+            assert!(
+                confirmer.seen.is_empty(),
+                "the user was asked questions derived from untrusted content"
+            );
+            let told = released(&text);
+            assert!(told.starts_with("refused:"), "{told}");
+            assert!(
+                told.contains("before anything untrusted has reached your context"),
+                "the refusal does not say when asking is possible: {told}"
+            );
+        }
+
+        /// And the refusal is text, not a failed turn: the model can carry on without an answer.
+        #[test]
+        fn a_refused_series_is_reported_rather_than_failing_the_turn() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy")
+            .resuming(Integrity::Untrusted);
+
+            let mut confirmer = Unattended;
+            let text = ask_user(&mut policy, &mut confirmer, &one_question()).text;
+            assert_eq!(text.label(), Label::trusted_public());
+        }
+
+        /// Trimming would tell the model the person was asked something they never saw.
+        #[test]
+        fn more_than_four_questions_are_refused_rather_than_trimmed() {
+            let mut confirmer = Watching::default();
+            let many: Vec<Value> = (0..5)
+                .map(|i| json!({"header": format!("T{i}"), "question": format!("Q{i}?")}))
+                .collect();
+            let told = released(&call(&mut confirmer, json!({"questions": many})));
+            assert!(
+                confirmer.seen.is_empty(),
+                "the user was asked a trimmed set of questions"
+            );
+            // The message has to name the limit, not merely be an error. Trimming the list and
+            // then failing some later check would also produce an error, and would tell the
+            // model its questions were malformed when what was wrong was how many it asked.
+            assert!(
+                told.contains(&ask::MOST_AT_ONCE.to_string()),
+                "the refusal does not say what the limit is: {told}"
+            );
+        }
+
+        #[test]
+        fn an_empty_list_of_questions_is_an_error() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(&mut confirmer, json!({"questions": []})));
+            assert!(told.starts_with("error:"), "{told}");
+            assert!(confirmer.seen.is_empty());
+        }
+
+        #[test]
+        fn a_missing_question_list_is_an_error() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(&mut confirmer, json!({"question": "Which?"})));
+            assert!(told.starts_with("error:"), "{told}");
+        }
+
+        /// The whole call fails rather than one question quietly going missing, because which
+        /// questions exist must not be decided by what the model wrote in them.
+        #[test]
+        fn a_question_with_no_tag_fails_the_whole_call() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(
+                &mut confirmer,
+                json!({"questions": [
+                    {"header": "Cache", "question": "Which cache layer?"},
+                    {"question": "Which branch?"}
+                ]}),
+            ));
+            assert!(told.starts_with("error:"), "{told}");
+            assert!(
+                confirmer.seen.is_empty(),
+                "the user was asked the questions that parsed"
+            );
+        }
+
+        #[test]
+        fn a_question_with_no_sentence_fails_the_whole_call() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(
+                &mut confirmer,
+                json!({"questions": [{"header": "Cache"}]}),
+            ));
+            assert!(told.starts_with("error:"), "{told}");
+            assert!(confirmer.seen.is_empty());
+        }
+
+        #[test]
+        fn an_option_with_no_label_fails_the_whole_call() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(
+                &mut confirmer,
+                json!({"questions": [{
+                    "header": "Cache", "question": "Which?",
+                    "options": [{"label": "HTTP"}, {"detail": "no label"}]
+                }]}),
+            ));
+            assert!(told.starts_with("error:"), "{told}");
+            assert!(confirmer.seen.is_empty());
+        }
+
+        /// A question the model could not supply options for is still worth asking: the person
+        /// answers in their own words.
+        #[test]
+        fn a_question_with_no_options_still_reaches_the_person() {
+            let mut confirmer = Watching::default();
+            call(
+                &mut confirmer,
+                json!({"questions": [{"header": "Branch", "question": "Which branch?"}]}),
+            );
+            assert!(
+                confirmer.seen.first().expect("asked").prompts[0]
+                    .rows
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn options_given_as_plain_strings_are_offered() {
+            let mut confirmer = Watching::default();
+            call(
+                &mut confirmer,
+                json!({"questions": [{
+                    "header": "Cache", "question": "Which?", "options": ["HTTP", "Query"]
+                }]}),
+            );
+            let rows = &confirmer.seen.first().expect("asked").prompts[0].rows;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].label, "HTTP");
+        }
+
+        #[test]
+        fn a_multiple_choice_question_says_so_to_the_person() {
+            let mut confirmer = Watching::default();
+            call(
+                &mut confirmer,
+                json!({"questions": [{
+                    "header": "Platforms", "question": "Which?",
+                    "options": ["Linux"], "multiple": true
+                }]}),
+            );
+            assert!(confirmer.seen.first().expect("asked").prompts[0].multiple);
+        }
+
+        /// Tool arguments arrive as JSON text, so a quoted boolean is common. Reading it as
+        /// false would hand the user a one-answer picker for a question that asked for several.
+        #[test]
+        fn a_quoted_boolean_still_asks_for_several_answers() {
+            for spelling in [json!("true"), json!("True"), json!("TRUE")] {
+                let mut confirmer = Watching::default();
+                call(
+                    &mut confirmer,
+                    json!({"questions": [{
+                        "header": "Platforms", "question": "Which?",
+                        "options": ["Linux"], "multiple": spelling
+                    }]}),
+                );
+                assert!(confirmer.seen.first().expect("asked").prompts[0].multiple);
+            }
+        }
+
+        /// Anything else is refused rather than read as one answer, for the same reason: a
+        /// silent downgrade is invisible to everyone who could have noticed it.
+        #[test]
+        fn an_unreadable_multiple_fails_the_call_rather_than_asking_for_one() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(
+                &mut confirmer,
+                json!({"questions": [{
+                    "header": "Platforms", "question": "Which?",
+                    "options": ["Linux"], "multiple": "yes"
+                }]}),
+            ));
+            assert!(told.starts_with("error:"), "{told}");
+            assert!(confirmer.seen.is_empty());
+        }
+
+        /// Options that are not a list would leave the person staring at a question naming
+        /// choices it does not show.
+        #[test]
+        fn options_that_are_not_a_list_fail_the_call() {
+            let mut confirmer = Watching::default();
+            let told = released(&call(
+                &mut confirmer,
+                json!({"questions": [{
+                    "header": "Cache", "question": "Which?", "options": "HTTP or Query"
+                }]}),
+            ));
+            assert!(told.starts_with("error:"), "{told}");
         }
     }
 

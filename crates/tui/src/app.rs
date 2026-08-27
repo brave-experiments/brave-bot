@@ -746,7 +746,7 @@ fn run_turn_animated(
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
-    let (answer_tx, answer_rx) = mpsc::channel::<bua_agent::Decision>();
+    let (answer_tx, answer_rx) = mpsc::channel::<crate::remote_confirm::Reply>();
 
     // A fresh token per turn: reusing one could cancel a turn before it started.
     let cancel = Cancel::new();
@@ -832,7 +832,41 @@ fn run_turn_animated(
                 }
                 // A closed channel means the worker is already gone, so there is nothing to
                 // answer and the loop below will collect its result.
-                let _ = answer_tx.send(answer.decision());
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Write(answer.decision()));
+            }
+            Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
+                // A planner that loops back over the same decision should not make the user
+                // restate it. The note is what keeps that from being invisible: an answer given
+                // once and reused silently would look like a question that was never asked.
+                let known: Vec<Option<bua_core::ask::Answer>> = asking
+                    .prompts
+                    .iter()
+                    .map(|prompt| session.recall_answer(&prompt.key))
+                    .collect();
+                for (prompt, earlier) in asking.prompts.iter().zip(&known) {
+                    if earlier.is_some() {
+                        session.note(format!("answered already: {}", prompt.question));
+                    }
+                }
+
+                // Only what is still outstanding is drawn, so the count in the title is the
+                // number of questions the person actually has to answer.
+                let outstanding = bua_core::ask::Asking {
+                    prompts: asking
+                        .prompts
+                        .iter()
+                        .zip(&known)
+                        .filter(|(_, earlier)| earlier.is_none())
+                        .map(|(prompt, _)| prompt.clone())
+                        .collect(),
+                };
+                let fresh = crate::ask::ask(terminal, &outstanding);
+
+                let answers = crate::ask::in_order(known, fresh);
+                for (prompt, answer) in asking.prompts.iter().zip(&answers) {
+                    session.remember_answer(prompt.key.clone(), answer.clone());
+                }
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Ask(answers));
             }
             // No reply: each of these is recorded and the next redraw, one iteration away,
             // shows it. That is what makes a long turn legible while it runs.

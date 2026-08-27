@@ -193,6 +193,13 @@ pub struct Session {
     /// to name it, and scanning back through the transcript for the tail would be a worse way
     /// to answer a question the session already knows the answer to.
     pub running: Option<Activity>,
+    /// Answers the user has already given this session, keyed by the question.
+    ///
+    /// A repeated question is answered from here rather than put to them again, since a planner
+    /// that loops back over the same decision should not make the user restate it. Kept in the
+    /// interface rather than the kernel: it is a convenience for the person, not a rule about
+    /// labels, and the key is trusted text by the time it reaches here.
+    pub answers: Vec<(String, bua_core::ask::Answer)>,
     /// Whether history is written to disk.
     ///
     /// Off by default so constructing a session does no I/O: a test would otherwise read and
@@ -236,6 +243,7 @@ impl Session {
             todos: Vec::new(),
             phase: None,
             running: None,
+            answers: Vec::new(),
             persist: false,
             said: Vec::new(),
             started: None,
@@ -727,6 +735,22 @@ impl Session {
         self.note(message);
     }
 
+    /// What the user said last time this exact question was asked, if they were asked it.
+    pub fn recall_answer(&self, key: &str) -> Option<bua_core::ask::Answer> {
+        self.answers
+            .iter()
+            .find(|(asked, _)| asked == key)
+            .map(|(_, answer)| answer.clone())
+    }
+
+    /// Remember an answer, replacing any earlier one for the same question.
+    pub fn remember_answer(&mut self, key: String, answer: bua_core::ask::Answer) {
+        match self.answers.iter_mut().find(|(asked, _)| *asked == key) {
+            Some(slot) => slot.1 = answer,
+            None => self.answers.push((key, answer)),
+        }
+    }
+
     pub fn toggle_trail(&mut self) {
         self.show_trail = !self.show_trail;
     }
@@ -751,6 +775,44 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bua_core::ask::Answer;
+
+    /// A question nobody has been asked has no answer to recall, which is what makes the memo
+    /// safe to consult for every question in a series.
+    #[test]
+    fn a_question_never_asked_has_no_remembered_answer() {
+        let session = Session::new(".");
+        assert_eq!(session.recall_answer("pick one: Cache: Which?"), None);
+    }
+
+    /// The key is the whole question, so two that differ anywhere are two questions and the
+    /// second is put to the person rather than answered with the first one's reply.
+    #[test]
+    fn a_different_question_is_not_answered_from_an_earlier_one() {
+        let mut session = Session::new(".");
+        session.remember_answer("pick one: Cache: Which?".into(), Answer::Chosen(vec![0]));
+        assert_eq!(session.recall_answer("pick one: Branch: Which?"), None);
+    }
+
+    /// Answering again replaces rather than accumulates, or the memo would grow a second entry
+    /// for the same question and recall would keep returning the stale one.
+    #[test]
+    fn answering_the_same_question_again_replaces_what_was_remembered() {
+        let mut session = Session::new(".");
+        session.remember_answer("q".into(), Answer::Chosen(vec![0]));
+        session.remember_answer("q".into(), Answer::Chosen(vec![1]));
+        assert_eq!(session.answers.len(), 1);
+        assert_eq!(session.recall_answer("q"), Some(Answer::Chosen(vec![1])));
+    }
+
+    /// A decline is an answer, so it is remembered as one. Treating it as absence would put a
+    /// question the person deliberately passed over back in front of them.
+    #[test]
+    fn a_skipped_question_is_remembered_as_skipped() {
+        let mut session = Session::new(".");
+        session.remember_answer("q".into(), Answer::Declined);
+        assert_eq!(session.recall_answer("q"), Some(Answer::Declined));
+    }
     use bua_core::label::Label;
 
     fn session() -> Session {

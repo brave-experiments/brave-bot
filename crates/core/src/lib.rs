@@ -12,6 +12,7 @@
 //! makes injected text unable to redirect an action. Ali built the first prototype of it
 //! in SafeHouse; this applies the same idea to a coding agent.
 
+pub mod ask;
 pub mod cancel;
 pub mod capability;
 pub mod command;
@@ -27,6 +28,7 @@ pub mod todo;
 pub mod trust;
 pub mod value;
 
+pub use ask::{Answer, Choice, Prompt, Question};
 pub use cancel::Cancel;
 pub use capability::{Capability, CapabilitySet, CapabilityToken};
 pub use command::{Pipeline, Stage};

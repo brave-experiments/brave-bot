@@ -1,6 +1,6 @@
 # Tools
 
-Eight tools. Every argument is either **routing**, which decides what the tool touches and must
+Nine tools. Every argument is either **routing**, which decides what the tool touches and must
 be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 
 | Tool | Routing arguments | Content arguments | Result |
@@ -13,6 +13,7 @@ be `(T,pub)`, or **content**, which is merely carried and may be untrusted:
 | `spawn_processor` | `reads` | `instruction` | a reference |
 | `load_skill` | `name` | none | the skill's text |
 | `todo_write` | none | `todos` | confirmation |
+| `ask_user` | `questions` | none | what you answered, question by question |
 
 Reads return the content itself when it is trusted and a reference when it is not, per R1.
 Writes are silent or shown according to the trust table in [trust.md](trust.md), per R6.
@@ -195,6 +196,63 @@ a decision. On untrusted content it would let file contents decide whether an ef
 So an untrusted file is refused rather than edited blind; trust the path, or send the change
 through a [processor](#processors) and write the whole file, where nothing is located and the
 body is shown to you in full.
+
+## Asking the user
+
+`ask_user` puts questions to you and hands the model your answers. It is for the planning step,
+where the work turns on something only you know: which of two approaches, which file was meant,
+whether something is in scope.
+
+One call carries **one to four questions**, and they are put to you one at a time, with the
+position shown so you can see how many are left. Each carries a short tag naming what it asks
+about, which is how you tell one from the next. For each, you can pick an option, pick several
+where the question allows it, answer in your own words, or skip it. Skipping moves to the next
+question rather than abandoning the rest: the model is told, question by question, what you
+answered and what you passed over.
+
+More than four is refused rather than trimmed. A question quietly dropped would be one the model
+was told you had been asked and you never saw.
+
+It is the one tool whose result comes from a person rather than from the workspace, and the only
+one with no effect at all. It still has a destination, your screen, and that is what makes the
+questions and their options **routing**: they decide what you are shown and therefore what you
+can answer. The routing field here is approved by being read. What is drawn is exactly the bytes
+the gate checked, nothing re-parses them afterwards, and there is no effect to endorse beyond
+the display.
+
+### Asked whole or refused whole
+
+The gate runs once, over a string covering every question in the call. Checking them one at a
+time would mean deciding, per question, whether that one is put to you, and which half of a set
+survives would then be a decision taken from what is in it. So a call is asked entirely or
+refused entirely.
+
+### When asking stops working
+
+The questions are written by the model, so they carry the integrity of the model's context. Once
+that context has met something untrusted, the routing gate refuses them. The model is told so and
+continues without an answer.
+
+This is not a limitation to work around. A question you were shown may have been written from
+bytes an attacker controlled, and choosing among strings an attacker wrote does not make those
+strings trustworthy. Treating your keypress as though it did would carry injected text into the
+planner's context, which is the one thing this design exists to prevent.
+
+Note what does **not** trip it. Reading a file nobody vouched for leaves the model free to ask,
+because that read was quarantined: the planner was handed a reference and never met the bytes, so
+nothing in that file could have shaped the question. The context falls when the planner is
+*shown* something untrusted, not when a turn reads it. That distinction is pinned by
+`a_quarantined_read_does_not_stop_the_planner_asking` in `crates/agent/tests/turn.rs`.
+
+An answer you type is different again: those bytes came from your keyboard, the same source as
+the task itself, so they are trusted the way your prompt is. That is a first label rather than an
+upgrade, and it is still refused when the question you were answering was not itself trustworthy.
+
+Where nobody can be asked, such as a one-shot `bua "..."` run, every question is declined rather
+than answered on your behalf. The model is told the reply came from a person, so inventing one
+would be worse than not asking. An answer given once is remembered for the session, question by
+question, so a model that loops back over the same decision does not make you restate it, and a
+set where you have already settled some shows you only the rest.
 
 ## Running programs
 
