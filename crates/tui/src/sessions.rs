@@ -946,6 +946,7 @@ mod tests {
                 messages: Vec::new(),
                 context: "trusted".to_string(),
                 references: 0,
+                archive: Vec::new(),
             },
         }
     }

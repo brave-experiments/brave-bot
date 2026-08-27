@@ -46,6 +46,13 @@ pub struct Conversation {
     references: usize,
     /// What everything this conversation has been shown amounts to.
     context: Integrity,
+    /// What compaction took out of the request, oldest first.
+    ///
+    /// What compaction shortens is the request, not the record. These messages are no longer
+    /// sent, and a summary of them is sent instead, but the person whose session this is still
+    /// owns every word of it: [`Conversation::recounted`] reads them back. A transcript with a
+    /// hole in it where the user's own earlier prompts were is not a saving worth making.
+    archive: Vec<Message>,
 }
 
 impl Default for Conversation {
@@ -64,6 +71,7 @@ impl Conversation {
             quarantine: SlotStore::new(),
             references: 0,
             context: Integrity::Trusted,
+            archive: Vec::new(),
         }
     }
 
@@ -85,17 +93,26 @@ impl Conversation {
     /// server rather than merely missing something. Filling the gap keeps the record of what
     /// was attempted, which is the reason the conversation survives a failed turn at all.
     pub fn with_system(&self, system: &str) -> Vec<Message> {
-        let mut messages = Vec::with_capacity(self.messages.len() + 1);
+        Self::assembled(system, &self.messages)
+    }
+
+    /// The same, over some prefix of the exchange.
+    ///
+    /// Shared with [`Conversation::with_system`] rather than written twice, because the gap
+    /// filling below is the difference between a well-formed request and one a server refuses,
+    /// and a summariser sending a prefix needs it exactly as much as a turn sending the whole.
+    fn assembled(system: &str, exchange: &[Message]) -> Vec<Message> {
+        let mut messages = Vec::with_capacity(exchange.len() + 1);
         messages.push(Message::system(system));
 
-        for (index, message) in self.messages.iter().enumerate() {
+        for (index, message) in exchange.iter().enumerate() {
             messages.push(message.clone());
 
             let Some(calls) = &message.tool_calls else {
                 continue;
             };
             for call in calls {
-                if !self.answered(index, &call.id) {
+                if !answered(exchange, index, &call.id) {
                     messages.push(Message::tool_result(
                         call.id.clone(),
                         "(this call did not run: the turn ended first)",
@@ -105,17 +122,6 @@ impl Conversation {
         }
 
         messages
-    }
-
-    /// Whether the round beginning at `index` answered the call with this id.
-    ///
-    /// Only the run of results immediately after it counts, since that is where the answers to
-    /// a round belong and where a server looks for them.
-    fn answered(&self, index: usize, id: &str) -> bool {
-        self.messages[index + 1..]
-            .iter()
-            .take_while(|message| message.tool_call_id.is_some())
-            .any(|message| message.tool_call_id.as_deref() == Some(id))
     }
 
     /// What the conversation has met, for the turn resuming it.
@@ -141,6 +147,92 @@ impl Conversation {
     /// The quarantine, for the kernel to write into and read back out of.
     pub fn quarantine(&mut self) -> &mut SlotStore {
         &mut self.quarantine
+    }
+
+    /// Where compaction would cut, or `None` when there is nothing worth summarising.
+    ///
+    /// The index is always the start of an exchange, never the middle of one. That is not a
+    /// preference: [`Conversation::with_system`] answers a call nothing answered, and it looks
+    /// only at the run of results immediately after the call, so an assistant message separated
+    /// from its results would leave both halves malformed. The boundaries are found from roles
+    /// and call ids, which are the shape of the exchange rather than anything anyone wrote.
+    ///
+    /// [`RECENT_EXCHANGES_KEPT`] of them stay word for word. A summary is lossy, and what a
+    /// session is in the middle of is the part that can least afford to be paraphrased.
+    ///
+    /// `None` where the head would be nothing but an earlier summary. There is nothing left to
+    /// give up in that case, and saying so is better than spending a request to learn it.
+    pub fn compaction_boundary(&self) -> Option<usize> {
+        let opens: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| opens_an_exchange(message))
+            .map(|(index, _)| index)
+            .collect();
+
+        let cut = *opens.get(opens.len().checked_sub(RECENT_EXCHANGES_KEPT)?)?;
+        self.messages[..cut]
+            .iter()
+            .any(|message| {
+                !message
+                    .content
+                    .as_text()
+                    .is_some_and(|text| text.starts_with(COMPACTED_PREFIX))
+            })
+            .then_some(cut)
+    }
+
+    /// The part compaction would replace, as one request's messages.
+    ///
+    /// The system prompt is the summariser's, so it is passed in the same way a turn passes its
+    /// own: the conversation stores neither.
+    pub fn to_summarise(&self, boundary: usize, system: &str) -> Vec<Message> {
+        Self::assembled(system, &self.messages[..boundary])
+    }
+
+    /// Put a summary in place of everything before `boundary`.
+    ///
+    /// Three things it deliberately leaves alone. The **quarantine**, because it holds the only
+    /// copy of the content the surviving references name, and a reference in a retained message
+    /// has to still resolve. The **reference counter**, because slots are written once and a name
+    /// handed out twice is a collision. The **integrity**, because compaction is not a fresh
+    /// session and nothing here has un-read what the conversation read.
+    ///
+    /// The replaced messages go to the archive rather than into a bin. See the field.
+    pub fn compacted(&mut self, boundary: usize, summary: &str) {
+        let replaced: Vec<Message> = self.messages.drain(..boundary).collect();
+        self.archive.extend(replaced);
+
+        let mut note = format!("{COMPACTED_PREFIX}\n\n{}", summary.trim());
+        if let Some(live) = self.live_references() {
+            note.push_str("\n\n");
+            note.push_str(&live);
+        }
+        self.messages.insert(0, Message::user(note));
+    }
+
+    /// What to tell the planner about the references it may still use.
+    ///
+    /// The names are still in the summary and in the retained messages, and nothing in either
+    /// says whether they survived, so the planner would find out by being refused. Written from
+    /// the counter and the slot store's inventory of ids: no origin, and no byte of anything
+    /// quarantined. An origin out of a quarantined listing is content, and this line is going
+    /// into the planner's context.
+    fn live_references(&self) -> Option<String> {
+        let names: Vec<String> = (0..self.references)
+            .map(|n| SlotId::new(format!("ref:{n}")))
+            .filter(|slot| self.quarantine.label_of(slot).is_some())
+            .map(|slot| slot.to_string())
+            .collect();
+
+        (!names.is_empty()).then(|| {
+            format!(
+                "The conversation above was summarised, but nothing was thrown away behind it: \
+                 {} still name what they named.",
+                names.join(", ")
+            )
+        })
     }
 
     /// Record what the turn's context has met.
@@ -204,6 +296,13 @@ pub struct Snapshot {
     /// How many references had been handed out.
     #[serde(default)]
     pub references: usize,
+    /// What compaction took out of the request, oldest first.
+    ///
+    /// Written down because it is the person's own transcript and losing it on a resume would
+    /// make compaction cost them their history after all. Defaulted, so a session file written
+    /// before compaction existed still reads.
+    #[serde(default)]
+    pub archive: Vec<Message>,
 }
 
 /// The word for an integrity, as it is written down.
@@ -235,6 +334,7 @@ impl Conversation {
                 Integrity::Untrusted => UNTRUSTED.to_string(),
             },
             references: self.references,
+            archive: self.archive.clone(),
         }
     }
 
@@ -264,6 +364,7 @@ impl Conversation {
             } else {
                 Integrity::Untrusted
             },
+            archive: snapshot.archive,
         }
     }
 
@@ -289,7 +390,9 @@ impl Conversation {
     /// showed a one-line summary.
     pub fn recounted(&self) -> Vec<Said> {
         let mut said = Vec::new();
-        for message in &self.messages {
+        // The archive first: what compaction took out of the request is still the person's
+        // session, and they are the one reading this.
+        for message in self.archive.iter().chain(self.messages.iter()) {
             match message.role {
                 Role::User
                     if message
@@ -303,6 +406,13 @@ impl Conversation {
                         .content
                         .as_text()
                         .is_some_and(|text| text.starts_with(RESUMED_PREFIX)) => {}
+                // Written for the planner, and the archive above already holds what it stands
+                // in for, so drawing it would show the session twice.
+                Role::User
+                    if message
+                        .content
+                        .as_text()
+                        .is_some_and(|text| text.starts_with(COMPACTED_PREFIX)) => {}
                 // `text` rather than the whole content: an attachment is drawn from what the
                 // interface recorded about it, and a data URI in the scrollback is not a transcript.
                 Role::User => said.push(Said::User(message.content.text())),
@@ -327,6 +437,41 @@ impl Conversation {
     }
 }
 
+/// Whether the round beginning at `index` answered the call with this id.
+///
+/// Only the run of results immediately after it counts, since that is where the answers to a
+/// round belong and where a server looks for them.
+fn answered(exchange: &[Message], index: usize, id: &str) -> bool {
+    exchange[index + 1..]
+        .iter()
+        .take_while(|message| message.tool_call_id.is_some())
+        .any(|message| message.tool_call_id.as_deref() == Some(id))
+}
+
+/// How many of the most recent exchanges compaction leaves word for word.
+///
+/// Two rather than one, because the exchange a session is in the middle of usually refers to the
+/// one before it: "do the same to the other file" is unanswerable from a paraphrase of what the
+/// other file was.
+const RECENT_EXCHANGES_KEPT: usize = 2;
+
+/// Whether a message begins an exchange, so compaction may cut in front of it.
+///
+/// A prompt the user typed, or a summary standing in for the ones before it. A tool result sent
+/// as prose is not one, whatever it looks like: it belongs to the round above it, and cutting
+/// between the two would separate a call from its answer.
+fn opens_an_exchange(message: &Message) -> bool {
+    message.role == Role::User
+        && !message
+            .content
+            .as_text()
+            .is_some_and(|text| text.starts_with(TOOL_RESULT_PREFIX))
+        && !message
+            .content
+            .as_text()
+            .is_some_and(|text| text.starts_with(RESUMED_PREFIX))
+}
+
 /// How a tool result is introduced when it is sent as prose rather than in the API's own shape.
 ///
 /// Public because an interface replaying a conversation has to tell one from a prompt, and a
@@ -335,6 +480,12 @@ pub const TOOL_RESULT_PREFIX: &str = "Result of ";
 
 /// How the note about a resume begins, so a transcript can tell it from something a person said.
 pub const RESUMED_PREFIX: &str = "This session was resumed.";
+
+/// How the summary standing in for a compacted exchange begins.
+///
+/// Public for the same reason as the others: a transcript has to tell it from a prompt, and a
+/// literal repeated in two crates is a literal that will disagree with itself.
+pub const COMPACTED_PREFIX: &str = "Earlier in this conversation:";
 
 /// What to tell the planner about the references it was handed before the resume.
 ///
@@ -359,6 +510,7 @@ fn dead_references(references: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bravebot_core::label::Label;
 
     #[test]
     fn a_new_conversation_has_nothing_in_it_and_has_seen_nothing() {
@@ -645,6 +797,280 @@ mod tests {
         assert_eq!(notes, 1, "the note was added again on top of itself");
     }
 
+    /// Three exchanges, the shape most of the compaction tests need.
+    fn three_exchanges() -> Conversation {
+        let mut conversation = Conversation::new();
+        for (prompt, answer) in [("first", "a"), ("second", "b"), ("third", "c")] {
+            conversation.push(Message::user(prompt));
+            conversation.push(Message::assistant(answer));
+        }
+        conversation
+    }
+
+    /// A summary is a paraphrase, and the exchange a session is in the middle of is the one that
+    /// can least afford to be paraphrased.
+    #[test]
+    fn compaction_keeps_the_most_recent_exchanges_word_for_word() {
+        let mut conversation = three_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        let kept: Vec<String> = conversation
+            .messages()
+            .iter()
+            .map(|message| message.content.text())
+            .collect();
+        assert_eq!(kept.len(), 5, "{kept:?}");
+        assert!(kept[0].starts_with(COMPACTED_PREFIX), "{kept:?}");
+        assert_eq!(&kept[1..], ["second", "b", "third", "c"]);
+    }
+
+    /// The invariant the cut point exists for. `with_system` answers a call nothing answered by
+    /// looking only at the run of results immediately after it, so an assistant message parted
+    /// from its results leaves a request the server refuses and a record that says a tool both
+    /// ran and did not.
+    #[test]
+    fn compaction_never_separates_a_call_from_its_results() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("first"));
+        conversation.push(Message::assistant_calling(
+            "looking",
+            vec![a_call("read_file", r#"{"path":"notes.md"}"#)],
+        ));
+        conversation.push(Message::tool_result("call-1", "the notes"));
+        conversation.push(Message::assistant("done"));
+        conversation.push(Message::user("second"));
+        conversation.push(Message::assistant("b"));
+        conversation.push(Message::user("third"));
+        conversation.push(Message::assistant("c"));
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the notes");
+
+        let sent = conversation.with_system("be careful");
+        assert!(
+            !sent
+                .iter()
+                .any(|m| m.content.text().contains("did not run")),
+            "a round was cut in half: {sent:?}"
+        );
+        assert!(
+            !sent.iter().any(|m| m.tool_call_id.is_some()),
+            "an answer outlived the call it answered: {sent:?}"
+        );
+    }
+
+    /// Compacting a conversation that is all recent would trade the exact words of what is being
+    /// worked on for a paraphrase of it, and save nothing worth having.
+    #[test]
+    fn a_conversation_with_nothing_but_recent_exchanges_is_not_compacted() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("first"));
+        conversation.push(Message::assistant("a"));
+        conversation.push(Message::user("second"));
+        assert_eq!(conversation.compaction_boundary(), None);
+    }
+
+    /// There is nothing left to give up, and saying so beats spending a request to summarise a
+    /// summary into a summary.
+    #[test]
+    fn a_head_that_is_only_an_earlier_summary_is_not_compacted_again() {
+        let mut conversation = three_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        assert_eq!(conversation.compaction_boundary(), None);
+    }
+
+    /// And it starts again once there is something new behind the summary, or a long session
+    /// would compact once and then grow forever.
+    #[test]
+    fn a_conversation_that_carries_on_after_a_summary_compacts_again() {
+        let mut conversation = three_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        conversation.push(Message::user("fourth"));
+        conversation.push(Message::assistant("d"));
+        assert!(conversation.compaction_boundary().is_some());
+    }
+
+    /// What compaction shortens is the request, not the record. A person resuming a session they
+    /// spent an afternoon on must not find their own earlier prompts missing from it.
+    #[test]
+    fn what_compaction_took_out_of_the_request_is_still_recounted_to_the_person() {
+        let mut conversation = three_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        assert_eq!(
+            conversation.recounted(),
+            vec![
+                Said::User("first".to_string()),
+                Said::Assistant("a".to_string()),
+                Said::User("second".to_string()),
+                Said::Assistant("b".to_string()),
+                Said::User("third".to_string()),
+                Said::Assistant("c".to_string()),
+            ]
+        );
+    }
+
+    /// The summary is written for the planner. Drawn in a transcript it would read as a prompt
+    /// the user never typed, on top of the exchange it is standing in for.
+    #[test]
+    fn the_summary_is_not_shown_as_something_the_user_said() {
+        let mut conversation = three_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        assert!(
+            !conversation.recounted().contains(&Said::User(format!(
+                "{COMPACTED_PREFIX}\n\nthey asked about the first thing"
+            ))),
+            "the summary was drawn as a prompt"
+        );
+    }
+
+    /// Slots are written once, so a name handed out twice is a collision rather than a muddle.
+    #[test]
+    fn compaction_does_not_rewind_the_reference_counter() {
+        let mut conversation = three_exchanges();
+        let _ = conversation.next_reference();
+        let _ = conversation.next_reference();
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they read two files");
+
+        assert_eq!(conversation.next_reference(), SlotId::new("ref:2"));
+    }
+
+    /// The quarantine holds the only copy of what a surviving reference names. Dropping it to
+    /// save room would leave the planner holding names for content that no longer exists, which
+    /// is the failure a resume already has and compaction has no excuse for.
+    #[test]
+    fn a_reference_minted_before_compaction_still_names_its_content_after_it() {
+        let mut conversation = three_exchanges();
+        let slot = conversation.next_reference();
+        conversation
+            .quarantine()
+            .writer_for(slot.clone(), Label::untrusted_private())
+            .expect("a writer")
+            .write("what nobody may read")
+            .expect("written");
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they read a file");
+
+        assert!(
+            conversation.quarantine().take_for_effect(&slot).is_ok(),
+            "compaction dropped the content behind a live reference"
+        );
+    }
+
+    /// The names are in the summary and in the retained messages, and nothing in either says
+    /// whether they still work, so without this the planner finds out by being refused.
+    #[test]
+    fn compaction_says_which_references_still_work() {
+        let mut conversation = three_exchanges();
+        let slot = conversation.next_reference();
+        conversation
+            .quarantine()
+            .writer_for(slot, Label::untrusted_private())
+            .expect("a writer")
+            .write("what nobody may read")
+            .expect("written");
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they read a file");
+
+        let note = conversation.messages()[0].content.text();
+        assert!(note.contains("ref:0"), "{note}");
+    }
+
+    /// A name minted for content the planner turned out to be allowed to read never became a
+    /// slot. Claiming it still names something would send the planner after nothing.
+    #[test]
+    fn a_reference_that_was_never_quarantined_is_not_claimed_to_be_live() {
+        let mut conversation = three_exchanges();
+        let _ = conversation.next_reference();
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they read a file they were allowed to see");
+
+        let note = conversation.messages()[0].content.text();
+        assert!(!note.contains("ref:0"), "{note}");
+    }
+
+    /// A session that outlives the process must come back compacted, and with the archive that
+    /// makes the shortening free for the person reading it.
+    #[test]
+    fn a_compacted_conversation_survives_being_written_down() {
+        let mut conversation = three_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        let restored = Conversation::restored(conversation.snapshot());
+        assert_eq!(restored.len(), 5);
+        assert!(
+            restored.messages()[0]
+                .content
+                .as_text()
+                .is_some_and(|text| text.starts_with(COMPACTED_PREFIX))
+        );
+        assert_eq!(restored.recounted().len(), 6);
+    }
+
+    /// Session files predate this field. Someone resuming yesterday's work should not be told
+    /// their session is unreadable because a newer build wanted a key it had never written.
+    #[test]
+    fn a_session_file_written_before_compaction_existed_still_reads() {
+        let stored = r#"{"messages":[{"role":"user","content":"what is 2 + 2?"}],
+                         "context":"trusted","references":0}"#;
+        let snapshot: Snapshot = serde_json::from_str(stored).expect("an older session file");
+        let restored = Conversation::restored(snapshot);
+
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.recounted().len(), 1);
+    }
+
+    /// Compaction is not a fresh session. Nothing in it has un-read what the conversation read,
+    /// and a summary that came back trusted would be the one upgrade this repository forbids.
+    #[test]
+    fn compaction_does_not_restore_integrity_the_conversation_had_lost() {
+        let mut conversation = three_exchanges();
+        conversation.observed(Integrity::Untrusted);
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first thing");
+
+        assert_eq!(conversation.context(), Integrity::Untrusted);
+    }
+
     /// Integrity is the one thing here that must never come back better than it went in, and a
     /// file is the easiest place to make that mistake.
     #[test]
@@ -669,6 +1095,7 @@ mod tests {
                 messages: Vec::new(),
                 context: word.to_string(),
                 references: 0,
+                archive: Vec::new(),
             });
             assert_eq!(
                 restored.context(),
