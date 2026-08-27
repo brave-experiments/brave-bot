@@ -47,16 +47,19 @@ impl Model {
 
 /// One entry as the server reports it.
 ///
-/// Only the fields that matter to a choice are named. The endpoint reports vision, audio and video
-/// support as well, none of which this agent uses.
+/// Only the fields that matter to a choice are named. The endpoint reports a description, a maker
+/// and context limits too, none of which decides anything here.
 #[derive(Debug, Deserialize)]
 struct Listed {
     /// Absent for an entry the server has no name for, which cannot be requested and is dropped.
     key: Option<String>,
     display_name: String,
-    /// A model that cannot call tools is no use here: every turn works by calling them, so
-    /// choosing one would produce an agent unable to read or write anything.
-    supports_tools: bool,
+    /// What the model can do: `chat`, `tools`, `vision`, `files` and others.
+    ///
+    /// Defaulted rather than required, so an entry omitting it is read as capable of nothing and
+    /// dropped. A missing list is not a promise about tools.
+    #[serde(default)]
+    capabilities: Vec<String>,
     options: ListedOptions,
 }
 
@@ -68,6 +71,12 @@ struct ListedOptions {
 
 /// The value of `access` that means a subscription is required.
 const PREMIUM_ACCESS: &str = "premium";
+
+/// The capability every turn here depends on.
+///
+/// Roughly two thirds of what the endpoint lists has it. The rest are chat-only models, and
+/// choosing one would produce an agent that cannot read or write anything.
+const TOOLS_CAPABILITY: &str = "tools";
 
 /// Ask the endpoint what it offers, newest answer each time.
 ///
@@ -101,7 +110,7 @@ fn usable(listed: Vec<Listed>) -> Vec<Model> {
     models.extend(
         listed
             .into_iter()
-            .filter(|entry| entry.supports_tools)
+            .filter(|entry| entry.capabilities.iter().any(|c| c == TOOLS_CAPABILITY))
             .filter_map(|entry| {
                 Some(Model {
                     key: entry.key?,
@@ -124,36 +133,47 @@ mod tests {
         usable(serde_json::from_str(body).expect("the test body parses"))
     }
 
-    /// The shape the backend actually answers with: a bare array, and the name to send back in
-    /// `key` rather than in `display_name`.
+    /// The shape the deployed endpoint answers with: a bare array, the name to send back in `key`
+    /// rather than in `display_name`, and what it can do in `capabilities`.
     #[test]
     fn a_bare_array_decodes_and_keeps_the_requestable_name() {
         let models = decoded(
-            r#"[{"key":"claude-3-sonnet","display_name":"Claude 4 Sonnet","supports_tools":true,
-                 "options":{"access":"premium"}}]"#,
+            r#"[{"key":"claude-3-sonnet","display_name":"Claude 5 Sonnet",
+                 "capabilities":["chat","tools","vision"],"options":{"access":"premium"}}]"#,
         );
         assert_eq!(models.len(), 2, "{models:?}");
         assert_eq!(models[1].key, "claude-3-sonnet");
-        assert_eq!(models[1].display_name, "Claude 4 Sonnet");
+        assert_eq!(models[1].display_name, "Claude 5 Sonnet");
         assert!(models[1].premium);
     }
 
     #[test]
     fn a_free_model_is_not_premium() {
         let models = decoded(
-            r#"[{"key":"llama-3-8b-instruct","display_name":"Llama 3 8B","supports_tools":true,
-                 "options":{"access":"basic_and_premium"}}]"#,
+            r#"[{"key":"claude-3-haiku","display_name":"Claude 4.5 Haiku",
+                 "capabilities":["chat","tools"],"options":{"access":"basic_and_premium"}}]"#,
         );
         assert!(!models[1].premium);
     }
 
-    /// Every turn here works by calling tools, so a model that cannot call them would be an agent
-    /// that can read and write nothing. Offering it would be offering a broken session.
+    /// Every turn here works by calling tools, so a chat-only model would be an agent that can read
+    /// and write nothing. Nine of the twenty-eight the endpoint lists are in this position, so it
+    /// is the common case rather than a hypothetical one.
     #[test]
     fn a_model_that_cannot_call_tools_is_not_offered() {
         let models = decoded(
-            r#"[{"key":"mixtral-8x7b-instruct","display_name":"Mixtral 8x7B","supports_tools":false,
-                 "options":{"access":"basic_and_premium"}}]"#,
+            r#"[{"key":"llama-3-8b-instruct","display_name":"Llama 3.1 8B",
+                 "capabilities":["chat","files"],"options":{"access":"basic_and_premium"}}]"#,
+        );
+        assert_eq!(models, vec![Model::automatic()], "{models:?}");
+    }
+
+    /// An entry claiming nothing is not claiming tools. Read as capable of nothing rather than
+    /// waved through, since the whole point of the check is that a chat-only model cannot work.
+    #[test]
+    fn an_entry_with_no_capabilities_is_not_offered() {
+        let models = decoded(
+            r#"[{"key":"mystery","display_name":"Mystery","options":{"access":"premium"}}]"#,
         );
         assert_eq!(models, vec![Model::automatic()], "{models:?}");
     }
@@ -171,7 +191,7 @@ mod tests {
     #[test]
     fn an_entry_without_a_key_is_dropped() {
         let models = decoded(
-            r#"[{"key":null,"display_name":"Nameless","supports_tools":true,
+            r#"[{"key":null,"display_name":"Nameless","capabilities":["chat","tools"],
                  "options":{"access":"premium"}}]"#,
         );
         assert_eq!(models, vec![Model::automatic()], "{models:?}");
@@ -182,21 +202,45 @@ mod tests {
     #[test]
     fn automatic_is_offered_once_even_if_the_server_lists_it_too() {
         let models = decoded(
-            r#"[{"key":"automatic","display_name":"Automatic","supports_tools":true,
+            r#"[{"key":"automatic","display_name":"Automatic","capabilities":["chat","tools"],
                  "options":{"access":"basic_and_premium"}}]"#,
         );
         assert_eq!(models, vec![Model::automatic()], "{models:?}");
     }
 
-    /// A field this agent does not use must not make an entry undecodable: the endpoint reports
-    /// vision, audio and rate limits too, and it grows fields without asking.
+    /// A field this agent does not use must not make an entry undecodable. The endpoint grows
+    /// fields without asking: it reported `supports_tools` once and reports `capabilities` now.
     #[test]
     fn unknown_fields_do_not_break_decoding() {
         let models = decoded(
-            r#"[{"key":"claude-3-sonnet","display_name":"Claude 4 Sonnet","supports_tools":true,
-                 "vision_support":true,"is_near_model":false,
-                 "options":{"access":"premium","description":"whatever","category":"chat"}}]"#,
+            r#"[{"key":"claude-3-sonnet","display_name":"Claude 5 Sonnet",
+                 "capabilities":["chat","tools"],"is_near_model":false,"is_suggested_model":true,
+                 "options":{"access":"premium","description":"whatever","display_maker":"Anthropic",
+                            "max_associated_content_length":16000}}]"#,
         );
         assert_eq!(models.len(), 2, "{models:?}");
+    }
+
+    /// A slice of what the deployed endpoint actually returns, kept verbatim so a change in its
+    /// shape fails here rather than at a user's prompt. The `supports_tools` field this once
+    /// decoded is absent from it, which is how that break was found.
+    #[test]
+    fn the_deployed_response_shape_decodes() {
+        let models = decoded(include_str!("../tests/models_response.json"));
+
+        assert!(models[0].is_automatic(), "automatic was not offered first");
+        let keys: Vec<&str> = models.iter().map(|m| m.key.as_str()).collect();
+        assert!(keys.contains(&"claude-3-sonnet"), "{keys:?}");
+        assert!(
+            !keys.contains(&"llama-3-8b-instruct"),
+            "a chat-only model was offered: {keys:?}"
+        );
+
+        let sonnet = models
+            .iter()
+            .find(|m| m.key == "claude-3-sonnet")
+            .expect("the premium entry survived");
+        assert_eq!(sonnet.display_name, "Claude 5 Sonnet");
+        assert!(sonnet.premium);
     }
 }

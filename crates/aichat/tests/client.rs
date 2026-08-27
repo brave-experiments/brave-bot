@@ -864,8 +864,8 @@ fn a_retry_goes_through_the_gate_again() {
 /// be spending one for nothing.
 #[test]
 fn the_model_listing_is_fetched_from_the_models_path() {
-    let listed = r#"[{"key":"claude-3-sonnet","display_name":"Claude 4 Sonnet",
-        "supports_tools":true,"options":{"access":"premium"}}]"#;
+    let listed = r#"[{"key":"claude-3-sonnet","display_name":"Claude 5 Sonnet",
+        "capabilities":["chat","tools"],"options":{"access":"premium"}}]"#;
     let (endpoint, received) = serve(listed);
     let config = config_for(&endpoint);
     let egress = Egress::new();
