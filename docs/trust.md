@@ -52,10 +52,10 @@ the one you gave that session. It carries the rules that session's writes record
 which is what stops a resumed turn reading back a file an earlier turn of the same session
 poisoned. A record from before maps were kept has none, and is asked about.
 
-`/clear` does not ask either, and keeps the map for the same reason. It empties the context, not
-the answers you gave: you are still the same person in the same directory, and the map still holds
-the untrusted markings this session's own writes recorded. Dropping them would read a file an
-earlier turn poisoned back as trusted, which is the one direction trust may never move.
+`/clear` **does** ask, because it begins a session and every session is asked. The map goes with the
+context it was built alongside, and so do the directories `/add-dir` opened under it: opening one is
+a grant, and leaving a tree reachable once nothing vouches for it would outlive the answer that
+allowed it. Leaving at the question ends the session, as it does at startup.
 
 The consequence is worth stating plainly. A file that one session recorded as untrusted is **not**
 remembered by the next session started fresh in that directory: say yes to the directory and it is
@@ -75,8 +75,9 @@ open and the other leaving a directory that prompts on every edit.
 Inside it, the rules are the working directory's own. `..` cannot climb out, a symlink leaving it is
 refused, and a relative path still always means the project, so no file ends up with two spellings.
 
-It lasts for the session, like every other answer here, and `--resume` carries it. A directory
-already inside the project is refused, since it is reachable by its relative path already.
+It lasts for the session, like every other answer here, and `--resume` carries it. `/clear` closes it
+again, since that begins a session of its own. A directory already inside the project is refused,
+since it is reachable by its relative path already.
 
 ## A path outside the working directory is a separate rule
 

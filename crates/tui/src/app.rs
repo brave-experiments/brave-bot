@@ -550,6 +550,17 @@ fn event_loop(
                 conversation = Conversation::new();
                 stored = crate::sessions::Handle::begin(workspace.root());
                 session.note("cleared: a new session, with the previous one still resumable");
+
+                // A new session, so it is asked what a new session is asked. The map goes with the
+                // context and the directories opened under it go too, since opening one is a grant
+                // and leaving it reachable with nothing vouching for it would outlive its answer.
+                workspace.close_added_directories();
+                let Some(fresh) = opening_trust(terminal, &mut session, workspace.root(), None)
+                else {
+                    return Ok(());
+                };
+                trust = fresh;
+                needs_draw = true;
             }
             Action::Submit(prompt) => {
                 // Both are threaded through: a turn that writes untrusted data into a trusted

@@ -344,17 +344,16 @@ impl Session {
         self.tokens = tokens;
     }
 
-    /// Begin again with nothing behind you, keeping what the user decided.
+    /// Begin again with nothing behind you.
     ///
-    /// What goes is everything about the exchange: the transcript, the turn count, and what it
-    /// spent. What stays is what the user chose rather than said, since none of it is context and
-    /// re-answering it would be the interface forgetting decisions it was told once. That is the
-    /// prompt history, the model, and the confinement.
+    /// Everything about the exchange goes: the transcript, the turn count, and what it spent. The
+    /// trust map is not held here and goes with it, along with the directories opened under it; the
+    /// caller asks the trust question again, because this begins a session and every session is
+    /// asked.
     ///
-    /// The trust map stays too, and stays for a stronger reason than convenience. It carries the
-    /// untrusted markings that this session's own writes recorded, so dropping it would read a file
-    /// an earlier turn poisoned back as trusted. Trust may only ever degrade, and starting over
-    /// inside one session is not a new user answering the question.
+    /// What stays is what belongs to the user rather than to the session: the model, the prompt
+    /// history, and the confinement in force. Re-answering those would be the interface forgetting
+    /// something it was told once, and none of them is a permission over the workspace.
     ///
     /// Deliberately not touching the input line, so a prompt half-typed when the user cleared is
     /// still there to send.
@@ -1043,8 +1042,10 @@ mod tests {
         assert_eq!(s.status, Status::Idle);
     }
 
-    /// What the user chose is not context, so re-asking for it would be forgetting a decision they
-    /// already made once.
+    /// What belongs to the user rather than to the session survives, since none of it is a
+    /// permission over the workspace and re-asking would forget something told once. The trust map
+    /// is the opposite case and is not kept, but it does not live here: the loop drops it and asks
+    /// again.
     #[test]
     fn clearing_keeps_what_the_user_chose() {
         let mut s = session();

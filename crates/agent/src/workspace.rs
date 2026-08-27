@@ -147,6 +147,15 @@ impl Workspace {
         &self.added
     }
 
+    /// Close every directory added by name, leaving only the primary root.
+    ///
+    /// For starting over inside one process: opening a directory is a grant, so it goes when the
+    /// grants do. Leaving them open while the trust map that vouched for them was discarded would
+    /// leave a tree reachable that nobody had vouched for.
+    pub fn close_added_directories(&mut self) {
+        self.added.clear();
+    }
+
     /// Resolve a path against the workspace.
     ///
     /// A relative path always means the primary root. An absolute path is legal only inside a

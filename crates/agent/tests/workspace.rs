@@ -1611,3 +1611,39 @@ fn a_new_file_can_be_created_in_an_added_directory() {
         "written"
     );
 }
+
+/// Starting over closes what was opened. Opening a directory is a grant, so leaving it reachable
+/// once the trust that vouched for it is gone would outlive the answer that allowed it.
+#[test]
+fn closing_added_directories_makes_them_unreachable_again() {
+    let scratch = Scratch::new("added-closed");
+    let other = outside("added-closed");
+    std::fs::write(other.path.join("notes.md"), "a note").unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted(added.join("notes.md").display().to_string());
+    workspace
+        .read(&mut policy, &path)
+        .expect("readable while the directory is open");
+
+    workspace.close_added_directories();
+    assert!(workspace.added_directories().is_empty());
+
+    let error = workspace
+        .read(&mut policy, &path)
+        .expect_err("a closed directory must be unreachable again");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+}
