@@ -490,7 +490,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  drag to copy  ·  pgup/pgdn to look back  ·  \
+                "  {trail}  ·  drag to copy  ·  pgup/pgdn  ·  /model  ·  \
                  /exit or ctrl-c to exit  ·  confinement {}",
                 session.confinement
             ),

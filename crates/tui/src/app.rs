@@ -58,6 +58,9 @@ const FRAME: Duration = Duration::from_millis(120);
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
 
+/// The line that opens the model picker instead of starting a turn.
+const MODEL_COMMAND: &str = "/model";
+
 /// What a key press asked for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -68,6 +71,8 @@ pub enum Action {
     Cancel,
     /// Take what the selection covers, which needs the screen as it was last drawn.
     Copy,
+    /// Ask which model to use. Needs the network and the terminal, so the loop runs it.
+    ChooseModel,
     Quit,
 }
 
@@ -108,6 +113,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.clear_input();
             session.quit();
             Action::Quit
+        }
+        KeyCode::Enter if session.input.trim() == MODEL_COMMAND => {
+            session.clear_input();
+            Action::ChooseModel
         }
         KeyCode::Enter => match session.submit() {
             Some(prompt) => Action::Submit(prompt),
@@ -453,6 +462,10 @@ fn event_loop(
         match action {
             Action::Quit => return Ok(()),
             Action::Copy => copy_selection(terminal, &mut session)?,
+            Action::ChooseModel => {
+                choose_model(terminal, &mut session, config);
+                needs_draw = true;
+            }
             Action::Submit(prompt) => {
                 // Both are threaded through: a turn that writes untrusted data into a trusted
                 // path records that, and the next turn must honour it, and a turn that has been
@@ -483,9 +496,56 @@ fn event_loop(
                 );
                 stored.append_audit(session.turns, &events);
             }
-            // Only reachable while a turn runs, which is handled inside `run_turn_animated`.
+            // Cancel is only reachable while a turn runs, which `run_turn_animated` handles.
             Action::Cancel | Action::None | Action::Redraw => {}
         }
+    }
+}
+
+/// Ask the endpoint what it offers, let the user pick, and remember what they picked.
+///
+/// A refusal or an unreachable endpoint leaves the model as it was and says so. That is the right
+/// outcome for a list nobody could fetch: guessing a set of names would offer choices the backend
+/// may not have, and a picker showing only "automatic" would look like a server with one model.
+///
+/// The list is content and the choice is routing. Nothing here is quarantined, because there is no
+/// planner context to keep it out of: the names are drawn for a person, and their pick is the
+/// endorsement for the request field it lands in.
+fn choose_model(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    config: &Config,
+) {
+    let mut sink = Trail::new();
+    let egress = Egress::new();
+
+    // A policy exists because `bua-net` is the only way out to the network and its gate takes one.
+    // Routing is the listing itself: this is not a turn, nothing is read from the workspace, and no
+    // model is involved, so there is no prompt to anchor it to.
+    let mut routing = bua_core::policy::Routing::new();
+    routing.insert_trusted("models", config.models_url());
+
+    let models = bua_core::policy::Policy::begin(
+        routing,
+        bua_core::policy::ReleasePlan::new(),
+        bua_core::capability::CapabilitySet::from_iter([
+            bua_core::capability::Capability::WebFetch,
+        ]),
+        &mut sink,
+    )
+    .map_err(|denial| denial.to_string())
+    .and_then(|mut policy| {
+        bua_aichat::models::list(&mut policy, config, &egress).map_err(|error| error.to_string())
+    });
+
+    match models {
+        Ok(models) => {
+            if let Some(chosen) = crate::model_prompt::choose(terminal, models, session.model()) {
+                session.choose_model(chosen.key);
+                session.note(format!("using {}", chosen.display_name));
+            }
+        }
+        Err(detail) => session.note(format!("could not list models: {detail}")),
     }
 }
 
@@ -1013,6 +1073,40 @@ mod tests {
             Action::Submit("what does /exit do".to_string())
         );
         assert!(!session.is_quitting());
+    }
+
+    /// A command, not a prompt: asking for the picker must not also ask the planner about models.
+    #[test]
+    fn typing_the_model_command_opens_the_picker() {
+        let mut session = Session::new("none");
+        for c in "/model".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::ChooseModel
+        );
+        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+        assert_eq!(session.status, Status::Idle, "a turn began");
+    }
+
+    /// Only the bare word. "/model is slow today" is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_model_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "why is /model slow".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("why is /model slow".to_string())
+        );
     }
 
     #[test]

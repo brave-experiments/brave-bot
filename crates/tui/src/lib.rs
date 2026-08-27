@@ -11,6 +11,7 @@ pub mod confirm;
 pub mod history;
 pub mod indicator;
 pub mod markdown;
+pub mod model_prompt;
 pub mod remote_confirm;
 pub mod render;
 pub mod resume;

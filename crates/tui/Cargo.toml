@@ -12,6 +12,9 @@ repository.workspace = true
 # sequence, which is base64 by specification.
 base64 = { workspace = true }
 bua-agent = { path = "../agent" }
+# The model picker lists what the endpoint offers, and asking it is this crate's own call
+# rather than something a turn does.
+bua-aichat = { path = "../aichat" }
 bua-config = { path = "../config" }
 bua-core = { path = "../core" }
 bua-net = { path = "../net" }
@@ -20,7 +23,3 @@ ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
-
-[dev-dependencies]
-# The tests read the conversation back out of a record, which needs its message type.
-bua-aichat = { path = "../aichat" }
