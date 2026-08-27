@@ -20,6 +20,7 @@ pub mod resume;
 pub mod select;
 pub mod sessions;
 pub mod state;
+pub mod status;
 pub mod store;
 pub mod trust_prompt;
 

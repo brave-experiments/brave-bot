@@ -61,6 +61,9 @@ const MODEL_COMMAND: &str = "/model";
 /// The line that opens another directory, taking the path to open as its argument.
 const ADD_DIR_COMMAND: &str = "/add-dir";
 
+/// The line that reports what this session is and what it may touch.
+const STATUS_COMMAND: &str = "/status";
+
 /// The line that starts a new session in place of this one.
 const CLEAR_COMMAND: &str = "/clear";
 
@@ -86,7 +89,12 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub const COMMANDS: [Command; 5] = [
+pub const COMMANDS: [Command; 6] = [
+    Command {
+        name: STATUS_COMMAND,
+        argument: "",
+        description: "Report this session, what it may touch, and what it has spent",
+    },
     Command {
         name: MODEL_COMMAND,
         argument: "",
@@ -163,6 +171,8 @@ pub enum Action {
     Clear,
     /// Call this session something else. Needs the session record, which the loop owns.
     Rename(String),
+    /// Report what this session is. Needs the workspace and the trust map, which the loop owns.
+    Status,
     Quit,
 }
 
@@ -207,6 +217,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input.trim() == MODEL_COMMAND => {
             session.clear_input();
             Action::ChooseModel
+        }
+        KeyCode::Enter if session.input.trim() == STATUS_COMMAND => {
+            session.clear_input();
+            Action::Status
         }
         KeyCode::Enter if session.input.trim() == CLEAR_COMMAND => {
             session.clear_input();
@@ -620,6 +634,22 @@ fn event_loop(
                 } else {
                     session.note("/rename needs a name with something in it");
                 }
+            }
+            Action::Status => {
+                let report = crate::status::report(&crate::status::Facts {
+                    session_name: stored.title(),
+                    session_id: stored.id(),
+                    directory: workspace.root(),
+                    added_directories: workspace.added_directories(),
+                    model: session.model(),
+                    config,
+                    confinement: &session.confinement,
+                    turns: session.turns,
+                    tokens: session.tokens,
+                    trust: &trust,
+                });
+                session.report(report);
+                needs_draw = true;
             }
             Action::Clear => {
                 // A new handle means a new id, so the session so far keeps its own files and stays
@@ -1680,15 +1710,17 @@ mod tests {
     fn a_cursor_past_the_end_of_a_narrowed_list_still_names_a_command() {
         let mut session = Session::new("none");
         handle_key(&mut session, key(KeyCode::Char('/')));
-        for _ in 0..4 {
+        // To the last of them, counted rather than named, so adding a command does not make this
+        // test assert about the wrong row.
+        for _ in 0..COMMANDS.len() {
             handle_key(&mut session, key(KeyCode::Down));
         }
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(EXIT_COMMAND)
+            Some(COMMANDS[COMMANDS.len() - 1].name)
         );
 
-        // Now one command matches, while the cursor still points at the fifth.
+        // Now one command matches, while the cursor still points at the last.
         handle_paste(&mut session, "cl");
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
@@ -1709,6 +1741,38 @@ mod tests {
         }
         assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::None);
         assert_eq!(session.input, "an ordinary prompt");
+    }
+
+    #[test]
+    fn typing_the_status_command_reports_rather_than_prompting() {
+        let mut session = Session::new("none");
+        for c in STATUS_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Status
+        );
+        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// Asking the planner about status is a question, not a command.
+    #[test]
+    fn a_prompt_containing_the_status_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /status show".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /status show".to_string())
+        );
     }
 
     /// A directory whose own name begins with a tilde is not a home-relative path.

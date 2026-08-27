@@ -69,6 +69,23 @@ fn print_help() {
     println!("  Esc                   Cancel a running turn, clear the input, or leave");
     println!("  Ctrl-C                Leave");
     println!();
+    // Listed from the commands themselves, so one renamed or added cannot leave this advertising a
+    // word that no longer works. The interface offers the same list when a slash is typed.
+    println!("Interactive commands:");
+    for command in bua_tui::app::COMMANDS {
+        let word = if command.argument.is_empty() {
+            command.name.to_string()
+        } else {
+            format!("{} {}", command.name, command.argument)
+        };
+        println!("  {word:<20}  {}", command.description);
+    }
+    // Not a command, but typed in the same place and worth finding here.
+    println!(
+        "  {:<20}  Include a workspace file as trusted context",
+        "@<path>"
+    );
+    println!();
     println!("Options:");
     println!("  --file <path>    Include a workspace file as context (repeatable)");
     println!("  -p, --print      Non-interactive. Reads piped stdin as quarantined context");

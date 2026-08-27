@@ -904,6 +904,54 @@ impl Session {
         self.transcript.push(Entry::system(message));
     }
 
+    /// Put a status report in the transcript, one note per line.
+    ///
+    /// In the transcript rather than over the screen, so it scrolls back with everything else and
+    /// can be copied out with the mouse.
+    ///
+    /// Both columns are padded here rather than by the renderer, because this is the only place that
+    /// knows the lines belong to one block. Values are aligned as well as labels: a note trailing a
+    /// short value would otherwise sit wherever that value happened to end, and a column of asides
+    /// starting in a different place on every row is harder to read than no column at all.
+    pub fn report(&mut self, report: crate::status::Report) {
+        let width_of = |pick: fn(&crate::status::Line) -> &str| {
+            report
+                .lines
+                .iter()
+                .map(|line| pick(line).chars().count())
+                .max()
+                .unwrap_or(0)
+        };
+        let labels = width_of(|line| &line.label);
+        // Only rows that carry a note need their value padded, so a long value on a row without one
+        // does not push every aside across the screen.
+        let values = report
+            .lines
+            .iter()
+            .filter(|line| !line.note.is_empty())
+            .map(|line| line.value.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        for line in report.lines {
+            let label = format!(
+                "{}{}",
+                line.label,
+                " ".repeat(labels - line.label.chars().count())
+            );
+            if line.note.is_empty() {
+                self.note(format!("{label}  {}", line.value));
+                continue;
+            }
+            let value = format!(
+                "{}{}",
+                line.value,
+                " ".repeat(values.saturating_sub(line.value.chars().count()))
+            );
+            self.note(format!("{label}  {value}  {}", line.note));
+        }
+    }
+
     /// Say something once for the whole session, ignoring it if it has been said already.
     pub fn note_once(&mut self, message: impl Into<String>) {
         let message = message.into();
@@ -1278,6 +1326,55 @@ mod tests {
             s.todos_by_turn().is_empty(),
             "a finished turn's list would still be written to the new session"
         );
+    }
+
+    /// A report reads as a block, so both columns line up: an aside starting wherever its value
+    /// happened to end is harder to read than no column at all.
+    #[test]
+    fn a_report_lines_its_columns_up() {
+        let mut s = session();
+        s.report(crate::status::Report {
+            lines: vec![
+                crate::status::Line {
+                    label: "Model".to_string(),
+                    value: "a-long-model-name".to_string(),
+                    note: "chosen".to_string(),
+                },
+                crate::status::Line {
+                    label: "Endpoint".to_string(),
+                    value: "dev".to_string(),
+                    note: "premium".to_string(),
+                },
+            ],
+        });
+
+        let notes: Vec<&str> = s.transcript.iter().map(|e| e.text.as_str()).collect();
+        let column_of = |line: &str, word: &str| line.find(word).expect("the word is on the line");
+        assert_eq!(
+            column_of(notes[0], "a-long-model-name"),
+            column_of(notes[1], "dev"),
+            "the values did not line up: {notes:?}"
+        );
+        assert_eq!(
+            column_of(notes[0], "chosen"),
+            column_of(notes[1], "premium"),
+            "the notes did not line up: {notes:?}"
+        );
+    }
+
+    /// A row with no aside must not have its value padded, or one long value would push every note
+    /// across the screen.
+    #[test]
+    fn a_row_with_no_note_is_not_padded() {
+        let mut s = session();
+        s.report(crate::status::Report {
+            lines: vec![crate::status::Line {
+                label: "Session".to_string(),
+                value: "a name".to_string(),
+                note: String::new(),
+            }],
+        });
+        assert_eq!(s.transcript[0].text, "Session  a name");
     }
 
     #[test]
