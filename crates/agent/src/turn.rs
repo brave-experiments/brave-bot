@@ -856,9 +856,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // figure that began again with each one would only notice a conversation growing inside a
     // single long turn: fifty short turns would fill the context with nothing watching.
     let mut context_tokens = conversation.last_request_tokens();
-    // Cleared once compaction has nothing left to give, so a conversation that is already as
-    // short as it can be does not spend a request per round rediscovering that.
+    // Cleared only by a failure. A summary that could not be made once will not be made on the
+    // next round either, and a turn should not spend a request per round finding that out.
     let mut may_compact = true;
+    // Whether the person has been told there is nothing to summarise. Said once rather than every
+    // round: a later round may well have something to give up, so the answer is worth asking for
+    // again, and it costs nothing to ask.
+    let mut said_nothing_to_compact = false;
     let completion = loop {
         // Checked before each request rather than mid-flight: a request already on the wire has
         // to finish, but nothing new needs to start.
@@ -883,20 +887,24 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 Ok(Some(done)) => {
                     tokens += done.usage.total();
                     output_tokens += done.usage.completion_tokens;
+                    said_nothing_to_compact = false;
                     reporter.narration(format!(
                         "the conversation was getting long, so {} earlier messages were \
                          summarised and the last {} kept as they are",
                         done.summarised, done.kept
                     ));
                 }
-                // Nothing left to shorten. Said once rather than every round, and said at all
-                // because a turn about to fail for want of room should not do so silently.
+                // Nothing to shorten yet. Nothing was sent, so asking again next round is free,
+                // and a round or two later there usually is something. Said at all because a turn
+                // about to run out of room should not do so silently.
                 Ok(None) => {
-                    may_compact = false;
-                    reporter.narration(
-                        "the conversation is long and there is nothing left to summarise"
-                            .to_string(),
-                    );
+                    if !said_nothing_to_compact {
+                        said_nothing_to_compact = true;
+                        reporter.narration(
+                            "the conversation is long and there is nothing to summarise yet"
+                                .to_string(),
+                        );
+                    }
                 }
                 // The conversation is untouched, so the turn carries on with the history it had.
                 // Failing the turn over this would turn a request that might still have fit into

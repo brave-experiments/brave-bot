@@ -6965,3 +6965,61 @@ fn a_conversation_nobody_has_measured_is_not_compacted() {
         "something was sent before the turn's own request: {first}"
     );
 }
+
+/// The case a single long turn presents, which is where the context actually fills up: one
+/// prompt, then round after round of tool calls. Nothing is summarisable for the first few
+/// rounds, and an implementation that gave up at the first "nothing yet" would never compact a
+/// turn at all.
+#[test]
+fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
+    let scratch = Scratch::new("compact-mid-turn");
+    for n in 1..=9 {
+        std::fs::write(scratch.path.join(format!("f{n}.txt")), format!("value {n}")).unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Nine rounds of reading a file, then an answer. Every reply reports a request far past the
+    // budget, so compaction is attempted before each round from the second onwards.
+    let mut replies: Vec<String> = (1..=9)
+        .map(|n| {
+            tool_request_with_usage(
+                "read_file",
+                &format!(r#"{{"path":"f{n}.txt"}}"#),
+                50_000,
+                10,
+            )
+        })
+        .collect();
+    replies.push(reply_with_usage("read them all", 50_000, 10));
+    // One more, for the summary the turn asks for partway through.
+    replies.push(reply_with("they have been reading f1.txt onwards"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_with_budget(&endpoint, 1_000);
+    let mut conversation = bravebot_agent::Conversation::new();
+
+    take_a_turn(
+        &config,
+        &workspace,
+        &mut conversation,
+        trusting_the_workspace(),
+        Task::new("read f1.txt through f9.txt, one at a time"),
+    )
+    .expect("turn runs");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    assert!(
+        bodies
+            .iter()
+            .any(|body| body.contains("Summarise everything above")),
+        "a long turn never summarised anything: {} requests",
+        bodies.len()
+    );
+    assert!(
+        bodies
+            .last()
+            .expect("a last request")
+            .contains("Earlier in this conversation:"),
+        "the summary never reached a later round"
+    );
+}
