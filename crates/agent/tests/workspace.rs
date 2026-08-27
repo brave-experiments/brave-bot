@@ -227,6 +227,7 @@ fn a_traversal_path_is_refused_even_when_trusted() {
     );
 }
 
+/// An absolute path names no directory the user added, so it is outside every root there is.
 #[test]
 fn an_absolute_path_is_refused() {
     let scratch = Scratch::new("absolute");
@@ -245,7 +246,7 @@ fn an_absolute_path_is_refused() {
     let error = workspace
         .read(&mut policy, &absolute)
         .expect_err("absolute paths must be refused");
-    assert!(matches!(error, WorkspaceError::Invalid { .. }));
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
 }
 
 /// A symlink pointing out of the workspace must not become a read of an outside file.
@@ -1369,4 +1370,244 @@ fn the_original_noise_directories_are_still_skipped() {
     let listing = listing.declassify(&proof);
 
     assert_eq!(listing.files, vec!["keep.txt"]);
+}
+
+/// A scratch directory outside the workspace, standing in for what `/add-dir` names.
+fn outside(name: &str) -> Scratch {
+    Scratch::new(&format!("outside-{name}"))
+}
+
+/// The point of the feature: a file in a directory the user named is readable by its absolute path.
+#[test]
+fn a_file_in_an_added_directory_is_readable_by_its_absolute_path() {
+    let scratch = Scratch::new("added-read");
+    let other = outside("added-read");
+    std::fs::write(other.path.join("notes.md"), "a note").unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted(added.join("notes.md").display().to_string());
+    let contents = workspace
+        .read(&mut policy, &path)
+        .expect("a file in an added directory is readable");
+    let proof = policy.authorise_content_release("test", "contents");
+    assert_eq!(contents.declassify(&proof), "a note");
+}
+
+/// Adding one directory must not make every absolute path legal, which was the whole of the
+/// confinement before this existed.
+#[test]
+fn an_absolute_path_outside_every_added_directory_is_still_refused() {
+    let scratch = Scratch::new("added-elsewhere");
+    let other = outside("added-elsewhere");
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let elsewhere = Labelled::trusted("/etc/hosts".to_string());
+    let error = workspace
+        .read(&mut policy, &elsewhere)
+        .expect_err("an unnamed absolute path must be refused");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+}
+
+/// With nothing added, an absolute path is refused as it always was.
+#[test]
+fn an_absolute_path_is_refused_when_nothing_was_added() {
+    let scratch = Scratch::new("added-none");
+    let other = outside("added-none");
+    std::fs::write(other.path.join("notes.md"), "a note").unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted(other.path.join("notes.md").display().to_string());
+    let error = workspace
+        .read(&mut policy, &path)
+        .expect_err("nothing was added, so nothing outside is reachable");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+}
+
+/// `..` must not walk out of an added directory, exactly as it cannot walk out of the primary root.
+#[test]
+fn a_parent_component_cannot_climb_out_of_an_added_directory() {
+    let scratch = Scratch::new("added-climb");
+    let other = outside("added-climb");
+    std::fs::create_dir_all(other.path.join("inner")).unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let climbing = Labelled::trusted(
+        added
+            .join("inner")
+            .join("..")
+            .join("..")
+            .join("escaped.md")
+            .display()
+            .to_string(),
+    );
+    let error = workspace
+        .read(&mut policy, &climbing)
+        .expect_err("`..` must not climb out of an added directory");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+}
+
+/// A symlink inside an added directory must not become a read of a file outside every root, which
+/// is the same rule the primary root already enforces.
+#[cfg(unix)]
+#[test]
+fn a_symlink_out_of_an_added_directory_is_refused() {
+    let scratch = Scratch::new("added-symlink");
+    let other = outside("added-symlink");
+    let secret = outside("added-symlink-secret");
+    std::fs::write(secret.path.join("private.txt"), "not yours").unwrap();
+    std::os::unix::fs::symlink(secret.path.join("private.txt"), other.path.join("link.txt"))
+        .unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let link = Labelled::trusted(added.join("link.txt").display().to_string());
+    let error = workspace
+        .read(&mut policy, &link)
+        .expect_err("a symlink out of an added directory must be refused");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+}
+
+/// A directory already in the workspace is refused: it is reachable relatively, and admitting it
+/// would give one file two spellings governed by two different trust rules.
+#[test]
+fn a_directory_inside_the_workspace_is_not_added() {
+    let scratch = Scratch::new("added-inside");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let error = workspace
+        .add_directory(scratch.path.join("vendor").to_str().expect("utf-8 path"))
+        .expect_err("a directory inside the workspace must be refused");
+    assert!(matches!(error, WorkspaceError::Invalid { .. }), "{error:?}");
+    assert!(workspace.added_directories().is_empty());
+}
+
+/// The canonical path is what comes back, since that is what trust is recorded against and what the
+/// user is shown. A name containing `..` must not become the rule.
+#[test]
+fn adding_a_directory_returns_its_canonical_path() {
+    let scratch = Scratch::new("added-canonical");
+    let other = outside("added-canonical");
+    std::fs::create_dir_all(other.path.join("inner")).unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let indirect = other.path.join("inner").join("..");
+    let added = workspace
+        .add_directory(indirect.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    assert_eq!(
+        added,
+        other.path.canonicalize().expect("canonical"),
+        "the name typed became the rule instead of the directory it names"
+    );
+}
+
+/// Adding the same directory twice is one directory, not two rules for it.
+#[test]
+fn adding_a_directory_twice_records_it_once() {
+    let scratch = Scratch::new("added-twice");
+    let other = outside("added-twice");
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let name = other.path.to_str().expect("utf-8 path");
+    workspace.add_directory(name).expect("added");
+    workspace.add_directory(name).expect("added again");
+    assert_eq!(workspace.added_directories().len(), 1);
+}
+
+/// A file that does not exist yet must be writable, or an added directory would be read-only.
+#[test]
+fn a_new_file_can_be_created_in_an_added_directory() {
+    let scratch = Scratch::new("added-create");
+    let other = outside("added-create");
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = added.join("fresh.md").display().to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("written".to_string()),
+        )
+        .expect("a new file in an added directory is writable");
+    assert_eq!(
+        std::fs::read_to_string(added.join("fresh.md")).unwrap(),
+        "written"
+    );
 }

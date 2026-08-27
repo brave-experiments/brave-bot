@@ -65,10 +65,20 @@ impl From<Denial> for WorkspaceError {
     }
 }
 
-/// A directory that file operations are confined to.
+/// The directories file operations are confined to.
+///
+/// One primary root, which every relative path is resolved against, plus any the user added by
+/// name with `/add-dir`. An added directory is reachable only by its absolute path, so the two
+/// never overlap: a relative path always means the project, whatever else is open.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
+    /// Absolute directories the user named, each canonical.
+    ///
+    /// Kept apart from `root` rather than being a list of equals, because the primary root is what
+    /// relative paths mean, what the session record is keyed on, and where `AGENTS.md` is looked
+    /// for. Making it one root among many would make all three ambiguous.
+    added: Vec<PathBuf>,
 }
 
 impl Workspace {
@@ -79,27 +89,78 @@ impl Workspace {
             path: root.display().to_string(),
             detail: e.to_string(),
         })?;
-        Ok(Self { root: canonical })
+        Ok(Self {
+            root: canonical,
+            added: Vec::new(),
+        })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Resolve a relative path inside the workspace.
+    /// Also allow paths inside `directory`, which must exist.
     ///
-    /// Rejects absolute paths and any `..` component. `..` is rejected before touching
-    /// the filesystem rather than by canonicalising afterwards, because the target of a
-    /// write may not exist yet, and a check that only works for existing files would
-    /// leave writes unprotected.
+    /// Returns the canonical path, which is what the caller records trust against and shows the
+    /// user: the name they typed may be a symlink or contain `..`, and the rule has to be about the
+    /// directory that was actually opened.
+    ///
+    /// A directory already inside the primary root is refused. It is reachable by its relative path
+    /// already, and admitting it would give one file two spellings, one governed by the project's
+    /// trust rules and one by its own.
+    pub fn add_directory(&mut self, directory: &str) -> Result<PathBuf, WorkspaceError> {
+        let candidate = Path::new(directory);
+        if !candidate.is_absolute() {
+            return Err(WorkspaceError::Invalid {
+                path: directory.to_string(),
+                reason: "must be an absolute path",
+            });
+        }
+
+        let canonical = candidate.canonicalize().map_err(|e| WorkspaceError::Io {
+            path: directory.to_string(),
+            detail: e.to_string(),
+        })?;
+
+        if !canonical.is_dir() {
+            return Err(WorkspaceError::Invalid {
+                path: directory.to_string(),
+                reason: "must be a directory",
+            });
+        }
+
+        if canonical.starts_with(&self.root) {
+            return Err(WorkspaceError::Invalid {
+                path: directory.to_string(),
+                reason: "is already inside the workspace, so it can be named relatively",
+            });
+        }
+
+        if !self.added.contains(&canonical) {
+            self.added.push(canonical.clone());
+        }
+        Ok(canonical)
+    }
+
+    /// The directories added by name, in the order they were added.
+    pub fn added_directories(&self) -> &[PathBuf] {
+        &self.added
+    }
+
+    /// Resolve a path against the workspace.
+    ///
+    /// A relative path always means the primary root. An absolute path is legal only inside a
+    /// directory the user added by name, and is refused otherwise: an absolute path was refused
+    /// outright before `/add-dir` existed, and naming a directory is what makes one reachable.
+    ///
+    /// Rejects any `..` component. `..` is rejected before touching the filesystem rather than by
+    /// canonicalising afterwards, because the target of a write may not exist yet, and a check
+    /// that only works for existing files would leave writes unprotected.
     fn resolve(&self, relative: &str) -> Result<PathBuf, WorkspaceError> {
         let candidate = Path::new(relative);
 
         if candidate.is_absolute() {
-            return Err(WorkspaceError::Invalid {
-                path: relative.to_string(),
-                reason: "must be relative to the workspace root",
-            });
+            return self.resolve_added(candidate, relative);
         }
 
         for component in candidate.components() {
@@ -133,6 +194,41 @@ impl Workspace {
         }
 
         Ok(joined)
+    }
+
+    /// Resolve an absolute path, which is legal only inside a directory the user added.
+    ///
+    /// The containment test is against the canonical path where one exists, so a symlink inside an
+    /// added directory pointing elsewhere is refused exactly as one in the primary root is. Where
+    /// the file does not exist yet, the lexical path is tested instead, which is what lets a write
+    /// create a file; `..` is rejected first, so there is nothing lexical containment can miss.
+    fn resolve_added(&self, candidate: &Path, named: &str) -> Result<PathBuf, WorkspaceError> {
+        if candidate
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(WorkspaceError::Escapes {
+                path: named.to_string(),
+            });
+        }
+
+        let inside = |path: &Path| self.added.iter().any(|dir| path.starts_with(dir));
+
+        if let Ok(canonical) = candidate.canonicalize() {
+            if !inside(&canonical) {
+                return Err(WorkspaceError::Escapes {
+                    path: named.to_string(),
+                });
+            }
+            return Ok(canonical);
+        }
+
+        if !inside(candidate) {
+            return Err(WorkspaceError::Escapes {
+                path: named.to_string(),
+            });
+        }
+        Ok(candidate.to_path_buf())
     }
 
     /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.
@@ -831,10 +927,15 @@ impl Workspace {
         Ok(())
     }
 
+    /// How a path is named back to the caller.
+    ///
+    /// Relative to the primary root for a file in the project, and absolute for one in an added
+    /// directory. That is the same spelling each would have to be given to reach the file again, so
+    /// a listing can be read and acted on without knowing which tree an entry came from.
     fn relative_display(&self, path: &Path) -> String {
-        path.strip_prefix(&self.root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string()
+        match path.strip_prefix(&self.root) {
+            Ok(relative) => relative.to_string_lossy().to_string(),
+            Err(_) => path.to_string_lossy().to_string(),
+        }
     }
 }
