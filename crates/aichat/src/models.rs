@@ -74,8 +74,8 @@ const PREMIUM_ACCESS: &str = "premium";
 
 /// The capability every turn here depends on.
 ///
-/// Roughly two thirds of what the endpoint lists has it. The rest are chat-only models, and
-/// choosing one would produce an agent that cannot read or write anything.
+/// Not everything the endpoint lists has it. The rest are chat-only models, and choosing one would
+/// produce an agent that cannot read or write anything.
 const TOOLS_CAPABILITY: &str = "tools";
 
 /// Ask the endpoint what it offers, newest answer each time.
@@ -138,31 +138,31 @@ mod tests {
     #[test]
     fn a_bare_array_decodes_and_keeps_the_requestable_name() {
         let models = decoded(
-            r#"[{"key":"claude-3-sonnet","display_name":"Claude 5 Sonnet",
+            r#"[{"key":"claude-3-sonnet","display_name":"Claude Sonnet",
                  "capabilities":["chat","tools","vision"],"options":{"access":"premium"}}]"#,
         );
         assert_eq!(models.len(), 2, "{models:?}");
         assert_eq!(models[1].key, "claude-3-sonnet");
-        assert_eq!(models[1].display_name, "Claude 5 Sonnet");
+        assert_eq!(models[1].display_name, "Claude Sonnet");
         assert!(models[1].premium);
     }
 
     #[test]
     fn a_free_model_is_not_premium() {
         let models = decoded(
-            r#"[{"key":"claude-3-haiku","display_name":"Claude 4.5 Haiku",
+            r#"[{"key":"claude-3-haiku","display_name":"Claude Haiku",
                  "capabilities":["chat","tools"],"options":{"access":"basic_and_premium"}}]"#,
         );
         assert!(!models[1].premium);
     }
 
     /// Every turn here works by calling tools, so a chat-only model would be an agent that can read
-    /// and write nothing. Nine of the twenty-eight the endpoint lists are in this position, so it
-    /// is the common case rather than a hypothetical one.
+    /// and write nothing. A good fraction of what the endpoint lists is chat-only, so this is the
+    /// common case rather than a hypothetical one.
     #[test]
     fn a_model_that_cannot_call_tools_is_not_offered() {
         let models = decoded(
-            r#"[{"key":"llama-3-8b-instruct","display_name":"Llama 3.1 8B",
+            r#"[{"key":"llama-3-8b-instruct","display_name":"Llama 3 8B",
                  "capabilities":["chat","files"],"options":{"access":"basic_and_premium"}}]"#,
         );
         assert_eq!(models, vec![Model::automatic()], "{models:?}");
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn unknown_fields_do_not_break_decoding() {
         let models = decoded(
-            r#"[{"key":"claude-3-sonnet","display_name":"Claude 5 Sonnet",
+            r#"[{"key":"claude-3-sonnet","display_name":"Claude Sonnet",
                  "capabilities":["chat","tools"],"is_near_model":false,"is_suggested_model":true,
                  "options":{"access":"premium","description":"whatever","display_maker":"Anthropic",
                             "max_associated_content_length":16000}}]"#,
@@ -221,11 +221,16 @@ mod tests {
         assert_eq!(models.len(), 2, "{models:?}");
     }
 
-    /// A slice of what the deployed endpoint actually returns, kept verbatim so a change in its
-    /// shape fails here rather than at a user's prompt. The `supports_tools` field this once
-    /// decoded is absent from it, which is how that break was found.
+    /// The shape of a real reply, field for field, including the ones this ignores: the array is
+    /// bare, tool support lives in `capabilities`, and access lives under `options`.
+    ///
+    /// The shape is what is pinned, not the roster. This decoded `supports_tools` until the
+    /// deployed endpoint was actually asked, and every listing would have failed; the fixture
+    /// exists so the next such change fails here rather than at a user's prompt. The entries are
+    /// stand-ins deliberately, since a snapshot of the live roster in a public repository would
+    /// publish which models are deployed and go stale besides.
     #[test]
-    fn the_deployed_response_shape_decodes() {
+    fn a_real_response_shape_decodes() {
         let models = decoded(include_str!("../tests/models_response.json"));
 
         assert!(models[0].is_automatic(), "automatic was not offered first");
@@ -240,7 +245,7 @@ mod tests {
             .iter()
             .find(|m| m.key == "claude-3-sonnet")
             .expect("the premium entry survived");
-        assert_eq!(sonnet.display_name, "Claude 5 Sonnet");
+        assert_eq!(sonnet.display_name, "Claude Sonnet");
         assert!(sonnet.premium);
     }
 }

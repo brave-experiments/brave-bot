@@ -1,7 +1,7 @@
 [
   {
     "key": "llama-3-8b-instruct",
-    "display_name": "Llama 3.1 8B",
+    "display_name": "Llama 3 8B",
     "capabilities": [
       "chat",
       "files"
@@ -12,18 +12,40 @@
       "type": "leo",
       "name": "llama-3-8b-instruct",
       "display_maker": "Meta",
-      "description": "Hi, I'm Leo. I'm an AI assistant by Brave. I'm powered by Ll",
+      "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "basic_and_premium",
       "max_associated_content_length": 16000,
       "long_conversation_warning_character_limit": 25600
     }
   },
   {
-    "key": "bedrock-meta.llama3-3-70b-instruct-v1:0",
-    "display_name": "Llama 3.3 70B",
+    "key": "qwen-14b-instruct",
+    "display_name": "Qwen 14B",
     "capabilities": [
       "chat",
       "tools",
+      "vision",
+      "deep_research"
+    ],
+    "is_suggested_model": false,
+    "is_near_model": false,
+    "options": {
+      "type": "leo",
+      "name": "qwen-14b-instruct",
+      "display_maker": "Alibaba",
+      "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
+      "access": "basic_and_premium",
+      "max_associated_content_length": 20000,
+      "long_conversation_warning_character_limit": 32000
+    }
+  },
+  {
+    "key": "claude-3-sonnet",
+    "display_name": "Claude Sonnet",
+    "capabilities": [
+      "chat",
+      "tools",
+      "vision",
       "files",
       "deep_research"
     ],
@@ -31,63 +53,38 @@
     "is_near_model": false,
     "options": {
       "type": "leo",
-      "name": "bedrock-meta.llama3-3-70b-instruct-v1:0",
-      "display_maker": "Meta",
-      "description": "Hi, I'm Leo. I'm an AI assistant by Brave. I'm powered by Ll",
-      "access": "basic_and_premium",
-      "max_associated_content_length": 4000,
-      "long_conversation_warning_character_limit": 6400
+      "name": "claude-3-sonnet",
+      "display_maker": "Anthropic",
+      "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
+      "access": "premium",
+      "max_associated_content_length": 16000,
+      "long_conversation_warning_character_limit": 25600
     }
   },
   {
-    "key": "claude-3-sonnet",
-    "display_name": "Claude 5 Sonnet",
+    "key": "claude-4-haiku",
+    "display_name": "Claude Haiku",
     "capabilities": [
       "chat",
       "tools",
       "vision",
-      "files",
-      "deep_research",
-      "content_agent"
+      "files"
     ],
     "is_suggested_model": false,
     "is_near_model": false,
     "options": {
       "type": "leo",
-      "name": "claude-3-sonnet",
+      "name": "claude-4-haiku",
       "display_maker": "Anthropic",
-      "description": "Hi, I'm Leo. I'm an AI assistant by Brave. I'm powered by Cl",
-      "access": "premium",
-      "max_associated_content_length": 64000,
-      "long_conversation_warning_character_limit": 102400
-    }
-  },
-  {
-    "key": "claude-3-haiku",
-    "display_name": "Claude 4.5 Haiku",
-    "capabilities": [
-      "chat",
-      "tools",
-      "vision",
-      "files",
-      "deep_research",
-      "content_agent"
-    ],
-    "is_suggested_model": true,
-    "is_near_model": false,
-    "options": {
-      "type": "leo",
-      "name": "claude-3-haiku",
-      "display_maker": "Anthropic",
-      "description": "Hi, I'm Leo. I'm an AI assistant by Brave. I'm powered by Cl",
+      "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "basic_and_premium",
-      "max_associated_content_length": 40960,
-      "long_conversation_warning_character_limit": 65536
+      "max_associated_content_length": 16000,
+      "long_conversation_warning_character_limit": 25600
     }
   },
   {
     "key": "brave-summary",
-    "display_name": "Brave Ocelot",
+    "display_name": "Brave Summariser",
     "capabilities": [
       "summary",
       "vision",
@@ -99,10 +96,10 @@
       "type": "leo",
       "name": "brave-summary",
       "display_maker": "Brave",
-      "description": "Hi, I'm Leo. I'm an AI assistant by Brave. I'm powered by Br",
+      "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "basic_and_premium",
-      "max_associated_content_length": 40000,
-      "long_conversation_warning_character_limit": 64000
+      "max_associated_content_length": 8000,
+      "long_conversation_warning_character_limit": 12800
     }
   }
 ]
