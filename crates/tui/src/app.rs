@@ -68,6 +68,9 @@ const ADD_DIR_COMMAND: &str = "/add-dir";
 /// The line that reports what this session is and what it may touch.
 const STATUS_COMMAND: &str = "/status";
 
+/// The line that summarises the conversation so far, in place of sending all of it.
+const COMPACT_COMMAND: &str = "/compact";
+
 /// The line that starts a new session in place of this one.
 const CLEAR_COMMAND: &str = "/clear";
 
@@ -93,7 +96,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub const COMMANDS: [Command; 6] = [
+pub const COMMANDS: [Command; 7] = [
     Command {
         name: STATUS_COMMAND,
         argument: "",
@@ -113,6 +116,11 @@ pub const COMMANDS: [Command; 6] = [
         name: RENAME_COMMAND,
         argument: "<name>",
         description: "Call this conversation something else",
+    },
+    Command {
+        name: COMPACT_COMMAND,
+        argument: "",
+        description: "Summarise the conversation so far, keeping the recent part",
     },
     Command {
         name: CLEAR_COMMAND,
@@ -177,6 +185,9 @@ pub enum Action {
     ChooseModel,
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
     AddDirectory(String),
+    /// Summarise the conversation so far. Needs the conversation and the network, which the loop
+    /// owns.
+    Compact,
     /// Start a new session here. Needs the conversation and the session record, which the loop owns.
     Clear,
     /// Call this session something else. Needs the session record, which the loop owns.
@@ -324,6 +335,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input().trim() == STATUS_COMMAND => {
             session.clear_input();
             Action::Status
+        }
+        KeyCode::Enter if session.input().trim() == COMPACT_COMMAND => {
+            session.clear_input();
+            Action::Compact
         }
         KeyCode::Enter if session.input().trim() == CLEAR_COMMAND => {
             session.clear_input();
@@ -948,6 +963,28 @@ fn event_loop(
                 session.report(report);
                 needs_draw = true;
             }
+            Action::Compact => {
+                let events;
+                (conversation, events) =
+                    compact_animated(terminal, &mut session, config, conversation, &trust)?;
+
+                // Written now rather than at the end of the next turn: the shortening is the
+                // change, and a session that compacted and then slept should resume compacted.
+                let title = stored.title().to_string();
+                stored.save(
+                    &title,
+                    crate::sessions::Standing {
+                        conversation: &conversation.snapshot(),
+                        turns: session.turns,
+                        tokens: session.tokens,
+                        todos: &session.todos_by_turn(),
+                        trust: &trust,
+                        programs: &programs,
+                    },
+                );
+                stored.append_audit(session.turns, &events);
+                needs_draw = true;
+            }
             Action::Clear => {
                 // A new handle means a new id, so the session so far keeps its own files and stays
                 // resumable. Nothing is deleted: what the user asked for is a clean context, and
@@ -1257,6 +1294,115 @@ fn run_command(
     Ok(sink.events().to_vec())
 }
 
+/// Summarise the conversation, showing the spinner while it happens.
+///
+/// A smaller relative of [`run_turn_animated`], and smaller because there is less to do: a
+/// summariser has no tools, so nothing asks about a write, nothing asks the user a question, and
+/// nothing lands in the workspace. What is left is a model call that takes as long as a round, and
+/// a loop that keeps the screen alive while it does.
+///
+/// Not cancellable, deliberately. The call is one round with nothing to interrupt part way, and a
+/// cancel would leave the same conversation it started with, which is what happens anyway if it
+/// fails.
+fn compact_animated(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    config: &Config,
+    conversation: Conversation,
+    trust: &TrustStore,
+) -> io::Result<(Conversation, Vec<Stamped>)> {
+    let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
+
+    let worker_config = config.clone();
+    let worker_trust = trust.clone();
+    let model = session.model().map(str::to_string);
+
+    session.begin_aside();
+
+    let worker = thread::spawn(move || {
+        let mut sink = Trail::new();
+        let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main);
+        let egress = Egress::new();
+        let mut conversation = conversation;
+        // Reduced to what a person can be told before it crosses back, since the error types are
+        // the kernel's and this thread is the only place they mean anything.
+        let done = turn::compact(
+            &worker_config,
+            &egress,
+            &mut conversation,
+            model.as_deref(),
+            &mut reporter,
+            &mut sink,
+            worker_trust,
+        )
+        .map_err(|e| e.to_string());
+        (done, conversation, sink)
+    });
+
+    loop {
+        terminal
+            .draw(|frame| render::draw(frame, session))
+            .map_err(io::Error::other)?;
+
+        // Input is still read, so a long summary does not leave the interface deaf. There is
+        // nothing to cancel, so a key that would stop a turn only says so.
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                TermEvent::Key(key) => {
+                    handle_key_while_working(session, key);
+                }
+                TermEvent::Paste(text) => session.paste(&text),
+                TermEvent::Mouse(mouse) => {
+                    let action = handle_mouse(session, mouse);
+                    if action == Action::Copy {
+                        copy_selection(terminal, session)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        match from_worker.recv_timeout(FRAME) {
+            Ok(crate::remote_confirm::ToMain::Phase(phase)) => session.set_phase(phase),
+            Ok(crate::remote_confirm::ToMain::Narration(text)) => session.narrate(text),
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let (done, conversation, sink) = worker.join().unwrap_or_else(|_| {
+        (
+            Err("the summary ended unexpectedly".to_string()),
+            Conversation::new(),
+            Trail::new(),
+        )
+    });
+
+    match &done {
+        Ok(Some(summary)) => {
+            session.end_aside(summary.usage.total());
+            session.measured(conversation.last_request_tokens(), config.context_budget);
+            session.note(format!(
+                "summarised {} earlier messages, keeping the last {} as they are",
+                summary.summarised, summary.kept
+            ));
+        }
+        Ok(None) => {
+            session.end_aside(0);
+            session.note("there is nothing to summarise yet");
+        }
+        Err(message) => {
+            session.end_aside(0);
+            session.note(format!(
+                "the conversation could not be summarised: {message}"
+            ));
+        }
+    }
+
+    Ok((conversation, sink.events().to_vec()))
+}
+
 /// Run a turn on a worker thread, redrawing while it works.
 ///
 /// The turn itself blocks on network requests, so running it here would freeze the indicator on
@@ -1509,7 +1655,14 @@ fn run_turn_animated(
         return Ok((conversation, fallback, fallback_programs, events));
     }
 
-    let (trust, programs) = fold_outcome(session, outcome, sink, fallback, fallback_programs);
+    let (trust, programs) = fold_outcome(
+        session,
+        outcome,
+        sink,
+        fallback,
+        fallback_programs,
+        config.context_budget,
+    );
     Ok((conversation, trust, programs, events))
 }
 
@@ -1529,6 +1682,7 @@ fn fold_outcome(
     sink: Trail,
     fallback: TrustStore,
     fallback_programs: TrustedPrograms,
+    budget: u64,
 ) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
@@ -1547,6 +1701,10 @@ fn fold_outcome(
             if !outcome.clean {
                 session.note("a policy gate refused something during that turn");
             }
+            // What the turn's last request came to, against what it would be compacted at. Not
+            // the same figure as the cost above: that adds every round together, this says how
+            // full the context is now.
+            session.measured(outcome.context_tokens, budget);
             // Carries forward any rule the turn recorded, so a path that received untrusted
             // data cannot be read back as trusted by the next turn, and any program the user
             // vouched for during it, so they are not asked about it again.
@@ -2472,6 +2630,53 @@ mod tests {
         );
     }
 
+    /// Typed before submitting, so the word never reaches the planner as a prompt: a session
+    /// asking to be shortened must not answer by talking about shortening itself.
+    #[test]
+    fn the_compact_command_asks_for_a_summary_rather_than_being_sent() {
+        let mut session = Session::new("none");
+        for c in COMPACT_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Compact
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// Only the bare word, so asking the planner about compacting something still asks it.
+    #[test]
+    fn a_prompt_containing_the_compact_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "how does /compact work".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("how does /compact work".to_string())
+        );
+    }
+
+    /// COMMANDS is the one place the set is written down, so a command missing from it is a
+    /// command the hint line, the completion list and Tab all fail to know about.
+    #[test]
+    fn compacting_is_offered_while_a_command_is_being_typed() {
+        assert_eq!(
+            completions("/comp")
+                .iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>(),
+            vec![COMPACT_COMMAND]
+        );
+    }
+
     /// Only the bare word, so asking the planner about clearing something still asks it.
     #[test]
     fn a_prompt_containing_the_clear_command_is_still_a_prompt() {
@@ -2679,7 +2884,7 @@ mod tests {
 
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(CLEAR_COMMAND),
+            Some(COMPACT_COMMAND),
             "the cursor did not return to the top of what now matches"
         );
     }
