@@ -188,6 +188,15 @@ impl Config {
         format!("{}/v1/chat/completions", self.endpoint)
     }
 
+    /// Full URL for the model listing.
+    ///
+    /// The free host, always: the listing reports which models are premium rather than differing
+    /// between the two, and asking the premium host would spend a subscription credential to learn
+    /// something the free one says for nothing.
+    pub fn models_url(&self) -> String {
+        format!("{}/v1/models", self.endpoint)
+    }
+
     /// The same endpoint on the premium host, when this build has one.
     pub fn premium_chat_completions_url(&self) -> Option<String> {
         self.premium_endpoint
@@ -348,6 +357,18 @@ mod tests {
             config.premium_chat_completions_url().as_deref(),
             Some("https://premium.invalid/v1/chat/completions")
         );
+    }
+
+    /// The listing lives on the free host and reports which of its entries are premium, so asking
+    /// the premium host would spend a subscription credential for the same answer.
+    #[test]
+    fn the_model_listing_url_is_on_the_free_host() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::PREMIUM_ENDPOINT => Some("https://premium.invalid".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert_eq!(config.models_url(), "https://example.invalid/v1/models");
     }
 
     /// A build without the premium host must report premium as unavailable rather than quietly

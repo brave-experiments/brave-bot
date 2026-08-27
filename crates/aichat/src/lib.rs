@@ -9,6 +9,7 @@
 //! reported in the response is preserved because the server may substitute a different
 //! one than was requested.
 
+pub mod models;
 pub mod protocol;
 
 use bua_config::Config;

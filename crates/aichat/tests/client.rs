@@ -858,3 +858,83 @@ fn a_retry_goes_through_the_gate_again() {
         .count();
     assert_eq!(checks, 2, "each attempt must be checked on its own");
 }
+
+/// The listing is a plain GET on the free host. It carries no signature and no credential: the
+/// endpoint requires neither, and spending a subscription credential to read a public list would
+/// be spending one for nothing.
+#[test]
+fn the_model_listing_is_fetched_from_the_models_path() {
+    let listed = r#"[{"key":"claude-3-sonnet","display_name":"Claude 4 Sonnet",
+        "supports_tools":true,"options":{"access":"premium"}}]"#;
+    let (endpoint, received) = serve(listed);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let models = bua_aichat::models::list(&mut policy, &config, &egress).expect("the list arrives");
+
+    assert_eq!(models[0].key, "automatic");
+    assert_eq!(models[1].key, "claude-3-sonnet");
+
+    let captured = received.recv().expect("request captured");
+    assert!(
+        captured.request_line.starts_with("GET /v1/models"),
+        "wrong target: {}",
+        captured.request_line
+    );
+    assert!(
+        captured.header("authorization").is_none(),
+        "the listing was signed"
+    );
+    assert!(
+        captured.header("cookie").is_none(),
+        "a credential was spent on the listing"
+    );
+}
+
+/// Every request leaves through the egress gate, so one made without the capability must be
+/// refused rather than quietly reaching the network by another route.
+#[test]
+fn the_model_listing_is_refused_without_the_network_capability() {
+    let (endpoint, _received) = serve("[]");
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::none(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let refused = bua_aichat::models::list(&mut policy, &config, &egress);
+    assert!(refused.is_err(), "the listing bypassed the gate");
+}
+
+/// A body that is not the shape the endpoint documents is an error, not an empty list: a picker
+/// showing only "automatic" would look like a server with one model rather than a broken reply.
+#[test]
+fn a_listing_that_is_not_an_array_is_an_error() {
+    let (endpoint, _received) = serve(r#"{"data":[]}"#);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let refused = bua_aichat::models::list(&mut policy, &config, &egress);
+    assert!(refused.is_err(), "an envelope was accepted as a list");
+}
