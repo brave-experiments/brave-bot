@@ -148,6 +148,42 @@ Quarantined content reaches a file through `write_file`'s `contents_ref`.
 sound only because the destination is inside the boundary the bytes came from: nothing leaves.
 Never reach for it for a network body, a command line, or a message to someone.
 
+## Compaction: a summary is not a processor's job
+
+Each round re-sends the whole conversation, so a long session grows its own request until the
+server refuses it. Compaction replaces the older part of the exchange, **in the request only**,
+with a summary of it, and `bravebot-agent`'s `compact` is where that happens.
+
+The summariser is a **planner-context call**. Reaching for a processor here is the obvious move
+and it is wrong: a processor's output is quarantined by construction, so what it can produce is a
+summary the planner may not read, which is not a summary the planner can carry on from. Never
+route compaction through `spawn_processor`.
+
+What licenses the call is that there is nothing new to read. Every message in a conversation has
+already been past `Policy::present`: trusted and shown, or quarantined with only a reference going
+in. So the summariser's context is the planner's context, and `Policy::label_model_output` labels
+its answer from that context, exactly as it labels the planner's own words. The label the client
+returns is the network's, not the context's, so the text is relabelled on the way back, the way
+every other round already does it.
+
+`Policy::adopt_summary` is the gate, and it **refuses** once the context has gone untrusted. Do not
+make it quarantine the summary instead: a reference to the planner's own history is not a history.
+Do not relabel to get past it. A conversation that cannot be shortened stays long, and the caller
+leaves it exactly as it was.
+
+Three things compaction never touches, and none of them may be relaxed to save room: the
+**quarantine**, which holds the only copy of what a surviving reference names; the **reference
+counter**, since slots are written once and a name handed out twice collides; and the
+**integrity**, since nothing here has un-read what the conversation read.
+
+The cut is always at the start of an exchange, chosen from roles and call ids. `with_system`
+answers an unanswered call by looking only at the run of results immediately after it, so a cut
+inside a round leaves a request the server refuses.
+
+And what is shortened is the request, not the record. The replaced messages go to an archive that
+`recounted` still reads and the snapshot still stores. The user owns their transcript; compaction
+is about what gets sent.
+
 ## Where trusted data comes from
 
 Model output is a function of the model's context and nothing else. So when the context holds

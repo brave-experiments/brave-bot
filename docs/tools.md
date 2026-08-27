@@ -171,6 +171,16 @@ reference, no filename can be learned from one, and a planner looking for a file
 will try glob after glob for as long as anyone lets it. Forty is well past what real work in a
 large repository takes, and well short of an afternoon.
 
+The other bound is on size rather than on rounds. Each round re-sends the whole conversation, so
+a long session grows its own request until the server refuses it. Once the last request passes
+`BRAVEBOT_CONTEXT_BUDGET` (100,000 tokens by default), the older part of the conversation is replaced,
+**in the request only**, by a summary of it; the two most recent exchanges stay word for word, and
+`/compact` asks for the same thing by hand. The person's transcript is untouched, and so is the
+quarantine, so a reference handed out before a summary still names what it named.
+
+The budget is a guess and has to be. The server reports what a request cost and never what it had
+room for, the default model resolves per request, and there is no tokeniser here to count with.
+
 ## Who decides what
 
 The model may choose *which* file to read next, because a read cannot change anything and
