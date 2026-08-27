@@ -551,6 +551,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             .expect("routing was precommitted with this key")
             .to_string();
 
+        // Naming the file is the grant. Recorded before the read so the read sees it, and
+        // recorded in the map rather than applied to this one label so it still holds when the
+        // planner goes on to edit what it was given. The rule is the file alone, which beats
+        // whatever covers the directory, so referencing a file works in a workspace the user
+        // declined at startup without trusting anything else in it.
+        policy.vouch_for_named_path(&path);
+
         let contents = workspace.read(&mut policy, &Labelled::trusted(path.clone()))?;
         // Recorded here rather than at the end of the turn: a turn that fails after this still
         // read it, and the conversation the next turn resumes has to know.

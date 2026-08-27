@@ -1803,6 +1803,24 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
     }
 
+    /// Record that the user named `path` themselves, which is what vouches for it.
+    ///
+    /// A referenced file reaches a turn as precommitted routing, so the name came from the
+    /// user's own line and not from anything a model or a file said. That is the same grant the
+    /// startup question and `/add-dir` record, and it is recorded the same way: as a rule in the
+    /// map, so it outlives the read and the file can be examined and edited afterwards.
+    ///
+    /// Always the exact path, never its parent. Naming one file says nothing about its siblings,
+    /// and a rule on the file is more specific than any rule on the tree around it, so a
+    /// referenced file is trusted inside a directory nobody vouched for.
+    pub fn vouch_for_named_path(&mut self, path: &str) {
+        self.trust.trust(path);
+        self.allow(
+            "trust",
+            format!("{path} trusted: the user named it in their own line"),
+        );
+    }
+
     /// Issue a single-use endorsement for a routing field at an exact value.
     ///
     /// The value is recorded, so the endorsement cannot be replayed against a
@@ -3256,6 +3274,83 @@ mod tests {
             .observe_path(Capability::FileRead, "src/a.rs")
             .expect("observes");
         assert_eq!(label.integrity, Integrity::Untrusted);
+    }
+
+    /// Naming a file is a grant, so its contents are the user's own input and the planner may
+    /// read them. Without this a reference in a workspace nobody vouched for was quarantined,
+    /// which left the agent holding a file it had been handed and could not open.
+    #[test]
+    fn a_file_the_user_named_is_read_as_trusted_though_nothing_else_is() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        policy.vouch_for_named_path("Makefile");
+
+        let label = policy
+            .observe_path(Capability::FileRead, "Makefile")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Trusted);
+    }
+
+    /// The grant is for the file, not the place it happens to sit.
+    #[test]
+    fn naming_a_file_vouches_for_nothing_beside_it() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        policy.vouch_for_named_path("src/a.rs");
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/b.rs")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Untrusted);
+    }
+
+    /// A rule on the file is more specific than a rule on the tree around it, which is what
+    /// lets one file be worked on inside a directory the user deliberately marked untrusted.
+    #[test]
+    fn a_named_file_is_trusted_inside_an_untrusted_tree() {
+        let mut sink = RecordingSink::new();
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("vendor");
+        let mut policy = Policy::begin(
+            routing_with("task", "edit"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_trust(store);
+
+        policy.vouch_for_named_path("vendor/lib.js");
+
+        assert_eq!(
+            policy
+                .observe_path(Capability::FileRead, "vendor/lib.js")
+                .expect("observes")
+                .integrity,
+            Integrity::Trusted
+        );
+        assert_eq!(
+            policy
+                .observe_path(Capability::FileRead, "vendor/other.js")
+                .expect("observes")
+                .integrity,
+            Integrity::Untrusted
+        );
     }
 
     /// The anti-laundering loop: untrusted bytes written into a trusted tree cannot be read

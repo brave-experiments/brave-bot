@@ -77,6 +77,14 @@ read deliberately withholds. So reference a file when you want it worked on, and
 it as you would be answering yes to a directory: content you have not read is content you are
 vouching for.
 
+The grant is recorded as a rule for **that file**, so it works in a directory you declined at startup
+and it outlives the read: the file can be edited afterwards, which is usually the point of naming it.
+A rule on a file is more specific than any rule on the tree around it, so `@vendor/lib.js` is trusted
+inside a `vendor` you marked untrusted. Nothing beside it is: naming one file says nothing about its
+siblings, and the rest of the directory stays exactly as it was.
+
+`/status` lists the rules, so what a line vouched for can be read back rather than remembered.
+
 A directory is somewhere to type through rather than a file to read, so naming one includes nothing.
 References cannot leave the workspace: `..` and an absolute path are refused rather than resolved,
 exactly as they are everywhere else.
