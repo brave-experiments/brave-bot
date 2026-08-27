@@ -223,6 +223,13 @@ pub struct Session {
     /// Read from `~/.bua` at startup and rewritten when `/model` picks one, so the choice outlives
     /// the session that made it and applies in every directory.
     model: Option<String>,
+    /// Which offered command is under the cursor while one is being typed.
+    ///
+    /// An index into what [`crate::app::completions`] returns for the current input rather than a
+    /// copy of the list, because the list is a function of the input and keeping a second copy in
+    /// step with it is the way the two come to disagree. Clamped when it is read, since typing
+    /// another letter can shorten the list under a cursor that was further down.
+    completion: usize,
 }
 
 impl Session {
@@ -248,6 +255,7 @@ impl Session {
             said: Vec::new(),
             started: None,
             model: None,
+            completion: 0,
         }
     }
 
@@ -483,6 +491,63 @@ impl Session {
         // so the position indicator goes away as soon as a key is pressed.
         self.history.leave();
         self.input.push(c);
+        // Back to the top of whatever is now offered. A cursor left where it was would sit on a
+        // different command after one more letter, so the highlighted row would drift as the list
+        // narrowed under it.
+        self.completion = 0;
+    }
+
+    /// The commands the half-typed line could still become.
+    pub fn completions(&self) -> Vec<crate::app::Command> {
+        if self.status == Status::Working {
+            return Vec::new();
+        }
+        crate::app::completions(&self.input)
+    }
+
+    /// Which offered command is under the cursor, or `None` when nothing is offered.
+    ///
+    /// Clamped here rather than when the input changes, because the list is a function of the
+    /// input: typing a letter can shorten it, and a cursor past the end would otherwise choose
+    /// nothing at the moment Tab was pressed.
+    pub fn highlighted_completion(&self) -> Option<crate::app::Command> {
+        let offered = self.completions();
+        if offered.is_empty() {
+            return None;
+        }
+        Some(offered[self.completion.min(offered.len() - 1)])
+    }
+
+    /// Whether a command is being typed, so the keys that walk the list belong to it.
+    pub fn is_completing(&self) -> bool {
+        !self.completions().is_empty()
+    }
+
+    /// Move down the offered commands, stopping at the end.
+    pub fn next_completion(&mut self) {
+        let last = self.completions().len().saturating_sub(1);
+        self.completion = (self.completion + 1).min(last);
+    }
+
+    /// Move up the offered commands, stopping at the top.
+    pub fn previous_completion(&mut self) {
+        self.completion = self.completion.saturating_sub(1);
+    }
+
+    /// Replace the half-typed word with the command under the cursor.
+    ///
+    /// A command taking an argument gets a trailing space, since the next thing typed is that
+    /// argument. One taking none does not, so it can be sent with Enter straight away.
+    pub fn accept_completion(&mut self) {
+        let Some(command) = self.highlighted_completion() else {
+            return;
+        };
+        self.input = if command.argument.is_empty() {
+            command.name.to_string()
+        } else {
+            format!("{} ", command.name)
+        };
+        self.completion = 0;
     }
 
     /// Fill the transcript from a conversation resumed off disk.
@@ -582,6 +647,7 @@ impl Session {
     pub fn backspace(&mut self) {
         self.history.leave();
         self.input.pop();
+        self.completion = 0;
     }
 
     /// Put a submitted prompt back for editing after its turn was cancelled.

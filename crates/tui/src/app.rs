@@ -70,17 +70,66 @@ const RENAME_COMMAND: &str = "/rename";
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
 
-/// Every command, in the order the hint line lists them.
+/// One command, and what it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Command {
+    /// The word typed, including the leading slash.
+    pub name: &'static str,
+    /// What it takes after the word, or empty where it takes nothing.
+    pub argument: &'static str,
+    /// One line, for the list shown while a command is being typed.
+    pub description: &'static str,
+}
+
+/// Every command, in the order they are offered.
 ///
-/// The hint is drawn from this rather than from a second copy of the words, so a command that is
-/// renamed or added cannot leave the line advertising something that no longer works.
-pub const COMMANDS: [&str; 5] = [
-    MODEL_COMMAND,
-    ADD_DIR_COMMAND,
-    RENAME_COMMAND,
-    CLEAR_COMMAND,
-    EXIT_COMMAND,
+/// The one place they are written down. The hint line, the completion list and the key handler all
+/// read from here, so a command that is renamed or added cannot leave any of them advertising
+/// something that no longer works.
+pub const COMMANDS: [Command; 5] = [
+    Command {
+        name: MODEL_COMMAND,
+        argument: "",
+        description: "Choose which model to think with",
+    },
+    Command {
+        name: ADD_DIR_COMMAND,
+        argument: "<path>",
+        description: "Open another directory, and trust it for this session",
+    },
+    Command {
+        name: RENAME_COMMAND,
+        argument: "<name>",
+        description: "Call this conversation something else",
+    },
+    Command {
+        name: CLEAR_COMMAND,
+        argument: "",
+        description: "Start a new session here, keeping this one resumable",
+    },
+    Command {
+        name: EXIT_COMMAND,
+        argument: "",
+        description: "Leave",
+    },
 ];
+
+/// The commands a half-typed line could still become, in the order they are offered.
+///
+/// Empty unless the line is a lone word starting with a slash: a command takes its argument after a
+/// space, so once there is one the command is settled and there is nothing left to complete. A
+/// line that is not a command at all completes to nothing, which is what closes the list.
+pub fn completions(line: &str) -> Vec<Command> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('/') || trimmed.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    COMMANDS
+        .iter()
+        .filter(|command| command.name.starts_with(trimmed))
+        .copied()
+        .collect()
+}
 
 /// The argument given to `command`, if that is what the line is.
 ///
@@ -177,12 +226,34 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.clear_input();
             Action::Rename(name)
         }
+        // A half-typed command, after every arm that recognises a whole one. Enter takes the
+        // highlighted row rather than sending "/mod" to the planner, which is never what was meant.
+        KeyCode::Enter if session.is_completing() => {
+            session.accept_completion();
+            Action::Redraw
+        }
         KeyCode::Enter => match session.submit() {
             Some(prompt) => Action::Submit(prompt),
             None => Action::None,
         },
         KeyCode::Backspace => {
             session.backspace();
+            Action::Redraw
+        }
+        // Tab completes, which is what it does everywhere else. Only while a command is being
+        // typed: with nothing offered it inserts nothing, rather than a stray character.
+        KeyCode::Tab if session.is_completing() => {
+            session.accept_completion();
+            Action::Redraw
+        }
+        // While the list is open the arrows walk it. History and scrolling get them back the moment
+        // it closes, which is as soon as the line stops being a lone half-typed command.
+        KeyCode::Up if session.is_completing() => {
+            session.previous_completion();
+            Action::Redraw
+        }
+        KeyCode::Down if session.is_completing() => {
+            session.next_completion();
             Action::Redraw
         }
         // Up and Down walk the prompt history, which is what they do in a shell and so what a
@@ -1451,6 +1522,177 @@ mod tests {
         );
         assert_eq!(argument_to("/renamed thing", RENAME_COMMAND), None);
         assert_eq!(argument_to("please /rename it", RENAME_COMMAND), None);
+    }
+
+    /// A slash offers everything; a letter narrows it; a space settles it, since the argument
+    /// comes next and there is nothing left to complete.
+    #[test]
+    fn what_a_half_typed_line_could_become() {
+        assert_eq!(completions("/").len(), COMMANDS.len());
+        assert_eq!(
+            completions("/cl")
+                .iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
+            vec![CLEAR_COMMAND]
+        );
+        assert!(
+            completions("/add-dir ~/notes").is_empty(),
+            "a settled command"
+        );
+        assert!(completions("what does /model do").is_empty(), "a prompt");
+        assert!(completions("").is_empty());
+        assert!(completions("/zzz").is_empty(), "a word matching nothing");
+    }
+
+    /// Tab is what completes everywhere else, and a command taking an argument gets the space its
+    /// argument goes after.
+    #[test]
+    fn tab_takes_the_highlighted_command() {
+        let mut session = Session::new("none");
+        for c in "/mod".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::Redraw);
+        assert_eq!(session.input, MODEL_COMMAND, "no argument, so no space");
+
+        let mut session = Session::new("none");
+        for c in "/add".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Tab));
+        assert_eq!(
+            session.input,
+            format!("{ADD_DIR_COMMAND} "),
+            "argument follows"
+        );
+    }
+
+    /// Enter on a half-typed command takes the highlighted row rather than sending "/mod" to the
+    /// planner, which is never what was meant.
+    #[test]
+    fn enter_on_a_half_typed_command_completes_it() {
+        let mut session = Session::new("none");
+        for c in "/mod".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Redraw
+        );
+        assert_eq!(session.input, MODEL_COMMAND);
+        assert!(session.transcript.is_empty(), "a fragment was sent");
+    }
+
+    /// A command typed out in full still runs on Enter: completing must not get in the way of the
+    /// thing it exists to help with.
+    #[test]
+    fn enter_on_a_whole_command_still_runs_it() {
+        let mut session = Session::new("none");
+        for c in CLEAR_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::Clear);
+    }
+
+    /// The arrows belong to the list while it is open, and to history and scrolling once it is not.
+    #[test]
+    fn the_arrows_walk_the_offered_commands_while_one_is_being_typed() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('/')));
+
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(COMMANDS[0].name),
+            "the list opens at the top"
+        );
+        handle_key(&mut session, key(KeyCode::Down));
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(COMMANDS[1].name)
+        );
+        handle_key(&mut session, key(KeyCode::Up));
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(COMMANDS[0].name)
+        );
+
+        // Up at the top stays, rather than wrapping to the end.
+        handle_key(&mut session, key(KeyCode::Up));
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(COMMANDS[0].name)
+        );
+    }
+
+    /// Down past the end stays on the last, so Tab always takes something.
+    #[test]
+    fn walking_past_the_end_stays_on_the_last_command() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('/')));
+        for _ in 0..COMMANDS.len() + 3 {
+            handle_key(&mut session, key(KeyCode::Down));
+        }
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(COMMANDS[COMMANDS.len() - 1].name)
+        );
+    }
+
+    /// Typing returns the cursor to the top, so the highlighted row does not drift to a different
+    /// command as the list narrows under it.
+    #[test]
+    fn typing_another_letter_returns_to_the_top_of_the_list() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('/')));
+        for _ in 0..4 {
+            handle_key(&mut session, key(KeyCode::Down));
+        }
+        handle_key(&mut session, key(KeyCode::Char('c')));
+
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(CLEAR_COMMAND),
+            "the cursor did not return to the top of what now matches"
+        );
+    }
+
+    /// A paste narrows the list without touching the cursor, so the cursor may be past the end of
+    /// what is left. Reading it must still name something, or Tab would complete nothing.
+    #[test]
+    fn a_cursor_past_the_end_of_a_narrowed_list_still_names_a_command() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('/')));
+        for _ in 0..4 {
+            handle_key(&mut session, key(KeyCode::Down));
+        }
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(EXIT_COMMAND)
+        );
+
+        // Now one command matches, while the cursor still points at the fifth.
+        handle_paste(&mut session, "cl");
+        assert_eq!(
+            session.highlighted_completion().map(|c| c.name),
+            Some(CLEAR_COMMAND),
+            "the cursor pointed past the narrowed list"
+        );
+        handle_key(&mut session, key(KeyCode::Tab));
+        assert_eq!(session.input, CLEAR_COMMAND);
+    }
+
+    /// With nothing being offered, Tab must not insert anything and the arrows go back to what they
+    /// do the rest of the time.
+    #[test]
+    fn tab_does_nothing_when_no_command_is_being_typed() {
+        let mut session = Session::new("none");
+        for c in "an ordinary prompt".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::None);
+        assert_eq!(session.input, "an ordinary prompt");
     }
 
     /// A directory whose own name begins with a tilde is not a home-relative path.

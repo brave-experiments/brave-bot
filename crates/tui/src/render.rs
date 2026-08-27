@@ -230,18 +230,26 @@ pub fn draw(frame: &mut Frame, session: &Session) {
     // rather than fixed: a fixed height is what made typing past the edge disappear.
     let input_height = input_height(session, frame.area().width, frame.area().height);
 
+    // Beneath the box while a command is being typed, and gone otherwise. Measured rather than
+    // reserved, so a session that is not completing anything gives the whole height to the
+    // transcript.
+    let offered = session.completions();
+    let completion_height = offered.len() as u16;
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),               // transcript
-            Constraint::Length(input_height), // input
-            Constraint::Length(1),            // hint line
+            Constraint::Min(1),                    // transcript
+            Constraint::Length(input_height),      // input
+            Constraint::Length(completion_height), // commands being offered
+            Constraint::Length(1),                 // hint line
         ])
         .split(frame.area());
 
     draw_transcript(frame, areas[0], session);
     draw_input(frame, areas[1], session);
-    draw_hint(frame, areas[2], session);
+    draw_completions(frame, areas[2], session, &offered);
+    draw_hint(frame, areas[3], session);
 
     // Last, over everything: the selection is of the screen rather than of any one widget, and
     // the user swept it over whatever happened to be there.
@@ -479,6 +487,66 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// How a command is written in the list: the word, and what follows it.
+fn command_word(command: &crate::app::Command) -> String {
+    if command.argument.is_empty() {
+        command.name.to_string()
+    } else {
+        format!("{} {}", command.name, command.argument)
+    }
+}
+
+/// The commands a half-typed line could still become, one per row.
+///
+/// The description column is measured from every command rather than from the ones on screen, so it
+/// sits in the same place however far the list has narrowed. Measuring the visible rows instead
+/// would slide the descriptions sideways with each letter typed.
+///
+/// Nothing labelled is involved: these are this program's own words about its own commands.
+fn draw_completions(
+    frame: &mut Frame,
+    area: Rect,
+    session: &Session,
+    offered: &[crate::app::Command],
+) {
+    if offered.is_empty() {
+        return;
+    }
+
+    let column = crate::app::COMMANDS
+        .iter()
+        .map(|command| command_word(command).chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let highlighted = session.highlighted_completion();
+    let lines: Vec<Line> = offered
+        .iter()
+        .map(|command| {
+            let chosen = Some(*command) == highlighted;
+            let name = if chosen {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+
+            let word = command_word(command);
+            let padding = column.saturating_sub(word.chars().count()) + 2;
+
+            Line::from(vec![
+                Span::styled(if chosen { "  ❯ " } else { "    " }, name),
+                Span::styled(word, name),
+                Span::raw(" ".repeat(padding)),
+                Span::styled(command.description, dim()),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 /// The shortcut line. Keeps the bindings discoverable without a help command.
 fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     let trail = if session.show_trail {
@@ -487,16 +555,12 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         "ctrl-t show trail"
     };
 
-    // Listed from the commands themselves, so renaming one cannot leave the hint advertising a
-    // word that no longer works. Grouped rather than divided one by one, because four commands each
-    // with its own divider runs off the side of an ordinary terminal, taking the confinement
-    // with it.
-    let commands = crate::app::COMMANDS.join(" ");
-
+    // The commands are no longer listed here. Typing a slash lists every one of them with what it
+    // does, which is both more than this line could hold and the moment a user wants to know.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  {commands}  ·  drag to copy  ·  pgup/pgdn  ·  confinement {}",
+                "  {trail}  ·  / for commands  ·  drag to copy  ·  pgup/pgdn  ·  confinement {}",
                 session.confinement
             ),
             dim(),
@@ -741,12 +805,97 @@ mod tests {
     /// the confinement too: matching it anywhere on the screen says nothing about whether the hint
     /// line still carries it. Widening this to make it pass would be hiding the truncation.
     #[test]
-    fn the_hint_line_lists_the_commands_and_the_confinement() {
+    fn the_hint_line_says_how_to_find_the_commands_and_reports_confinement() {
         let output = rendered_at(&Session::new("kernel-enforced"), 120, 24);
-        for command in crate::app::COMMANDS {
-            assert!(output.contains(command), "{command} missing: {output}");
-        }
+        assert!(output.contains("/ for commands"), "{output}");
         assert!(output.contains("confinement kernel-enforced"), "{output}");
+    }
+
+    /// Typing a slash offers every command with what it does, which is the thing the hint line
+    /// stopped listing.
+    #[test]
+    fn a_slash_offers_every_command_and_what_it_does() {
+        let mut session = Session::new("none");
+        session.type_char('/');
+        let output = rendered_at(&session, 120, 24);
+
+        for command in crate::app::COMMANDS {
+            assert!(output.contains(command.name), "{} missing", command.name);
+            assert!(
+                output.contains(command.description),
+                "{} has no description on screen",
+                command.name
+            );
+        }
+    }
+
+    /// Narrowing shows only what still matches, so the list answers what the half-typed word could
+    /// become rather than repeating the whole set.
+    #[test]
+    fn a_narrowed_list_offers_only_what_still_matches() {
+        let mut session = Session::new("none");
+        for c in "/cl".chars() {
+            session.type_char(c);
+        }
+        let output = rendered_at(&session, 120, 24);
+
+        assert!(output.contains("/clear"), "{output}");
+        assert!(
+            !output.contains("/model"),
+            "a command that cannot match was offered"
+        );
+        assert!(
+            !output.contains("/rename"),
+            "a command that cannot match was offered"
+        );
+    }
+
+    /// The descriptions line up in one column, and stay there as the list narrows. Measured from
+    /// every command rather than the visible ones, or they would slide sideways with each letter.
+    #[test]
+    fn the_descriptions_share_a_column_however_far_the_list_narrows() {
+        // Read off the buffer by cell, since a rendered row is one cell per column and a symbol
+        // may be more than one byte.
+        let column_of = |line: &str| -> usize {
+            let mut session = Session::new("none");
+            for c in line.chars() {
+                session.type_char(c);
+            }
+            let mut terminal = Terminal::new(TestBackend::new(96, 14)).expect("terminal");
+            terminal
+                .draw(|frame| draw(frame, &session))
+                .expect("draw succeeds");
+            let buffer = terminal.backend().buffer();
+            for row in 0..14u16 {
+                let text: String = (0..96u16)
+                    .map(|column| buffer.cell((column, row)).expect("cell").symbol())
+                    .collect();
+                if let Some(at) = text.find("Call this conversation") {
+                    // The row is ASCII up to the description apart from the marker, so a character
+                    // count to that point is the column it sits in.
+                    return text[..at].chars().count();
+                }
+            }
+            panic!("the /rename row was not on screen");
+        };
+
+        assert_eq!(
+            column_of("/"),
+            column_of("/rename"),
+            "the description moved as the list narrowed"
+        );
+    }
+
+    /// With nothing being typed the rows go, giving the height back to the transcript rather than
+    /// leaving a gap where the list was.
+    #[test]
+    fn an_ordinary_prompt_offers_nothing() {
+        let mut session = Session::new("none");
+        for c in "what does this do".chars() {
+            session.type_char(c);
+        }
+        let output = rendered_at(&session, 120, 24);
+        assert!(!output.contains("Choose which model"), "{output}");
     }
 
     #[test]
