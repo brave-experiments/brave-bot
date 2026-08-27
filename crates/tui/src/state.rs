@@ -146,6 +146,18 @@ pub enum Status {
     Quitting,
 }
 
+/// What a half-typed line could still become.
+///
+/// One kind at a time: a command is the whole line and a file reference is its last word, so the
+/// list is never a mixture and the keys that walk it never have to ask which they are walking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Offered {
+    /// Nothing is being typed towards, so the list is closed.
+    Nothing,
+    Commands(Vec<crate::app::Command>),
+    Files(Vec<crate::entries::Entry>),
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -225,11 +237,17 @@ pub struct Session {
     model: Option<String>,
     /// Which offered command is under the cursor while one is being typed.
     ///
-    /// An index into what [`crate::app::completions`] returns for the current input rather than a
-    /// copy of the list, because the list is a function of the input and keeping a second copy in
-    /// step with it is the way the two come to disagree. Clamped when it is read, since typing
-    /// another letter can shorten the list under a cursor that was further down.
+    /// An index into what [`Session::offered`] returns for the current input rather than a copy of
+    /// the list, because the list is a function of the input and keeping a second copy in step with
+    /// it is the way the two come to disagree. Clamped when it is read, since typing another letter
+    /// can shorten the list under a cursor that was further down.
     completion: usize,
+    /// The directory a file reference is completed against.
+    ///
+    /// Empty by default so constructing a session reads no directory: a test would otherwise offer
+    /// whatever happened to be in the process's working directory. The real session names it with
+    /// [`Session::in_workspace`].
+    workspace: std::path::PathBuf,
 }
 
 impl Session {
@@ -256,7 +274,17 @@ impl Session {
             started: None,
             model: None,
             completion: 0,
+            workspace: std::path::PathBuf::new(),
         }
+    }
+
+    /// Complete file references against this directory.
+    ///
+    /// Separate from [`Session::new`] so listing a directory is a deliberate choice at one call
+    /// site rather than a side effect of constructing a session.
+    pub fn in_workspace(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.workspace = root.into();
+        self
     }
 
     /// Load history from disk and keep writing to it.
@@ -497,15 +525,40 @@ impl Session {
         self.completion = 0;
     }
 
-    /// The commands the half-typed line could still become.
-    pub fn completions(&self) -> Vec<crate::app::Command> {
+    /// What the half-typed line could still become: a command, or a file reference.
+    ///
+    /// One of the two at most. A command is the whole line and a reference is its last word, so
+    /// nothing can be both.
+    pub fn offered(&self) -> Offered {
         if self.status == Status::Working {
-            return Vec::new();
+            return Offered::Nothing;
         }
-        crate::app::completions(&self.input)
+        let commands = crate::app::completions(&self.input);
+        if !commands.is_empty() {
+            return Offered::Commands(commands);
+        }
+        match crate::entries::typed_reference(&self.input) {
+            Some(typed) => {
+                let entries = crate::entries::matching(&self.workspace, typed);
+                if entries.is_empty() {
+                    Offered::Nothing
+                } else {
+                    Offered::Files(entries)
+                }
+            }
+            None => Offered::Nothing,
+        }
     }
 
-    /// Which offered command is under the cursor, or `None` when nothing is offered.
+    /// The commands the half-typed line could still become.
+    pub fn completions(&self) -> Vec<crate::app::Command> {
+        match self.offered() {
+            Offered::Commands(commands) => commands,
+            _ => Vec::new(),
+        }
+    }
+
+    /// Which offered command is under the cursor, or `None` when no command is offered.
     ///
     /// Clamped here rather than when the input changes, because the list is a function of the
     /// input: typing a letter can shorten it, and a cursor past the end would otherwise choose
@@ -518,35 +571,96 @@ impl Session {
         Some(offered[self.completion.min(offered.len() - 1)])
     }
 
-    /// Whether a command is being typed, so the keys that walk the list belong to it.
-    pub fn is_completing(&self) -> bool {
-        !self.completions().is_empty()
+    /// Which offered file is under the cursor, or `None` when no file is offered.
+    pub fn highlighted_entry(&self) -> Option<crate::entries::Entry> {
+        let Offered::Files(entries) = self.offered() else {
+            return None;
+        };
+        entries
+            .get(self.completion.min(entries.len().saturating_sub(1)))
+            .cloned()
     }
 
-    /// Move down the offered commands, stopping at the end.
+    /// Whether something is being offered, so the keys that walk the list belong to it.
+    pub fn is_completing(&self) -> bool {
+        !matches!(self.offered(), Offered::Nothing)
+    }
+
+    /// Whether taking what is offered would change the line.
+    ///
+    /// What Enter turns on. Tab may be pressed on a finished word harmlessly, but Enter has to
+    /// choose between completing and sending, and a prompt ending in `@README.md` is a finished
+    /// sentence even though the word is still what the list is about. Completing there would leave
+    /// a user pressing Enter twice to say something perfectly well formed.
+    pub fn completion_would_change_the_line(&self) -> bool {
+        match self.offered() {
+            Offered::Nothing => false,
+            Offered::Commands(_) => self
+                .highlighted_completion()
+                .is_some_and(|command| command.name != self.input.trim()),
+            Offered::Files(_) => {
+                let Some(entry) = self.highlighted_entry() else {
+                    return false;
+                };
+                crate::entries::typed_reference(&self.input)
+                    .is_some_and(|typed| typed != entry.path)
+            }
+        }
+    }
+
+    /// How many things are offered, for walking and for measuring the space they need.
+    pub fn offered_count(&self) -> usize {
+        match self.offered() {
+            Offered::Commands(commands) => commands.len(),
+            Offered::Files(entries) => entries.len(),
+            Offered::Nothing => 0,
+        }
+    }
+
+    /// Move down what is offered, stopping at the end.
     pub fn next_completion(&mut self) {
-        let last = self.completions().len().saturating_sub(1);
+        let last = self.offered_count().saturating_sub(1);
         self.completion = (self.completion + 1).min(last);
     }
 
-    /// Move up the offered commands, stopping at the top.
+    /// Move up what is offered, stopping at the top.
     pub fn previous_completion(&mut self) {
         self.completion = self.completion.saturating_sub(1);
     }
 
-    /// Replace the half-typed word with the command under the cursor.
+    /// Take what is under the cursor.
     ///
-    /// A command taking an argument gets a trailing space, since the next thing typed is that
-    /// argument. One taking none does not, so it can be sent with Enter straight away.
+    /// A command replaces the whole line, since a command *is* the line. A file replaces only the
+    /// half-typed reference, because the rest is the sentence it was written into.
+    ///
+    /// Neither adds a trailing space when there is more to type: a command expecting an argument
+    /// gets one, and so does a file, while a directory does not, so the path can be typed onwards
+    /// into it.
     pub fn accept_completion(&mut self) {
-        let Some(command) = self.highlighted_completion() else {
-            return;
-        };
-        self.input = if command.argument.is_empty() {
-            command.name.to_string()
-        } else {
-            format!("{} ", command.name)
-        };
+        match self.offered() {
+            Offered::Commands(_) => {
+                let Some(command) = self.highlighted_completion() else {
+                    return;
+                };
+                self.input = if command.argument.is_empty() {
+                    command.name.to_string()
+                } else {
+                    format!("{} ", command.name)
+                };
+            }
+            Offered::Files(_) => {
+                let Some(entry) = self.highlighted_entry() else {
+                    return;
+                };
+                let kept = match self.input.rfind('@') {
+                    Some(at) => &self.input[..at],
+                    None => return,
+                };
+                let trailing = if entry.is_directory { "" } else { " " };
+                self.input = format!("{kept}@{}{trailing}", entry.path);
+            }
+            Offered::Nothing => return,
+        }
         self.completion = 0;
     }
 

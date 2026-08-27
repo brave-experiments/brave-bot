@@ -230,25 +230,30 @@ pub fn draw(frame: &mut Frame, session: &Session) {
     // rather than fixed: a fixed height is what made typing past the edge disappear.
     let input_height = input_height(session, frame.area().width, frame.area().height);
 
-    // Beneath the box while a command is being typed, and gone otherwise. Measured rather than
-    // reserved, so a session that is not completing anything gives the whole height to the
-    // transcript.
-    let offered = session.completions();
-    let completion_height = offered.len() as u16;
+    // Beneath the box while something is being typed towards, and gone otherwise. Measured rather
+    // than reserved, so a session offering nothing gives the whole height to the transcript, and
+    // bounded so a directory of many files cannot push the transcript off the screen.
+    let offered = session.offered();
+    let room = frame
+        .area()
+        .height
+        .saturating_sub(input_height + 1)
+        .saturating_sub(1);
+    let offered_height = (session.offered_count() as u16).min(room);
 
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),                    // transcript
-            Constraint::Length(input_height),      // input
-            Constraint::Length(completion_height), // commands being offered
-            Constraint::Length(1),                 // hint line
+            Constraint::Min(1),                 // transcript
+            Constraint::Length(input_height),   // input
+            Constraint::Length(offered_height), // what is being offered
+            Constraint::Length(1),              // hint line
         ])
         .split(frame.area());
 
     draw_transcript(frame, areas[0], session);
     draw_input(frame, areas[1], session);
-    draw_completions(frame, areas[2], session, &offered);
+    draw_offered(frame, areas[2], session, &offered);
     draw_hint(frame, areas[3], session);
 
     // Last, over everything: the selection is of the screen rather than of any one widget, and
@@ -496,23 +501,27 @@ fn command_word(command: &crate::app::Command) -> String {
     }
 }
 
-/// The commands a half-typed line could still become, one per row.
+/// What the half-typed line could still become, one per row.
+///
+/// Commands or files, never a mixture, because the line can only be being typed towards one of
+/// them. Nothing labelled is involved either way: the commands are this program's own words, and the
+/// filenames are read out of the directory to show a person which files are in it, never to decide
+/// anything and never reaching a model from here.
+fn draw_offered(frame: &mut Frame, area: Rect, session: &Session, offered: &crate::state::Offered) {
+    let lines = match offered {
+        crate::state::Offered::Nothing => return,
+        crate::state::Offered::Commands(commands) => command_lines(session, commands),
+        crate::state::Offered::Files(entries) => entry_lines(session, entries),
+    };
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// One row per command, with what it does.
 ///
 /// The description column is measured from every command rather than from the ones on screen, so it
 /// sits in the same place however far the list has narrowed. Measuring the visible rows instead
 /// would slide the descriptions sideways with each letter typed.
-///
-/// Nothing labelled is involved: these are this program's own words about its own commands.
-fn draw_completions(
-    frame: &mut Frame,
-    area: Rect,
-    session: &Session,
-    offered: &[crate::app::Command],
-) {
-    if offered.is_empty() {
-        return;
-    }
-
+fn command_lines(session: &Session, offered: &[crate::app::Command]) -> Vec<Line<'static>> {
     let column = crate::app::COMMANDS
         .iter()
         .map(|command| command_word(command).chars().count())
@@ -520,7 +529,7 @@ fn draw_completions(
         .unwrap_or(0);
 
     let highlighted = session.highlighted_completion();
-    let lines: Vec<Line> = offered
+    offered
         .iter()
         .map(|command| {
             let chosen = Some(*command) == highlighted;
@@ -542,9 +551,37 @@ fn draw_completions(
                 Span::styled(command.description, dim()),
             ])
         })
-        .collect();
+        .collect()
+}
 
-    frame.render_widget(Paragraph::new(lines), area);
+/// One row per workspace entry a reference could name.
+///
+/// A directory is dimmer than a file and keeps its trailing slash, because the two are chosen for
+/// different reasons: a file is what a reference ends at, and a directory is somewhere to keep
+/// typing. Nothing here says what a file contains, only that it exists.
+fn entry_lines(session: &Session, offered: &[crate::entries::Entry]) -> Vec<Line<'static>> {
+    let highlighted = session.highlighted_entry();
+    offered
+        .iter()
+        .map(|entry| {
+            let chosen = Some(entry) == highlighted.as_ref();
+            let colour = if entry.is_directory {
+                Style::default().fg(Color::Blue)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            let style = if chosen {
+                colour.add_modifier(Modifier::BOLD)
+            } else {
+                colour
+            };
+
+            Line::from(vec![
+                Span::styled(if chosen { "  ❯ " } else { "    " }, style),
+                Span::styled(entry.path.clone(), style),
+            ])
+        })
+        .collect()
 }
 
 /// The shortcut line. Keeps the bindings discoverable without a help command.
@@ -560,7 +597,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  / for commands  ·  drag to copy  ·  pgup/pgdn  ·  confinement {}",
+                "  {trail}  ·  / for commands  ·  @ for files  ·  pgup/pgdn  ·  confinement {}",
                 session.confinement
             ),
             dim(),
@@ -808,6 +845,7 @@ mod tests {
     fn the_hint_line_says_how_to_find_the_commands_and_reports_confinement() {
         let output = rendered_at(&Session::new("kernel-enforced"), 120, 24);
         assert!(output.contains("/ for commands"), "{output}");
+        assert!(output.contains("@ for files"), "{output}");
         assert!(output.contains("confinement kernel-enforced"), "{output}");
     }
 

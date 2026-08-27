@@ -228,7 +228,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         }
         // A half-typed command, after every arm that recognises a whole one. Enter takes the
         // highlighted row rather than sending "/mod" to the planner, which is never what was meant.
-        KeyCode::Enter if session.is_completing() => {
+        // A half-typed command, after every arm that recognises a whole one. Enter takes the
+        // highlighted row rather than sending "/mod" to the planner, which is never what was meant.
+        //
+        // A reference only completes while it is still unfinished. A prompt ending in one that
+        // already names a file is a finished sentence, and Enter has to send it: completing there
+        // would leave a user pressing Enter twice to say something perfectly well formed.
+        KeyCode::Enter if session.completion_would_change_the_line() => {
             session.accept_completion();
             Action::Redraw
         }
@@ -509,7 +515,9 @@ fn event_loop(
     let mut workspace = workspace.clone();
 
     // The one place persistence is turned on: history in ~/.bua outlives the session.
-    let mut session = Session::new(confinement).with_stored_history();
+    let mut session = Session::new(confinement)
+        .with_stored_history()
+        .in_workspace(workspace.root());
 
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
@@ -838,9 +846,17 @@ fn run_turn_animated(
     // are cheap handles; Egress builds its own connection pool.
     let worker_config = config.clone();
     let worker_workspace = workspace.clone();
-    let task = Task::new(prompt)
+    // Every file named with `@` becomes context, which a turn treats as trusted: the user typed the
+    // path and their keystroke is what vouches for it, exactly as `--file` does on the command
+    // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
+    // sent and the files that came with it cannot disagree.
+    let mut task = Task::new(prompt)
         .with_home(bua_agent::home::directory())
         .with_model(session.model().map(str::to_string));
+    for file in crate::entries::referenced(prompt) {
+        task = task.with_file(file);
+    }
+    let task = task;
     // Kept so a failed turn does not lose the user's decisions.
     let fallback = trust.clone();
 

@@ -64,6 +64,23 @@ holds. Across a fresh start it does not, because a fresh start has no memory to 
 file holds content you do not trust, the answer is to say no to the directory, or to not leave it
 there.
 
+## Naming a file with `@`
+
+Writing `@src/main.rs` in a prompt puts that file's **contents into the turn as trusted input**, and
+typing `@` offers what is in the workspace so the choice is an informed one. It is the same thing
+`--file` does on the command line, and it is trusted for the same reason: you typed the path, and
+sending the line is the grant. Nothing a model said chose the file.
+
+Trusted matters here, and it is the point rather than a detail. The planner may read those contents,
+compare them, and act on what they say, which is what makes a reference useful and what a quarantined
+read deliberately withholds. So reference a file when you want it worked on, and be as careful about
+it as you would be answering yes to a directory: content you have not read is content you are
+vouching for.
+
+A directory is somewhere to type through rather than a file to read, so naming one includes nothing.
+References cannot leave the workspace: `..` and an absolute path are refused rather than resolved,
+exactly as they are everywhere else.
+
 ## Opening another directory
 
 `/add-dir ~/notes` opens a second directory for the rest of the session. Two things have to happen

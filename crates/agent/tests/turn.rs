@@ -5379,3 +5379,41 @@ fn a_quarantined_read_does_not_stop_the_planner_asking() {
         "quarantined content reached the planner: {third}"
     );
 }
+
+/// A file the user referenced with `@` in the interface reaches the model as trusted context.
+///
+/// The same channel `--file` uses, which is the point: `Task::files` is precommitted as trusted
+/// routing, so what arrives is the user's own input rather than a path a model chose. This is the
+/// claim the `@` syntax rests on, so it is checked against a real turn rather than only against the
+/// reading of the prompt.
+#[test]
+fn a_turn_includes_referenced_file_contents() {
+    let scratch = Scratch::new("referenced");
+    std::fs::write(scratch.path.join("notes.md"), "THE REFERENCED CONTENTS").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("read it"));
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Exactly what the event loop builds from the line "summarise @notes.md".
+    let task = Task::new("summarise @notes.md").with_file("notes.md");
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+    assert!(outcome.clean, "a gate refused the referenced file");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        body.contains("THE REFERENCED CONTENTS"),
+        "the referenced file never reached the model: {body}"
+    );
+}
