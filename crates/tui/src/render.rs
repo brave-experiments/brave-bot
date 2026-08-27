@@ -490,7 +490,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  drag to copy  ·  pgup/pgdn  ·  /model  ·  \
+                "  {trail}  ·  drag to copy  ·  pgup/pgdn  ·  /model  ·  /add-dir  ·  \
                  /exit or ctrl-c to exit  ·  confinement {}",
                 session.confinement
             ),
@@ -737,7 +737,7 @@ mod tests {
     /// the hint line still carries it.
     #[test]
     fn the_hint_line_reports_confinement() {
-        let output = rendered_at(&Session::new("kernel-enforced"), 130, 24);
+        let output = rendered_at(&Session::new("kernel-enforced"), 140, 24);
         assert!(output.contains("/exit or ctrl-c to exit"), "{output}");
         assert!(output.contains("confinement kernel-enforced"), "{output}");
     }

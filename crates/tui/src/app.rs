@@ -61,6 +61,24 @@ const EXIT_COMMAND: &str = "/exit";
 /// The line that opens the model picker instead of starting a turn.
 const MODEL_COMMAND: &str = "/model";
 
+/// The line that opens another directory, taking the path to open as its argument.
+const ADD_DIR_COMMAND: &str = "/add-dir";
+
+/// The directory `/add-dir` was asked to open, if that is what the line is.
+///
+/// `None` for anything else, so a prompt that merely mentions the word is still a prompt. The
+/// bare command with no argument is `Some("")`, which the loop answers by saying what it needs
+/// rather than silently doing nothing.
+fn add_dir_argument(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let rest = line.strip_prefix(ADD_DIR_COMMAND)?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    // A following character that is not a space means a longer word, not this command.
+    rest.strip_prefix(' ').map(str::trim)
+}
+
 /// What a key press asked for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -73,6 +91,8 @@ pub enum Action {
     Copy,
     /// Ask which model to use. Needs the network and the terminal, so the loop runs it.
     ChooseModel,
+    /// Open another directory. Needs the workspace and the trust map, which the loop owns.
+    AddDirectory(String),
     Quit,
 }
 
@@ -117,6 +137,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input.trim() == MODEL_COMMAND => {
             session.clear_input();
             Action::ChooseModel
+        }
+        KeyCode::Enter if add_dir_argument(&session.input).is_some() => {
+            let directory = add_dir_argument(&session.input)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            Action::AddDirectory(directory)
         }
         KeyCode::Enter => match session.submit() {
             Some(prompt) => Action::Submit(prompt),
@@ -373,6 +400,11 @@ fn event_loop(
     confinement: String,
     start: Start,
 ) -> io::Result<()> {
+    // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
+    // the turns after it must see one. The primary root never changes, so nothing keyed on it
+    // (the session record, where AGENTS.md is looked for) moves underneath.
+    let mut workspace = workspace.clone();
+
     // The one place persistence is turned on: history in ~/.bua outlives the session.
     let mut session = Session::new(confinement).with_stored_history();
 
@@ -466,6 +498,9 @@ fn event_loop(
                 choose_model(terminal, &mut session, config);
                 needs_draw = true;
             }
+            Action::AddDirectory(directory) => {
+                add_directory(&mut session, &mut workspace, &mut trust, &directory);
+            }
             Action::Submit(prompt) => {
                 // Both are threaded through: a turn that writes untrusted data into a trusted
                 // path records that, and the next turn must honour it, and a turn that has been
@@ -475,7 +510,7 @@ fn event_loop(
                     terminal,
                     &mut session,
                     config,
-                    workspace,
+                    &workspace,
                     &prompt,
                     conversation,
                     trust,
@@ -499,6 +534,64 @@ fn event_loop(
             // Cancel is only reachable while a turn runs, which `run_turn_animated` handles.
             Action::Cancel | Action::None | Action::Redraw => {}
         }
+    }
+}
+
+/// Open another directory and vouch for it, for the rest of this session.
+///
+/// Two things happen together, and both are needed. The workspace makes the directory reachable at
+/// all, since an absolute path is refused otherwise. The trust map records that the user vouched
+/// for it, which is what the write gates consult. Doing only the first would leave every write
+/// there asking; doing only the second would leave a rule about files nothing can open.
+///
+/// The path recorded is the canonical one, not the name typed: `~/notes/../notes` and a symlink
+/// both name a directory whose rules should be about where it actually is.
+///
+/// Session-scoped on purpose. `docs/trust.md` is explicit that trust is not sticky per directory,
+/// so a later session starts without this and is asked again. It does survive `--resume`, since
+/// that restores the map its own user gave.
+fn add_directory(
+    session: &mut Session,
+    workspace: &mut Workspace,
+    trust: &mut TrustStore,
+    directory: &str,
+) {
+    if directory.is_empty() {
+        session.note("/add-dir needs a directory, as in /add-dir ~/notes");
+        return;
+    }
+
+    // Expanded here rather than in the workspace, because `~` is a shell convention and a library
+    // resolving it would be guessing at a home the caller never named.
+    let expanded = expand_home(directory);
+
+    match workspace.add_directory(&expanded) {
+        Ok(added) => {
+            let shown = added.display().to_string();
+            trust.trust(&shown);
+            session.note(format!("added {shown}, and trusting it for this session"));
+        }
+        Err(error) => session.note(format!("could not add {directory}: {error}")),
+    }
+}
+
+/// Replace a leading `~` with the user's home directory.
+///
+/// Only a leading one, and only when it is the whole first segment, so a directory genuinely called
+/// `~notes` is left alone. Without a home to expand to, the path is passed through and the
+/// workspace refuses it for not being absolute, which says the same thing.
+fn expand_home(directory: &str) -> String {
+    let Some(rest) = directory.strip_prefix('~') else {
+        return directory.to_string();
+    };
+    if !(rest.is_empty() || rest.starts_with('/')) {
+        return directory.to_string();
+    }
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => {
+            format!("{}{rest}", std::path::Path::new(&home).display())
+        }
+        _ => directory.to_string(),
     }
 }
 
@@ -1107,6 +1200,79 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("why is /model slow".to_string())
         );
+    }
+
+    /// The argument is the point of this one, so it must arrive with the action.
+    #[test]
+    fn the_add_dir_command_carries_its_directory() {
+        let mut session = Session::new("none");
+        for c in "/add-dir ~/notes".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::AddDirectory("~/notes".to_string())
+        );
+        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// With no argument there is nothing to open, and the loop says so rather than doing nothing.
+    #[test]
+    fn the_bare_add_dir_command_is_still_the_command() {
+        let mut session = Session::new("none");
+        for c in "/add-dir".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::AddDirectory(String::new())
+        );
+    }
+
+    /// A longer word beginning with the command is not the command, or "/add-dirs are useful"
+    /// would open a directory called "s are useful".
+    #[test]
+    fn a_longer_word_starting_with_the_command_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/add-dirs are confusing".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/add-dirs are confusing".to_string())
+        );
+    }
+
+    /// And a sentence that merely mentions it is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_add_dir_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /add-dir do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /add-dir do".to_string())
+        );
+    }
+
+    /// A directory whose own name begins with a tilde is not a home-relative path.
+    #[test]
+    fn a_tilde_is_expanded_only_as_a_whole_first_segment() {
+        let home = std::env::var("HOME").expect("a home directory");
+        assert_eq!(expand_home("~/notes"), format!("{home}/notes"));
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~notes"), "~notes");
+        assert_eq!(expand_home("/tmp/notes"), "/tmp/notes");
+        assert_eq!(expand_home("relative/notes"), "relative/notes");
     }
 
     #[test]

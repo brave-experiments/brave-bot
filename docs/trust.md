@@ -59,6 +59,20 @@ holds. Across a fresh start it does not, because a fresh start has no memory to 
 file holds content you do not trust, the answer is to say no to the directory, or to not leave it
 there.
 
+## Opening another directory
+
+`/add-dir ~/notes` opens a second directory for the rest of the session. Two things have to happen
+for that to be useful, and it does both: the directory becomes **reachable**, since an absolute path
+is otherwise refused whatever the trust map says, and it is recorded as **trusted**, which is what
+stops every write there asking. Either alone is no use, one leaving a rule about files nothing can
+open and the other leaving a directory that prompts on every edit.
+
+Inside it, the rules are the working directory's own. `..` cannot climb out, a symlink leaving it is
+refused, and a relative path still always means the project, so no file ends up with two spellings.
+
+It lasts for the session, like every other answer here, and `--resume` carries it. A directory
+already inside the project is refused, since it is reachable by its relative path already.
+
 ## A path outside the working directory is a separate rule
 
 Trust rules come in two kinds, and neither says anything about the other. A **relative** rule is

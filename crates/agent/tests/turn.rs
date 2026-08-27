@@ -5069,3 +5069,87 @@ fn without_a_choice_the_configured_default_is_requested() {
         "the default was not requested: {body}"
     );
 }
+
+/// The whole point of `/add-dir`, end to end: once a directory is added, a turn can read a file in
+/// it by absolute path, and the contents reach the model.
+#[test]
+fn a_turn_can_read_a_file_in_an_added_directory() {
+    let scratch = Scratch::new("added-turn");
+    let outside = Scratch::new("added-turn-outside");
+    std::fs::write(outside.path.join("notes.md"), "a note from outside").unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(outside.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+    let note = added.join("notes.md").display().to_string();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", &format!(r#"{{"path":"{note}"}}"#)),
+        reply_with("read it"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Trusted the way `/add-dir` records it: by the canonical absolute path.
+    let mut trust = trusting_the_workspace();
+    trust.trust(&added.display().to_string());
+
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read the note"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+    assert!(outcome.clean, "a gate refused the read");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("a note from outside"),
+        "the file in the added directory never reached the model: {second}"
+    );
+}
+
+/// And without adding it, the same read is refused. This is what makes the test above meaningful
+/// rather than a demonstration that absolute paths work anyway.
+#[test]
+fn a_turn_cannot_read_outside_the_workspace_without_adding_it() {
+    let scratch = Scratch::new("unadded-turn");
+    let outside = Scratch::new("unadded-turn-outside");
+    std::fs::write(outside.path.join("notes.md"), "a note from outside").unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let note = outside.path.join("notes.md").display().to_string();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", &format!(r#"{{"path":"{note}"}}"#)),
+        reply_with("could not"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read the note"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("a note from outside"),
+        "a file outside every root reached the model: {second}"
+    );
+}
