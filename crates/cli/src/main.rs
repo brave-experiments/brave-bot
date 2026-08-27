@@ -474,7 +474,7 @@ fn doctor() -> ExitCode {
                 None => println!("  premium   not configured"),
             }
             println!("  key id    {}", config.key_id);
-            println!("  model     {}", config.model);
+            println!("  model     {} (default)", config.default_model);
             println!("  key       {} (never transmitted)", config.signing_key);
             report_subscription();
         }

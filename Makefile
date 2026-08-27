@@ -3,7 +3,8 @@ VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.
 
 # Forwarded into the cross-build container, which does not inherit the host environment.
 BUILD_ENV = SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
-            BRAVE_AI_CHAT_PREMIUM_ENDPOINT MODEL BUA_ALLOW_UNCONFIGURED_BUILD
+            BRAVE_AI_CHAT_PREMIUM_ENDPOINT BRAVE_AI_CHAT_DEFAULT_MODEL \
+            BUA_ALLOW_UNCONFIGURED_BUILD
 
 .PHONY: help
 help:

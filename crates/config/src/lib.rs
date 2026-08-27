@@ -20,6 +20,9 @@ include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 
 /// The server treats an unrecognised model as `automatic`, so that is also our
 /// default rather than pinning a name that may silently stop existing.
+///
+/// Not offered by `GET /v1/models`, which lists concrete models only, so a picker showing the
+/// server's list has to put this one back.
 pub const DEFAULT_MODEL: &str = "automatic";
 
 /// A value that must not be printed.
@@ -98,8 +101,9 @@ pub struct Config {
     /// given the host: falling back to the free endpoint with a subscription credential attached
     /// would send the credential somewhere it does not belong.
     pub premium_endpoint: Option<String>,
-    /// Model to request. The server may substitute a different one.
-    pub model: String,
+    /// Model to request when the user has not picked one. The server may substitute a different
+    /// one regardless.
+    pub default_model: String,
 }
 
 /// A value captured when this binary was built, or `None` if the build had none.
@@ -155,7 +159,7 @@ impl Config {
             return Err(ConfigError::InvalidEndpoint { value: endpoint });
         }
 
-        let model = lookup(env_var::MODEL)
+        let default_model = lookup(env_var::DEFAULT_MODEL)
             .filter(|m| !m.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
@@ -172,7 +176,7 @@ impl Config {
             key_id,
             endpoint: endpoint.trim_end_matches('/').to_string(),
             premium_endpoint,
-            model,
+            default_model,
         })
     }
 
@@ -213,31 +217,44 @@ mod tests {
     }
 
     #[test]
-    fn model_defaults_to_automatic() {
+    fn the_default_model_is_automatic() {
         let config = Config::from_lookup(complete_env).unwrap();
-        assert_eq!(config.model, DEFAULT_MODEL);
+        assert_eq!(config.default_model, DEFAULT_MODEL);
     }
 
     #[test]
-    fn model_can_be_overridden() {
+    fn the_default_model_can_be_overridden() {
         let config = Config::from_lookup(|k| match k {
-            env_var::MODEL => Some("some-pinned-model".into()),
+            env_var::DEFAULT_MODEL => Some("some-pinned-model".into()),
             other => complete_env(other),
         })
         .unwrap();
-        assert_eq!(config.model, "some-pinned-model");
+        assert_eq!(config.default_model, "some-pinned-model");
     }
 
-    /// An empty MODEL should fall back rather than sending "" and being silently
+    /// The variable is prefixed like every other one. A bare `MODEL` is a name anything in a
+    /// shared shell profile might already export, and reading it would take that as an
+    /// instruction about which model to send.
+    #[test]
+    fn a_bare_model_variable_is_not_read() {
+        let config = Config::from_lookup(|k| match k {
+            "MODEL" => Some("something-else-set-this".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert_eq!(config.default_model, DEFAULT_MODEL);
+    }
+
+    /// An empty value should fall back rather than sending "" and being silently
     /// reset by the server.
     #[test]
-    fn an_empty_model_falls_back_to_the_default() {
+    fn an_empty_default_model_falls_back() {
         let config = Config::from_lookup(|k| match k {
-            env_var::MODEL => Some("   ".into()),
+            env_var::DEFAULT_MODEL => Some("   ".into()),
             other => complete_env(other),
         })
         .unwrap();
-        assert_eq!(config.model, DEFAULT_MODEL);
+        assert_eq!(config.default_model, DEFAULT_MODEL);
     }
 
     #[test]

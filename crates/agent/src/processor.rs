@@ -182,7 +182,7 @@ pub fn run<S: Sink>(
 
     // No tools, deliberately and visibly: `ChatRequest::new` leaves the field empty and nothing
     // below adds to it.
-    let request = ChatRequest::new(&chat.config.model, messages);
+    let request = ChatRequest::new(&chat.config.default_model, messages);
 
     let mut client = AichatClient::new(chat.config, chat.egress);
     if let Some(subscription) = chat.subscription.as_deref_mut() {

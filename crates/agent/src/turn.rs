@@ -611,7 +611,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let round = Phase::of_round(steps);
         reporter.phase(round);
 
-        let request = ChatRequest::new(&config.model, conversation.with_system(&system));
+        let request = ChatRequest::new(&config.default_model, conversation.with_system(&system));
         let request = if may_call_tools {
             request.with_tools(offered.clone())
         } else {
