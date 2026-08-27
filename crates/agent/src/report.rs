@@ -109,6 +109,11 @@ pub enum Phase {
     Planning,
     /// A later call, with tool results in hand.
     Thinking,
+    /// The conversation is being summarised so that it stops growing.
+    ///
+    /// Worth its own word for the same reason as reconnecting: nothing is being worked out, and
+    /// a pause the user cannot account for is the difference between a slow turn and a stuck one.
+    Compacting,
     /// The request failed in transit and is being sent again.
     ///
     /// Worth its own word because the pause looks like the others and is not one: nothing is
@@ -131,6 +136,7 @@ impl Phase {
         match self {
             Self::Planning => "Planning",
             Self::Thinking => "Thinking",
+            Self::Compacting => "Compacting",
             Self::Reconnecting => "Reconnecting",
         }
     }

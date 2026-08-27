@@ -463,13 +463,19 @@ impl Session {
         // exactly like thinking and is not: nothing is being worked out and what the model had
         // written has been thrown away.
         //
+        // Compacting is one of them too: the request is being summarised, which takes as long as
+        // a round and produces nothing to look at, so without a word for it the session looks
+        // stuck at the moment it is doing the most.
+        //
         // Thinking is not one of them, and neither is the call in flight or the task in hand:
         // both of those are already on their own lines in the transcript above, and repeating
         // the running call here left the spinner reading "Isolated processor(index.html,
         // server.py)…", which is a strange thing for a word beside a spinner to be. What that
         // word is for is showing that the session is alive while the answer takes its time.
         match self.phase {
-            Some(phase @ (Phase::Planning | Phase::Reconnecting)) => Some(phase.word().to_string()),
+            Some(phase @ (Phase::Planning | Phase::Reconnecting | Phase::Compacting)) => {
+                Some(phase.word().to_string())
+            }
             _ => None,
         }
     }

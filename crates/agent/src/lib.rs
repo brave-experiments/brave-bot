@@ -4,6 +4,7 @@
 //! from precommitted routing, never from model output, so a turn cannot be redirected
 //! by the content it processes.
 
+pub mod compact;
 pub mod confirm;
 pub mod conversation;
 pub mod diff;

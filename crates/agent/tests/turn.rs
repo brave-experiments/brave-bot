@@ -6798,3 +6798,170 @@ fn a_turn_without_attachments_still_sends_the_prompt_as_a_bare_string() {
     let last = messages.last().expect("a last message");
     assert_eq!(last["content"], "say hello");
 }
+
+/// A config whose conversations are compacted much sooner than a real one's, so a test need not
+/// build a hundred thousand tokens of history to reach the trigger.
+fn config_with_budget(endpoint: &str, budget: u64) -> Config {
+    Config::from_lookup(|key| match key {
+        "SERVICES_KEY_AICHAT" => Some("test-key".into()),
+        "BRAVE_SERVICES_KEY_ID" => Some("test-id".into()),
+        "BRAVE_AI_CHAT_ENDPOINT" => Some(endpoint.to_string()),
+        "BRAVEBOT_CONTEXT_BUDGET" => Some(budget.to_string()),
+        _ => None,
+    })
+    .expect("config")
+}
+
+/// A session of three exchanges that the server has already said is large.
+fn a_long_conversation() -> bravebot_agent::Conversation {
+    let mut conversation = bravebot_agent::Conversation::new();
+    for (prompt, answer) in [
+        ("port the parser to the new lexer", "started on it"),
+        ("what about the error type", "widened it"),
+        ("carry on", "carrying on"),
+    ] {
+        conversation.push(bravebot_aichat::protocol::Message::user(prompt));
+        conversation.push(bravebot_aichat::protocol::Message::assistant(answer));
+    }
+    conversation.measured(50_000);
+    conversation
+}
+
+/// The whole point. A conversation the server says is nearly too large is summarised before the
+/// next request rather than after the one that gets refused, and the request that follows carries
+/// the summary in place of what it stood for.
+#[test]
+fn a_conversation_past_the_budget_is_summarised_before_the_next_request() {
+    let scratch = Scratch::new("compact-fires");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        reply_with("they are porting the parser and widened the error type"),
+        reply_with("done"),
+    ]);
+    let config = config_with_budget(&endpoint, 1_000);
+    let mut conversation = a_long_conversation();
+
+    take_a_turn(
+        &config,
+        &workspace,
+        &mut conversation,
+        bravebot_core::trust::TrustStore::new(),
+        Task::new("finish it"),
+    )
+    .expect("turn runs");
+
+    let summarising = received.recv().expect("the summariser's request");
+    assert!(
+        summarising.contains("port the parser to the new lexer"),
+        "the summariser was not shown the exchange: {summarising}"
+    );
+
+    let planning = received.recv().expect("the planner's request");
+    assert!(
+        planning.contains("widened the error type"),
+        "the summary did not reach the next request: {planning}"
+    );
+    assert!(
+        !planning.contains("port the parser to the new lexer"),
+        "the summarised exchange was sent anyway: {planning}"
+    );
+}
+
+/// A summariser with a tool would be a second planner, which is a second thing to reason about
+/// rather than a shorter conversation. The request carries none, and nothing may add one.
+#[test]
+fn the_summariser_is_offered_no_tools() {
+    let scratch = Scratch::new("compact-no-tools");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![reply_with("a summary"), reply_with("done")]);
+    let config = config_with_budget(&endpoint, 1_000);
+    let mut conversation = a_long_conversation();
+
+    take_a_turn(
+        &config,
+        &workspace,
+        &mut conversation,
+        bravebot_core::trust::TrustStore::new(),
+        Task::new("finish it"),
+    )
+    .expect("turn runs");
+
+    let summarising = received.recv().expect("the summariser's request");
+    assert!(
+        !summarising.contains("\"tools\""),
+        "the summariser was offered tools: {summarising}"
+    );
+
+    let planning = received.recv().expect("the planner's request");
+    assert!(
+        planning.contains("\"tools\""),
+        "the planner lost its tools: {planning}"
+    );
+}
+
+/// The gate's whole purpose. A summary of a context that has gone untrusted is untrusted, and
+/// there is nowhere for it to go, so the turn carries on with the history it already had rather
+/// than quarantining the planner from its own past.
+#[test]
+fn a_summary_of_an_untrusted_conversation_leaves_the_conversation_whole() {
+    let scratch = Scratch::new("compact-refused");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![reply_with("a summary"), reply_with("done")]);
+    let config = config_with_budget(&endpoint, 1_000);
+
+    let mut snapshot = a_long_conversation().snapshot();
+    snapshot.context = "untrusted".to_string();
+    let mut conversation = bravebot_agent::Conversation::restored(snapshot);
+
+    take_a_turn(
+        &config,
+        &workspace,
+        &mut conversation,
+        bravebot_core::trust::TrustStore::new(),
+        Task::new("finish it"),
+    )
+    .expect("turn runs");
+
+    let _summarising = received.recv().expect("the summariser's request");
+    let planning = received.recv().expect("the planner's request");
+    assert!(
+        planning.contains("port the parser to the new lexer"),
+        "a refused summary took the conversation with it: {planning}"
+    );
+    assert!(
+        conversation
+            .messages()
+            .iter()
+            .any(|m| m.content.text() == "port the parser to the new lexer"),
+        "the conversation was shortened despite the refusal"
+    );
+}
+
+/// A conversation nobody has measured yet is not compacted on the strength of a figure that does
+/// not exist. Every first turn of every session would otherwise open by summarising nothing.
+#[test]
+fn a_conversation_nobody_has_measured_is_not_compacted() {
+    let scratch = Scratch::new("compact-unmeasured");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![reply_with("done")]);
+    let config = config_with_budget(&endpoint, 1);
+
+    take_a_turn(
+        &config,
+        &workspace,
+        &mut bravebot_agent::Conversation::new(),
+        bravebot_core::trust::TrustStore::new(),
+        Task::new("what is 2 + 2?"),
+    )
+    .expect("turn runs");
+
+    let first = received.recv().expect("a request");
+    assert!(
+        first.contains("what is 2 + 2?"),
+        "something was sent before the turn's own request: {first}"
+    );
+}

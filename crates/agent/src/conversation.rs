@@ -53,6 +53,15 @@ pub struct Conversation {
     /// owns every word of it: [`Conversation::recounted`] reads them back. A transcript with a
     /// hole in it where the user's own earlier prompts were is not a saving worth making.
     archive: Vec<Message>,
+    /// What the last request built from this conversation came to, as the server counted it.
+    ///
+    /// Kept here rather than in the turn because a session is many turns and the conversation is
+    /// the only thing that outlives one of them. A figure that started again at zero each turn
+    /// would only ever notice a conversation growing inside a single long turn, and a session of
+    /// fifty short ones would fill the context with nothing watching.
+    ///
+    /// Trusted metadata: a count the server reported, never anything anyone wrote.
+    measured: u64,
 }
 
 impl Default for Conversation {
@@ -72,6 +81,7 @@ impl Conversation {
             references: 0,
             context: Integrity::Trusted,
             archive: Vec::new(),
+            measured: 0,
         }
     }
 
@@ -147,6 +157,23 @@ impl Conversation {
     /// The quarantine, for the kernel to write into and read back out of.
     pub fn quarantine(&mut self) -> &mut SlotStore {
         &mut self.quarantine
+    }
+
+    /// Record what the last request built from this conversation came to.
+    ///
+    /// The server's own figure. There is no tokeniser here, so this is the only measurement of a
+    /// conversation's size that exists, and it is one round out of date by construction: it says
+    /// what the last request came to, not what the next one will.
+    pub fn measured(&mut self, prompt_tokens: u64) {
+        self.measured = prompt_tokens;
+    }
+
+    /// What the last request came to, or zero where none has been sent yet.
+    ///
+    /// Zero reads as "not measured", which is the same thing as "not yet too large" for every
+    /// purpose here.
+    pub fn last_request_tokens(&self) -> u64 {
+        self.measured
     }
 
     /// Where compaction would cut, or `None` when there is nothing worth summarising.
@@ -303,6 +330,12 @@ pub struct Snapshot {
     /// before compaction existed still reads.
     #[serde(default)]
     pub archive: Vec<Message>,
+    /// What the last request built from this conversation came to.
+    ///
+    /// Stored so a resumed session knows it is already large. Without it the first turn after a
+    /// resume sends the whole conversation again to find out what it already knew.
+    #[serde(default)]
+    pub measured: u64,
 }
 
 /// The word for an integrity, as it is written down.
@@ -335,6 +368,7 @@ impl Conversation {
             },
             references: self.references,
             archive: self.archive.clone(),
+            measured: self.measured,
         }
     }
 
@@ -365,6 +399,7 @@ impl Conversation {
                 Integrity::Untrusted
             },
             archive: snapshot.archive,
+            measured: snapshot.measured,
         }
     }
 
@@ -1096,6 +1131,7 @@ mod tests {
                 context: word.to_string(),
                 references: 0,
                 archive: Vec::new(),
+                measured: 0,
             });
             assert_eq!(
                 restored.context(),
