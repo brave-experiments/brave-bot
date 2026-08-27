@@ -5012,3 +5012,60 @@ fn a_single_skipped_skill_is_counted_in_the_singular() {
         outcome.notices
     );
 }
+
+/// A model the user chose must be the one asked for, or the choice is decoration.
+#[test]
+fn a_chosen_model_is_the_one_requested() {
+    let scratch = Scratch::new("chosen-model");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("anything").with_model(Some("claude-3-sonnet".to_string()));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        body.contains(r#""model":"claude-3-sonnet""#),
+        "the chosen model was not requested: {body}"
+    );
+}
+
+/// Choosing nothing is not choosing "", so a turn with no choice falls back to the configured
+/// default rather than sending an empty field the server would reset anyway.
+#[test]
+fn without_a_choice_the_configured_default_is_requested() {
+    let scratch = Scratch::new("default-model");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("anything");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        body.contains(r#""model":"automatic""#),
+        "the default was not requested: {body}"
+    );
+}

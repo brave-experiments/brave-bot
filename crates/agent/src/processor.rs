@@ -92,6 +92,12 @@ pub struct Chat<'a> {
     pub config: &'a Config,
     pub egress: &'a Egress,
     pub subscription: Option<&'a mut dyn Subscription>,
+    /// The model the user chose, if they chose one. `None` uses the configured default.
+    ///
+    /// The planner's model, deliberately: a processor is doing the turn's work on the turn's
+    /// behalf, and quietly running it on something else would make the choice mean less than it
+    /// appears to.
+    pub model: Option<&'a str>,
 }
 
 /// What one processor run produced.
@@ -182,7 +188,8 @@ pub fn run<S: Sink>(
 
     // No tools, deliberately and visibly: `ChatRequest::new` leaves the field empty and nothing
     // below adds to it.
-    let request = ChatRequest::new(&chat.config.default_model, messages);
+    let model = chat.model.unwrap_or(&chat.config.default_model);
+    let request = ChatRequest::new(model, messages);
 
     let mut client = AichatClient::new(chat.config, chat.egress);
     if let Some(subscription) = chat.subscription.as_deref_mut() {

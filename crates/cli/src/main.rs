@@ -156,7 +156,12 @@ fn run_task(args: &[String]) -> ExitCode {
     let egress = bua_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let mut task = Task::new(prompt).with_home(bua_agent::home::directory());
+    // The same choice the interface records. A preference about which model to think with is the
+    // user's, not the interface's, so a one-shot run honours it rather than reverting to the
+    // default the environment happens to name.
+    let mut task = Task::new(prompt)
+        .with_home(bua_agent::home::directory())
+        .with_model(bua_tui::store::load_model());
     for file in files {
         task = task.with_file(file);
     }
@@ -474,7 +479,12 @@ fn doctor() -> ExitCode {
                 None => println!("  premium   not configured"),
             }
             println!("  key id    {}", config.key_id);
-            println!("  model     {} (default)", config.default_model);
+            // What a run would actually request, since a choice made with `/model` overrides the
+            // configured default and reporting only the default would explain the wrong thing.
+            match bua_tui::store::load_model() {
+                Some(chosen) => println!("  model     {chosen} (chosen with /model)"),
+                None => println!("  model     {} (default)", config.default_model),
+            }
             println!("  key       {} (never transmitted)", config.signing_key);
             report_subscription();
         }

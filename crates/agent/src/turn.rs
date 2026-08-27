@@ -277,6 +277,12 @@ pub struct Task {
     /// on whatever the developer happened to have installed, and a run would differ from the
     /// same run elsewhere for reasons nothing in the task described.
     pub home: Option<PathBuf>,
+    /// The model to request, when the user has chosen one.
+    ///
+    /// `None` means the configured default applies. Supplied per turn rather than read here for
+    /// the same reason as `home`: where the choice is stored is the caller's business, and a turn
+    /// should not differ from the same turn elsewhere for reasons the task does not state.
+    pub model: Option<String>,
 }
 
 impl Task {
@@ -286,6 +292,7 @@ impl Task {
             files: Vec::new(),
             piped: None,
             home: None,
+            model: None,
         }
     }
 
@@ -305,6 +312,12 @@ impl Task {
     /// the correct behaviour for a caller that has not said where those live.
     pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
         self.home = home;
+        self
+    }
+
+    /// Request a particular model rather than the configured default.
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
         self
     }
 }
@@ -611,7 +624,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let round = Phase::of_round(steps);
         reporter.phase(round);
 
-        let request = ChatRequest::new(&config.default_model, conversation.with_system(&system));
+        let model = task.model.as_deref().unwrap_or(&config.default_model);
+        let request = ChatRequest::new(model, conversation.with_system(&system));
         let request = if may_call_tools {
             request.with_tools(offered.clone())
         } else {
@@ -776,6 +790,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         subscription: subscription
                             .as_mut()
                             .map(|s| s as &mut dyn bua_aichat::Subscription),
+                        model: task.model.as_deref(),
                     },
                 },
                 confirmer,

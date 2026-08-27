@@ -211,6 +211,11 @@ pub struct Session {
     /// An `Instant` rather than a stored elapsed value so the display advances between redraws
     /// without anything having to tick it.
     started: Option<Instant>,
+    /// The model the user chose, or `None` to use the configured default.
+    ///
+    /// Read from `~/.bua` at startup and rewritten when `/model` picks one, so the choice outlives
+    /// the session that made it and applies in every directory.
+    model: Option<String>,
 }
 
 impl Session {
@@ -234,6 +239,7 @@ impl Session {
             persist: false,
             said: Vec::new(),
             started: None,
+            model: None,
         }
     }
 
@@ -247,8 +253,26 @@ impl Session {
     /// as typing it would have been.
     pub fn with_stored_history(mut self) -> Self {
         self.history = crate::history::History::from_entries(crate::store::load_history());
+        self.model = crate::store::load_model();
         self.persist = true;
         self
+    }
+
+    /// The model to request, or `None` to use the configured default.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// Record the model the user picked, keeping it for later sessions.
+    ///
+    /// Written through to disk only for a session that persists, which is the same rule history
+    /// follows and for the same reason: a test must not rewrite the developer's own choice.
+    pub fn choose_model(&mut self, model: impl Into<String>) {
+        let model = model.into();
+        if self.persist {
+            crate::store::save_model(&model);
+        }
+        self.model = Some(model);
     }
 
     /// How long the turn in flight has been running, or zero when idle.
@@ -906,6 +930,20 @@ mod tests {
         assert!(!s.is_quitting());
         s.quit();
         assert!(s.is_quitting());
+    }
+
+    /// No choice means the configured default applies, which is not the same as choosing a model
+    /// named "": the turn has to be able to tell those apart.
+    #[test]
+    fn a_session_starts_with_no_model_chosen() {
+        assert_eq!(session().model(), None);
+    }
+
+    #[test]
+    fn choosing_a_model_is_observable() {
+        let mut s = session();
+        s.choose_model("claude-3-sonnet");
+        assert_eq!(s.model(), Some("claude-3-sonnet"));
     }
     /// The indicator only exists while a turn is in flight.
     #[test]

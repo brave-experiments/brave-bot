@@ -553,7 +553,9 @@ fn run_turn_animated(
     // are cheap handles; Egress builds its own connection pool.
     let worker_config = config.clone();
     let worker_workspace = workspace.clone();
-    let task = Task::new(prompt).with_home(bua_agent::home::directory());
+    let task = Task::new(prompt)
+        .with_home(bua_agent::home::directory())
+        .with_model(session.model().map(str::to_string));
     // Kept so a failed turn does not lose the user's decisions.
     let fallback = trust.clone();
 

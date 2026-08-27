@@ -1,24 +1,39 @@
 //! Where global state lives on disk.
 //!
-//! `~/.bua` holds anything that should outlive a session. Only prompt history so far, but the
-//! directory is the place for it rather than a per-project file: a question worth asking again is
-//! usually worth asking in another checkout too.
+//! `~/.bua` holds anything that should outlive a session: prompt history, and the model the user
+//! chose. The directory rather than a per-project file, for the same reason in both cases: a
+//! question worth asking again is usually worth asking in another checkout too, and which model to
+//! think with is not a property of a checkout.
 //!
 //! Every operation here degrades to doing nothing. A missing home directory, a read-only disk, a
-//! corrupt file: none of that is worth refusing to start over, because history is a convenience
-//! and the session works without it.
+//! corrupt file: none of that is worth refusing to start over, because the session works without
+//! any of it, falling back to the configured default.
 //!
 //! # What comes back is not trusted
 //!
 //! A history file can be edited, and on a shared machine it can be edited by someone else. So a
 //! recalled prompt is not fed to a turn: it is placed in the input box, where the user reads it
 //! and presses Enter. That keystroke is what makes it trusted, exactly as typing it would have.
+//!
+//! The model file is a name, not an instruction, and it lands in a request's routing field. What
+//! makes that safe is not the file: it is that the whole directory is the user's own configuration
+//! surface, on the footing [`bua_core::policy::Policy::label_user_configuration`] describes, and
+//! that a name the server does not recognise is reset to `automatic` rather than obeyed.
 
 use std::io::Write;
 use std::path::PathBuf;
 
 /// The history file inside the global state directory.
 const HISTORY_FILE: &str = "history";
+
+/// The chosen model, one line, inside the global state directory.
+const MODEL_FILE: &str = "model";
+
+/// The longest model name worth reading back.
+///
+/// A name goes into a request field, and one this long is not a name the endpoint listed. Bounded
+/// so a corrupt or overwritten file cannot turn into an absurd request.
+const MAX_MODEL_BYTES: usize = 128;
 
 /// Prompts kept on disk.
 ///
@@ -120,6 +135,47 @@ pub fn save_history(entries: &[String]) {
     let temporary = dir.join("history.tmp");
     if std::fs::write(&temporary, body).is_ok() {
         let _ = std::fs::rename(&temporary, dir.join(HISTORY_FILE));
+    }
+}
+
+/// The model the user chose, or `None` if they never have.
+///
+/// Global rather than per-directory: a preference about which model to think with is not a
+/// property of a checkout, and answering it once per project is answering it repeatedly.
+pub fn load_model() -> Option<String> {
+    let path = directory()?.join(MODEL_FILE);
+    parse_model(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Read the model out of the file's contents.
+///
+/// Separate from the I/O so the rules are testable. A blank or over-long file is no choice at all
+/// rather than a choice of nothing: the caller then falls back to the configured default, which is
+/// what a user who has never picked one gets.
+pub fn parse_model(contents: &str) -> Option<String> {
+    let name = contents.lines().next()?.trim();
+    if name.is_empty() || name.len() > MAX_MODEL_BYTES {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Record the model the user chose.
+///
+/// Written to a temporary file and renamed, so an interrupted write leaves the previous choice
+/// rather than a half-written name. Best-effort like everything else here: a choice that could not
+/// be saved still applies to the session that made it.
+pub fn save_model(model: &str) {
+    let Some(dir) = directory() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    let temporary = dir.join("model.tmp");
+    if std::fs::write(&temporary, format!("{model}\n")).is_ok() {
+        let _ = std::fs::rename(&temporary, dir.join(MODEL_FILE));
     }
 }
 
@@ -235,5 +291,38 @@ mod tests {
     fn an_entry_at_the_limit_is_kept() {
         let exact = "x".repeat(MAX_ENTRY_BYTES);
         assert_eq!(parse_history(&format!("{exact}\n")), vec![exact]);
+    }
+
+    #[test]
+    fn a_stored_model_is_read_back_without_its_newline() {
+        assert_eq!(
+            parse_model("claude-3-sonnet\n").as_deref(),
+            Some("claude-3-sonnet")
+        );
+    }
+
+    /// Nothing recorded means no choice, and the caller falls back to the configured default. An
+    /// empty file must not become a request for a model named "".
+    #[test]
+    fn an_empty_file_is_not_a_choice() {
+        for contents in ["", "\n", "   \n"] {
+            assert_eq!(parse_model(contents), None, "{contents:?} became a choice");
+        }
+    }
+
+    /// The file is one line. A second one is not a second choice, and taking the last would let
+    /// anything appended to the file decide what gets requested.
+    #[test]
+    fn only_the_first_line_is_read() {
+        assert_eq!(parse_model("first\nsecond\n").as_deref(), Some("first"));
+    }
+
+    /// The name goes into a request field, so a corrupt file must not turn into an absurd request.
+    #[test]
+    fn an_over_long_name_is_not_a_choice() {
+        let huge = "x".repeat(MAX_MODEL_BYTES + 1);
+        assert_eq!(parse_model(&huge), None);
+        let exact = "x".repeat(MAX_MODEL_BYTES);
+        assert_eq!(parse_model(&exact).as_deref(), Some(exact.as_str()));
     }
 }
