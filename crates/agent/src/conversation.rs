@@ -194,16 +194,7 @@ impl Conversation {
     /// `None` where the head would be nothing but an earlier summary. There is nothing left to
     /// give up in that case, and saying so is better than spending a request to learn it.
     pub fn compaction_boundary(&self) -> Option<usize> {
-        let cut = self.by_exchange().or_else(|| self.by_round())?;
-        self.messages[..cut]
-            .iter()
-            .any(|message| {
-                !message
-                    .content
-                    .as_text()
-                    .is_some_and(|text| text.starts_with(COMPACTED_PREFIX))
-            })
-            .then_some(cut)
+        self.by_exchange().or_else(|| self.by_round())
     }
 
     /// The start of the last [`RECENT_EXCHANGES_KEPT`] exchanges.
@@ -211,9 +202,7 @@ impl Conversation {
     /// A summary is lossy, and what a session is in the middle of is the part that can least
     /// afford to be paraphrased.
     fn by_exchange(&self) -> Option<usize> {
-        let opens = self.boundaries(opens_an_exchange);
-        let cut = *opens.get(opens.len().checked_sub(RECENT_EXCHANGES_KEPT)?)?;
-        (cut > 0).then_some(cut)
+        self.cut_keeping(&self.boundaries(opens_an_exchange), RECENT_EXCHANGES_KEPT)
     }
 
     /// The start of the last [`RECENT_ROUNDS_KEPT`] rounds.
@@ -223,9 +212,43 @@ impl Conversation {
     /// to carry, and a turn on its fortieth round has more history behind it than the sentence
     /// that started it.
     fn by_round(&self) -> Option<usize> {
-        let points = self.boundaries(|message| message.tool_call_id.is_none());
-        let cut = *points.get(points.len().checked_sub(RECENT_ROUNDS_KEPT)?)?;
-        (cut > 0).then_some(cut)
+        self.cut_keeping(
+            &self.boundaries(|message| message.tool_call_id.is_none()),
+            RECENT_ROUNDS_KEPT,
+        )
+    }
+
+    /// The cut that keeps the last `kept` of these boundaries, if it is worth making.
+    ///
+    /// **Worth making is the whole of this.** Summarising costs a model call, so a cut that gives
+    /// up one round in order to keep twelve has spent a round to save almost nothing, and the
+    /// next round is in exactly the same position: a conversation that cannot get under the
+    /// budget would then summarise itself once per round for the rest of the turn, doubling the
+    /// requests and shortening nothing. That is not hypothetical. A request has a floor it cannot
+    /// go below, the system prompt and the tool schemas, and a budget under that floor is
+    /// unreachable however much history is given up.
+    ///
+    /// So at least as much has to be given up as is kept. That pays for the call, and it makes
+    /// the next compaction wait until that much has built up again, which is the hysteresis that
+    /// stops the loop.
+    ///
+    /// An earlier summary does not count towards what is given up. It is already the compressed
+    /// form of something, so re-summarising it buys nothing and loses a little more of it each
+    /// time.
+    fn cut_keeping(&self, points: &[usize], kept: usize) -> Option<usize> {
+        let head = points.len().checked_sub(kept)?;
+        let cut = *points.get(head)?;
+
+        let given_up = points[..head]
+            .iter()
+            .filter(|&&index| {
+                !self.messages[index]
+                    .content
+                    .as_text()
+                    .is_some_and(|text| text.starts_with(COMPACTED_PREFIX))
+            })
+            .count();
+        (given_up >= kept).then_some(cut)
     }
 
     /// The indices a cut may fall on, by whatever rule is asking.
@@ -868,10 +891,18 @@ mod tests {
         assert_eq!(notes, 1, "the note was added again on top of itself");
     }
 
-    /// Three exchanges, the shape most of the compaction tests need.
-    fn three_exchanges() -> Conversation {
+    /// Four exchanges, the shape most of the compaction tests need.
+    ///
+    /// Four rather than three because a cut has to give up at least as much as it keeps, and two
+    /// are kept. Three exchanges is a conversation with nothing worth summarising in it.
+    fn four_exchanges() -> Conversation {
         let mut conversation = Conversation::new();
-        for (prompt, answer) in [("first", "a"), ("second", "b"), ("third", "c")] {
+        for (prompt, answer) in [
+            ("first", "a"),
+            ("second", "b"),
+            ("third", "c"),
+            ("fourth", "d"),
+        ] {
             conversation.push(Message::user(prompt));
             conversation.push(Message::assistant(answer));
         }
@@ -882,7 +913,7 @@ mod tests {
     /// can least afford to be paraphrased.
     #[test]
     fn compaction_keeps_the_most_recent_exchanges_word_for_word() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let boundary = conversation
             .compaction_boundary()
             .expect("something to compact");
@@ -895,7 +926,7 @@ mod tests {
             .collect();
         assert_eq!(kept.len(), 5, "{kept:?}");
         assert!(kept[0].starts_with(COMPACTED_PREFIX), "{kept:?}");
-        assert_eq!(&kept[1..], ["second", "b", "third", "c"]);
+        assert_eq!(&kept[1..], ["third", "c", "fourth", "d"]);
     }
 
     /// The invariant the cut point exists for. `with_system` answers a call nothing answered by
@@ -916,6 +947,8 @@ mod tests {
         conversation.push(Message::assistant("b"));
         conversation.push(Message::user("third"));
         conversation.push(Message::assistant("c"));
+        conversation.push(Message::user("fourth"));
+        conversation.push(Message::assistant("d"));
 
         let boundary = conversation
             .compaction_boundary()
@@ -942,7 +975,7 @@ mod tests {
     fn a_turn_that_is_long_by_itself_gives_up_its_earlier_rounds() {
         let mut conversation = Conversation::new();
         conversation.push(Message::user("find and fix the bug"));
-        for round in 0..10 {
+        for round in 0..14 {
             conversation.push(Message::assistant_calling(
                 "looking",
                 vec![ToolCallRequest {
@@ -963,7 +996,7 @@ mod tests {
         conversation.compacted(boundary, "they are looking for a bug in src/main.rs");
 
         assert!(
-            conversation.len() < 21,
+            conversation.len() < 29,
             "nothing was given up: {}",
             conversation.len()
         );
@@ -987,7 +1020,7 @@ mod tests {
         for answers in 1..=5 {
             let mut conversation = Conversation::new();
             conversation.push(Message::user("fix it"));
-            for round in 0..10 {
+            for round in 0..14 {
                 conversation.push(Message::assistant_calling(
                     "looking",
                     vec![ToolCallRequest {
@@ -1034,11 +1067,72 @@ mod tests {
         assert_eq!(conversation.compaction_boundary(), None);
     }
 
+    /// The bound on futility. A request has a floor it cannot go below, the system prompt and the
+    /// tool schemas, so a budget under that floor is unreachable however much history is given
+    /// up. Without this the turn summarises itself once per round for the rest of its life,
+    /// doubling the requests and shortening nothing: measured at 35 summaries in a turn that
+    /// should have made none.
+    #[test]
+    fn a_cut_that_would_give_up_less_than_it_keeps_is_not_worth_a_request() {
+        let mut conversation = four_exchanges();
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first two things");
+
+        // One more exchange is not enough to pay for another summary.
+        conversation.push(Message::user("fifth"));
+        conversation.push(Message::assistant("e"));
+        assert_eq!(conversation.compaction_boundary(), None);
+
+        // Two is.
+        conversation.push(Message::user("sixth"));
+        conversation.push(Message::assistant("f"));
+        assert!(conversation.compaction_boundary().is_some());
+    }
+
+    /// The same bound on the round fallback, which is where it was actually costing something: a
+    /// long turn added one round at a time, so each compaction gave up one round to keep twelve.
+    #[test]
+    fn a_long_turn_does_not_summarise_itself_once_per_round() {
+        let mut conversation = Conversation::new();
+        conversation.push(Message::user("find and fix the bug"));
+
+        let mut summaries = 0;
+        for round in 0..40 {
+            conversation.push(Message::assistant_calling(
+                "looking",
+                vec![ToolCallRequest {
+                    id: format!("call-{round}"),
+                    kind: "function".to_string(),
+                    function: ToolCallRequestFunction {
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+                    },
+                }],
+            ));
+            conversation.push(Message::tool_result(format!("call-{round}"), "some lines"));
+
+            // What the turn loop does every round once the budget is passed.
+            if let Some(boundary) = conversation.compaction_boundary() {
+                conversation.compacted(boundary, "they are looking for a bug in src/main.rs");
+                summaries += 1;
+            }
+        }
+
+        assert!(
+            summaries <= 40 / RECENT_ROUNDS_KEPT + 1,
+            "a summary every {} rounds or so was expected, and there were {summaries}",
+            RECENT_ROUNDS_KEPT
+        );
+        assert!(summaries > 0, "the longest turn there is never compacted");
+    }
+
     /// There is nothing left to give up, and saying so beats spending a request to summarise a
     /// summary into a summary.
     #[test]
     fn a_head_that_is_only_an_earlier_summary_is_not_compacted_again() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let boundary = conversation
             .compaction_boundary()
             .expect("something to compact");
@@ -1051,14 +1145,16 @@ mod tests {
     /// would compact once and then grow forever.
     #[test]
     fn a_conversation_that_carries_on_after_a_summary_compacts_again() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let boundary = conversation
             .compaction_boundary()
             .expect("something to compact");
         conversation.compacted(boundary, "they asked about the first thing");
 
-        conversation.push(Message::user("fourth"));
-        conversation.push(Message::assistant("d"));
+        for (prompt, answer) in [("fifth", "e"), ("sixth", "f")] {
+            conversation.push(Message::user(prompt));
+            conversation.push(Message::assistant(answer));
+        }
         assert!(conversation.compaction_boundary().is_some());
     }
 
@@ -1066,7 +1162,7 @@ mod tests {
     /// spent an afternoon on must not find their own earlier prompts missing from it.
     #[test]
     fn what_compaction_took_out_of_the_request_is_still_recounted_to_the_person() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let boundary = conversation
             .compaction_boundary()
             .expect("something to compact");
@@ -1081,6 +1177,8 @@ mod tests {
                 Said::Assistant("b".to_string()),
                 Said::User("third".to_string()),
                 Said::Assistant("c".to_string()),
+                Said::User("fourth".to_string()),
+                Said::Assistant("d".to_string()),
             ]
         );
     }
@@ -1089,7 +1187,7 @@ mod tests {
     /// the user never typed, on top of the exchange it is standing in for.
     #[test]
     fn the_summary_is_not_shown_as_something_the_user_said() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let boundary = conversation
             .compaction_boundary()
             .expect("something to compact");
@@ -1106,7 +1204,7 @@ mod tests {
     /// Slots are written once, so a name handed out twice is a collision rather than a muddle.
     #[test]
     fn compaction_does_not_rewind_the_reference_counter() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let _ = conversation.next_reference();
         let _ = conversation.next_reference();
 
@@ -1123,7 +1221,7 @@ mod tests {
     /// is the failure a resume already has and compaction has no excuse for.
     #[test]
     fn a_reference_minted_before_compaction_still_names_its_content_after_it() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let slot = conversation.next_reference();
         conversation
             .quarantine()
@@ -1147,7 +1245,7 @@ mod tests {
     /// whether they still work, so without this the planner finds out by being refused.
     #[test]
     fn compaction_says_which_references_still_work() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let slot = conversation.next_reference();
         conversation
             .quarantine()
@@ -1169,7 +1267,7 @@ mod tests {
     /// slot. Claiming it still names something would send the planner after nothing.
     #[test]
     fn a_reference_that_was_never_quarantined_is_not_claimed_to_be_live() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let _ = conversation.next_reference();
 
         let boundary = conversation
@@ -1185,7 +1283,7 @@ mod tests {
     /// makes the shortening free for the person reading it.
     #[test]
     fn a_compacted_conversation_survives_being_written_down() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         let boundary = conversation
             .compaction_boundary()
             .expect("something to compact");
@@ -1199,7 +1297,7 @@ mod tests {
                 .as_text()
                 .is_some_and(|text| text.starts_with(COMPACTED_PREFIX))
         );
-        assert_eq!(restored.recounted().len(), 6);
+        assert_eq!(restored.recounted().len(), 8);
     }
 
     /// Session files predate this field. Someone resuming yesterday's work should not be told
@@ -1219,7 +1317,7 @@ mod tests {
     /// and a summary that came back trusted would be the one upgrade this repository forbids.
     #[test]
     fn compaction_does_not_restore_integrity_the_conversation_had_lost() {
-        let mut conversation = three_exchanges();
+        let mut conversation = four_exchanges();
         conversation.observed(Integrity::Untrusted);
 
         let boundary = conversation

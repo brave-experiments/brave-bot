@@ -6818,6 +6818,7 @@ fn a_long_conversation() -> bravebot_agent::Conversation {
     for (prompt, answer) in [
         ("port the parser to the new lexer", "started on it"),
         ("what about the error type", "widened it"),
+        ("now the tests", "updated them"),
         ("carry on", "carrying on"),
     ] {
         conversation.push(bravebot_aichat::protocol::Message::user(prompt));
@@ -6973,14 +6974,15 @@ fn a_conversation_nobody_has_measured_is_not_compacted() {
 #[test]
 fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
     let scratch = Scratch::new("compact-mid-turn");
-    for n in 1..=9 {
+    for n in 1..=15 {
         std::fs::write(scratch.path.join(format!("f{n}.txt")), format!("value {n}")).unwrap();
     }
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    // Nine rounds of reading a file, then an answer. Every reply reports a request far past the
-    // budget, so compaction is attempted before each round from the second onwards.
-    let mut replies: Vec<String> = (1..=9)
+    // Fifteen rounds of reading a file, then an answer. Every reply reports a request far past
+    // the budget, so compaction is attempted before each round from the second onwards, and is
+    // worth making once enough rounds have built up behind it.
+    let mut replies: Vec<String> = (1..=15)
         .map(|n| {
             tool_request_with_usage(
                 "read_file",
@@ -6991,7 +6993,8 @@ fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
         })
         .collect();
     replies.push(reply_with_usage("read them all", 50_000, 10));
-    // One more, for the summary the turn asks for partway through.
+    // Two more, for the summaries the turn asks for on its way through.
+    replies.push(reply_with("they have been reading f1.txt onwards"));
     replies.push(reply_with("they have been reading f1.txt onwards"));
 
     let (endpoint, received) = serve_sequence(replies);
@@ -7003,7 +7006,7 @@ fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
         &workspace,
         &mut conversation,
         trusting_the_workspace(),
-        Task::new("read f1.txt through f9.txt, one at a time"),
+        Task::new("read f1.txt through f15.txt, one at a time"),
     )
     .expect("turn runs");
 
@@ -7021,5 +7024,16 @@ fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
             .expect("a last request")
             .contains("Earlier in this conversation:"),
         "the summary never reached a later round"
+    );
+
+    // And not once per round. A conversation that cannot get under the budget would otherwise
+    // spend a model call every round for the rest of the turn, shortening nothing.
+    let summaries = bodies
+        .iter()
+        .filter(|body| body.contains("Summarise everything above"))
+        .count();
+    assert!(
+        summaries <= 3,
+        "the turn summarised itself {summaries} times in 16 rounds"
     );
 }
