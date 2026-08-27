@@ -491,7 +491,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         Paragraph::new(Line::from(Span::styled(
             format!(
                 "  {trail}  ·  drag to copy  ·  pgup/pgdn or scroll to look back  ·  \
-                 ctrl-c exit  ·  confinement {}",
+                 /exit or ctrl-c to exit  ·  confinement {}",
                 session.confinement
             ),
             dim(),
@@ -736,7 +736,7 @@ mod tests {
         let session = Session::new("kernel-enforced");
         let output = rendered(&session);
         assert!(output.contains("kernel-enforced"));
-        assert!(output.contains("ctrl-c exit"));
+        assert!(output.contains("/exit or ctrl-c to exit"));
     }
 
     #[test]

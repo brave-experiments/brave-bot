@@ -55,6 +55,9 @@ const TRACK_MOTION_ONLY_WHILE_DRAGGING: &str = "\x1b[?1003l\x1b[?1000h\x1b[?1002
 /// advances by one glyph per redraw rather than skipping.
 const FRAME: Duration = Duration::from_millis(120);
 
+/// The one line that ends the session instead of starting a turn.
+const EXIT_COMMAND: &str = "/exit";
+
 /// What a key press asked for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -97,6 +100,12 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             Action::Redraw
         }
         KeyCode::Esc => {
+            session.quit();
+            Action::Quit
+        }
+        // Typed before submitting, so the word never reaches the planner as a prompt.
+        KeyCode::Enter if session.input.trim() == EXIT_COMMAND => {
+            session.clear_input();
             session.quit();
             Action::Quit
         }
@@ -970,6 +979,38 @@ mod tests {
         handle_key(&mut session, key(KeyCode::Backspace));
         assert!(session.input.is_empty(), "backspace did not clear the line");
         assert_eq!(handle_key(&mut session, ctrl('d')), Action::Quit);
+    }
+
+    /// The word is a command, not a prompt: it must end the session rather than reach the planner.
+    #[test]
+    fn typing_the_exit_command_quits() {
+        let mut session = Session::new("none");
+        for c in "/exit".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::Quit);
+        assert!(session.is_quitting());
+        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// Only the bare word, so a prompt that merely mentions it is still a prompt.
+    #[test]
+    fn a_prompt_containing_the_exit_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /exit do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /exit do".to_string())
+        );
+        assert!(!session.is_quitting());
     }
 
     #[test]
