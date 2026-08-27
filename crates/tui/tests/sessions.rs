@@ -358,3 +358,92 @@ fn the_audit_keeps_the_time_each_event_happened() {
         "the events were stamped when they were written down rather than when they happened"
     );
 }
+
+/// A renamed session must be findable under its new name at once, without waiting for another
+/// turn: a user who renames and then walks away should not lose the name.
+#[test]
+fn renaming_a_session_rewrites_the_record_immediately() {
+    let scratch = Scratch::new("rename");
+    let conversation = a_conversation();
+
+    let mut handle = Handle::begin(&scratch.project);
+    handle.save(
+        "make a space invaders game",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 1_200,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+        },
+    );
+    let derived = sessions::list(&scratch.project)[0].title.clone();
+    assert_eq!(derived, "make a space invaders game");
+
+    assert!(handle.rename("the parser bug"));
+
+    let listed = sessions::list(&scratch.project);
+    assert_eq!(listed.len(), 1, "renaming made a second session");
+    assert_eq!(listed[0].title, "the parser bug");
+
+    // The rest of the record has to survive being amended, since a rename knows none of it.
+    let record = sessions::load(&scratch.project, handle.id()).expect("the record is still there");
+    assert_eq!(record.turns, 1);
+    assert_eq!(record.tokens, 1_200);
+    assert!(
+        !record.conversation.messages.is_empty(),
+        "the conversation was lost"
+    );
+}
+
+/// The chosen name has to outlast the turn that follows it, or the derived title would take it
+/// back the moment the user said anything else.
+#[test]
+fn a_chosen_name_survives_the_next_turn() {
+    let scratch = Scratch::new("rename-survives");
+    let conversation = a_conversation();
+
+    let mut handle = Handle::begin(&scratch.project);
+    assert!(handle.rename("the parser bug"));
+    handle.save(
+        "some later question entirely",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 10,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+        },
+    );
+
+    assert_eq!(sessions::list(&scratch.project)[0].title, "the parser bug");
+}
+
+/// Renaming before the first turn has no record to rewrite, so the name has to wait on the handle
+/// and be written by the first save rather than being dropped.
+#[test]
+fn a_session_can_be_named_before_it_has_a_record() {
+    let scratch = Scratch::new("rename-early");
+    let mut handle = Handle::begin(&scratch.project);
+
+    assert!(handle.rename("named up front"));
+    assert!(
+        sessions::list(&scratch.project).is_empty(),
+        "renaming created a record for a session with no turns"
+    );
+    assert_eq!(handle.title(), "named up front");
+}
+
+/// An empty name is refused rather than silently keeping the old one, which would look like the
+/// rename worked.
+#[test]
+fn an_empty_name_is_refused() {
+    let scratch = Scratch::new("rename-empty");
+    let mut handle = Handle::begin(&scratch.project);
+    handle.rename("a real name");
+
+    for empty in ["", "   ", "\t"] {
+        assert!(!handle.rename(empty), "{empty:?} was accepted");
+    }
+    assert_eq!(handle.title(), "a real name");
+}

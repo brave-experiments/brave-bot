@@ -64,6 +64,9 @@ const ADD_DIR_COMMAND: &str = "/add-dir";
 /// The line that starts a new session in place of this one.
 const CLEAR_COMMAND: &str = "/clear";
 
+/// The line that renames this session, taking the new name as its argument.
+const RENAME_COMMAND: &str = "/rename";
+
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
 
@@ -71,16 +74,21 @@ const EXIT_COMMAND: &str = "/exit";
 ///
 /// The hint is drawn from this rather than from a second copy of the words, so a command that is
 /// renamed or added cannot leave the line advertising something that no longer works.
-pub const COMMANDS: [&str; 4] = [MODEL_COMMAND, ADD_DIR_COMMAND, CLEAR_COMMAND, EXIT_COMMAND];
+pub const COMMANDS: [&str; 5] = [
+    MODEL_COMMAND,
+    ADD_DIR_COMMAND,
+    RENAME_COMMAND,
+    CLEAR_COMMAND,
+    EXIT_COMMAND,
+];
 
-/// The directory `/add-dir` was asked to open, if that is what the line is.
+/// The argument given to `command`, if that is what the line is.
 ///
-/// `None` for anything else, so a prompt that merely mentions the word is still a prompt. The
-/// bare command with no argument is `Some("")`, which the loop answers by saying what it needs
-/// rather than silently doing nothing.
-fn add_dir_argument(line: &str) -> Option<&str> {
-    let line = line.trim();
-    let rest = line.strip_prefix(ADD_DIR_COMMAND)?;
+/// `None` for anything else, so a prompt that merely mentions the word is still a prompt, and so is
+/// a longer word that happens to start with it. The bare command with no argument is `Some("")`,
+/// which the caller answers by saying what it needs rather than silently doing nothing.
+fn argument_to<'a>(line: &'a str, command: &str) -> Option<&'a str> {
+    let rest = line.trim().strip_prefix(command)?;
     if rest.is_empty() {
         return Some("");
     }
@@ -104,6 +112,8 @@ pub enum Action {
     AddDirectory(String),
     /// Start a new session here. Needs the conversation and the session record, which the loop owns.
     Clear,
+    /// Call this session something else. Needs the session record, which the loop owns.
+    Rename(String),
     Quit,
 }
 
@@ -153,12 +163,19 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.clear_input();
             Action::Clear
         }
-        KeyCode::Enter if add_dir_argument(&session.input).is_some() => {
-            let directory = add_dir_argument(&session.input)
+        KeyCode::Enter if argument_to(&session.input, ADD_DIR_COMMAND).is_some() => {
+            let directory = argument_to(&session.input, ADD_DIR_COMMAND)
                 .expect("the guard just matched")
                 .to_string();
             session.clear_input();
             Action::AddDirectory(directory)
+        }
+        KeyCode::Enter if argument_to(&session.input, RENAME_COMMAND).is_some() => {
+            let name = argument_to(&session.input, RENAME_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            Action::Rename(name)
         }
         KeyCode::Enter => match session.submit() {
             Some(prompt) => Action::Submit(prompt),
@@ -515,6 +532,15 @@ fn event_loop(
             }
             Action::AddDirectory(directory) => {
                 add_directory(&mut session, &mut workspace, &mut trust, &directory);
+            }
+            Action::Rename(name) => {
+                if name.is_empty() {
+                    session.note("/rename needs a name, as in /rename the parser bug");
+                } else if stored.rename(&name) {
+                    session.note(format!("renamed to {}", stored.title()));
+                } else {
+                    session.note("/rename needs a name with something in it");
+                }
             }
             Action::Clear => {
                 // A new handle means a new id, so the session so far keeps its own files and stays
@@ -1316,6 +1342,70 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("does /clear delete anything".to_string())
         );
+    }
+
+    /// The name is the point of this one, so it must arrive with the action, spaces and all.
+    #[test]
+    fn the_rename_command_carries_the_whole_name() {
+        let mut session = Session::new("none");
+        for c in "/rename the parser bug".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Rename("the parser bug".to_string())
+        );
+        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// With no name there is nothing to rename to, and the loop says so.
+    #[test]
+    fn the_bare_rename_command_is_still_the_command() {
+        let mut session = Session::new("none");
+        for c in RENAME_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Rename(String::new())
+        );
+    }
+
+    /// A sentence mentioning it is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_rename_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /rename do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /rename do".to_string())
+        );
+    }
+
+    /// One parser serves every command that takes an argument, so its rules are worth pinning
+    /// once: the bare word, the word with an argument, and a longer word that merely starts alike.
+    #[test]
+    fn an_argument_is_taken_only_after_the_whole_command_word() {
+        assert_eq!(
+            argument_to("/rename a name", RENAME_COMMAND),
+            Some("a name")
+        );
+        assert_eq!(argument_to("/rename", RENAME_COMMAND), Some(""));
+        assert_eq!(
+            argument_to("  /rename  spaced  ", RENAME_COMMAND),
+            Some("spaced")
+        );
+        assert_eq!(argument_to("/renamed thing", RENAME_COMMAND), None);
+        assert_eq!(argument_to("please /rename it", RENAME_COMMAND), None);
     }
 
     /// A directory whose own name begins with a tilde is not a home-relative path.

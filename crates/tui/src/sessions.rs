@@ -231,6 +231,55 @@ impl Handle {
         &self.id
     }
 
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Call the session something the user chose.
+    ///
+    /// Takes effect at once rather than at the next turn, by rewriting the record where there is
+    /// one: a session renamed and then left alone should be findable under its new name, and one
+    /// renamed before its first turn has no record to rewrite yet, so the name waits on the handle
+    /// and `save` writes it.
+    ///
+    /// The name is trimmed and cut to the length a derived title gets, since it goes in the same
+    /// column of the same list. An empty name is refused, which the caller reports: silently
+    /// keeping the old one would look like the rename worked.
+    pub fn rename(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        self.title = title_from(name);
+        self.rewrite_title();
+        true
+    }
+
+    /// Put the current title into the record on disk, if the session has one yet.
+    ///
+    /// Read, amended and written rather than rebuilt, because everything else in the record belongs
+    /// to the turns that produced it and this knows none of it.
+    fn rewrite_title(&self) {
+        let Some(directory) = self.directory() else {
+            return;
+        };
+        let path = directory.join(format!("{}.json", self.id));
+        let Some(mut record) = read(&path) else {
+            return;
+        };
+        record.title = self.title.clone();
+        record.updated = now();
+
+        let Ok(body) = serde_json::to_vec_pretty(&record) else {
+            return;
+        };
+        // Beside and renamed, as `save` does, so an interrupted rename leaves the record it had.
+        let temporary = directory.join(format!("{}.tmp", self.id));
+        if std::fs::write(&temporary, body).is_ok() {
+            let _ = std::fs::rename(&temporary, path);
+        }
+    }
+
     /// Write the session down as it now stands.
     ///
     /// Called after each turn rather than at the end, because the end may never come: a session
