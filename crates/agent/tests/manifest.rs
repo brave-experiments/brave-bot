@@ -714,8 +714,13 @@ fn a_manifest_that_will_not_parse_comes_back_verbatim() {
     assert!(attempt.steps.is_empty());
 
     // And the report a person reads shows the words rather than only complaining about them.
+    // The goal is not in it: the caller narrates that as the run happens, and repeating it here
+    // printed it twice on every path.
     let report = attempt.describe();
-    assert!(report.contains("goal, as understood"));
+    assert!(
+        !report.contains("goal, as understood"),
+        "the goal was repeated"
+    );
     assert!(report.contains("not usable"));
     assert!(report.contains("then decide what to do"));
 }

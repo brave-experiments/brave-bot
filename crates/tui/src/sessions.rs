@@ -411,7 +411,7 @@ pub fn list(project: &Path) -> Vec<Summary> {
         })
         .collect();
 
-    summaries.sort_by(|a, b| b.updated.cmp(&a.updated));
+    summaries.sort_by_key(|summary| std::cmp::Reverse(summary.updated));
     summaries
 }
 

@@ -316,7 +316,7 @@ impl std::fmt::Display for PlanError {
 /// Not validation. Anything this rejects is a document that is not a plan at all, which is a
 /// different question from whether a plan is well formed. That question belongs to the kernel.
 fn parse(source: &str) -> Result<Draft, PlanError> {
-    let document: Value = serde_json::from_str(source.trim())
+    let document: Value = serde_json::from_str(document_in(source))
         .map_err(|e| PlanError::Malformed(format!("not JSON: {e}")))?;
 
     // The planner's own way of saying it cannot do this. Honoured rather than treated as a
@@ -341,6 +341,11 @@ fn parse(source: &str) -> Result<Draft, PlanError> {
         let mut parsed = DraftStep::new(capability);
         if let Some(args) = step.get("args").and_then(Value::as_object) {
             for (key, value) in args {
+                // An optional argument the planner declined. Absent and null say the same
+                // thing, and a model writing null is being idiomatic rather than wrong.
+                if value.is_null() {
+                    continue;
+                }
                 let arg = read_arg(value).ok_or_else(|| {
                     PlanError::Malformed(format!(
                         "step {index}: '{key}' is not text, a whole number, or a list of names"
@@ -370,6 +375,82 @@ fn read_arg(value: &Value) -> Option<Arg> {
             .map(Arg::List),
         _ => None,
     }
+}
+
+/// The plan document inside a chat reply, with its packaging removed.
+///
+/// A planning call is a chat call, and models answer chat the way chat is written: a reasoning
+/// block, then the document inside a markdown fence. Neither is part of the plan, and most of the
+/// catalogue answers this way, so a parser that reads the whole reply throws away correct plans
+/// over their wrapping.
+///
+/// What is not removed is prose. `a_plan_wrapped_in_prose_is_refused` states the rule this keeps:
+/// a plan recovered from a paragraph is a plan nobody wrote, and hunting for the first brace in
+/// "I could do {this} or {that}" produces exactly that. A fence and a reasoning block are
+/// different in kind because both are delimited, so taking the wrapping off cannot pick the wrong
+/// document.
+fn document_in(reply: &str) -> &str {
+    let text = reply.trim();
+    let text = without_leading_reasoning(text);
+    unfenced(text).unwrap_or(text)
+}
+
+/// `text` with a leading `<think>...</think>` block removed.
+///
+/// Leading only. A tag further in is inside the document, and removing it would be editing the
+/// plan rather than unwrapping it.
+fn without_leading_reasoning(text: &str) -> &str {
+    for (open, close) in REASONING_TAGS {
+        if let Some(rest) = text.strip_prefix(open)
+            && let Some(at) = rest.find(close)
+        {
+            return rest[at + close.len()..].trim_start();
+        }
+    }
+    text
+}
+
+/// The tags a reply may open with. Written out rather than built from names so the set a reader
+/// has to trust is visible, and so nothing is allocated to look for one that is not there.
+const REASONING_TAGS: [(&str, &str); 3] = [
+    ("<think>", "</think>"),
+    ("<thinking>", "</thinking>"),
+    ("<reasoning>", "</reasoning>"),
+];
+
+/// The document inside a fence that wraps the whole of `text`, or `None`.
+///
+/// The same test `bua_core::fence` applies to a processor's answer on `main`: the first line
+/// opens a fence, the last closes one, and nothing between them closes it early. A fence that
+/// closes in the middle means the reply is prose containing a block rather than one block, and
+/// that is the case this must not touch.
+fn unfenced(text: &str) -> Option<&str> {
+    let (opening, rest) = text.split_once('\n')?;
+    let marker = backticks(opening.trim_end());
+    // Three or more, as markdown requires. The rest of the opening line is the language, which
+    // may be anything but must not contain a backtick.
+    if marker < 3 || opening.trim_end()[marker..].contains('`') {
+        return None;
+    }
+
+    let (body, closing) = rest.rsplit_once('\n')?;
+    let closing = closing.trim();
+    if backticks(closing) < marker || !closing.trim_matches('`').is_empty() {
+        return None;
+    }
+    if body
+        .lines()
+        .any(|line| backticks(line.trim_start()) >= marker)
+    {
+        return None;
+    }
+
+    Some(body.trim())
+}
+
+/// How many backticks a line opens with.
+fn backticks(line: &str) -> usize {
+    line.chars().take_while(|c| *c == '`').count()
 }
 
 /// Phase 2. Capability names become tool names, deterministically and with no model.
@@ -538,15 +619,14 @@ impl Attempt {
         ));
     }
 
-    /// How the whole attempt reads to a person, for a failure report.
+    /// How the attempt reads to a person, for a failure report.
+    ///
+    /// The goal is deliberately absent. Every caller narrates it as the run happens, so
+    /// repeating it here printed it twice on every path: under `--trace` on success, and
+    /// unconditionally on failure. What a reader still needs afterwards is the plan, or the
+    /// document that would not become one, and which steps ran.
     pub fn describe(&self) -> String {
         let mut out = String::new();
-        if let Some(shape) = &self.shape {
-            out.push_str("goal, as understood\n");
-            for line in shape.lines() {
-                out.push_str(&format!("  {line}\n"));
-            }
-        }
         match (&self.plan, &self.proposed) {
             (Some(plan), _) => out.push_str(plan),
             // No frozen plan means it never validated, so the model's own words are all there is.
@@ -735,6 +815,10 @@ fn ask<S: Sink, R: Reporter>(
     *model = completion.model;
 
     let (spoken, _) = completion.content.into_parts_for_decoding();
+    // A reasoning block is the model thinking aloud rather than answering, and this is the one
+    // place a reply enters the module. Removed here so no later reader has to know about it:
+    // narration, the report, the history, and the parser all see the same text.
+    let spoken = without_leading_reasoning(&spoken).to_string();
     let labelled = policy.label_model_output(round, spoken);
     policy
         .read_trusted_content(round, &labelled)
@@ -1288,11 +1372,73 @@ mod tests {
     fn a_plan_wrapped_in_prose_is_refused() {
         for text in [
             "Sure! Here is the plan: {\"steps\": []}",
-            "```json\n{\"steps\": []}\n```",
+            "I could do {\"steps\": []} or something else entirely}",
             "",
         ] {
             assert!(parse(text).is_err(), "'{text}' was accepted");
         }
+    }
+
+    /// A fence and a reasoning block are packaging rather than prose: both are delimited, so
+    /// taking them off cannot pick the wrong document. Most of the catalogue answers this way,
+    /// and refusing them made the mode unusable with those models.
+    #[test]
+    fn packaging_around_a_plan_is_removed() {
+        for text in [
+            "```json\n{\"steps\": []}\n```",
+            "```\n{\"steps\": []}\n```",
+            "<think>the user wants a listing</think>{\"steps\": []}",
+        ] {
+            assert!(parse(text).is_ok(), "'{text}' was refused");
+        }
+    }
+
+    /// A reasoning block is stored and shown to a person, so it is removed at the source rather
+    /// than at each place that displays it.
+    #[test]
+    fn a_leading_reasoning_block_is_not_part_of_the_answer() {
+        assert_eq!(
+            without_leading_reasoning("<think>an aside</think>1. read the file"),
+            "1. read the file"
+        );
+        assert_eq!(
+            without_leading_reasoning("1. read the file"),
+            "1. read the file"
+        );
+        // Not leading, so inside the answer and not ours to edit.
+        assert_eq!(
+            without_leading_reasoning("1. mention <think> in a document"),
+            "1. mention <think> in a document"
+        );
+    }
+
+    /// The plan `llama-3-8b-instruct` returned, refused for writing null where it meant to
+    /// leave an optional argument out.
+    #[test]
+    fn a_null_optional_argument_is_the_same_as_an_absent_one() {
+        let plan = r#"{"steps": [{"capability": "FILE_LIST", "args": {"directory": ".", "pattern": null, "out_slot": "file_list"}}]}"#;
+        let draft = parse(plan).expect("null is an argument declined, not a malformed one");
+        assert_eq!(draft.steps.len(), 1);
+    }
+
+    /// A reply that is prose containing a fenced block is not a fenced plan, and salvaging the
+    /// block out of it would be the guessing the rule above forbids.
+    #[test]
+    fn prose_containing_a_fence_is_still_prose() {
+        assert!(parse("Here you go:\n```json\n{\"steps\": []}\n```\nlet me know").is_err());
+    }
+
+    /// The reply `near-glm-5` returned, refused with "not JSON: expected value at line 1
+    /// column 1" before packaging was removed: a reasoning block, then a fence.
+    #[test]
+    fn the_reply_a_reasoning_model_returns_is_a_plan() {
+        let reply = "<think>The user wants me to list all files in the current directory. This \
+                     is a simple FILE_LIST operation.</think>```json\n{\"steps\": \
+                     [{\"capability\": \"FILE_LIST\", \"args\": {\"directory\": \".\", \
+                     \"out_slot\": \"files\"}}, {\"capability\": \"ANSWER\", \"args\": \
+                     {\"from_slot\": \"files\"}}]}\n```";
+        let draft = parse(reply).expect("a plan wrapped in reasoning and a fence");
+        assert_eq!(draft.steps.len(), 2);
     }
 
     /// Surrounding whitespace is formatting, not a different document.
