@@ -487,11 +487,16 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         "ctrl-t show trail"
     };
 
+    // Listed from the commands themselves, so renaming one cannot leave the hint advertising a
+    // word that no longer works. Grouped rather than divided one by one, because four commands each
+    // with its own divider runs off the side of an ordinary terminal, taking the confinement
+    // with it.
+    let commands = crate::app::COMMANDS.join(" ");
+
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  drag to copy  ·  pgup/pgdn  ·  /model  ·  /add-dir  ·  \
-                 /exit or ctrl-c to exit  ·  confinement {}",
+                "  {trail}  ·  {commands}  ·  drag to copy  ·  pgup/pgdn  ·  confinement {}",
                 session.confinement
             ),
             dim(),
@@ -732,13 +737,15 @@ mod tests {
     }
 
     /// The confinement sits at the end of the hints, so it is the first thing a narrow terminal
-    /// cuts off. Asserted at a width where the whole line fits, because the heading happens to
-    /// name the confinement too: matching it anywhere on the screen says nothing about whether
-    /// the hint line still carries it.
+    /// cuts off. Asserted at a width an ordinary terminal actually has, because the heading names
+    /// the confinement too: matching it anywhere on the screen says nothing about whether the hint
+    /// line still carries it. Widening this to make it pass would be hiding the truncation.
     #[test]
-    fn the_hint_line_reports_confinement() {
-        let output = rendered_at(&Session::new("kernel-enforced"), 140, 24);
-        assert!(output.contains("/exit or ctrl-c to exit"), "{output}");
+    fn the_hint_line_lists_the_commands_and_the_confinement() {
+        let output = rendered_at(&Session::new("kernel-enforced"), 120, 24);
+        for command in crate::app::COMMANDS {
+            assert!(output.contains(command), "{command} missing: {output}");
+        }
         assert!(output.contains("confinement kernel-enforced"), "{output}");
     }
 

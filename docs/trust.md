@@ -52,6 +52,11 @@ the one you gave that session. It carries the rules that session's writes record
 which is what stops a resumed turn reading back a file an earlier turn of the same session
 poisoned. A record from before maps were kept has none, and is asked about.
 
+`/clear` does not ask either, and keeps the map for the same reason. It empties the context, not
+the answers you gave: you are still the same person in the same directory, and the map still holds
+the untrusted markings this session's own writes recorded. Dropping them would read a file an
+earlier turn poisoned back as trusted, which is the one direction trust may never move.
+
 The consequence is worth stating plainly. A file that one session recorded as untrusted is **not**
 remembered by the next session started fresh in that directory: say yes to the directory and it is
 read as trusted again. Within a session, and across a resume of it, the second row of the table

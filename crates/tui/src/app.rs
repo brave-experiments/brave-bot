@@ -55,14 +55,23 @@ const TRACK_MOTION_ONLY_WHILE_DRAGGING: &str = "\x1b[?1003l\x1b[?1000h\x1b[?1002
 /// advances by one glyph per redraw rather than skipping.
 const FRAME: Duration = Duration::from_millis(120);
 
-/// The one line that ends the session instead of starting a turn.
-const EXIT_COMMAND: &str = "/exit";
-
 /// The line that opens the model picker instead of starting a turn.
 const MODEL_COMMAND: &str = "/model";
 
 /// The line that opens another directory, taking the path to open as its argument.
 const ADD_DIR_COMMAND: &str = "/add-dir";
+
+/// The line that starts a new session in place of this one.
+const CLEAR_COMMAND: &str = "/clear";
+
+/// The one line that ends the session instead of starting a turn.
+const EXIT_COMMAND: &str = "/exit";
+
+/// Every command, in the order the hint line lists them.
+///
+/// The hint is drawn from this rather than from a second copy of the words, so a command that is
+/// renamed or added cannot leave the line advertising something that no longer works.
+pub const COMMANDS: [&str; 4] = [MODEL_COMMAND, ADD_DIR_COMMAND, CLEAR_COMMAND, EXIT_COMMAND];
 
 /// The directory `/add-dir` was asked to open, if that is what the line is.
 ///
@@ -93,6 +102,8 @@ pub enum Action {
     ChooseModel,
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
     AddDirectory(String),
+    /// Start a new session here. Needs the conversation and the session record, which the loop owns.
+    Clear,
     Quit,
 }
 
@@ -137,6 +148,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input.trim() == MODEL_COMMAND => {
             session.clear_input();
             Action::ChooseModel
+        }
+        KeyCode::Enter if session.input.trim() == CLEAR_COMMAND => {
+            session.clear_input();
+            Action::Clear
         }
         KeyCode::Enter if add_dir_argument(&session.input).is_some() => {
             let directory = add_dir_argument(&session.input)
@@ -500,6 +515,15 @@ fn event_loop(
             }
             Action::AddDirectory(directory) => {
                 add_directory(&mut session, &mut workspace, &mut trust, &directory);
+            }
+            Action::Clear => {
+                // A new handle means a new id, so the session so far keeps its own files and stays
+                // resumable. Nothing is deleted: what the user asked for is a clean context, and
+                // throwing away the record would be answering a question they did not ask.
+                session.clear();
+                conversation = Conversation::new();
+                stored = crate::sessions::Handle::begin(workspace.root());
+                session.note("cleared: a new session, with the previous one still resumable");
             }
             Action::Submit(prompt) => {
                 // Both are threaded through: a turn that writes untrusted data into a trusted
@@ -1140,7 +1164,7 @@ mod tests {
     #[test]
     fn typing_the_exit_command_quits() {
         let mut session = Session::new("none");
-        for c in "/exit".chars() {
+        for c in EXIT_COMMAND.chars() {
             handle_key(&mut session, key(KeyCode::Char(c)));
         }
 
@@ -1172,7 +1196,7 @@ mod tests {
     #[test]
     fn typing_the_model_command_opens_the_picker() {
         let mut session = Session::new("none");
-        for c in "/model".chars() {
+        for c in MODEL_COMMAND.chars() {
             handle_key(&mut session, key(KeyCode::Char(c)));
         }
 
@@ -1225,7 +1249,7 @@ mod tests {
     #[test]
     fn the_bare_add_dir_command_is_still_the_command() {
         let mut session = Session::new("none");
-        for c in "/add-dir".chars() {
+        for c in ADD_DIR_COMMAND.chars() {
             handle_key(&mut session, key(KeyCode::Char(c)));
         }
 
@@ -1261,6 +1285,36 @@ mod tests {
         assert_eq!(
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("what does /add-dir do".to_string())
+        );
+    }
+
+    /// A command, not a prompt: it must not reach the planner as a request to clear something.
+    #[test]
+    fn typing_the_clear_command_starts_a_new_session() {
+        let mut session = Session::new("none");
+        for c in CLEAR_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::Clear);
+        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// Only the bare word, so asking the planner about clearing something still asks it.
+    #[test]
+    fn a_prompt_containing_the_clear_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "does /clear delete anything".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("does /clear delete anything".to_string())
         );
     }
 

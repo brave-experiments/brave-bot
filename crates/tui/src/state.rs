@@ -336,6 +336,37 @@ impl Session {
         self.tokens = tokens;
     }
 
+    /// Begin again with nothing behind you, keeping what the user decided.
+    ///
+    /// What goes is everything about the exchange: the transcript, the turn count, and what it
+    /// spent. What stays is what the user chose rather than said, since none of it is context and
+    /// re-answering it would be the interface forgetting decisions it was told once. That is the
+    /// prompt history, the model, and the confinement.
+    ///
+    /// The trust map stays too, and stays for a stronger reason than convenience. It carries the
+    /// untrusted markings that this session's own writes recorded, so dropping it would read a file
+    /// an earlier turn poisoned back as trusted. Trust may only ever degrade, and starting over
+    /// inside one session is not a new user answering the question.
+    ///
+    /// Deliberately not touching the input line, so a prompt half-typed when the user cleared is
+    /// still there to send.
+    pub fn clear(&mut self) {
+        self.transcript.clear();
+        self.turns = 0;
+        self.tokens = 0;
+        self.written = 0;
+        self.todos.clear();
+        self.phase = None;
+        self.running = None;
+        self.started = None;
+        self.scroll = 0;
+        self.selection = None;
+        self.copied = None;
+        // A standing condition is worth saying once per session, and this is now a new one: the
+        // reason a skill was left out applies to the next turn as much as it did to the last.
+        self.said.clear();
+    }
+
     /// The task list each turn finished with, by turn number, for writing the session down.
     ///
     /// Read back off the transcript rather than kept in a second place, because the transcript is
@@ -934,6 +965,78 @@ mod tests {
 
     /// No choice means the configured default applies, which is not the same as choosing a model
     /// named "": the turn has to be able to tell those apart.
+    /// Clearing drops the exchange, which is the whole point: a fresh context.
+    #[test]
+    fn clearing_drops_the_transcript_and_what_it_spent() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.complete("an answer", Vec::new(), 500);
+        assert!(!s.transcript.is_empty());
+
+        s.clear();
+        assert!(s.transcript.is_empty(), "the transcript survived");
+        assert_eq!(s.turns, 0);
+        assert_eq!(s.tokens, 0, "the spend survived");
+        assert_eq!(s.status, Status::Idle);
+    }
+
+    /// What the user chose is not context, so re-asking for it would be forgetting a decision they
+    /// already made once.
+    #[test]
+    fn clearing_keeps_what_the_user_chose() {
+        let mut s = session();
+        s.choose_model("claude-3-sonnet");
+        s.type_char('a');
+        s.submit();
+        s.complete("an answer", Vec::new(), 10);
+
+        s.clear();
+        assert_eq!(
+            s.model(),
+            Some("claude-3-sonnet"),
+            "the model was forgotten"
+        );
+        assert_eq!(s.confinement, "kernel-enforced");
+        assert_eq!(s.history.len(), 1, "the prompt history was dropped");
+    }
+
+    /// A prompt half-typed when the user cleared is still a prompt they meant to send.
+    #[test]
+    fn clearing_leaves_the_input_line_alone() {
+        let mut s = session();
+        for c in "half a thought".chars() {
+            s.type_char(c);
+        }
+        s.clear();
+        assert_eq!(s.input, "half a thought");
+    }
+
+    /// Nothing belonging to the turn just finished may appear beneath the next one's work.
+    ///
+    /// Asserted between turns rather than during one, because that is the only moment `/clear` can
+    /// happen: a running turn does not accept Enter, so the line waits until it ends.
+    #[test]
+    fn clearing_forgets_the_previous_turn() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        s.set_todos(bua_core::todo::rows(&bua_core::todo::List::new(vec![
+            bua_core::todo::Item::new("something", bua_core::todo::Status::Active),
+        ])));
+        s.complete("an answer", Vec::new(), 10);
+        s.scroll_up(5);
+
+        s.clear();
+        assert!(s.todos.is_empty(), "a task list outlived the turn");
+        assert!(s.indicator().is_none(), "the indicator outlived the turn");
+        assert_eq!(s.scroll, 0, "the scroll position outlived the transcript");
+        assert!(
+            s.todos_by_turn().is_empty(),
+            "a finished turn's list would still be written to the new session"
+        );
+    }
+
     #[test]
     fn a_session_starts_with_no_model_chosen() {
         assert_eq!(session().model(), None);
