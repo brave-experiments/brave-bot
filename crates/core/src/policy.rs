@@ -173,6 +173,8 @@ pub struct Policy<'sink, S: Sink> {
     denials: usize,
     /// Which paths the user vouched for.
     trust: TrustStore,
+    /// Which programs the user has stopped being asked about, by resolved path.
+    programs: crate::programs::TrustedPrograms,
     /// The integrity of every observation this turn has made, met together.
     ///
     /// Starts trusted, since the task is the user's own words, and drops to untrusted the moment
@@ -228,6 +230,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             sink,
             denials: 0,
             trust: TrustStore::new(),
+            programs: crate::programs::TrustedPrograms::new(),
             context: Integrity::Trusted,
         })
     }
@@ -291,6 +294,30 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The trust decisions in force, including any this turn recorded.
     pub fn trust(&self) -> &TrustStore {
         &self.trust
+    }
+
+    /// Begin with the programs an earlier turn of this session was told to stop asking about.
+    pub fn with_programs(mut self, programs: crate::programs::TrustedPrograms) -> Self {
+        self.programs = programs;
+        self
+    }
+
+    /// The programs vouched for, including any this turn recorded.
+    pub fn programs(&self) -> &crate::programs::TrustedPrograms {
+        &self.programs
+    }
+
+    /// Record that the user vouched for the program at this resolved path.
+    ///
+    /// Only ever called because a person, looking at the argv and the resolved path, asked for it.
+    /// Nothing derives membership from what a program did or from what it printed: its output is
+    /// `(U,priv)` and could say anything.
+    pub fn remember_program(&mut self, resolved: &str) {
+        self.programs.trust(resolved);
+        self.allow(
+            "approval",
+            format!("{resolved}: vouched for by the user, so this session stops asking about it"),
+        );
     }
 
     /// Begin with the context an earlier turn ended with.
@@ -1823,30 +1850,80 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
     /// Whether running this pipeline needs a person's approval.
     ///
-    /// **Always true.** There is no read-only category and there is no way to establish one:
-    /// `foo --bar` might write to disk and nothing here can tell. A stage declaring itself
-    /// harmless would only help if the declaration were honest, and an unprompted write from one
-    /// that lied is worse than a prompt nobody wanted.
+    /// True unless **every** program in it is one this session's user has already vouched for.
+    /// There is no read-only category and there is no way to establish one: `foo --bar` might
+    /// write to disk and nothing here can tell, and a stage declaring itself harmless would only
+    /// help if the declaration were honest. So a program nobody has vouched for is always asked
+    /// about, however innocuous it looks.
     ///
-    /// It returns a `bool` rather than nothing so it reads like [`Policy::write_needs_approval`]
-    /// at the call site, and so the reason reaches the audit trail. Do not add a case that
-    /// returns false. Remembered argv patterns are the direction to take if the prompting becomes
-    /// tiresome, and those belong in the trust map, not here.
-    pub fn run_needs_approval(&mut self, pipeline: &crate::command::Pipeline) -> bool {
-        // Said separately because it is a second and independent reason, and because a person
-        // reading the audit trail should see which of the two applied.
+    /// What may answer the question is a person having answered it before, in this session, for
+    /// this program. That is the only thing that may: never a property of the argv, never
+    /// something a stage declares about itself, and never anything derived from what a program
+    /// printed, which is `(U,priv)` and could say anything.
+    ///
+    /// `resolved` is what each stage's program name resolved to, in stage order, and matching is
+    /// on those rather than on the names. A name is not a program: `$PATH` decides what `grep`
+    /// means, so remembering the string would let a later change inherit an approval given for a
+    /// different binary. A `resolved` that does not line up with the stages asks.
+    ///
+    /// Private input asks whatever is remembered. See [`crate::programs`] for what the list is and
+    /// what it deliberately is not.
+    pub fn run_needs_approval(
+        &mut self,
+        pipeline: &crate::command::Pipeline,
+        resolved: &[String],
+    ) -> bool {
+        // First and unconditional. Private input is a reason on confidentiality rather than
+        // integrity, and vouching for a program is not consenting to hand it the user's data, so
+        // no amount of remembering answers this one.
         if pipeline.releases_private() {
             self.allow(
                 "approval",
                 "private input into a program, which releases it past this policy, asking"
                     .to_string(),
             );
+            return true;
         }
+
+        // A resolution that did not line up with the stages is not something to match against a
+        // remembered entry. Asking is the answer whenever this cannot be established, since the
+        // alternative is running something on a guess about which binary it is.
+        if resolved.len() != pipeline.len() {
+            self.allow(
+                "approval",
+                "the programs could not all be resolved, so nothing is matched, asking".to_string(),
+            );
+            return true;
+        }
+
+        let unknown: Vec<&String> = resolved
+            .iter()
+            .filter(|path| !self.programs.contains(path))
+            .collect();
+
+        if unknown.is_empty() {
+            // Every stage is a program this session's user read the argv of once and vouched for.
+            self.allow(
+                "approval",
+                format!(
+                    "every program is one the user vouched for this session ({}), no prompt",
+                    resolved.join(", ")
+                ),
+            );
+            return false;
+        }
+
         self.allow(
             "approval",
             format!(
-                "{} stage(s): nothing can establish that a program changes nothing, asking",
-                pipeline.len()
+                "nothing can establish that a program changes nothing, and {} {} not vouched for, \
+                 asking",
+                unknown
+                    .iter()
+                    .map(|path| path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if unknown.len() == 1 { "is" } else { "are" }
             ),
         );
         true
@@ -3043,19 +3120,119 @@ mod tests {
         crate::command::Pipeline::new(vec![crate::command::Stage::new("git", vec!["log".into()])])
     }
 
-    /// The rule the whole tool rests on: nothing establishes that a program changed nothing, so
-    /// every run is put to a person. There is no case that answers false.
+    /// Nothing establishes that a program changed nothing, so a program nobody has vouched for is
+    /// put to a person however innocuous it looks.
     #[test]
-    fn every_run_is_put_to_a_person() {
+    fn a_program_nobody_vouched_for_is_put_to_a_person() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
-        assert!(policy.run_needs_approval(&a_pipeline()));
+        assert!(policy.run_needs_approval(&a_pipeline(), &["/usr/bin/git".to_string()]));
         assert!(
-            policy.run_needs_approval(&crate::command::Pipeline::new(vec![
-                crate::command::Stage::new("pwd", Vec::new())
-            ])),
+            policy.run_needs_approval(
+                &crate::command::Pipeline::new(vec![crate::command::Stage::new("pwd", Vec::new())]),
+                &["/bin/pwd".to_string()]
+            ),
             "a stage that looks harmless is still put to a person"
         );
+    }
+
+    /// The point of the list: having read the argv once and said yes, a person is not asked again
+    /// for the rest of the session.
+    #[test]
+    fn a_program_the_user_vouched_for_is_not_asked_about_again() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_program("/usr/bin/git");
+        assert!(!policy.run_needs_approval(&a_pipeline(), &["/usr/bin/git".to_string()]));
+    }
+
+    /// Every stage, not any stage. A pipeline is as consequential as its least familiar program,
+    /// so one unremembered stage puts the whole pipeline to a person.
+    #[test]
+    fn one_unvouched_stage_puts_the_whole_pipeline_to_a_person() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_program("/usr/bin/git");
+        let pipeline = crate::command::Pipeline::new(vec![
+            crate::command::Stage::new("git", vec!["log".into()]),
+            crate::command::Stage::new("curl", vec!["-T".into(), "-".into()]),
+        ]);
+        assert!(
+            policy.run_needs_approval(
+                &pipeline,
+                &["/usr/bin/git".to_string(), "/usr/bin/curl".to_string()]
+            ),
+            "an unvouched stage rode in behind a vouched one"
+        );
+    }
+
+    /// Matched on the resolved path, so an approval does not follow a name onto a different
+    /// binary when `$PATH` or an alias changes what the name means.
+    #[test]
+    fn vouching_does_not_follow_a_name_onto_a_different_binary() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_program("/usr/bin/grep");
+        let pipeline = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "grep",
+            vec!["x".into()],
+        )]);
+        assert!(
+            policy.run_needs_approval(&pipeline, &["/opt/homebrew/bin/grep".to_string()]),
+            "an approval followed the name rather than the program"
+        );
+    }
+
+    /// Private input asks whatever is remembered. Vouching for a program says it may run; it does
+    /// not say the user's own data may be handed to it.
+    #[test]
+    fn private_input_asks_even_for_a_vouched_program() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_program("/usr/bin/git");
+        let pipeline = a_pipeline().with_stdin(Label::trusted_private());
+        assert!(
+            policy.run_needs_approval(&pipeline, &["/usr/bin/git".to_string()]),
+            "a remembered program was handed private data with no prompt"
+        );
+    }
+
+    /// Where the programs could not be resolved, nothing is matched and the answer is to ask. The
+    /// alternative is running something on a guess about which binary it is.
+    #[test]
+    fn an_unresolved_program_is_asked_about() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_program("/usr/bin/git");
+        assert!(
+            policy.run_needs_approval(&a_pipeline(), &[]),
+            "a pipeline whose programs were not resolved skipped the prompt"
+        );
+    }
+
+    /// The list is granted, never assumed: a fresh policy vouches for nothing, so the first run of
+    /// anything asks.
+    #[test]
+    fn a_fresh_policy_vouches_for_no_program() {
+        let mut sink = RecordingSink::new();
+        let policy = open_policy(&mut sink);
+        assert!(policy.programs().is_empty());
+    }
+
+    /// What an earlier turn was told carries into this one, which is what makes the list worth
+    /// having across a session rather than within one turn.
+    #[test]
+    fn a_turn_inherits_what_the_session_vouched_for() {
+        let mut sink = RecordingSink::new();
+        let policy = Policy::begin(
+            routing_with("task", "summarise the readme"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap()
+        .with_programs(crate::programs::TrustedPrograms::from_iter(["/bin/ls"]));
+        assert!(policy.programs().contains("/bin/ls"));
     }
 
     /// Nothing runs without an endorsement. The planner's argv is not trusted and cannot become
