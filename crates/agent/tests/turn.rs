@@ -6240,3 +6240,49 @@ fn a_refusal_does_not_spell_out_a_quarantined_filename() {
         "the test never reached the refusal it is about, so it proves nothing"
     );
 }
+
+/// A planner told only "nothing will show you what is in it" takes the blind path and never
+/// mentions that there is another one.
+///
+/// A session rewrote a user's game through a processor it could not see, then told them it could
+/// not confirm anything it had done. One sentence would have got it the file: the user can vouch,
+/// and they know which file the reference is even though the planner does not.
+#[test]
+fn a_quarantined_read_tells_the_planner_the_user_can_vouch() {
+    let scratch = Scratch::new("quarantined-hint");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request("read_file", r#"{"path_ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Nothing vouched for, so the listing and the file are both quarantined.
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let _second = received.recv().expect("second request");
+    let third = received.recv().expect("third request");
+    assert!(
+        third.contains("the user can vouch for the file"),
+        "the planner was not told the way out of working blind"
+    );
+    // Still no filename: the way out is described in terms of the reference.
+    assert!(
+        !third.contains("game.js"),
+        "the hint leaked the filename it is about"
+    );
+}
