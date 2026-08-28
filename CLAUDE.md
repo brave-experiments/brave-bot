@@ -75,6 +75,13 @@ containing "untrusted content ends here" ends nothing. A caption can be imitated
 captions; a margin cannot. Never replace the bar with a heading, and never show untrusted content
 outside a marked block.
 
+That holds only while content cannot draw. A terminal acts on the bytes it is sent, so an escape
+sequence in shown text would let the text colour itself, move the cursor, or paint a margin the
+renderer never drew, which is the forgery the margin exists to rule out. `render::printable`
+replaces every control character with a visible glyph, and everything untrusted goes through it on
+the way to the screen. Replaced rather than dropped, since a character silently removed is one the
+user cannot tell was ever in the file.
+
 ## Trusted content may be examined; untrusted content may not
 
 The rule bans deciding from **untrusted** content. Trusted content carries no such

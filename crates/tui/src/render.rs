@@ -80,6 +80,33 @@ const MAX_DIFF_LINES: usize = 12;
 /// it. A caption could be imitated; a margin cannot.
 const QUARANTINE_BAR: &str = "\u{2503}";
 
+/// Replace control characters, so drawn text cannot move the cursor or recolour the screen.
+///
+/// The interface's structure is drawn by this module: the margin down a quarantine block, the `!`
+/// before a command, the colour that says which is which. An escape sequence in the text would let
+/// the text draw those instead, and a forged margin is worse than no margin, since the whole point
+/// of drawing one is that content cannot.
+///
+/// Everything the terminal would act on becomes a visible glyph, so what is on the screen stays a
+/// faithful record of the bytes without being able to act. Tabs and newlines are handled before this
+/// (lines are already split, and a tab is only ever width), so both are safe to keep.
+fn printable(text: &str) -> String {
+    if !text.chars().any(|c| c.is_control() && c != '\t') {
+        return text.to_string();
+    }
+    text.chars()
+        .map(|c| {
+            if !c.is_control() || c == '\t' {
+                c
+            } else {
+                // The Unicode pictures for C0, so an escape reads as ␛ rather than vanishing: a
+                // character silently dropped is one a user cannot tell was ever there.
+                char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}')
+            }
+        })
+        .collect()
+}
+
 /// Draw one tool call: what it is, and what came of it.
 ///
 /// The shape mirrors a turn's own: a marker, then the detail indented beneath it, so a call
@@ -159,7 +186,9 @@ fn quarantined_lines(shown: &Shown) -> Vec<Line<'static>> {
     for line in &shown.preview {
         lines.push(Line::from(vec![
             Span::styled(format!("  {QUARANTINE_BAR} "), marked),
-            Span::styled(line.clone(), dim()),
+            // Neutralised, because this is the block whose whole claim is that the margin was drawn
+            // by the renderer: content that could emit an escape could paint a margin of its own.
+            Span::styled(printable(line), dim()),
         ]));
     }
 
@@ -195,13 +224,17 @@ fn diff_lines(changes: &[Change], untrusted: bool) -> Vec<Line<'static>> {
         .take(MAX_DIFF_LINES)
         .map(|change| {
             let body = match change {
-                Change::Added(text) => {
-                    Span::styled(format!("+ {text}"), Style::default().fg(Color::Green))
-                }
-                Change::Removed(text) => {
-                    Span::styled(format!("- {text}"), Style::default().fg(Color::Red))
-                }
-                Change::Kept(text) => Span::styled(format!("  {text}"), dim()),
+                // Neutralised like the quarantine preview: a hunk of a file an attacker wrote is the
+                // same bytes, and here they sit beside a margin that means something.
+                Change::Added(text) => Span::styled(
+                    format!("+ {}", printable(text)),
+                    Style::default().fg(Color::Green),
+                ),
+                Change::Removed(text) => Span::styled(
+                    format!("- {}", printable(text)),
+                    Style::default().fg(Color::Red),
+                ),
+                Change::Kept(text) => Span::styled(format!("  {}", printable(text)), dim()),
                 Change::Elided(count) => Span::styled(format!("… {count} unchanged lines"), dim()),
             };
             Line::from(vec![margin.clone(), body])
