@@ -164,6 +164,9 @@ pub enum Action {
     Cancel,
     /// Take what the selection covers, which needs the screen as it was last drawn.
     Copy,
+    /// Write the prompt somewhere with room to think. Needs the terminal, which the loop hands
+    /// over to the editor and takes back afterwards.
+    Edit,
     /// Ask which model to use. Needs the network and the terminal, so the loop runs it.
     ChooseModel,
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
@@ -196,6 +199,9 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.toggle_trail();
             Action::Redraw
         }
+        // The box holds one line at a time and cannot be moved around in. A prompt worth more
+        // than a sentence is written blind here, so it goes somewhere with room instead.
+        KeyCode::Char('g') if ctrl => Action::Edit,
         // Escape means "stop what is happening" before it means anything else, so a turn in
         // flight is cancelled first. The prompt comes back for editing rather than being lost.
         KeyCode::Esc if session.status == Status::Working => Action::Cancel,
@@ -460,27 +466,8 @@ pub fn run(
     confinement: String,
     start: Start,
 ) -> io::Result<()> {
-    enable_raw_mode()?;
     let mut stdout = io::stdout();
-    // Mouse capture is what makes the wheel scroll the transcript. It costs the
-    // terminal's own text selection, so it is disabled again on the way out.
-    //
-    // Bracketed paste is what keeps a pasted prompt from sending itself. Without it the
-    // terminal delivers a paste as ordinary keystrokes, and the newline most clipboards carry
-    // at the end arrives as Enter.
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
-
-    // Mouse capture asks for motion reported whether or not a button is down, which is a stream
-    // of events for a pointer merely crossing the window and a redraw for each one. Only the
-    // drag matters here, so all-motion reporting goes back off: what stays on reports the
-    // buttons, the wheel, and motion while a button is held, which is the gesture being read.
-    write!(stdout, "{TRACK_MOTION_ONLY_WHILE_DRAGGING}")?;
-    stdout.flush()?;
+    take_over_terminal(&mut stdout)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
@@ -503,16 +490,82 @@ pub fn run(
 
     // Restore the terminal even if the loop failed: leaving a user in raw mode on an
     // alternate screen is worse than the original error.
+    hand_back_terminal(terminal.backend_mut())?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+/// Put the terminal into the state the interface draws in.
+///
+/// Mouse capture is what makes the wheel scroll the transcript. It costs the terminal's own text
+/// selection, so it is given back on the way out.
+///
+/// Bracketed paste is what keeps a pasted prompt from sending itself. Without it the terminal
+/// delivers a paste as ordinary keystrokes, and the newline most clipboards carry at the end
+/// arrives as Enter.
+///
+/// One definition rather than one per caller, because the interface gives the terminal away and
+/// takes it back again whenever the prompt is edited elsewhere, and a difference between the two
+/// setups would show as a mode that only survives until the first edit.
+fn take_over_terminal<W: Write>(out: &mut W) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+
+    // Mouse capture asks for motion reported whether or not a button is down, which is a stream
+    // of events for a pointer merely crossing the window and a redraw for each one. Only the
+    // drag matters here, so all-motion reporting goes back off: what stays on reports the
+    // buttons, the wheel, and motion while a button is held, which is the gesture being read.
+    write!(out, "{TRACK_MOTION_ONLY_WHILE_DRAGGING}")?;
+    out.flush()
+}
+
+/// Put the terminal back the way it was found.
+fn hand_back_terminal<W: Write>(out: &mut W) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(
-        terminal.backend_mut(),
+        out,
         DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
+    out.flush()
+}
+
+/// Hand the terminal to the user's editor, and take back whatever they saved.
+///
+/// The editor gets the terminal properly rather than sharing it: raw mode off, the alternate
+/// screen left, the mouse and paste modes given back. A full-screen editor drawing over an
+/// interface that still believes it owns the screen is the alternative, and neither of them
+/// would be legible.
+///
+/// The screen is cleared on the way back because the alternate screen came back empty while the
+/// interface still holds the frame it drew before leaving. Without it the first redraw sends only
+/// what changed, over a screen that has nothing under it.
+fn edit_prompt(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+) -> io::Result<()> {
+    hand_back_terminal(terminal.backend_mut())?;
     terminal.show_cursor()?;
 
-    result
+    let edited = crate::editor::edit(&session.input);
+
+    take_over_terminal(terminal.backend_mut())?;
+    terminal.clear()?;
+
+    match edited {
+        Ok(line) => session.take_edited(line),
+        // Said rather than swallowed: an editor that would not start looks exactly like a key
+        // that does nothing, and the user has no other way to tell the two apart.
+        Err(failure) => session.note(failure.to_string()),
+    }
+    Ok(())
 }
 
 /// Concrete in the backend rather than generic: the loop is only ever driven by a real
@@ -626,6 +679,10 @@ fn event_loop(
         match action {
             Action::Quit => return Ok(()),
             Action::Copy => copy_selection(terminal, &mut session)?,
+            Action::Edit => {
+                edit_prompt(terminal, &mut session)?;
+                needs_draw = true;
+            }
             Action::ChooseModel => {
                 choose_model(terminal, &mut session, config);
                 needs_draw = true;
@@ -1335,6 +1392,38 @@ mod tests {
         assert!(
             !session.is_quitting(),
             "clearing the input ended the session"
+        );
+    }
+
+    /// The prompt has to be able to leave the box. Ctrl-G is the one key that says so, and a
+    /// control combination that falls through to the catch-all would type a stray 'g' instead.
+    #[test]
+    fn ctrl_g_asks_for_the_editor() {
+        let mut session = Session::new("none");
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, ctrl('g')), Action::Edit);
+        assert_eq!(
+            session.input, "half a thought",
+            "the line was disturbed before the editor saw it"
+        );
+    }
+
+    /// Handing the terminal to an editor mid-turn would take the screen away from the turn that
+    /// is drawing on it, and the line the editor returned would be waiting for a box that has
+    /// moved on. The keys the user can still use while a turn runs do not include this one.
+    #[test]
+    fn the_editor_key_does_nothing_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('x')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        assert_eq!(
+            handle_key_while_working(&mut session, ctrl('g')),
+            Action::None
         );
     }
 

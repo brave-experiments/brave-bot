@@ -597,7 +597,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  / for commands  ·  @ for files  ·  pgup/pgdn  ·  confinement {}",
+                "  {trail}  ·  ctrl-g editor  ·  / for commands  ·  @ for files  ·  pgup/pgdn  ·  confinement {}",
                 session.confinement
             ),
             dim(),
@@ -838,15 +838,17 @@ mod tests {
     }
 
     /// The confinement sits at the end of the hints, so it is the first thing a narrow terminal
-    /// cuts off. Asserted at a width an ordinary terminal actually has, because the heading names
-    /// the confinement too: matching it anywhere on the screen says nothing about whether the hint
-    /// line still carries it. Widening this to make it pass would be hiding the truncation.
+    /// cuts off. Asserted at a width an ordinary terminal actually has, and against that row
+    /// alone: the heading names the confinement too, so matching it anywhere on the screen says
+    /// nothing about whether the hint line still carries it. Widening this to make it pass would
+    /// be hiding the truncation, and so would asserting against the whole screen again.
     #[test]
     fn the_hint_line_says_how_to_find_the_commands_and_reports_confinement() {
-        let output = rendered_at(&Session::new("kernel-enforced"), 120, 24);
-        assert!(output.contains("/ for commands"), "{output}");
-        assert!(output.contains("@ for files"), "{output}");
-        assert!(output.contains("confinement kernel-enforced"), "{output}");
+        let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
+        assert!(hint.contains("ctrl-g editor"), "{hint}");
+        assert!(hint.contains("/ for commands"), "{hint}");
+        assert!(hint.contains("@ for files"), "{hint}");
+        assert!(hint.contains("confinement kernel-enforced"), "{hint}");
     }
 
     /// Typing a slash offers every command with what it does, which is the thing the hint line
@@ -1214,6 +1216,21 @@ mod tests {
             .content()
             .iter()
             .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    /// The hint line alone, which is the last row of the screen.
+    ///
+    /// Needed because the heading carries the confinement too: searching the whole screen for it
+    /// cannot tell a hint line that still fits from one that has been cut off.
+    fn hint_row_at(session: &Session, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, session))
+            .expect("draw succeeds");
+        let buffer = terminal.backend().buffer().clone();
+        (0..width)
+            .map(|column| buffer[(column, height - 1)].symbol())
             .collect()
     }
 

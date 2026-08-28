@@ -816,6 +816,24 @@ impl Session {
         }
     }
 
+    /// Take the line back from an external editor.
+    ///
+    /// Replaces rather than appends: the editor was opened on this line, so what comes back is
+    /// the same line after however much thought, not something to add to it.
+    ///
+    /// Guarded like the other editing methods. Nothing can reach it mid-turn, since the key is
+    /// ignored while one runs, but the field belongs to the idle state either way.
+    pub fn take_edited(&mut self, line: impl Into<String>) {
+        if self.status != Status::Idle {
+            return;
+        }
+        // A recalled prompt that has been through an editor is the working line now, exactly as
+        // it would be after a keystroke.
+        self.history.leave();
+        self.input = line.into();
+        self.completion = 0;
+    }
+
     /// Show the previous prompt, stepping further back on each call.
     pub fn recall_older(&mut self) {
         if self.status != Status::Idle {
@@ -1110,6 +1128,30 @@ mod tests {
         s.paste("more");
         assert_eq!(s.input, "more", "a paste was dropped mid-turn");
         assert!(s.submit().is_none(), "a second turn was allowed to start");
+    }
+
+    /// The editor was opened on the line, so what comes back is that line after thinking about
+    /// it. Appending would give the user their own prompt twice.
+    #[test]
+    fn a_line_from_the_editor_replaces_what_was_typed() {
+        let mut s = session();
+        s.paste("half a thought");
+        s.take_edited("a whole one, at last");
+        assert_eq!(s.input, "a whole one, at last");
+    }
+
+    /// A recalled prompt taken through an editor is the working line now, exactly as it would be
+    /// after a keystroke. Left browsing, the next Up would step away from the edit.
+    #[test]
+    fn editing_a_recalled_prompt_stops_browsing_history() {
+        let mut s = session();
+        s.history.push("an older prompt".to_string());
+        s.recall_older();
+        assert!(s.history.is_browsing());
+
+        s.take_edited("an older prompt, revised");
+        assert!(!s.history.is_browsing(), "still browsing after an edit");
+        assert_eq!(s.input, "an older prompt, revised");
     }
 
     #[test]

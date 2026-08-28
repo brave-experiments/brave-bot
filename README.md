@@ -33,7 +33,8 @@ bua import-leo-creds                 # use a Leo Premium subscription
 ```
 
 In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, Ctrl-T
-toggles the audit trail, Esc cancels a running turn. Add `--trace` to a one-shot run for the
+toggles the audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back
+what you saved, Esc cancels a running turn. Add `--trace` to a one-shot run for the
 same audit trail: which gate checked what, the label every value carried, and what was
 released.
 
