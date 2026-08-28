@@ -618,6 +618,133 @@ mod tests {
             .collect()
     }
 
+    fn a_run(private: bool) -> RunRequest {
+        let pipeline = bua_core::Pipeline::new(vec![
+            bua_core::Stage::new("git", vec!["log".into(), "--oneline".into()]),
+            bua_core::Stage::new("sed", vec!["-n".into(), "1,10p".into()]),
+        ]);
+        RunRequest {
+            pipeline: if private {
+                pipeline.with_stdin(bua_core::label::Label::trusted_private())
+            } else {
+                pipeline
+            },
+            resolved: vec!["/usr/bin/git".into(), "/usr/bin/sed".into()],
+            directory: "/home/someone/project".into(),
+        }
+    }
+
+    /// Wide enough that the lines under test are not wrapped by the box, since what is being
+    /// checked is the wording rather than the layout.
+    fn rendered_run(request: &RunRequest) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                draw_run(frame, request, 0);
+            })
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    /// A reviewer has to see the argv, the binary behind each name, and where it will run. All
+    /// three change what the run means, and none of them can be inferred from the others.
+    #[test]
+    fn a_run_prompt_shows_the_argv_the_binary_and_the_directory() {
+        let drawn = rendered_run(&a_run(false));
+        assert!(drawn.contains("git log --oneline"), "{drawn}");
+        assert!(drawn.contains("sed -n 1,10p"), "{drawn}");
+        assert!(drawn.contains("/usr/bin/git"), "the binary is not shown");
+        assert!(drawn.contains("/home/someone/project"), "{drawn}");
+    }
+
+    /// Said every time, because it is true every time and it is the thing a reviewer is most
+    /// likely to assume otherwise.
+    #[test]
+    fn a_run_prompt_says_it_is_not_sandboxed() {
+        assert!(rendered_run(&a_run(false)).contains("not sandboxed"));
+    }
+
+    /// Vouching is by program and not by argument vector, so a person agreeing to it is agreeing
+    /// that any arguments to that program will run unasked for the rest of the session. The
+    /// prompt has to say so; nothing else in the interface will.
+    #[test]
+    fn a_run_prompt_says_what_vouching_would_actually_cover() {
+        let drawn = rendered_run(&a_run(false));
+        assert!(
+            drawn.contains("whatever the arguments"),
+            "the prompt does not say vouching ignores the arguments: {drawn}"
+        );
+        assert!(drawn.contains("/usr/bin/git"), "{drawn}");
+    }
+
+    /// Private input asks every time whatever is remembered, so the key that offers to stop
+    /// asking is not offered: it would promise something that will not happen.
+    #[test]
+    fn a_run_that_releases_private_data_offers_no_standing_permission() {
+        let drawn = rendered_run(&a_run(true));
+        assert!(
+            drawn.contains("cannot be remembered"),
+            "the prompt offered to remember a run that will always ask: {drawn}"
+        );
+        assert!(
+            drawn.contains("your own data"),
+            "the confidentiality reason was not given: {drawn}"
+        );
+    }
+
+    /// Three answers, and the one that grants a standing permission is a key of its own rather
+    /// than a follow-up question nobody would read.
+    #[test]
+    fn the_run_keys_separate_running_once_from_running_always() {
+        let once = run_answer_for(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(once, Some(RunResponse::Answer(RunAnswer::Approve)));
+        assert!(!RunAnswer::Approve.decision().remember);
+
+        let always = run_answer_for(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(always, Some(RunResponse::Answer(RunAnswer::ApproveAlways)));
+        assert!(RunAnswer::ApproveAlways.decision().remember);
+    }
+
+    /// Enter is the key most likely to be pressed out of habit, and this prompt starts a program.
+    #[test]
+    fn enter_does_not_approve_a_run() {
+        assert_eq!(
+            run_answer_for(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+    }
+
+    /// Interrupting refuses and vouches for nothing: a turn being stopped is not consent to what
+    /// it was stopped at, let alone standing consent.
+    #[test]
+    fn ctrl_c_refuses_the_run_and_vouches_for_nothing() {
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(
+            run_answer_for(key),
+            Some(RunResponse::Answer(RunAnswer::Interrupt))
+        );
+        let decision = RunAnswer::Interrupt.decision();
+        assert!(!decision.approved());
+        assert!(!decision.remember);
+    }
+
+    /// Saying no refuses this run without vouching for anything or stopping the turn.
+    #[test]
+    fn saying_no_to_a_run_vouches_for_nothing() {
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(
+            run_answer_for(key),
+            Some(RunResponse::Answer(RunAnswer::Reject))
+        );
+        assert!(!RunAnswer::Reject.decision().remember);
+    }
+
     /// The prompt blocks everything else, so Ctrl-C must be answerable here too. It stops the
     /// turn rather than only refusing the write: a user reaching for the interrupt wants the
     /// work to stop.

@@ -763,6 +763,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A record from before the list was kept vouches for nothing, which is the safe direction:
+    /// every run asks, rather than a resumed session inheriting a permission nobody recorded.
+    #[test]
+    fn a_record_without_a_program_list_vouches_for_nothing() {
+        let record = a_record();
+        assert!(record.trusted_programs().is_empty());
+    }
+
+    /// What was written down comes back, by resolved path, so a resumed session stops asking about
+    /// exactly the programs its own user vouched for.
+    #[test]
+    fn the_programs_a_session_vouched_for_come_back() {
+        let mut record = a_record();
+        record.programs = vec!["/usr/bin/git".to_string(), "/bin/ls".to_string()];
+        let vouched = record.trusted_programs();
+        assert!(vouched.contains("/usr/bin/git"));
+        assert!(vouched.contains("/bin/ls"));
+        assert!(
+            !vouched.contains("/opt/homebrew/bin/git"),
+            "a record vouched for a binary it never named"
+        );
+    }
+
     /// A record from before the map was kept must be asked about, not read as a map that trusts
     /// nothing. The two look the same in the end and are answered differently: nothing recorded
     /// is a question, and an empty map is an answer.

@@ -83,6 +83,11 @@ fn a_trust_map() -> TrustStore {
     trust
 }
 
+/// Two programs the user vouched for, by resolved path.
+fn a_program_list() -> TrustedPrograms {
+    TrustedPrograms::from_iter(["/usr/bin/git", "/usr/bin/make"])
+}
+
 fn a_conversation() -> Conversation {
     let mut conversation = Conversation::new();
     conversation.push(Message::user("make a space invaders game"));
@@ -120,7 +125,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 1_200,
             todos: &a_plan(),
             trust: &a_trust_map(),
-            programs: &TrustedPrograms::new(),
+            programs: &a_program_list(),
         },
     );
     handle.append_audit(
@@ -187,7 +192,9 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 3_400,
             todos: &a_plan(),
             trust: &a_trust_map(),
-            programs: &TrustedPrograms::new(),
+            // Carried forward the way a live session carries it, so the assertion below is about
+            // the list surviving a re-save and a resume rather than about one write.
+            programs: &a_program_list(),
         },
     );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
@@ -230,7 +237,9 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 5_600,
             todos: &a_plan(),
             trust: &a_trust_map(),
-            programs: &TrustedPrograms::new(),
+            // Carried forward the way a live session carries it, so the assertion below is about
+            // the list surviving a re-save and a resume rather than about one write.
+            programs: &a_program_list(),
         },
     );
     let listed = sessions::list(&scratch.project);
@@ -270,6 +279,13 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
         !restored.is_trusted("src/fetched.json"),
         "a path a write had distrusted came back trusted"
     );
+
+    // The programs go with the session too, and for the same reason: the person resuming is the
+    // person who vouched for them, so they are not asked about the same program again.
+    let vouched = record.trusted_programs();
+    assert!(vouched.contains("/usr/bin/git"));
+    assert!(vouched.contains("/usr/bin/make"));
+    assert_eq!(vouched.len(), 2, "the list came back with something extra");
 
     // A session that declined recorded that it declined, which is not the same as a record that
     // predates the map. Both trust nothing; only the second is asked about again.
