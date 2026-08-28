@@ -60,23 +60,45 @@ impl Stage {
 
     /// The stage as a person should read it before approving.
     ///
-    /// Each argument is shown separately, quoted when it contains whitespace or is empty, so a
-    /// reviewer can see where one argument ends and the next begins. That boundary is the whole
-    /// point: it is what a shell would have decided and what this leaves to nothing.
+    /// Each argument is shown separately, so a reviewer can see where one argument ends and the
+    /// next begins. That boundary is the whole point: it is what a shell would have decided and
+    /// what this leaves to nothing.
+    ///
+    /// The quoting has to be **unambiguous**, not merely readable, because an approval is bound to
+    /// what the person saw. Quoting only on whitespace was not: `["a b"]` and `["'a", "b'"]` both
+    /// came out as `prog 'a b'`, so a reviewer reading one could have been approving the other. So
+    /// a quote or a backslash forces quoting too, and both are escaped inside it.
     pub fn display(&self) -> String {
         let mut out = String::from(&self.program);
         for arg in &self.args {
             out.push(' ');
-            if arg.is_empty() || arg.contains(char::is_whitespace) {
-                out.push('\'');
-                out.push_str(arg);
-                out.push('\'');
-            } else {
-                out.push_str(arg);
-            }
+            out.push_str(&quoted(arg));
         }
         out
     }
+}
+
+/// One argument, quoted so that no two arguments can render alike.
+///
+/// A bare token is one with nothing in it that quoting is for. Anything else is wrapped, with a
+/// backslash and a quote escaped inside the wrapping, which is what makes the rendering reversible
+/// and therefore safe to bind an approval to.
+fn quoted(arg: &str) -> String {
+    let plain =
+        !arg.is_empty() && !arg.contains(|c: char| c.is_whitespace() || c == '\'' || c == '\\');
+    if plain {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('\'');
+    for c in arg.chars() {
+        if c == '\'' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 /// A sequence of stages, each feeding the next.
@@ -156,6 +178,36 @@ mod tests {
     #[test]
     fn an_empty_argument_is_still_shown() {
         assert_eq!(Stage::new("prog", vec![String::new()]).display(), "prog ''");
+    }
+
+    /// Two different argument lists must never render alike. An approval is bound to what the
+    /// person read, so a rendering that collides lets a reviewer approve one argv while another
+    /// runs. Quoting on whitespace alone collided here: both of these came out as `prog 'a b'`.
+    #[test]
+    fn two_argument_lists_cannot_look_alike() {
+        let one = Stage::new("prog", vec!["a b".into()]);
+        let other = Stage::new("prog", vec!["'a".into(), "b'".into()]);
+        assert_ne!(
+            one.display(),
+            other.display(),
+            "two argument lists rendered identically, so an approval cannot name either"
+        );
+    }
+
+    /// A quote in an argument is data, so it survives the rendering rather than being read as the
+    /// end of a quoted run.
+    #[test]
+    fn a_quote_in_an_argument_is_escaped() {
+        let stage = Stage::new("prog", vec!["it's".into()]);
+        assert_eq!(stage.display(), r"prog 'it\'s'");
+    }
+
+    /// A backslash is what does the escaping, so an argument containing one has to escape it too
+    /// or a trailing backslash would escape the closing quote.
+    #[test]
+    fn a_backslash_in_an_argument_is_escaped() {
+        let stage = Stage::new("prog", vec![r"c:\path".into()]);
+        assert_eq!(stage.display(), r"prog 'c:\\path'");
     }
 
     /// A shell metacharacter is data here, so it is shown as the ordinary argument it is rather
