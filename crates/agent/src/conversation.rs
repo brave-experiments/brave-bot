@@ -288,6 +288,12 @@ impl Conversation {
             note.push_str(&live);
         }
         self.messages.insert(0, Message::user(note));
+
+        // The figure described a conversation that no longer exists, and nothing has measured
+        // this one. Left alone it would say the context is still full: the gauge would show a
+        // percentage for an exchange that has been shortened underneath it, and the next turn
+        // would open by trying to compact again on the strength of it.
+        self.measured = 0;
     }
 
     /// What to tell the planner about the references it may still use.
@@ -1065,6 +1071,22 @@ mod tests {
         conversation.push(Message::assistant("a"));
         conversation.push(Message::user("second"));
         assert_eq!(conversation.compaction_boundary(), None);
+    }
+
+    /// The figure said how large the conversation was before it was shortened. Kept, it would
+    /// have the next turn open by trying to compact again on the strength of a measurement of
+    /// something that no longer exists.
+    #[test]
+    fn compacting_forgets_a_measurement_of_the_conversation_it_replaced() {
+        let mut conversation = four_exchanges();
+        conversation.measured(90_000);
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        conversation.compacted(boundary, "they asked about the first two things");
+
+        assert_eq!(conversation.last_request_tokens(), 0);
     }
 
     /// The bound on futility. A request has a floor it cannot go below, the system prompt and the

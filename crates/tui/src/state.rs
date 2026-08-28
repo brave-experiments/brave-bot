@@ -1534,9 +1534,12 @@ impl Session {
     /// Capped at a hundred rather than allowed past it. The budget is a guess at a window nobody
     /// reports, so a request larger than it is a session that will be compacted next round, not a
     /// context that is a hundred and forty per cent full.
+    /// Zero reads as "not measured" rather than as an empty context. No request costs nothing, so
+    /// the figure only ever arrives as zero when there has not been one to count: before the
+    /// first turn, and after a compaction has shortened the conversation underneath it.
     pub fn fullness(&self) -> Option<u64> {
         let (used, budget) = self.occupancy?;
-        (budget > 0).then(|| (used * 100 / budget).min(100))
+        (used > 0 && budget > 0).then(|| (used * 100 / budget).min(100))
     }
 
     /// Enter the working state for something that is not a turn.
@@ -1946,6 +1949,16 @@ mod tests {
         let mut s = Session::new("none");
         s.measured(140_000, 100_000);
         assert_eq!(s.fullness(), Some(100));
+    }
+
+    /// After a compaction nothing has been counted for the shortened conversation, and the old
+    /// figure describes an exchange that is no longer being sent. Better to say nothing until the
+    /// next turn counts it than to show a percentage that is no longer about anything.
+    #[test]
+    fn a_context_measured_at_nothing_is_a_context_nobody_has_measured() {
+        let mut s = Session::new("none");
+        s.measured(0, 100_000);
+        assert_eq!(s.fullness(), None);
     }
 
     /// A new session's context is empty, so the gauge from the old one would be describing a
