@@ -173,9 +173,12 @@ large repository takes, and well short of an afternoon.
 
 The other bound is on size rather than on rounds. Each round re-sends the whole conversation, so
 a long session grows its own request until the server refuses it. Once the last request passes
-`BRAVEBOT_CONTEXT_BUDGET` (100,000 tokens by default), the older part of the conversation is replaced,
-**in the request only**, by a summary of it; the two most recent exchanges stay word for word, and
-`/compact` asks for the same thing by hand. The person's transcript is untouched, and so is the
+`BRAVEBOT_CONTEXT_BUDGET` (100,000 tokens by default), the older part of the conversation is
+replaced, **in the request only**, by a summary of it, and `/compact` asks for the same thing by
+hand. The two most recent exchanges stay word for word, or the most recent rounds where one turn
+has gone long enough on its own to have no earlier exchange to give up. A cut always gives up at
+least as much as it keeps, so a conversation that cannot get under the budget does not summarise
+itself every round for the rest of the turn. The person's transcript is untouched, and so is the
 quarantine, so a reference handed out before a summary still names what it named.
 
 The budget is a guess and has to be. The server reports what a request cost and never what it had

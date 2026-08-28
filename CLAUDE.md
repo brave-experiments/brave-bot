@@ -176,9 +176,19 @@ Three things compaction never touches, and none of them may be relaxed to save r
 counter**, since slots are written once and a name handed out twice collides; and the
 **integrity**, since nothing here has un-read what the conversation read.
 
-The cut is always at the start of an exchange, chosen from roles and call ids. `with_system`
+The cut lands where a round is not in progress, chosen from roles and call ids. `with_system`
 answers an unanswered call by looking only at the run of results immediately after it, so a cut
-inside a round leaves a request the server refuses.
+between a call and its results leaves the head saying the call never ran and the tail holding an
+answer to a call that is not there. Whole exchanges are given up first, since the boundary between
+two of them is the one a person would draw. A turn that has gone long on its own has no earlier
+exchange to give, because it adds one prompt however many rounds follow, so there it gives up
+earlier **rounds** instead.
+
+**A cut must give up at least as much as it keeps.** Summarising costs a model call, and a request
+has a floor it cannot go below, the system prompt and the tool schemas, so a budget under that
+floor is unreachable however much history is given up. Without this a turn in that position
+summarises itself once per round for the rest of its life and shortens nothing: measured at 35
+summaries in a turn that should have made none. Never relax it to compact sooner.
 
 And what is shortened is the request, not the record. The replaced messages go to an archive that
 `recounted` still reads and the snapshot still stores. The user owns their transcript; compaction
