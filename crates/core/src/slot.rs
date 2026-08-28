@@ -128,7 +128,11 @@ pub enum Home {
     /// planner's own words.
     Anywhere,
     /// The answer is for this file and may be written to no other.
-    Only(String),
+    ///
+    /// The slot is carried alongside the path because the two have different audiences. The path
+    /// is what the write is checked against; the slot is what a refusal may say back to the
+    /// planner, which must not be told a filename it was never shown.
+    Only { path: String, named_by: SlotId },
     /// The answer came from a processor given more than one document, and nothing said which of
     /// them it was for. It may be written nowhere until something does.
     Unsaid,

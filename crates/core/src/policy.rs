@@ -758,9 +758,11 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
         slots
             .defer(slot.clone(), &path, label)
+            // Named by the slot, never by the path: this message travels back to the planner as
+            // a tool result, and the path may be one a quarantined listing never showed it.
             .map_err(|e| Denial {
                 principle: Principle::Confinement,
-                message: format!("{tool}: could not reserve {slot} for {path}: {e}"),
+                message: format!("{tool}: could not reserve {slot}: {e}"),
             })?;
 
         self.sink.emit(Event::SlotDeferred {
@@ -1026,14 +1028,14 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
         let text = read(&path).map_err(|detail| Denial {
             principle: Principle::Confinement,
-            message: format!("{tool}: {slot} could not be read from {path}: {detail}"),
+            message: format!("{tool}: {slot} could not be read: {detail}"),
         })?;
 
         let measured = slots
             .fill(slot, Labelled::new(text, label))
             .map_err(|e| Denial {
                 principle: Principle::Confinement,
-                message: format!("{tool}: {slot} could not be filled from {path}: {e}"),
+                message: format!("{tool}: {slot} could not be filled: {e}"),
             })?;
 
         self.sink.emit(Event::SlotWritten {
@@ -1568,12 +1570,16 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         about: Option<&SlotId>,
         slots: &mut crate::slot::SlotStore,
     ) {
-        let home = match about.and_then(|about| slots.path_of(about).map(str::to_string)) {
-            Some(path) => crate::slot::Home::Only(path),
+        let home = match about.and_then(|about| {
+            slots
+                .path_of(about)
+                .map(|path| (path.to_string(), about.clone()))
+        }) {
+            Some((path, named_by)) => crate::slot::Home::Only { path, named_by },
             None => crate::slot::Home::Unsaid,
         };
         let said = match &home {
-            crate::slot::Home::Only(path) => format!("{slot} answers for {path}"),
+            crate::slot::Home::Only { path, .. } => format!("{slot} answers for {path}"),
             _ => format!("{slot} answers for no file in particular, so it may be written nowhere"),
         };
         slots.set_home(slot, home);
@@ -1593,13 +1599,17 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ) -> Gated<()> {
         match slots.home_of(slot) {
             crate::slot::Home::Anywhere => Ok(()),
-            crate::slot::Home::Only(home) if home == path => Ok(()),
-            crate::slot::Home::Only(home) => Err(self.deny(
+            crate::slot::Home::Only { path: home, .. } if home == path => Ok(()),
+            // Named by its reference, never by its path. The planner reaches this having chosen a
+            // destination it may not be able to name, and a refusal that spelled the other file
+            // out would hand it a filename the listing had quarantined. One session read two
+            // filenames straight out of two of these refusals and said so.
+            crate::slot::Home::Only { named_by, .. } => Err(self.deny(
                 "write",
                 Principle::IntegrityGate,
                 format!(
-                    "{slot} is the answer for {home}, so it cannot be written to {path}. Ask a \
-                     processor about {path} if that is the file you mean."
+                    "{slot} is the answer for {named_by}, so it cannot be written anywhere else. \
+                     Ask a processor about the file you mean if that is a different one."
                 ),
             )),
             crate::slot::Home::Unsaid => Err(self.deny(
