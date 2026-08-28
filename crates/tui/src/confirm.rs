@@ -8,7 +8,7 @@
 //! event all resolve to refusal.
 
 use bua_agent::confirm::{
-    Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, WriteRequest,
+    Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
 use bua_agent::diff::Change;
 use bua_core::ask::{Answer as UserAnswer, Asking};
@@ -45,6 +45,10 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
 
     fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
         ask_output(self.terminal, request).decision()
+    }
+
+    fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
+        ask_vouch(self.terminal, request).decision()
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<UserAnswer> {
@@ -739,6 +743,137 @@ fn stage_count_of(count: usize, one: &str, many: &str) -> String {
     } else {
         format!("{count} {many}")
     }
+}
+
+/// Draw the offer to vouch for a quarantined file, and wait for an answer.
+pub fn ask_vouch<B: Backend>(terminal: &mut Terminal<B>, request: &VouchRequest) -> Answer {
+    let mut scroll = 0u16;
+    loop {
+        let mut most = 0u16;
+        if terminal
+            .draw(|frame| most = draw_vouch(frame, request, scroll))
+            .is_err()
+        {
+            return Answer::Reject;
+        }
+
+        match event::read() {
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(Response::Answer(answer)) => return answer,
+                Some(Response::Scroll(by)) => {
+                    scroll = scroll.saturating_add_signed(by).min(most);
+                }
+                None => continue,
+            },
+            Ok(_) => continue,
+            Err(_) => return Answer::Reject,
+        }
+    }
+}
+
+/// Draw the vouch offer, returning how far it can be scrolled.
+///
+/// The preview carries the same margin bar as everything else the model has not been allowed to
+/// read, because that is exactly what it is until this question is answered.
+fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -> u16 {
+    let area = centred(frame.area());
+    frame.render_widget(Clear, area);
+
+    let marked = Style::default().fg(Color::Yellow);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "Trust ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                request.path.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  the model cannot read this file, so it is working blind on it. Vouching lets it",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "  read this file for the rest of this session, here and in every later read.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::raw(""),
+    ];
+
+    for line in request.preview.lines() {
+        lines.push(Line::from(vec![
+            Span::styled("┃ ", marked),
+            Span::raw(line.to_string()),
+        ]));
+    }
+    if request.truncated {
+        lines.push(Line::from(vec![
+            Span::styled("┃ ", marked),
+            Span::styled("…", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    let keys = Line::from(vec![
+        Span::styled(
+            "  y",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" trust it    "),
+        Span::styled(
+            "n",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" leave it quarantined    "),
+        Span::styled(
+            "ctrl-c",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green))
+        .title(" let the model read this file? ");
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inside);
+
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let drawn = body.line_count(rows[0].width) as u16;
+    let furthest = drawn.saturating_sub(rows[0].height);
+    let offset = scroll.min(furthest);
+    frame.render_widget(body.scroll((offset, 0)), rows[0]);
+
+    let mut keys = keys;
+    if furthest > 0 {
+        let below = furthest - offset;
+        keys.push_span(Span::styled(
+            if below > 0 {
+                format!("   ↑↓ {below} more")
+            } else {
+                "   ↑↓ back".to_string()
+            },
+            Style::default().fg(Color::Green),
+        ));
+    }
+    frame.render_widget(Paragraph::new(keys), rows[1]);
+
+    furthest
 }
 
 /// A centred box, sized to the terminal but never larger than it.

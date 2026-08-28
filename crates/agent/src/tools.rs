@@ -830,6 +830,12 @@ fn tally(n: usize, one: &str, many: &str) -> String {
 /// Unchanged lines kept around each run of changes, so a hunk can be read in context.
 const DIFF_CONTEXT: usize = 3;
 
+/// How many lines of a quarantined file are shown when offering to vouch for it.
+///
+/// Enough to tell what the file is, not so much that the prompt becomes a document nobody reads.
+/// The decision being asked for is about the path, not about these lines.
+const VOUCH_PREVIEW: usize = 20;
+
 /// What a write did, for the person watching: a line saying how much changed, and the hunks
 /// themselves where showing them is worth the room.
 ///
@@ -935,7 +941,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     reporter.tool_started(Activity::running(verb, target.clone()));
 
     let produced = match name.as_str() {
-        "read_file" => read_file(policy, tools.workspace, tools.slots, &arguments),
+        "read_file" => read_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
@@ -1026,10 +1032,11 @@ fn references_in(arguments: &Value) -> Labelled<String> {
     Labelled::new(names.join(", "), bua_core::label::Label::untrusted_public())
 }
 
-fn read_file<S: Sink>(
+fn read_file<S: Sink, C: Confirmer>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     slots: &SlotStore,
+    confirmer: &mut C,
     arguments: &Value,
 ) -> Produced {
     let found = match path_argument(policy, "read_file", Purpose::Read, slots, arguments) {
@@ -1073,6 +1080,37 @@ fn read_file<S: Sink>(
     // limit describe a slice, and there is nothing to slice until something reads it, so those
     // are still read now.
     let whole_file = arguments.get("offset").is_none() && arguments.get("limit").is_none();
+
+    // The trust question, put where it bites rather than only at startup. A file is quarantined
+    // because nobody vouched for it, and that is the user's decision to make: they are shown the
+    // path and the first lines of it and can vouch on the spot, after which this read and every
+    // later one sees the file. A yes writes the same rule `@` and the startup question write, so
+    // nothing here is a second route to trusting content.
+    //
+    // Asked once per path per turn, and only for a path that is quarantined, so a planner retrying
+    // a read does not put the same question up twice.
+    if policy.should_offer_vouch(&proposed_path) {
+        let (preview, truncated) = match workspace.peek_for_review(&proposed_path) {
+            Some(body) => {
+                let head: Vec<&str> = body.lines().take(VOUCH_PREVIEW).collect();
+                let truncated = body.lines().count() > head.len();
+                (head.join("\n"), truncated)
+            }
+            // Nothing to show means nothing to vouch about: a path that cannot be read is reported
+            // by the read below, not turned into a question.
+            None => (String::new(), false),
+        };
+        if !preview.is_empty() {
+            let request = crate::confirm::VouchRequest {
+                path: proposed_path.clone(),
+                preview,
+                truncated,
+            };
+            if confirmer.confirm_vouch(&request) == Decision::Approve {
+                policy.vouch_for_named_path(&proposed_path);
+            }
+        }
+    }
 
     // A reference to a file the planner may not read already is that file, so reading it has
     // nothing to hand back but another name for the same thing, which reads as the read having
@@ -2922,6 +2960,10 @@ mod tests {
                 &mut self,
                 _request: &crate::confirm::OutputRequest,
             ) -> Decision {
+                Decision::Reject
+            }
+
+            fn confirm_vouch(&mut self, _request: &crate::confirm::VouchRequest) -> Decision {
                 Decision::Reject
             }
 

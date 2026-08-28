@@ -1058,6 +1058,19 @@ fn run_turn_animated(
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
             }
+            Ok(crate::remote_confirm::ToMain::Vouch(request)) => {
+                let answer = crate::confirm::ask_vouch(terminal, &request);
+                if answer == crate::confirm::Answer::Interrupt {
+                    cancel.cancel();
+                    session.note("cancelling…");
+                }
+                if answer == crate::confirm::Answer::Approve {
+                    // Said on the transcript because it is a standing decision the user will not
+                    // otherwise see recorded anywhere until they ask for /status.
+                    session.note(format!("trusting {} for this session", request.path));
+                }
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Vouch(answer.decision()));
+            }
             Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
                 // A planner that loops back over the same decision should not make the user
                 // restate it. The note is what keeps that from being invisible: an answer given

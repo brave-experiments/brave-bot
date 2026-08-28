@@ -192,6 +192,21 @@ impl OutputRequest {
     }
 }
 
+/// A quarantined file the model would like to read.
+///
+/// Offered at the moment a read is refused, so the trust question is put where it matters rather
+/// than only at startup. A yes writes the same rule into the trust map that `@` and the startup
+/// question write, so this is the existing decision surfaced, not a second route to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VouchRequest {
+    /// The file, as the user knows it. They are the only party shown this.
+    pub path: String,
+    /// The first lines of it, so the decision is about something they have seen.
+    pub preview: String,
+    /// Whether the preview is only part of the file.
+    pub truncated: bool,
+}
+
 /// What the user decided about a run.
 ///
 /// Two answers rather than one, because "yes" and "yes, and stop asking" are different things and
@@ -282,6 +297,13 @@ pub trait Confirmer {
     /// question cannot mean.
     fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision;
 
+    /// Ask whether to vouch for a quarantined file the model wants to read. Implementations must
+    /// default to refusal when they cannot ask.
+    ///
+    /// A yes records a rule in the trust map, so it is a standing decision about the path rather
+    /// than about one read.
+    fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision;
+
     /// Put a series of questions to the person, one answer per question in the order they were
     /// asked.
     ///
@@ -316,6 +338,10 @@ impl Confirmer for Unattended {
         Decision::Reject
     }
 
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -344,6 +370,10 @@ impl Confirmer for ApproveWrites {
         Decision::Reject
     }
 
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -363,6 +393,10 @@ impl Confirmer for ChoosesFirst {
     }
 
     fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
         Decision::Reject
     }
 
@@ -404,6 +438,10 @@ impl Confirmer for ApproveRuns {
         Decision::Reject
     }
 
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -423,6 +461,10 @@ impl Confirmer for RemembersRuns {
     }
 
     fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
         Decision::Reject
     }
 
@@ -446,6 +488,10 @@ impl Confirmer for ReadsOutput {
 
     fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
         Decision::Approve
+    }
+
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+        Decision::Reject
     }
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
