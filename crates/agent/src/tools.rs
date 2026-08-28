@@ -413,11 +413,15 @@ pub fn available() -> Vec<Tool> {
                                 },
                                 "args": {
                                     "type": "array",
-                                    "description": "The arguments, one per entry. Split them the \
-                                                    way a shell would have: [\"log\", \
-                                                    \"--oneline\", \"-50\"], never [\"log \
-                                                    --oneline -50\"], because nothing here \
-                                                    splits a string for you.",
+                                    "description": "What comes AFTER the program, one argument \
+                                                    per entry. Do not repeat the program name \
+                                                    here: this is not an argv vector and there is \
+                                                    no argv[0]. For `git log --oneline -50` the \
+                                                    program is \"git\" and args are [\"log\", \
+                                                    \"--oneline\", \"-50\"]. Split them the \
+                                                    way a shell would have, since nothing here \
+                                                    splits a string for you: never [\"log \
+                                                    --oneline -50\"] as one entry.",
                                     "items": {"type": "string"}
                                 }
                             },
@@ -2519,6 +2523,29 @@ mod tests {
                 .contains("does not stop you asking afterwards"),
             "ask_user still implies reading forfeits the question: {}",
             tool.function.description
+        );
+    }
+
+    /// `args` is what follows the program, not an argv vector. A planner reading it as argv puts
+    /// the program name in twice, and `open open -a ...` ran instead of `open -a ...`: the
+    /// browser never started, the error was quarantined, and the turn reported success.
+    #[test]
+    fn run_says_the_arguments_exclude_the_program_name() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "run")
+            .expect("run is offered");
+        let described = tool.function.parameters["properties"]["pipeline"]["items"]["properties"]
+            ["args"]["description"]
+            .as_str()
+            .expect("args is described");
+        assert!(
+            described.contains("Do not repeat the program name"),
+            "args does not rule out argv[0]: {described}"
+        );
+        assert!(
+            described.contains("no argv[0]"),
+            "args does not name the convention it is not: {described}"
         );
     }
 
