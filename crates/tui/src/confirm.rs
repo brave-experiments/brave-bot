@@ -463,26 +463,33 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     if !request.releases_private() {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "  a: trust this command for the rest of this session, meaning both:",
+            "  a: trust this exact command for the rest of this session",
+            Style::default().fg(Color::DarkGray),
+        )));
+        // The command first, then what trusting it means. The claims are about this, so a reader
+        // should have it in front of them before reading them.
+        for command in &vouching {
+            lines.push(Line::from(Span::styled(
+                format!("       {}", command.display()),
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "     which means both:",
             Style::default().fg(Color::DarkGray),
         )));
         lines.push(Line::from(Span::styled(
             "       it runs again unasked, side effects and all",
             Style::default().fg(Color::DarkGray),
         )));
+        // The half nothing else in the interface would reveal, so it is the half that is coloured.
         lines.push(Line::from(Span::styled(
             "       what it prints is trusted, and the model reads it",
             Style::default().fg(Color::Yellow),
         )));
-        for command in &vouching {
-            lines.push(Line::from(Span::styled(
-                format!("       {}", command.display()),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
         // Exact arguments, so the narrowness is visible rather than assumed the other way.
         lines.push(Line::from(Span::styled(
-            "       these arguments only: git log is not git push",
+            "     these arguments only: git log would not cover git push",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -717,7 +724,7 @@ mod tests {
             "the prompt does not name the arguments being vouched for: {drawn}"
         );
         assert!(
-            drawn.contains("git log is not git push"),
+            drawn.contains("would not cover git push"),
             "the prompt does not say the entry is one command: {drawn}"
         );
     }
