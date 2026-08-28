@@ -155,6 +155,15 @@ enum Entry {
         verbatim: Option<String>,
         /// Where an answer produced by a processor may be written.
         home: Home,
+        /// What produced this, where it was a program: the command as the user approved it.
+        ///
+        /// `None` for everything else. Only such a slot may be offered to the user for reading. A
+        /// file's trust is the trust map's business, and promoting a file's contents here would be
+        /// a second route to a decision that already has one.
+        ///
+        /// The string is the driver's own rendering of an argv a person endorsed, never anything a
+        /// program printed, so it is safe to put back on a screen beside the output.
+        from_command: Option<String>,
     },
     Unread(Deferred),
 }
@@ -187,6 +196,14 @@ impl Entry {
             Self::Read { home, .. } => home.clone(),
             // A file that has not been read is not an answer to anything.
             Self::Unread(_) => Home::Anywhere,
+        }
+    }
+
+    fn printed_by(&self) -> Option<&str> {
+        match self {
+            Self::Read { from_command, .. } => from_command.as_deref(),
+            // Nothing has run, so nothing printed this.
+            Self::Unread(_) => None,
         }
     }
 }
@@ -244,6 +261,26 @@ impl SlotStore {
         if let Some(Entry::Read { home: slot, .. }) = self.slots.get_mut(id) {
             *slot = home;
         }
+    }
+
+    /// Record that a slot holds what this command printed.
+    pub(crate) fn mark_from_command(&mut self, id: &SlotId, command: &str) {
+        if let Some(Entry::Read { from_command, .. }) = self.slots.get_mut(id) {
+            *from_command = Some(command.to_string());
+        }
+    }
+
+    /// Whether this slot holds what a program printed.
+    pub fn is_from_command(&self, id: &SlotId) -> bool {
+        self.command_of(id).is_some()
+    }
+
+    /// The command that printed this, where one did.
+    ///
+    /// Metadata, like everything else a caller may ask a slot store: this is the driver's own
+    /// rendering of an argv a person endorsed, never a byte of what the program printed.
+    pub fn command_of(&self, id: &SlotId) -> Option<&str> {
+        self.slots.get(id).and_then(Entry::printed_by)
     }
 
     /// Record that one slot holds exactly what another does.
@@ -359,6 +396,7 @@ impl SlotStore {
                 verbatim: Some(deferred.path.clone()),
                 path: Some(deferred.path),
                 home: Home::Anywhere,
+                from_command: None,
             },
         );
         Ok(measured)
@@ -445,6 +483,7 @@ impl SlotWriter<'_> {
                 path: None,
                 verbatim: None,
                 home: Home::Anywhere,
+                from_command: None,
             },
         );
         Ok(())
@@ -481,6 +520,7 @@ impl SlotWriter<'_> {
                 path: None,
                 verbatim: None,
                 home: Home::Anywhere,
+                from_command: None,
             },
         );
         Ok(measured)

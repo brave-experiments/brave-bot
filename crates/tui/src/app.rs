@@ -993,6 +993,14 @@ fn run_turn_animated(
                 // disagree with.
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Run(answer.decision()));
             }
+            Ok(crate::remote_confirm::ToMain::ReadOutput(request)) => {
+                let answer = crate::confirm::ask_output(terminal, &request);
+                if answer == crate::confirm::Answer::Interrupt {
+                    cancel.cancel();
+                    session.note("cancelling…");
+                }
+                let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
+            }
             Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
                 // A planner that loops back over the same decision should not make the user
                 // restate it. The note is what keeps that from being invisible: an answer given

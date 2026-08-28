@@ -7,7 +7,9 @@
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.
 
-use bua_agent::confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, WriteRequest};
+use bua_agent::confirm::{
+    Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, WriteRequest,
+};
 use bua_agent::diff::Change;
 use bua_core::ask::{Answer as UserAnswer, Asking};
 use ratatui::Terminal;
@@ -39,6 +41,10 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
 
     fn confirm_run(&mut self, request: &RunRequest) -> RunDecision {
         ask_run(self.terminal, request).decision()
+    }
+
+    fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
+        ask_output(self.terminal, request).decision()
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<UserAnswer> {
@@ -585,6 +591,156 @@ fn stage_count(count: usize) -> String {
     }
 }
 
+/// Draw the prompt for reading a command's output and wait for an answer.
+///
+/// The one prompt whose body is the thing being decided about rather than a description of it. It
+/// reuses the write prompt's keys and scrolling, because the answer is the same shape: yes, no, or
+/// stop.
+pub fn ask_output<B: Backend>(terminal: &mut Terminal<B>, request: &OutputRequest) -> Answer {
+    let mut scroll = 0u16;
+    loop {
+        let mut most = 0u16;
+        // A terminal that cannot be drawn to cannot show the output, and approving output nobody
+        // was shown is the one thing this question cannot mean.
+        if terminal
+            .draw(|frame| most = draw_output(frame, request, scroll))
+            .is_err()
+        {
+            return Answer::Reject;
+        }
+
+        match event::read() {
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(Response::Answer(answer)) => return answer,
+                Some(Response::Scroll(by)) => {
+                    scroll = scroll.saturating_add_signed(by).min(most);
+                }
+                None => continue,
+            },
+            Ok(_) => continue,
+            Err(_) => return Answer::Reject,
+        }
+    }
+}
+
+/// Draw the output for reading, returning how far it can be scrolled.
+///
+/// Every line of the output carries the margin bar the transcript draws down anything the model
+/// was not allowed to read, and the content never gets to draw its own. A block claiming "output
+/// ends here" ends nothing: the bar is the structure, and it is outside what the program wrote.
+fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16) -> u16 {
+    let area = centred(frame.area());
+    frame.render_widget(Clear, area);
+
+    let marked = Style::default().fg(Color::Yellow);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "Read ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                stage_count_of(request.lines(), "line", "lines"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  printed by {}", request.command),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  the model has not seen this. Approving puts it in its context, and it will act \
+             on it.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::raw(""),
+    ];
+
+    // An empty result is a fact worth stating. Drawing nothing would read as a prompt that failed
+    // to render, and the reviewer would be deciding about a blank box.
+    if request.output.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("┃ ", marked),
+            Span::styled("(it printed nothing)", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+    for line in request.output.lines() {
+        lines.push(Line::from(vec![
+            Span::styled("┃ ", marked),
+            Span::raw(line.to_string()),
+        ]));
+    }
+
+    let keys = Line::from(vec![
+        Span::styled(
+            "  y",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" let it read this    "),
+        Span::styled(
+            "n",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" keep it back    "),
+        Span::styled(
+            "ctrl-c",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" let the model read this? ");
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inside);
+
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let drawn = body.line_count(rows[0].width) as u16;
+    let furthest = drawn.saturating_sub(rows[0].height);
+    let offset = scroll.min(furthest);
+    frame.render_widget(body.scroll((offset, 0)), rows[0]);
+
+    let mut keys = keys;
+    if furthest > 0 {
+        let below = furthest - offset;
+        keys.push_span(Span::styled(
+            if below > 0 {
+                format!("   ↑↓ {below} more")
+            } else {
+                "   ↑↓ back".to_string()
+            },
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    frame.render_widget(Paragraph::new(keys), rows[1]);
+
+    furthest
+}
+
+/// `1 line`, `2 lines`.
+fn stage_count_of(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        format!("{count} {one}")
+    } else {
+        format!("{count} {many}")
+    }
+}
+
 /// A centred box, sized to the terminal but never larger than it.
 fn centred(area: Rect) -> Rect {
     let vertical = Layout::default()
@@ -789,6 +945,71 @@ mod tests {
             Some(RunResponse::Answer(RunAnswer::Reject))
         );
         assert!(!RunAnswer::Reject.decision().remember);
+    }
+
+    fn an_output(text: &str) -> OutputRequest {
+        OutputRequest {
+            command: "find /Applications -name 'Brave Browser Nightly.app'".into(),
+            output: text.into(),
+            reference: "ref:5".into(),
+        }
+    }
+
+    fn rendered_output(request: &OutputRequest) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                draw_output(frame, request, 0);
+            })
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    /// The whole point of this prompt: the bytes themselves are what the person decides about, so
+    /// they have to be on the screen, along with which command printed them.
+    #[test]
+    fn the_output_prompt_shows_the_bytes_and_the_command() {
+        let drawn = rendered_output(&an_output("/Applications/Brave Browser Nightly.app\n"));
+        assert!(
+            drawn.contains("/Applications/Brave Browser Nightly.app"),
+            "{drawn}"
+        );
+        assert!(drawn.contains("find /Applications"), "{drawn}");
+    }
+
+    /// Every line carries the margin bar the transcript draws down anything the model has not been
+    /// allowed to read, and the content never draws its own, so a block claiming the output has
+    /// ended ends nothing.
+    #[test]
+    fn output_is_drawn_inside_the_margin_it_cannot_forge() {
+        let drawn = rendered_output(&an_output("first\nsecond\nthird"));
+        assert_eq!(
+            drawn.matches('┃').count(),
+            3,
+            "one bar per line of output, drawn outside what the program wrote: {drawn}"
+        );
+    }
+
+    /// A command that printed nothing is a fact worth stating. An empty box reads as a prompt that
+    /// failed to render, and the reviewer would be answering about nothing.
+    #[test]
+    fn output_that_is_empty_says_so() {
+        assert!(rendered_output(&an_output("")).contains("printed nothing"));
+    }
+
+    /// The person has to be told what approving does, since the consequence is not visible in the
+    /// bytes: they go into the planner's context and it acts on them.
+    #[test]
+    fn the_output_prompt_says_what_approving_does() {
+        let drawn = rendered_output(&an_output("Darwin"));
+        assert!(drawn.contains("has not seen this"), "{drawn}");
+        assert!(drawn.contains("act on it"), "{drawn}");
     }
 
     /// The prompt blocks everything else, so Ctrl-C must be answerable here too. It stops the

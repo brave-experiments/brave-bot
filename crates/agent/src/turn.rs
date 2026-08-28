@@ -980,6 +980,16 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         if let Some(from) = &output.unchanged_from {
                             policy.copied_from(&reference.slot, from, conversation.quarantine());
                         }
+                        // Only a slot a program printed may be offered to the user for reading,
+                        // so the provenance is recorded here, where the slot is minted, together
+                        // with the command as the person approved it.
+                        if let Some(command) = &output.printed_by {
+                            policy.came_from_command(
+                                &reference.slot,
+                                command,
+                                conversation.quarantine(),
+                            );
+                        }
                         // An answer is for one file, however many the processor was given.
                         // Recorded here, where the slot is minted, so a write of it goes there
                         // and nowhere else: a planner that assumed a second answer was about a

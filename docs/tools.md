@@ -312,7 +312,40 @@ A program may print anything, including bytes an earlier stage read out of a fil
 so that is the only label that holds without knowing what ran. The model therefore receives a
 reference rather than text and cannot read what it just ran.
 
-The one thing that changes it is you, saying so. See "Unless you have said always" below.
+Two things change it, and both are you saying so: vouching for the command in advance, below, or
+reading one result and letting it through, next.
+
+### Asking to read a result
+
+A run's output is quarantined, so `which`, `find` and `uname` tell the model nothing by
+themselves. When it needs the answer it asks for it with `read_output`, naming the reference the
+run gave it. You are then shown **the bytes themselves**, with the command that printed them, and
+you decide.
+
+```
+╭ let the model read this? ────────────────────────────────╮
+│Read 1 line  printed by find /Applications -name 'Brave…' │
+│                                                          │
+│  the model has not seen this. Approving puts it in its   │
+│  context, and it will act on it.                         │
+│                                                          │
+│┃ /Applications/Brave Browser Nightly.app                 │
+│                                                          │
+│  y let it read this    n keep it back    ctrl-c stop     │
+╰──────────────────────────────────────────────────────────╯
+```
+
+This is the strongest assertion in the system, and the only one made about bytes rather than about
+a prediction: vouching for a command guesses at output that does not exist yet, while this is a
+statement about text in front of you. It covers **that one result**. The command is not added to
+anything, and the next run asks again.
+
+Only output from `run` can be read this way. A file's worth is the trust map's answer, and `@`,
+`/add-dir` and the startup question already give it; a second route would be a way to disagree
+with the first.
+
+Errors are worth reading too. A run that failed put its explanation on stderr, and a model that
+cannot see it will tell you the command worked.
 
 ### Every run asks
 

@@ -432,6 +432,26 @@ pub fn available() -> Vec<Tool> {
                 "required": ["pipeline"]
             }),
         ),
+        Tool::function(
+            "read_output",
+            "Ask to be shown what a command printed. Give the reference a run handed back. The \
+             user sees the output and decides; if they agree, it comes back to you as text you \
+             can read. Use it whenever you ran something to find something out, which is most of \
+             the time: a run's output is quarantined by default, so `which`, `find`, `uname` and \
+             the like tell you nothing until you ask for the result. Ask for the errors too when \
+             a run fails, or you will not know why it failed and must not claim it succeeded. \
+             Only for output from run; a quarantined file is not readable this way.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "The reference a run gave you, e.g. \"ref:5\"."
+                    }
+                },
+                "required": ["ref"]
+            }),
+        ),
     ]
 }
 
@@ -497,6 +517,11 @@ pub struct Output {
     /// Zero for every tool but the processor. A turn that reported only its own rounds would
     /// understate what it cost by however much its processors wrote.
     pub usage: Usage,
+    /// The command whose output this is, where a run produced it.
+    ///
+    /// Recorded on the slot by the turn loop, since only a slot minted from a command may be
+    /// offered to the user for reading.
+    pub printed_by: Option<String>,
 }
 
 /// Everything a tool works with that is not the policy.
@@ -559,6 +584,11 @@ struct Produced {
     content: bool,
     /// What the tool spent at the model. Only a processor spends anything.
     usage: Usage,
+    /// The command whose output this is, where a run produced it.
+    ///
+    /// Recorded on the slot by the turn loop, because only a slot minted from a command may be
+    /// offered to the user for reading.
+    printed_by: Option<String>,
 }
 
 impl Produced {
@@ -578,6 +608,7 @@ impl Produced {
             said: None,
             content: false,
             usage: Usage::default(),
+            printed_by: None,
         }
     }
 
@@ -664,6 +695,7 @@ fn verb_for(tool: &str) -> &'static str {
         "load_skill" => "Skill",
         "ask_user" => "Ask",
         "run" => "Run",
+        "read_output" => "Read output",
         _ => "Tool",
     }
 }
@@ -892,6 +924,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 said: produced.said,
                 content: produced.content,
                 usage: produced.usage,
+                printed_by: produced.printed_by,
             };
         }
     };
@@ -912,6 +945,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "load_skill" => load_skill(policy, tools.skills, &arguments),
         "ask_user" => ask_user(policy, confirmer, &arguments),
         "run" => run(policy, tools, confirmer, &arguments),
+        "read_output" => read_output(policy, tools, confirmer, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
 
@@ -936,6 +970,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         said: produced.said,
         content: produced.content,
         usage: produced.usage,
+        printed_by: produced.printed_by,
     }
 }
 
@@ -959,6 +994,7 @@ fn problem(text: impl Into<String>) -> Produced {
         said: None,
         content: false,
         usage: Usage::default(),
+        printed_by: None,
     }
 }
 
@@ -1798,6 +1834,79 @@ fn todo_write<S: Sink, R: Reporter>(
 ///
 /// Nothing here decides anything from content. The references are names the driver handed out,
 /// the instruction is the planner's, and the label on the result is computed by the kernel from
+/// Show a command's output to the user, and give it to the planner if they agree.
+///
+/// The one place bytes cross out of quarantine into the planner's context on nothing but a
+/// person's say-so, and the order is what makes that defensible: the output is released for
+/// display, put in front of the person in full, and only then, if they agree, does an endorsement
+/// exist for the kernel to consume.
+///
+/// The driver never reads it. The text goes from the slot to the screen and, on approval, from the
+/// kernel to the planner; nothing here branches on a byte of it.
+fn read_output<S: Sink, C: Confirmer>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> Produced {
+    let Some(named) = argument(arguments, "ref") else {
+        return problem("error: 'ref' is required and must be a reference name, e.g. \"ref:5\"");
+    };
+
+    let slot = match policy.accept_reference("read_output", "ref", &named) {
+        Ok(slot) => slot,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
+    // Refused here as well as in the kernel, so a planner naming a file is told what to do about
+    // it rather than being told a gate said no.
+    if !tools.slots.is_from_command(&slot) {
+        return problem(format!(
+            "refused: {slot} is not something a program printed, so there is nothing to show. \
+             Only a reference that came back from run can be read this way."
+        ));
+    }
+
+    // Released for the person to read, which is the whole of what this call is for. A display
+    // release cannot feed an effect, and this one feeds a screen.
+    let shown = {
+        let content = match policy.resolve("read_output", &slot, tools.slots) {
+            Ok(content) => content,
+            Err(denial) => return problem(format!("refused: {denial}")),
+        };
+        let proof = policy.authorise_display_release("command output the planner asked to read");
+        content.declassify(&proof)
+    };
+
+    let request = crate::confirm::OutputRequest {
+        command: tools
+            .slots
+            .command_of(&slot)
+            .unwrap_or("a command")
+            .to_string(),
+        output: shown,
+        reference: slot.to_string(),
+    };
+
+    if confirmer.confirm_read_output(&request) == Decision::Reject {
+        return problem(format!(
+            "refused: the user did not let you read {slot}. Do not ask for it again. Work with \
+             what you have, or say in your reply what you needed from it."
+        ));
+    }
+
+    // The approval is what makes these bytes readable, and it is bound to this exact reference.
+    policy.issue_grant("read_output", "ref", slot.to_string());
+
+    match policy.read_output(&slot, tools.slots) {
+        Ok(text) => {
+            let lines = tally(request.lines(), "line", "lines");
+            Produced::new(text, format!("what {slot} held"), format!("{lines}, read")).of_content()
+        }
+        Err(denial) => problem(format!("refused: {denial}")),
+    }
+}
+
 /// Run a program, after a person approves the exact arguments.
 ///
 /// The order is the whole of the safety argument, and it is the same order a write goes through:
@@ -1978,6 +2087,9 @@ fn run<S: Sink, C: Confirmer>(
             // program's output is: it may include bytes an earlier stage read out of a file an
             // attacker wrote.
             produced.untrusted = !label.is_trusted();
+            // What the slot will be told it came from, so the user can be asked to read it later
+            // and can see which command they are reading.
+            produced.printed_by = Some(displayed.clone());
             produced
         }
         // A run that produced nothing still says what happened. The argv is safe to repeat back:
@@ -2435,7 +2547,8 @@ mod tests {
                 "spawn_processor",
                 "load_skill",
                 "ask_user",
-                "run"
+                "run",
+                "read_output"
             ]
         );
     }
@@ -2800,6 +2913,13 @@ mod tests {
                 _request: &crate::confirm::RunRequest,
             ) -> crate::confirm::RunDecision {
                 crate::confirm::RunDecision::reject()
+            }
+
+            fn confirm_read_output(
+                &mut self,
+                _request: &crate::confirm::OutputRequest,
+            ) -> Decision {
+                Decision::Reject
             }
 
             fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {

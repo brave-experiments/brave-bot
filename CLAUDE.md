@@ -294,9 +294,16 @@ The rules `run` lives under, none of which may be relaxed to make something work
   without the planner or the driver reading it.
 - stdout and stderr are `(U,priv)` unless the user has vouched for **every** stage, argv and all,
   in which case they are `(T,priv)`. The pessimistic label is the default and the only one that
-  holds without knowing what ran. Nothing a caller, a stage, or the model can declare changes it:
-  the single exception is a person saying, at the prompt and in those terms, that they trust the
-  command and its output. Never widen that to anything the system infers.
+  holds without knowing what ran. Nothing a caller, a stage, or the model can declare changes it.
+  Only a person can, in one of two ways, and both are assertions rather than inferences: vouching
+  for the command in advance, or reading one result on screen and letting it through with
+  `Policy::read_output`. Never widen either to anything the system infers.
+- `Policy::read_output` is the stronger of the two, and the only assertion anywhere here made about
+  bytes rather than about a prediction. It is **not** a relabel: the slot keeps the label it was
+  quarantined at, and what the planner receives is a new value whose first label comes from the
+  provenance the kernel tracked, which is a person having read it. It covers one result, needs a
+  single-use endorsement naming that slot, and refuses for anything but command output, since a
+  file's worth is the trust map's answer and a second route to it would be a way to disagree.
 - Private input asks, even though the labels would permit it, because handing the user's data to a
   program releases it somewhere this policy stops governing.
 - Every run asks, unless the user has already vouched for every command in it. There is no
