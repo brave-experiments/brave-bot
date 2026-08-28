@@ -4,19 +4,19 @@
 //! process rather than an in-memory pipe is the point: it exercises the sandbox spawn
 //! path, which is where a confinement failure would surface.
 
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::RecordingSink;
-use bua_core::label::Label;
-use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_mcp::{McpError, StdioServer};
-use bua_sandbox::policy::SandboxPolicy;
-use bua_sandbox::{Sandbox, Unavailable};
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::RecordingSink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_mcp::{McpError, StdioServer};
+use bravebot_sandbox::policy::SandboxPolicy;
+use bravebot_sandbox::{Sandbox, Unavailable};
 use std::io::Write;
 use std::path::PathBuf;
 
 /// Write a fake MCP server that replies to each request by id.
 fn fake_server(name: &str, script: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("bua-mcp-fake-{name}.sh"));
+    let path = std::env::temp_dir().join(format!("bravebot-mcp-fake-{name}.sh"));
     let mut file = std::fs::File::create(&path).expect("create script");
     file.write_all(script.as_bytes()).expect("write script");
     drop(file);
@@ -80,7 +80,7 @@ fn sandbox_policy() -> SandboxPolicy {
 
 /// Skip where no real backend exists, since these tests need a spawn to succeed.
 fn sandbox_or_skip() -> Option<Box<dyn Sandbox>> {
-    match bua_sandbox::for_current_platform() {
+    match bravebot_sandbox::for_current_platform() {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("SKIPPED (no confinement backend): {e}");
@@ -105,7 +105,7 @@ fn a_confined_server_completes_the_handshake_and_lists_tools() {
     )
     .expect("server launches under confinement");
 
-    server.initialize("bua", "0.1.0").expect("handshake");
+    server.initialize("bravebot", "0.1.0").expect("handshake");
 
     let tools = server.list_tools().expect("tools listed");
     assert_eq!(tools.len(), 1);
@@ -131,7 +131,7 @@ fn a_tool_result_is_labelled_untrusted() {
         &sandbox_policy(),
     )
     .expect("server launches");
-    server.initialize("bua", "0.1.0").expect("handshake");
+    server.initialize("bravebot", "0.1.0").expect("handshake");
 
     let mut sink = RecordingSink::new();
     let mut policy = Policy::begin(
@@ -168,7 +168,7 @@ fn a_tool_call_without_the_capability_is_refused() {
         &sandbox_policy(),
     )
     .expect("server launches");
-    server.initialize("bua", "0.1.0").expect("handshake");
+    server.initialize("bravebot", "0.1.0").expect("handshake");
 
     let mut sink = RecordingSink::new();
     let mut policy = Policy::begin(
@@ -241,7 +241,7 @@ done
         &sandbox_policy(),
     )
     .expect("server launches");
-    server.initialize("bua", "0.1.0").expect("handshake");
+    server.initialize("bravebot", "0.1.0").expect("handshake");
 
     let error = server.list_tools().expect_err("must report the error");
     assert!(
@@ -270,7 +270,7 @@ fn a_server_that_exits_early_is_an_error() {
     .expect("launch succeeds even though the server exits");
 
     let error = server
-        .initialize("bua", "0.1.0")
+        .initialize("bravebot", "0.1.0")
         .expect_err("a dead server cannot handshake");
     assert!(matches!(error, McpError::Transport(_)), "got: {error}");
 

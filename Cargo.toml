@@ -9,7 +9,7 @@ edition = "2024"
 # release build could not compile rather than deferring that to CI.
 rust-version = "1.88"
 license = "MPL-2.0"
-repository = "https://github.com/brave-experiments/brave-user-agent"
+repository = "https://github.com/brave-experiments/brave-bot"
 
 [workspace.dependencies]
 base64 = "0.22"

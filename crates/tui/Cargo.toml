@@ -1,5 +1,5 @@
 [package]
-name = "bua-tui"
+name = "bravebot-tui"
 description = "Interactive terminal interface"
 version.workspace = true
 edition.workspace = true
@@ -11,11 +11,11 @@ repository.workspace = true
 # Already in the tree for the credential protocol; here it encodes the clipboard escape
 # sequence, which is base64 by specification.
 base64 = { workspace = true }
-bua-agent = { path = "../agent" }
-bua-config = { path = "../config" }
-bua-core = { path = "../core" }
-bua-net = { path = "../net" }
-bua-sandbox = { path = "../sandbox" }
+bravebot-agent = { path = "../agent" }
+bravebot-config = { path = "../config" }
+bravebot-core = { path = "../core" }
+bravebot-net = { path = "../net" }
+bravebot-sandbox = { path = "../sandbox" }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,4 +23,4 @@ unicode-width = { workspace = true }
 
 [dev-dependencies]
 # The tests read the conversation back out of a record, which needs its message type.
-bua-aichat = { path = "../aichat" }
+bravebot-aichat = { path = "../aichat" }

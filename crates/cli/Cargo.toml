@@ -1,5 +1,5 @@
 [package]
-name = "bua-cli"
+name = "bravebot-cli"
 description = "Command-line entry point"
 version.workspace = true
 edition.workspace = true
@@ -8,14 +8,14 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "bua"
+name = "bravebot"
 path = "src/main.rs"
 
 [dependencies]
-bua-agent = { path = "../agent" }
-bua-config = { path = "../config" }
-bua-core = { path = "../core" }
-bua-net = { path = "../net" }
-bua-sandbox = { path = "../sandbox" }
-bua-skus = { path = "../skus" }
-bua-tui = { path = "../tui" }
+bravebot-agent = { path = "../agent" }
+bravebot-config = { path = "../config" }
+bravebot-core = { path = "../core" }
+bravebot-net = { path = "../net" }
+bravebot-sandbox = { path = "../sandbox" }
+bravebot-skus = { path = "../skus" }
+bravebot-tui = { path = "../tui" }

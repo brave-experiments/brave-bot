@@ -14,9 +14,9 @@
 //!   that has gone away is simply not drawing. Failing a turn because nobody was watching would
 //!   let the display outrank the work.
 
-use bua_agent::confirm::{Confirmer, Decision, WriteRequest};
-use bua_agent::report::{Activity, Phase, Reporter};
-use bua_core::todo::Row;
+use bravebot_agent::confirm::{Confirmer, Decision, WriteRequest};
+use bravebot_agent::report::{Activity, Phase, Reporter};
+use bravebot_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
 
 /// What a worker sends the main thread.
@@ -108,8 +108,8 @@ impl Reporter for RemoteReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_agent::confirm::Intent;
-    use bua_core::todo::{Item, List, Status, rows};
+    use bravebot_agent::confirm::Intent;
+    use bravebot_core::todo::{Item, List, Status, rows};
     use std::sync::mpsc::channel;
     use std::thread;
 

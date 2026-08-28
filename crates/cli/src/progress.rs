@@ -8,8 +8,8 @@
 //! where it can be piped into something else; a progress log that shared that stream would
 //! corrupt it.
 
-use bua_agent::report::{Activity, Reporter};
-use bua_core::todo::Row;
+use bravebot_agent::report::{Activity, Reporter};
+use bravebot_core::todo::Row;
 use std::io::Write;
 
 /// Marks a call, matching the interactive transcript so the two read alike.

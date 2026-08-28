@@ -19,30 +19,30 @@
 #
 # Override for one command without editing this file:
 #
-#   BUA_ENV=prod direnv exec . bua doctor
+#   BRAVEBOT_ENV=prod direnv exec . bravebot doctor
 # ---------------------------------------------------------------------------
-export BUA_ENV="${BUA_ENV:-dev}"
+export BRAVEBOT_ENV="${BRAVEBOT_ENV:-dev}"
 
 # --- dev -------------------------------------------------------------------
 # Hosts resolve on the VPN only; off-VPN the names do not resolve at all.
-# Import the matching subscription with:  bua import-leo-creds development
+# Import the matching subscription with:  bravebot import-leo-creds development
 DEV_SERVICES_KEY="replace-me"
 DEV_KEY_ID="replace-me"
 DEV_ENDPOINT="https://ai-chat.bsg.brave.software"
 DEV_PREMIUM_ENDPOINT="https://ai-chat-premium.bsg.brave.software"
 
 # --- prod ------------------------------------------------------------------
-# Import the matching subscription with:  bua import-leo-creds stable
+# Import the matching subscription with:  bravebot import-leo-creds stable
 PROD_SERVICES_KEY="replace-me"
 PROD_KEY_ID="replace-me"
 PROD_ENDPOINT="https://ai-chat.bsg.brave.com"
 PROD_PREMIUM_ENDPOINT="https://ai-chat-premium.bsg.brave.com"
 
 # ---------------------------------------------------------------------------
-# Selection. An unrecognised BUA_ENV fails here rather than silently leaving
+# Selection. An unrecognised BRAVEBOT_ENV fails here rather than silently leaving
 # the variables unset, which would surface later as a confusing 401.
 # ---------------------------------------------------------------------------
-case "$BUA_ENV" in
+case "$BRAVEBOT_ENV" in
   dev)
     export SERVICES_KEY_AICHAT="$DEV_SERVICES_KEY"
     export BRAVE_SERVICES_KEY_ID="$DEV_KEY_ID"
@@ -56,7 +56,7 @@ case "$BUA_ENV" in
     export BRAVE_AI_CHAT_PREMIUM_ENDPOINT="$PROD_PREMIUM_ENDPOINT"
     ;;
   *)
-    echo "BUA_ENV must be 'dev' or 'prod', got '$BUA_ENV'" >&2
+    echo "BRAVEBOT_ENV must be 'dev' or 'prod', got '$BRAVEBOT_ENV'" >&2
     return 1 2>/dev/null || exit 1
     ;;
 esac

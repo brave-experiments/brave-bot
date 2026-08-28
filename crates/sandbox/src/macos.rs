@@ -243,7 +243,7 @@ mod tests {
             .allow_read("/usr")
             .allow_read("/bin");
 
-        let target = std::env::temp_dir().join("bua-sandbox-must-not-exist");
+        let target = std::env::temp_dir().join("bravebot-sandbox-must-not-exist");
         let _ = std::fs::remove_file(&target);
 
         let mut child = sandbox

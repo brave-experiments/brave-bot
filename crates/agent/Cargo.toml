@@ -1,5 +1,5 @@
 [package]
-name = "bua-agent"
+name = "bravebot-agent"
 description = "Task execution: label-aware tools and the turn loop"
 version.workspace = true
 edition.workspace = true
@@ -8,11 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bua-aichat = { path = "../aichat" }
-bua-config = { path = "../config" }
-bua-core = { path = "../core" }
-bua-net = { path = "../net" }
-bua-skus = { path = "../skus" }
+bravebot-aichat = { path = "../aichat" }
+bravebot-config = { path = "../config" }
+bravebot-core = { path = "../core" }
+bravebot-net = { path = "../net" }
+bravebot-skus = { path = "../skus" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

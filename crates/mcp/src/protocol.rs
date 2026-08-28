@@ -219,10 +219,10 @@ mod tests {
     /// No capabilities are advertised, so a server cannot ask this client to act.
     #[test]
     fn initialize_advertises_no_capabilities() {
-        let params = initialize_params("bua", "0.1.0");
+        let params = initialize_params("bravebot", "0.1.0");
         assert_eq!(params["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(params["capabilities"], serde_json::json!({}));
-        assert_eq!(params["clientInfo"]["name"], "bua");
+        assert_eq!(params["clientInfo"]["name"], "bravebot");
     }
 
     #[test]

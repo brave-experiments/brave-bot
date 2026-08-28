@@ -7,8 +7,8 @@
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.
 
-use bua_agent::confirm::{Confirmer, Decision, Intent, WriteRequest};
-use bua_agent::diff::Change;
+use bravebot_agent::confirm::{Confirmer, Decision, Intent, WriteRequest};
+use bravebot_agent::diff::Change;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};

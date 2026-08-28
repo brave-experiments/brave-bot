@@ -5,12 +5,12 @@
 //! are the ones that matter, and each asserts the negative directly, that no extra request went
 //! out and no file appeared, rather than asserting that a reply looked sensible.
 
-use bua_agent::manifest;
-use bua_agent::turn::Task;
-use bua_agent::{Mode, Workspace};
-use bua_config::Config;
-use bua_core::event::{Event, RecordingSink};
-use bua_core::trust::TrustStore;
+use bravebot_agent::manifest;
+use bravebot_agent::turn::Task;
+use bravebot_agent::{Mode, Workspace};
+use bravebot_config::Config;
+use bravebot_core::event::{Event, RecordingSink};
+use bravebot_core::trust::TrustStore;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -24,7 +24,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("bua-manifest-{name}"));
+        let path = std::env::temp_dir().join(format!("bravebot-manifest-{name}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create scratch");
         Self { path }
@@ -152,17 +152,17 @@ fn run(
     workspace: &Workspace,
     prompt: &str,
     sink: &mut RecordingSink,
-) -> Result<bua_agent::Outcome, bua_agent::TurnError> {
+) -> Result<bravebot_agent::Outcome, bravebot_agent::TurnError> {
     manifest::run(
         config,
-        &bua_net::Egress::new(),
+        &bravebot_net::Egress::new(),
         workspace,
         &Task::new(prompt),
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
         sink,
         TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
 }
 
@@ -222,7 +222,7 @@ fn a_slot_no_step_reads_is_never_opened() {
 #[test]
 fn a_read_transform_answer_plan_runs_end_to_end() {
     let scratch = Scratch::new("end-to-end");
-    std::fs::write(scratch.path.join("README.md"), "bua is a coding agent").unwrap();
+    std::fs::write(scratch.path.join("README.md"), "bravebot is a coding agent").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
     let (endpoint, received) = serve(vec![
@@ -263,11 +263,11 @@ fn a_read_transform_answer_plan_runs_end_to_end() {
     // The planner never met the file. That is the whole mode: the plan was written before the
     // read happened, and the read's result went into a slot nobody shows anyone.
     assert!(
-        !planning.contains("bua is a coding agent"),
+        !planning.contains("bravebot is a coding agent"),
         "the planner was shown the file"
     );
     assert!(
-        processing.contains("bua is a coding agent"),
+        processing.contains("bravebot is a coding agent"),
         "the transform should be the one that sees it"
     );
 }
@@ -578,12 +578,12 @@ fn a_turn_reports_no_planning_record() {
     let config = config_for(&endpoint);
     let mut sink = RecordingSink::new();
 
-    let outcome = bua_agent::turn::run(
+    let outcome = bravebot_agent::turn::run(
         &config,
-        &bua_net::Egress::new(),
+        &bravebot_net::Egress::new(),
         &workspace,
         &Task::new("what is 2 + 2?"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -608,18 +608,18 @@ fn the_goal_and_the_steps_are_both_reported_before_any_step_runs() {
     ]);
     let config = config_for(&endpoint);
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     manifest::run(
         &config,
-        &bua_net::Egress::new(),
+        &bravebot_net::Egress::new(),
         &workspace,
         &Task::new("what is in a.md"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("runs");
 
@@ -662,7 +662,7 @@ fn the_audit_trail_records_each_planning_call() {
         .events()
         .iter()
         .filter_map(|event| match event {
-            bua_core::event::Event::GatePassed { gate, detail } if *gate == "planning" => {
+            bravebot_core::event::Event::GatePassed { gate, detail } if *gate == "planning" => {
                 Some(detail.as_str())
             }
             _ => None,
@@ -675,9 +675,9 @@ fn the_audit_trail_records_each_planning_call() {
 }
 
 /// Pull the attempt out of a failure. A run that stopped must always come back with one.
-fn attempt_of(error: bua_agent::TurnError) -> bua_agent::manifest::Attempt {
+fn attempt_of(error: bravebot_agent::TurnError) -> bravebot_agent::manifest::Attempt {
     match error {
-        bua_agent::TurnError::Manifest { attempt, .. } => *attempt,
+        bravebot_agent::TurnError::Manifest { attempt, .. } => *attempt,
         other => panic!("a manifest run must fail with its attempt, got: {other}"),
     }
 }
@@ -836,23 +836,23 @@ fn a_cancelled_run_is_not_reported_as_a_failed_attempt() {
     let config = config_for(&endpoint);
     let mut sink = RecordingSink::new();
 
-    let cancel = bua_core::cancel::Cancel::new();
+    let cancel = bravebot_core::cancel::Cancel::new();
     cancel.cancel();
 
     let failure = manifest::run(
         &config,
-        &bua_net::Egress::new(),
+        &bravebot_net::Egress::new(),
         &workspace,
         &Task::new("do a thing"),
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
         TrustStore::new(),
         &cancel,
     )
     .expect_err("a cancelled run does not finish");
 
-    assert!(matches!(failure, bua_agent::TurnError::Cancelled));
+    assert!(matches!(failure, bravebot_agent::TurnError::Cancelled));
 }
 
 /// The first planning call must know that something downstream will read the workspace, or it

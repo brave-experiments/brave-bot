@@ -9,15 +9,15 @@
 //! them; `"integrity": "untrusted", "confidentiality": "private"` is right for a file being read
 //! six months later by someone answering a question about what happened.
 //!
-//! Shaping events here rather than deriving it in the kernel is deliberate. `bua-core` has no
+//! Shaping events here rather than deriving it in the kernel is deliberate. `bravebot-core` has no
 //! dependencies at all, and a serialisation format is a presentation concern: the same events
 //! already become terminal lines a few modules away.
 //!
 //! Nothing in here is content. Every field is a gate name, a capability, a label, a path or a
 //! slot id, which is the same reason the trail can be shown on a screen without a release.
 
-use bua_core::event::{Event, Role};
-use bua_core::label::{Confidentiality, Integrity, Label};
+use bravebot_core::event::{Event, Role};
+use bravebot_core::label::{Confidentiality, Integrity, Label};
 use serde_json::{Value, json};
 
 /// One event as the transcript shows it: the words, and whether it is a refusal.
@@ -253,8 +253,8 @@ fn label_json(label: Label) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_core::capability::Capability;
-    use bua_core::slot::SlotId;
+    use bravebot_core::capability::Capability;
+    use bravebot_core::slot::SlotId;
 
     /// The four words the whole model is stated in have to appear in the file, or an audit is a
     /// list of gate names with no answer to the question it exists for.

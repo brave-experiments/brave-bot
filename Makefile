@@ -1,13 +1,13 @@
-BINARY = bua
+BINARY = bravebot
 VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)
 
 # Forwarded into the cross-build container, which does not inherit the host environment.
 BUILD_ENV = SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
-            BRAVE_AI_CHAT_PREMIUM_ENDPOINT MODEL BUA_ALLOW_UNCONFIGURED_BUILD
+            BRAVE_AI_CHAT_PREMIUM_ENDPOINT MODEL BRAVEBOT_ALLOW_UNCONFIGURED_BUILD
 
 .PHONY: help
 help:
-	@echo "bua $(VERSION)"
+	@echo "bravebot $(VERSION)"
 	@echo
 	@echo "Development:"
 	@echo "  make build          Debug build"
@@ -133,7 +133,7 @@ define cross-build
 	done; \
 	DOCKER_BUILDKIT=1 docker build -f Dockerfile.cross -t $(BINARY)-$(1) \
 		--build-arg TARGET=$(2) \
-		--secret id=bua_env,src="$$env_file" .
+		--secret id=bravebot_env,src="$$env_file" .
 	$(call extract,$(BINARY)-$(1),$(1))
 endef
 

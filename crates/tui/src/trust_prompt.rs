@@ -9,7 +9,7 @@
 //! stream all resolve to declining, because the failure mode of guessing wrong here is that a
 //! session silently writes to files nobody vouched for.
 
-use bua_core::trust::TrustStore;
+use bravebot_core::trust::TrustStore;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};

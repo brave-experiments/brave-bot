@@ -1,5 +1,5 @@
 [package]
-name = "bua-sandbox"
+name = "bravebot-sandbox"
 description = "OS-level confinement for untrusted subprocesses"
 version.workspace = true
 edition.workspace = true

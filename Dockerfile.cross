@@ -17,19 +17,19 @@ COPY . .
 #
 # Rust's own strip can corrupt some targets in zigbuild flows, so symbols are kept
 # here and removed during packaging instead.
-RUN --mount=type=secret,id=bua_env,target=/run/secrets/bua_env \
+RUN --mount=type=secret,id=bravebot_env,target=/run/secrets/bravebot_env \
     rustup target add "$TARGET" \
-    && if [ -f /run/secrets/bua_env ]; then . /run/secrets/bua_env; fi \
+    && if [ -f /run/secrets/bravebot_env ]; then . /run/secrets/bravebot_env; fi \
     && cargo zigbuild --release --locked --target "$TARGET" \
        --config profile.release.strip=false
 
 # Normalise the artifact name so extraction does not need to know about .exe.
 RUN mkdir -p /out \
-    && if [ -f "/src/target/${TARGET}/release/bua.exe" ]; then \
-         cp "/src/target/${TARGET}/release/bua.exe" /out/bua; \
+    && if [ -f "/src/target/${TARGET}/release/bravebot.exe" ]; then \
+         cp "/src/target/${TARGET}/release/bravebot.exe" /out/bravebot; \
        else \
-         cp "/src/target/${TARGET}/release/bua" /out/bua; \
+         cp "/src/target/${TARGET}/release/bravebot" /out/bravebot; \
        fi
 
 FROM scratch
-COPY --from=builder /out/bua /bua
+COPY --from=builder /out/bravebot /bravebot

@@ -41,8 +41,8 @@
 //! 2. **Concrete mapping.** Deterministic, no model. Capability names become tool names through
 //!    a table the model has never seen.
 //! 3. **Structural validation.** Deterministic, no model, in the kernel.
-//!    [`bua_core::policy::Policy::adopt_manifest`] refuses a plan from a context that met
-//!    anything untrusted, then [`bua_core::manifest::validate`] refuses one that is not well
+//!    [`bravebot_core::policy::Policy::adopt_manifest`] refuses a plan from a context that met
+//!    anything untrusted, then [`bravebot_core::manifest::validate`] refuses one that is not well
 //!    formed. Any violation fails the run; a manifest is never half adopted.
 //!
 //! Phase 2 is thinner here than in the specification, and the reason is worth stating rather
@@ -65,19 +65,19 @@
 //! conversation to resume: the planner is never shown a result, so there is nothing for a second
 //! turn to continue. A manifest run is one run, start to finish.
 
-use bua_aichat::AichatClient;
-use bua_aichat::protocol::{ChatRequest, Message};
-use bua_config::Config;
-use bua_core::cancel::Cancel;
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::Sink;
-use bua_core::label::{Confidentiality, Label};
-use bua_core::manifest::{self, Arg, Draft, DraftStep, Manifest, Step, Tier};
-use bua_core::policy::{Destination, Policy, ReleasePlan, Routing};
-use bua_core::slot::{SlotId, SlotStore};
-use bua_core::trust::TrustStore;
-use bua_core::value::Labelled;
-use bua_net::Egress;
+use bravebot_aichat::AichatClient;
+use bravebot_aichat::protocol::{ChatRequest, Message};
+use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::Sink;
+use bravebot_core::label::{Confidentiality, Label};
+use bravebot_core::manifest::{self, Arg, Draft, DraftStep, Manifest, Step, Tier};
+use bravebot_core::policy::{Destination, Policy, ReleasePlan, Routing};
+use bravebot_core::slot::{SlotId, SlotStore};
+use bravebot_core::trust::TrustStore;
+use bravebot_core::value::Labelled;
+use bravebot_net::Egress;
 use serde_json::Value;
 
 use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
@@ -420,7 +420,7 @@ const REASONING_TAGS: [(&str, &str); 3] = [
 
 /// The document inside a fence that wraps the whole of `text`, or `None`.
 ///
-/// The same test `bua_core::fence` applies to a processor's answer on `main`: the first line
+/// The same test `bravebot_core::fence` applies to a processor's answer on `main`: the first line
 /// opens a fence, the last closes one, and nothing between them closes it early. A fence that
 /// closes in the middle means the reply is prose containing a block rather than one block, and
 /// that is the case this must not touch.
@@ -899,7 +899,7 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
     let mut chat = Chat {
         config,
         egress,
-        subscription: subscription.map(|s| s as &mut dyn bua_aichat::Subscription),
+        subscription: subscription.map(|s| s as &mut dyn bravebot_aichat::Subscription),
     };
 
     for (index, step) in plan.steps().iter().enumerate() {

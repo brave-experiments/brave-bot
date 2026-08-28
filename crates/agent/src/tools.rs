@@ -27,12 +27,12 @@ use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use crate::diff::Diff;
 use crate::processor::{self, Chat};
 use crate::report::{Activity, Reporter};
-use bua_aichat::protocol::{Tool, ToolCall, Usage};
-use bua_core::event::Sink;
-use bua_core::policy::{Destination, Policy};
-use bua_core::slot::{SlotId, SlotStore};
-use bua_core::todo::{self, Item, List, Status};
-use bua_core::value::Labelled;
+use bravebot_aichat::protocol::{Tool, ToolCall, Usage};
+use bravebot_core::event::Sink;
+use bravebot_core::policy::{Destination, Policy};
+use bravebot_core::slot::{SlotId, SlotStore};
+use bravebot_core::todo::{self, Item, List, Status};
+use bravebot_core::value::Labelled;
 use serde_json::{Value, json};
 
 use crate::workspace::{Page, Workspace};
@@ -690,7 +690,7 @@ fn argument(arguments: &Value, key: &str) -> Option<Labelled<String>> {
     let raw = arguments.get(key)?.as_str()?.to_string();
     Some(Labelled::new(
         raw,
-        bua_core::label::Label::untrusted_public(),
+        bravebot_core::label::Label::untrusted_public(),
     ))
 }
 
@@ -705,7 +705,10 @@ fn references_in(arguments: &Value) -> Labelled<String> {
         .and_then(Value::as_array)
         .map(|entries| entries.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    Labelled::new(names.join(", "), bua_core::label::Label::untrusted_public())
+    Labelled::new(
+        names.join(", "),
+        bravebot_core::label::Label::untrusted_public(),
+    )
 }
 
 fn read_file<S: Sink>(
@@ -863,7 +866,7 @@ fn path_argument<S: Sink>(
             // vouched for. What may be done with it is decided by the gate that comes next,
             // promotion for a read and a person's endorsement for a write.
             Ok(PathArgument {
-                path: Labelled::new(path, bua_core::label::Label::untrusted_public()),
+                path: Labelled::new(path, bravebot_core::label::Label::untrusted_public()),
                 destination: Destination::Reference,
                 shown: slot.to_string(),
             })
@@ -930,7 +933,10 @@ fn list_files<S: Sink>(
     arguments: &Value,
 ) -> Produced {
     let proposed = argument(arguments, "directory").unwrap_or_else(|| {
-        Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
+        Labelled::new(
+            ".".to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        )
     });
 
     let directory = match policy.promote_confined_read("list_files", "directory", &proposed) {
@@ -1373,7 +1379,10 @@ fn spawn_processor<S: Sink>(
                 "error: every entry in 'reads' must be a reference name, e.g. \"ref:0\"",
             );
         };
-        let named = Labelled::new(name.to_string(), bua_core::label::Label::untrusted_public());
+        let named = Labelled::new(
+            name.to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        );
         match policy.accept_reference("spawn_processor", "reads", &named) {
             Ok(slot) => reads.push(slot),
             Err(denial) => return problem(format!("refused: {denial}")),
@@ -1430,7 +1439,10 @@ fn search<S: Sink>(
         return problem("error: 'pattern' is required and must be a string");
     };
     let proposed_dir = argument(arguments, "directory").unwrap_or_else(|| {
-        Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
+        Labelled::new(
+            ".".to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        )
     });
 
     let pattern = match policy.promote_confined_read("search", "pattern", &pattern) {
@@ -1569,7 +1581,10 @@ mod tests {
     fn string_arguments_are_labelled_untrusted() {
         let arguments = json!({"path": "src/main.rs"});
         let value = argument(&arguments, "path").expect("present");
-        assert_eq!(value.label(), bua_core::label::Label::untrusted_public());
+        assert_eq!(
+            value.label(),
+            bravebot_core::label::Label::untrusted_public()
+        );
     }
 
     #[test]
@@ -1724,10 +1739,10 @@ mod tests {
     mod todos {
         use super::*;
         use crate::report::RecordingReporter;
-        use bua_core::capability::{Capability, CapabilitySet};
-        use bua_core::event::RecordingSink;
-        use bua_core::label::Integrity;
-        use bua_core::policy::{ReleasePlan, Routing};
+        use bravebot_core::capability::{Capability, CapabilitySet};
+        use bravebot_core::event::RecordingSink;
+        use bravebot_core::label::Integrity;
+        use bravebot_core::policy::{ReleasePlan, Routing};
 
         fn routing() -> Routing {
             let mut r = Routing::new();

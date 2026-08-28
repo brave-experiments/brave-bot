@@ -23,11 +23,11 @@ make all-platforms
 
 ## Which build wrote a session
 
-Every session record carries the build that produced it, and `bua --version` prints the same
+Every session record carries the build that produced it, and `bravebot --version` prints the same
 string:
 
 ```
-bua 0.1.0 (f2a6e1a, modified)
+bravebot 0.1.0 (f2a6e1a, modified)
 ```
 
 The commit is what the binary was compiled from, and `modified` means the tree had uncommitted
@@ -54,7 +54,7 @@ direnv allow
 The build captures whatever is set at build time, so the resulting binary works in any
 directory rather than needing direnv wherever it is started. A build with nothing set **fails**,
 rather than producing a binary that only works in the tree it came from; to build one
-deliberately, set `BUA_ALLOW_UNCONFIGURED_BUILD=1` and supply the variables at run time.
+deliberately, set `BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=1` and supply the variables at run time.
 
 The environment still wins when set, which is how a released binary is pointed at a local
 backend without rebuilding it. Baked values are masked so `strings` on the binary does not
@@ -65,7 +65,7 @@ The cross-build container does not inherit the host environment, so `make all-pl
 forwards these variables as a BuildKit secret rather than a build argument, which would record
 the signing key in the image metadata.
 
-Run `bua doctor` to check configuration and confinement without revealing the signing key.
+Run `bravebot doctor` to check configuration and confinement without revealing the signing key.
 
 ## Conventions
 
@@ -96,8 +96,8 @@ if text.matches(old).count() > 1 {
 }
 ```
 
-Moving such a branch from `bua-agent` into `bua-core` does not fix it. `bua-core` is the driver
-too, and relocating a decision is not the same as removing it. Nor does "it is only for a
+Moving such a branch from `bravebot-agent` into `bravebot-core` does not fix it. `bravebot-core`
+is the driver too, and relocating a decision is not the same as removing it. Nor does "it is only for a
 message to the model", which is R1.
 
 A declassification witness is **not permission to inspect**. Minting one records that bytes

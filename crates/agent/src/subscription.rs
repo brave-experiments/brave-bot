@@ -8,18 +8,18 @@
 //! subscription that silently stops being used looks like the model got worse for no reason, and
 //! the error names the fix (re-import, or unset the premium endpoint).
 
-use bua_aichat::{Subscription, SubscriptionCredential};
-use bua_skus::{Channel, DeviceError, Registration, StoreError};
+use bravebot_aichat::{Subscription, SubscriptionCredential};
+use bravebot_skus::{Channel, DeviceError, Registration, StoreError};
 
 /// How a new batch is obtained, as a function so a test can supply one without a network.
-type Register = fn(bua_skus::Environment, &str, &str) -> Result<Registration, DeviceError>;
+type Register = fn(bravebot_skus::Environment, &str, &str) -> Result<Registration, DeviceError>;
 
 /// Spends credentials from the keychain, one per request.
 ///
 /// The batch is opened once and spent from memory, so a session prompts for the keychain at most
-/// once rather than on every model round. See [`bua_skus::store::Wallet`].
+/// once rather than on every model round. See [`bravebot_skus::store::Wallet`].
 pub struct ImportedSubscription {
-    wallet: bua_skus::store::Wallet,
+    wallet: bravebot_skus::store::Wallet,
     /// The clock, as an injectable function so a test need not wait for a real date.
     now: fn() -> String,
     /// How many credentials were left after the last spend, for a caller that wants to warn.
@@ -36,11 +36,11 @@ impl ImportedSubscription {
     /// Open `channel`'s imported batch, prompting for the keychain at most once.
     pub fn new(channel: Channel) -> Option<Self> {
         Some(Self {
-            wallet: bua_skus::store::Wallet::open(channel).ok()?,
+            wallet: bravebot_skus::store::Wallet::open(channel).ok()?,
             now: current_timestamp,
             remaining: None,
             register: default_register,
-            new_request_id: bua_skus::new_request_id,
+            new_request_id: bravebot_skus::new_request_id,
             refilled: false,
         })
     }
@@ -51,9 +51,9 @@ impl ImportedSubscription {
     /// one: it would prompt whoever ran it, and in CI there is nobody to answer, so the run would
     /// hang or fail on a machine difference rather than on the code.
     #[cfg(test)]
-    fn detached(batch: bua_skus::StoredCredentials) -> Self {
+    fn detached(batch: bravebot_skus::StoredCredentials) -> Self {
         Self {
-            wallet: bua_skus::store::Wallet::detached(batch),
+            wallet: bravebot_skus::store::Wallet::detached(batch),
             now: current_timestamp,
             remaining: None,
             // Refusing rather than reaching the network, so a test that unexpectedly triggers a
@@ -84,7 +84,7 @@ impl ImportedSubscription {
             .into_iter()
             .filter_map(Self::new)
             .find(|subscription| {
-                (subscription.wallet.environment() == bua_skus::Environment::Production)
+                (subscription.wallet.environment() == bravebot_skus::Environment::Production)
                     == production
             })
     }
@@ -112,13 +112,13 @@ impl Subscription for ImportedSubscription {
             Err(e) => return Err(e.to_string()),
         };
 
-        let value = bua_skus::device::present(&spent.credential, &spent.issuer)
+        let value = bravebot_skus::device::present(&spent.credential, &spent.issuer)
             .map_err(|e| e.to_string())?;
 
         self.remaining = Some(spent.remaining);
 
         Ok(SubscriptionCredential {
-            cookie_name: bua_skus::CREDENTIAL_COOKIE_NAME.to_string(),
+            cookie_name: bravebot_skus::CREDENTIAL_COOKIE_NAME.to_string(),
             cookie_value: value,
         })
     }
@@ -182,11 +182,11 @@ fn is_production_endpoint(endpoint: &str) -> Option<bool> {
 
 /// Register against the real service.
 fn default_register(
-    environment: bua_skus::Environment,
+    environment: bravebot_skus::Environment,
     order_id: &str,
     request_id: &str,
 ) -> Result<Registration, DeviceError> {
-    bua_skus::device::register(environment, order_id, request_id)
+    bravebot_skus::device::register(environment, order_id, request_id)
 }
 
 /// The current time, in the fixed-width UTC form the stored windows use.
@@ -267,13 +267,13 @@ mod tests {
         assert_eq!(civil_from_days(20_687), (2026, 8, 22));
     }
 
-    fn batch() -> bua_skus::StoredCredentials {
-        bua_skus::StoredCredentials {
+    fn batch() -> bravebot_skus::StoredCredentials {
+        bravebot_skus::StoredCredentials {
             order_id: "order".to_string(),
-            environment: bua_skus::Environment::Production,
+            environment: bravebot_skus::Environment::Production,
             item_id: "item".to_string(),
             issuer: "brave.com?sku=brave-leo-premium".to_string(),
-            credentials: vec![bua_skus::store::Credential {
+            credentials: vec![bravebot_skus::store::Credential {
                 // Not a real token, so presenting it fails. That is what the error paths below
                 // exercise, without needing a signed batch from the service.
                 unblinded: "not-a-token".to_string(),
@@ -341,7 +341,10 @@ mod tests {
         let credential = subscription
             .next_credential()
             .expect("an expired batch is replaced");
-        assert_eq!(credential.cookie_name, bua_skus::CREDENTIAL_COOKIE_NAME);
+        assert_eq!(
+            credential.cookie_name,
+            bravebot_skus::CREDENTIAL_COOKIE_NAME
+        );
         assert!(subscription.refilled);
     }
 
@@ -413,14 +416,14 @@ mod tests {
     }
 
     /// A registration with one usable credential, as the service would return.
-    fn fresh_registration() -> bua_skus::Registration {
-        bua_skus::Registration {
+    fn fresh_registration() -> bravebot_skus::Registration {
+        bravebot_skus::Registration {
             order_id: "order".to_string(),
-            environment: bua_skus::Environment::Production,
+            environment: bravebot_skus::Environment::Production,
             item_id: "item".to_string(),
             issuer: "brave.com?sku=brave-leo-premium".to_string(),
-            credentials: vec![bua_skus::device::SignedCredential {
-                unblinded: bua_skus::device::test_credential(),
+            credentials: vec![bravebot_skus::device::SignedCredential {
+                unblinded: bravebot_skus::device::test_credential(),
                 // Open-ended, so the credential is valid whenever the test happens to run.
                 valid_from: "2000-01-01T00:00:00".to_string(),
                 valid_to: "2999-01-01T00:00:00".to_string(),

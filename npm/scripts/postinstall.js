@@ -12,18 +12,18 @@ const https = require("node:https");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
-const SKIP_ENV = "BUA_INSTALL_SKIP_DOWNLOAD";
-const DEFAULT_REPO = "brave-experiments/brave-user-agent";
+const SKIP_ENV = "BRAVEBOT_INSTALL_SKIP_DOWNLOAD";
+const DEFAULT_REPO = "brave-experiments/brave-bot";
 const MAX_REDIRECTS = 5;
 
-const repo = process.env.BUA_REPO || DEFAULT_REPO;
+const repo = process.env.BRAVEBOT_REPO || DEFAULT_REPO;
 const pkg = require(path.join(__dirname, "../../package.json"));
 const tag = `v${pkg.version}`;
 
 // Lets the package install in CI or a sandbox with no network, and during local
 // development where the binary is built rather than downloaded.
 if (process.env[SKIP_ENV] === "1") {
-  console.log(`Skipping bua binary download because ${SKIP_ENV}=1`);
+  console.log(`Skipping bravebot binary download because ${SKIP_ENV}=1`);
   process.exit(0);
 }
 
@@ -37,7 +37,7 @@ const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
 const destination = path.join(__dirname, "..", "bin", target.binaryName);
 
 install().catch((error) => {
-  console.error(`Failed to install the bua binary: ${error.message}`);
+  console.error(`Failed to install the bravebot binary: ${error.message}`);
   process.exit(1);
 });
 
@@ -57,19 +57,19 @@ async function install() {
 
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, bytes, { mode: 0o755 });
-  console.log(`Installed bua ${tag} (${target.asset})`);
+  console.log(`Installed bravebot ${tag} (${target.asset})`);
 }
 
 function resolveTarget(platform, arch) {
   const resolved = resolveArch(platform, arch);
   const key = `${platform}-${resolved}`;
   const table = {
-    "darwin-arm64": "bua-darwin-arm64",
-    "darwin-x64": "bua-darwin-amd64",
-    "linux-arm64": "bua-linux-arm64",
-    "linux-x64": "bua-linux-amd64",
-    "win32-arm64": "bua-windows-arm64.exe",
-    "win32-x64": "bua-windows-amd64.exe",
+    "darwin-arm64": "bravebot-darwin-arm64",
+    "darwin-x64": "bravebot-darwin-amd64",
+    "linux-arm64": "bravebot-linux-arm64",
+    "linux-x64": "bravebot-linux-amd64",
+    "win32-arm64": "bravebot-windows-arm64.exe",
+    "win32-x64": "bravebot-windows-amd64.exe",
   };
   const asset = table[key];
   if (!asset) {
@@ -77,14 +77,14 @@ function resolveTarget(platform, arch) {
   }
   return {
     asset,
-    binaryName: platform === "win32" ? "bua-bin.exe" : "bua-bin",
+    binaryName: platform === "win32" ? "bravebot-bin.exe" : "bravebot-bin",
   };
 }
 
 // Under Rosetta, node reports x64 on an arm64 machine. Installing the x64 binary
 // would work but run translated, so prefer the native one.
 function resolveArch(platform, arch) {
-  const override = process.env.BUA_INSTALL_ARCH;
+  const override = process.env.BRAVEBOT_INSTALL_ARCH;
   if (override === "arm64" || override === "x64") {
     return override;
   }
@@ -132,7 +132,7 @@ function get(url, redirects, callback) {
   }
 
   https
-    .get(url, { headers: { "User-Agent": "brave-user-agent-installer" } }, (response) => {
+    .get(url, { headers: { "User-Agent": "brave-bot-installer" } }, (response) => {
       const { statusCode, headers } = response;
       if (statusCode >= 300 && statusCode < 400 && headers.location) {
         response.resume();

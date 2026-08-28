@@ -8,7 +8,7 @@
 //! A missing value fails the build rather than producing a binary that only works in
 //! the tree it came from, since that failure would otherwise surface as a confusing
 //! runtime error for whoever was given the binary. Builds that genuinely have no
-//! credentials, CI in particular, set BUA_ALLOW_UNCONFIGURED_BUILD=1.
+//! credentials, CI in particular, set BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=1.
 
 use std::env;
 use std::fs;
