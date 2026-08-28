@@ -5787,8 +5787,8 @@ fn what_a_program_printed_does_not_reach_the_planner() {
     );
 }
 
-/// A command line in the program field is the mistake worth catching by name: it would otherwise
-/// become one program with a very odd name and fail with nothing useful said.
+/// A command line in the program field does not resolve, and the refusal says what to do about
+/// it. Caught by the lookup failing, never by the shape of the string.
 #[test]
 fn a_command_line_in_the_program_field_is_refused_with_an_explanation() {
     let scratch = Scratch::new("run-cmdline");
@@ -5806,6 +5806,50 @@ fn a_command_line_in_the_program_field_is_refused_with_an_explanation() {
     assert!(
         seen.lock().unwrap().is_empty(),
         "a command line got as far as asking the user"
+    );
+}
+
+/// A path with a space in it is an ordinary path. Most of `/Applications` has one, and refusing
+/// them from the shape of the string told a planner that had named a binary correctly that it had
+/// written a command line, four times over, until it concluded spaces were unsupported.
+#[test]
+fn a_program_path_containing_a_space_runs() {
+    let scratch = Scratch::new("run-spacey");
+    let directory = scratch.path.join("Some App.app");
+    std::fs::create_dir_all(&directory).unwrap();
+    let program = directory.join("Some Program");
+    std::fs::write(
+        &program,
+        "#!/bin/sh
+echo started
+",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"./Some App.app/Some Program","args":["--flag"]}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    let request = asked
+        .first()
+        .expect("a path with a space was refused instead of being run");
+    assert!(
+        request.resolved[0].ends_with("Some Program"),
+        "resolved to something else: {:?}",
+        request.resolved
     );
 }
 

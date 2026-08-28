@@ -1840,18 +1840,6 @@ fn run<S: Sink, C: Confirmer>(
         )
         .declassify(&proof);
 
-        // A command line in the program field is the mistake to catch, because it would otherwise
-        // become one program with a very odd name and fail to resolve with no explanation. A test
-        // on the shape of the planner's own argument, deciding what to say back to it: nothing
-        // about where anything lands, and nothing read out of the workspace.
-        if program.contains(char::is_whitespace) {
-            return problem(format!(
-                "error: '{program}' is not a program name. There is no shell here, so a command \
-                 line cannot be one field: put the program in 'program' and each argument in its \
-                 own entry of 'args'."
-            ));
-        }
-
         let mut args = Vec::new();
         match entry.get("args") {
             None => {}
@@ -1882,6 +1870,22 @@ fn run<S: Sink, C: Confirmer>(
     for stage in &pipeline.stages {
         match crate::programs::resolve(&stage.program, &directory) {
             Some(path) => resolved.push(path),
+            // Whether a name is a program is decided by looking for it, never by its shape. A
+            // guess from the shape refused every path with a space in it, which on macOS is most
+            // of /Applications: a planner naming the Brave binary correctly was told four times
+            // that it had written a command line, and concluded that spaces were unsupported.
+            //
+            // Whitespace only picks the wording once the lookup has already failed, which is the
+            // one point where a command line and a mistyped path are worth telling apart.
+            None if stage.program.contains(char::is_whitespace) => {
+                return problem(format!(
+                    "error: '{}' was not found, and it contains a space. If that was a command \
+                     line, put the program in 'program' and each argument in its own entry of \
+                     'args'; there is no shell here to split it. If it is genuinely a path with a \
+                     space in it, check the spelling: a path with spaces is fine.",
+                    stage.program
+                ));
+            }
             None => {
                 return problem(format!(
                     "error: '{}' was not found. It may not be installed, or may not be on PATH.",
