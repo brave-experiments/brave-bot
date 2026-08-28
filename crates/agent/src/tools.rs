@@ -311,15 +311,16 @@ pub fn available() -> Vec<Tool> {
         ),
         Tool::function(
             "ask_user",
-            "Ask the user up to four questions and wait for their answers. Use it while \
-             planning, when the work turns on something only they can tell you: which of two \
-             approaches to take, which file you were meant, whether something is in scope. Ask \
+            "Ask the user up to four questions and wait for their answers. Only for what you \
+             cannot find out yourself: which of two approaches to take, whether something is in \
+             scope, which of two plausible files they meant. Never for a fact about this machine. \
+             A path, a filename, whether a program is installed, what something is called: go and \
+             look with list_files, search, read_file or run instead, and note that a quarantined \
+             result does not stop you asking afterwards, so looking first costs you nothing. Ask \
              everything the plan turns on in one call rather than a question per turn; they are \
-             put to the user one at a time. Ask before you start reading, not after: a question \
-             can only be put to the user while nothing untrusted has reached your context, and \
-             it is refused afterwards. Offer concrete options where you can; the user may also \
-             answer in their own words or skip a question, and a skipped question is an answer \
-             to work with rather than a reason to ask again.",
+             put to the user one at a time. Offer concrete options where you can; the user may \
+             also answer in their own words or skip a question, and a skipped question is an \
+             answer to work with rather than a reason to ask again.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2481,6 +2482,44 @@ mod tests {
                 "a stage gained a '{absent}' field, which would be a command line"
             );
         }
+    }
+
+    /// A planner that asks the user for a path, a filename, or whether something is installed is
+    /// asking a person to do a lookup, and they answer less precisely than the filesystem does.
+    /// One session opened by asking where Brave was installed rather than looking.
+    #[test]
+    fn asking_is_described_as_a_last_resort_after_looking() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "ask_user")
+            .expect("ask_user is offered");
+        let described = tool.function.description.to_lowercase();
+        assert!(
+            described.contains("cannot find out yourself"),
+            "ask_user does not say to look first: {described}"
+        );
+        assert!(
+            described.contains("never for a fact about this machine"),
+            "ask_user does not rule out asking for discoverable facts: {described}"
+        );
+    }
+
+    /// The reason looking first is safe, which the planner has no way to know otherwise. It used
+    /// to be told the opposite, that a question was refused once anything had been read, which is
+    /// what made front-loading questions look obligatory.
+    #[test]
+    fn ask_user_says_that_looking_first_does_not_forfeit_the_question() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "ask_user")
+            .expect("ask_user is offered");
+        assert!(
+            tool.function
+                .description
+                .contains("does not stop you asking afterwards"),
+            "ask_user still implies reading forfeits the question: {}",
+            tool.function.description
+        );
     }
 
     /// The tool must tell the planner it will not see the output, or it spends rounds running
