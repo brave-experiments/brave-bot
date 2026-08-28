@@ -30,7 +30,7 @@ pub mod trust_prompt;
 ///
 /// Written into every session record, so a transcript read later can be matched to the code that
 /// produced it rather than inferred from its own symptoms.
-pub const BUILD: &str = env!("BUA_BUILD");
+pub const BUILD: &str = env!("BRAVEBOT_BUILD");
 pub mod verbs;
 pub mod wrap;
 

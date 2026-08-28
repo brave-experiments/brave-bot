@@ -11,7 +11,7 @@
 //! Declining is always one keypress away. A question the user does not want is a question they
 //! can dismiss, and a picker with no exit would make the model able to stall the session.
 
-use bua_core::ask::{Answer, Asking, Prompt, Row};
+use bravebot_core::ask::{Answer, Asking, Prompt, Row};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode};
@@ -606,11 +606,11 @@ fn centred(area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_core::ask::{Choice, Question};
+    use bravebot_core::ask::{Choice, Question};
     use ratatui::backend::TestBackend;
 
     fn prompt(multiple: bool) -> Prompt {
-        bua_core::ask::prompt(&Question::new(
+        bravebot_core::ask::prompt(&Question::new(
             "Cache layer",
             "Which cache layer?",
             vec![
@@ -798,7 +798,7 @@ mod tests {
     }
 
     fn platforms() -> Prompt {
-        bua_core::ask::prompt(&Question::new(
+        bravebot_core::ask::prompt(&Question::new(
             "Platforms",
             "Which platforms?",
             vec![Choice::new("Linux", None), Choice::new("macOS", None)],
@@ -1169,8 +1169,12 @@ mod tests {
 
     #[test]
     fn a_question_with_no_options_opens_the_field_at_once() {
-        let bare =
-            bua_core::ask::prompt(&Question::new("Branch", "Which branch?", Vec::new(), false));
+        let bare = bravebot_core::ask::prompt(&Question::new(
+            "Branch",
+            "Which branch?",
+            Vec::new(),
+            false,
+        ));
         assert_eq!(
             answer(
                 &bare,
@@ -1183,8 +1187,12 @@ mod tests {
     /// With no list to fall back to, escape from the field is a decline rather than a dead end.
     #[test]
     fn escaping_a_question_with_no_options_declines() {
-        let bare =
-            bua_core::ask::prompt(&Question::new("Branch", "Which branch?", Vec::new(), false));
+        let bare = bravebot_core::ask::prompt(&Question::new(
+            "Branch",
+            "Which branch?",
+            Vec::new(),
+            false,
+        ));
         assert_eq!(answer(&bare, &[KeyCode::Esc]), Some(Answer::Declined));
     }
 
@@ -1283,7 +1291,7 @@ mod tests {
     /// A tag the model wrote long must not cost the person the sentence they have to answer.
     #[test]
     fn a_long_tag_is_shortened_rather_than_pushing_the_question_off_the_line() {
-        let wordy = bua_core::ask::prompt(&Question::new(
+        let wordy = bravebot_core::ask::prompt(&Question::new(
             "An extremely long tag nobody could read at a glance",
             "Which cache layer?",
             vec![Choice::new("HTTP", None)],
@@ -1304,7 +1312,7 @@ mod tests {
     /// person has to work out the meaning of.
     #[test]
     fn a_question_with_no_tag_draws_no_chip() {
-        let untagged = bua_core::ask::prompt(&Question::new(
+        let untagged = bravebot_core::ask::prompt(&Question::new(
             "",
             "Which cache layer?",
             vec![Choice::new("HTTP", None)],
@@ -1322,7 +1330,7 @@ mod tests {
     /// that was never offered.
     #[test]
     fn a_list_cut_short_says_so() {
-        let many = bua_core::ask::prompt(&Question::new(
+        let many = bravebot_core::ask::prompt(&Question::new(
             "File",
             "Which file?",
             (0..60)
@@ -1383,7 +1391,7 @@ mod tests {
     /// waste the height a long list needs.
     #[test]
     fn options_without_details_are_not_spaced_apart() {
-        let bare = bua_core::ask::prompt(&Question::new(
+        let bare = bravebot_core::ask::prompt(&Question::new(
             "Which",
             "Which?",
             vec![Choice::new("One", None), Choice::new("Two", None)],
@@ -1418,7 +1426,7 @@ mod tests {
     /// not counted, the last options would be drawn over the line that says how to answer.
     #[test]
     fn a_detailed_list_still_leaves_room_for_the_keys() {
-        let many = bua_core::ask::prompt(&Question::new(
+        let many = bravebot_core::ask::prompt(&Question::new(
             "File",
             "Which file?",
             (0..40)
@@ -1483,7 +1491,7 @@ mod tests {
     /// to say that instead of offering a list that is not there.
     #[test]
     fn a_field_with_no_options_behind_it_offers_to_skip() {
-        let bare = one(&bua_core::ask::prompt(&Question::new(
+        let bare = one(&bravebot_core::ask::prompt(&Question::new(
             "Branch",
             "Which branch?",
             Vec::new(),

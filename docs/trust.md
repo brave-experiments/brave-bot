@@ -154,7 +154,7 @@ which is the laundering the rest of this document exists to prevent.
 
 ## Your own directory is trusted, because it is yours
 
-The table above is about the working directory. `~/.bua` is different: it holds your history,
+The table above is about the working directory. `~/.bravebot` is different: it holds your history,
 your sessions, your standing instructions, and your skills, and everything in it is something you
 put there. It is read as trusted for that reason, on the same footing as the configuration that
 already picks your model and your endpoint.
@@ -163,10 +163,10 @@ This is not trust assumed from silence, which is the thing the rest of this docu
 An empty directory offers nothing at all. **Putting a file there is the grant**, exactly as
 answering yes to a working directory is.
 
-The consequence, worth stating rather than burying: a skill you downloaded into `~/.bua/skills`
+The consequence, worth stating rather than burying: a skill you downloaded into `~/.bravebot/skills`
 is trusted as far as a config file you pasted is. Read one before you install it. See
 [skills.md](skills.md).
 
-Files in a *project* get no such standing. A project's `AGENTS.md` and `.bua/skills` are read
+Files in a *project* get no such standing. A project's `AGENTS.md` and `.bravebot/skills` are read
 through the table above, so they load when you vouched for the directory and are left out when
 you did not.

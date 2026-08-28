@@ -1,6 +1,6 @@
 //! Sessions kept on disk, so one can be picked up again tomorrow.
 //!
-//! Under `~/.bua/sessions`, one directory per working directory, because a session belongs to
+//! Under `~/.bravebot/sessions`, one directory per working directory, because a session belongs to
 //! the checkout it happened in: the list worth seeing when resuming in one project is not the
 //! list from another. The directory is named after the path it stands for, mangled into one
 //! segment, and the real path is written inside the record as well, since the mangling is not
@@ -23,17 +23,17 @@
 //! what the planner was allowed to hold: no untrusted bytes, by construction rather than by
 //! filtering. The same goes for the task lists, which came out of the render gate on their way to
 //! the screen. The quarantine is not written at all, and the audit is labels and gate names with
-//! no content in it. See [`bua_agent::conversation::Snapshot`].
+//! no content in it. See [`bravebot_agent::conversation::Snapshot`].
 //!
 //! Everything degrades to doing nothing. A missing home, a full disk, a corrupt record: a
 //! session that cannot be written down still runs, and one that cannot be read is left out of
 //! the list rather than taken as a reason to fail.
 
-use bua_agent::conversation::Snapshot;
-use bua_core::label::Integrity;
-use bua_core::programs::TrustedPrograms;
-use bua_core::todo::{self, Item, List, Row, Status};
-use bua_core::trust::TrustStore;
+use bravebot_agent::conversation::Snapshot;
+use bravebot_core::label::Integrity;
+use bravebot_core::programs::TrustedPrograms;
+use bravebot_core::todo::{self, Item, List, Row, Status};
+use bravebot_core::trust::TrustStore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -157,7 +157,7 @@ impl Record {
     /// The trust map this session had, or `None` if it did not record one.
     ///
     /// An integrity this build does not recognise reads as untrusted, the safe direction, as
-    /// [`bua_agent::conversation::Snapshot`] already does for the context. A hand-edited or
+    /// [`bravebot_agent::conversation::Snapshot`] already does for the context. A hand-edited or
     /// newer-than-this-build record therefore resumes with less trust rather than more.
     pub fn trust_map(&self) -> Option<TrustStore> {
         let rules = self.trust.as_ref()?;
@@ -180,7 +180,7 @@ impl Record {
         TrustedPrograms::from_iter(
             self.programs
                 .iter()
-                .map(|c| bua_core::programs::Command::new(c.program.clone(), c.args.clone())),
+                .map(|c| bravebot_core::programs::Command::new(c.program.clone(), c.args.clone())),
         )
     }
 
@@ -588,7 +588,7 @@ pub fn branch_note(was: Option<&str>, now: Option<&str>) -> Option<String> {
 /// with no build written down, which is one from before this was kept and has nothing to compare.
 pub fn build_note(was: Option<&str>, now: &str) -> Option<String> {
     let was = was?;
-    (was != now).then(|| format!("that session ran on bua {was}; this is {now}"))
+    (was != now).then(|| format!("that session ran on bravebot {was}; this is {now}"))
 }
 
 pub fn branch_of(directory: &Path) -> Option<String> {
@@ -643,7 +643,7 @@ pub fn title_from(prompt: &str) -> String {
 /// replaced thirteen minutes ago are described the same way.
 pub fn how_long_ago(then: u64) -> String {
     let seconds = now().saturating_sub(then);
-    bua_agent::report::how_long_ago(std::time::Duration::from_secs(seconds))
+    bravebot_agent::report::how_long_ago(std::time::Duration::from_secs(seconds))
 }
 
 /// A size in the units a person reads.
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn a_working_directory_becomes_one_readable_segment() {
-        let key = key_for(Path::new("/Users/someone/projects/bua"));
+        let key = key_for(Path::new("/Users/someone/projects/bravebot"));
         assert!(!key.contains('/'));
         assert!(key.contains("projects"), "{key} is not recognisable");
     }
@@ -766,7 +766,7 @@ mod tests {
     /// A scratch checkout, so the test says what the code reads rather than what this machine
     /// happens to have checked out.
     fn fake_checkout(name: &str, head: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("bua-sessions-{name}"));
+        let root = std::env::temp_dir().join(format!("bravebot-sessions-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".git")).expect("create scratch");
         std::fs::write(root.join(".git").join("HEAD"), head).expect("write HEAD");
@@ -991,7 +991,7 @@ mod tests {
     /// Not every directory is a checkout, and that is not a failure to report.
     #[test]
     fn a_directory_that_is_not_a_checkout_has_no_branch() {
-        let root = std::env::temp_dir().join("bua-sessions-not-a-checkout");
+        let root = std::env::temp_dir().join("bravebot-sessions-not-a-checkout");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create scratch");
         assert_eq!(branch_of(&root), None);

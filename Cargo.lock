@@ -277,72 +277,72 @@ dependencies = [
 ]
 
 [[package]]
-name = "bua-agent"
+name = "bravebot-agent"
 version = "0.1.0"
 dependencies = [
- "bua-aichat",
- "bua-config",
- "bua-core",
- "bua-net",
- "bua-skus",
+ "bravebot-aichat",
+ "bravebot-config",
+ "bravebot-core",
+ "bravebot-net",
+ "bravebot-skus",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "bua-aichat"
+name = "bravebot-aichat"
 version = "0.1.0"
 dependencies = [
- "bua-config",
- "bua-core",
- "bua-net",
- "bua-signing",
+ "bravebot-config",
+ "bravebot-core",
+ "bravebot-net",
+ "bravebot-signing",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "bua-cli"
+name = "bravebot-cli"
 version = "0.1.0"
 dependencies = [
- "bua-agent",
- "bua-config",
- "bua-core",
- "bua-net",
- "bua-sandbox",
- "bua-skus",
- "bua-tui",
+ "bravebot-agent",
+ "bravebot-config",
+ "bravebot-core",
+ "bravebot-net",
+ "bravebot-sandbox",
+ "bravebot-skus",
+ "bravebot-tui",
 ]
 
 [[package]]
-name = "bua-config"
+name = "bravebot-config"
 version = "0.1.0"
 
 [[package]]
-name = "bua-core"
+name = "bravebot-core"
 version = "0.1.0"
 
 [[package]]
-name = "bua-mcp"
+name = "bravebot-mcp"
 version = "0.1.0"
 dependencies = [
- "bua-core",
- "bua-net",
- "bua-sandbox",
+ "bravebot-core",
+ "bravebot-net",
+ "bravebot-sandbox",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "bua-net"
+name = "bravebot-net"
 version = "0.1.0"
 dependencies = [
- "bua-core",
+ "bravebot-core",
  "ureq",
 ]
 
 [[package]]
-name = "bua-sandbox"
+name = "bravebot-sandbox"
 version = "0.1.0"
 dependencies = [
  "landlock",
@@ -350,7 +350,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bua-signing"
+name = "bravebot-signing"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -359,7 +359,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bua-skus"
+name = "bravebot-skus"
 version = "0.1.0"
 dependencies = [
  "challenge-bypass-ristretto",
@@ -372,16 +372,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "bua-tui"
+name = "bravebot-tui"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "bua-agent",
- "bua-aichat",
- "bua-config",
- "bua-core",
- "bua-net",
- "bua-sandbox",
+ "bravebot-agent",
+ "bravebot-aichat",
+ "bravebot-config",
+ "bravebot-core",
+ "bravebot-net",
+ "bravebot-sandbox",
  "ratatui",
  "serde",
  "serde_json",

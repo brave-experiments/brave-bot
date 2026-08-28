@@ -1,5 +1,5 @@
 [package]
-name = "bua-aichat"
+name = "bravebot-aichat"
 description = "Client for the OpenAI-compatible aichat backend"
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bua-config = { path = "../config" }
-bua-core = { path = "../core" }
-bua-net = { path = "../net" }
-bua-signing = { path = "../signing" }
+bravebot-config = { path = "../config" }
+bravebot-core = { path = "../core" }
+bravebot-net = { path = "../net" }
+bravebot-signing = { path = "../signing" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

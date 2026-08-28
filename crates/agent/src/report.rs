@@ -10,7 +10,7 @@
 //! display outrank the work.
 
 use crate::diff::Change;
-use bua_core::todo::Row;
+use bravebot_core::todo::Row;
 
 /// One thing the turn did, shaped for the person watching.
 ///
@@ -372,7 +372,7 @@ impl Reporter for RecordingReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_core::todo::{Item, List, Status, rows};
+    use bravebot_core::todo::{Item, List, Status, rows};
 
     #[test]
     fn a_recording_reporter_keeps_each_update_in_order() {

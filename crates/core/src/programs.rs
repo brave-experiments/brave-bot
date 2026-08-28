@@ -33,7 +33,7 @@
 //!
 //! The program is the **resolved path**. `$PATH` and shell aliases decide what a name means, so
 //! recording the string would let a later change inherit an assertion made about a different
-//! binary. Resolution happens outside this crate, which performs no I/O; see `bua_agent::programs`.
+//! binary. Resolution happens outside this crate, which performs no I/O; see `bravebot_agent::programs`.
 //!
 //! # The session, not the directory
 //!

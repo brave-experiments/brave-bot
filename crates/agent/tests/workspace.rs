@@ -1,11 +1,11 @@
 //! Tests for the label-aware file tools, exercised against a real temporary directory.
 
-use bua_agent::workspace::{Workspace, WorkspaceError};
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::RecordingSink;
-use bua_core::label::Label;
-use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_core::value::Labelled;
+use bravebot_agent::workspace::{Workspace, WorkspaceError};
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::RecordingSink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_core::value::Labelled;
 use std::path::PathBuf;
 
 /// A scratch directory that removes itself, so tests do not leave state behind.
@@ -15,7 +15,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("bua-workspace-{name}"));
+        let path = std::env::temp_dir().join(format!("bravebot-workspace-{name}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create scratch");
         Self { path }
@@ -258,7 +258,7 @@ fn a_symlink_out_of_the_workspace_is_refused() {
         .path
         .parent()
         .unwrap()
-        .join("bua-outside-target.txt");
+        .join("bravebot-outside-target.txt");
     std::fs::write(&outside, "outside data").unwrap();
     std::os::unix::fs::symlink(&outside, scratch.path.join("link.txt")).unwrap();
 

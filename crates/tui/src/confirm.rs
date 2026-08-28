@@ -7,11 +7,11 @@
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.
 
-use bua_agent::confirm::{
+use bravebot_agent::confirm::{
     Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
-use bua_agent::diff::Change;
-use bua_core::ask::{Answer as UserAnswer, Asking};
+use bravebot_agent::diff::Change;
+use bravebot_core::ask::{Answer as UserAnswer, Asking};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -396,7 +396,7 @@ pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> 
 
 /// Draw the run confirmation, returning how far its body can be scrolled.
 ///
-/// One line per stage, rendered by [`bua_core::Stage::display`], which quotes unambiguously: two
+/// One line per stage, rendered by [`bravebot_core::Stage::display`], which quotes unambiguously: two
 /// different argument vectors cannot come out looking alike, so what the reviewer reads names
 /// exactly the argv the endorsement will be bound to.
 fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u16 {
@@ -933,13 +933,13 @@ mod tests {
     }
 
     fn a_run(private: bool) -> RunRequest {
-        let pipeline = bua_core::Pipeline::new(vec![
-            bua_core::Stage::new("git", vec!["log".into(), "--oneline".into()]),
-            bua_core::Stage::new("sed", vec!["-n".into(), "1,10p".into()]),
+        let pipeline = bravebot_core::Pipeline::new(vec![
+            bravebot_core::Stage::new("git", vec!["log".into(), "--oneline".into()]),
+            bravebot_core::Stage::new("sed", vec!["-n".into(), "1,10p".into()]),
         ]);
         RunRequest {
             pipeline: if private {
-                pipeline.with_stdin(bua_core::label::Label::trusted_private())
+                pipeline.with_stdin(bravebot_core::label::Label::trusted_private())
             } else {
                 pipeline
             },

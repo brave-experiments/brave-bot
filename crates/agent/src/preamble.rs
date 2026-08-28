@@ -24,9 +24,9 @@
 
 use crate::skills::{Catalogue, Notice};
 use crate::workspace::Workspace;
-use bua_core::event::Sink;
-use bua_core::policy::Policy;
-use bua_core::value::Labelled;
+use bravebot_core::event::Sink;
+use bravebot_core::policy::Policy;
+use bravebot_core::value::Labelled;
 use std::path::Path;
 
 /// The file a project or a user states their conventions in.
@@ -59,7 +59,7 @@ pub fn compose<S: Sink>(
         && let Some(text) = read_home_agents(policy, home)
     {
         standing.push_str(&format!(
-            "From ~/.bua/{AGENTS_FILE}:\n\n{}\n\n",
+            "From ~/.bravebot/{AGENTS_FILE}:\n\n{}\n\n",
             text.trim()
         ));
     }
@@ -91,10 +91,10 @@ pub fn compose<S: Sink>(
     preamble
 }
 
-/// `~/.bua/AGENTS.md`, trusted for sitting where it sits.
+/// `~/.bravebot/AGENTS.md`, trusted for sitting where it sits.
 fn read_home_agents<S: Sink>(policy: &mut Policy<'_, S>, home: &Path) -> Option<String> {
     let text = std::fs::read_to_string(home.join(AGENTS_FILE)).ok()?;
-    let origin = format!("~/.bua/{AGENTS_FILE}");
+    let origin = format!("~/.bravebot/{AGENTS_FILE}");
     let labelled = policy.label_user_configuration(&origin, text);
     policy.read_trusted_content("preamble", &labelled).ok()
 }

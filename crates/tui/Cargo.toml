@@ -1,5 +1,5 @@
 [package]
-name = "bua-tui"
+name = "bravebot-tui"
 description = "Interactive terminal interface"
 version.workspace = true
 edition.workspace = true
@@ -11,14 +11,14 @@ repository.workspace = true
 # Already in the tree for the credential protocol; here it encodes the clipboard escape
 # sequence, which is base64 by specification.
 base64 = { workspace = true }
-bua-agent = { path = "../agent" }
+bravebot-agent = { path = "../agent" }
 # The model picker lists what the endpoint offers, and asking it is this crate's own call
 # rather than something a turn does.
-bua-aichat = { path = "../aichat" }
-bua-config = { path = "../config" }
-bua-core = { path = "../core" }
-bua-net = { path = "../net" }
-bua-sandbox = { path = "../sandbox" }
+bravebot-aichat = { path = "../aichat" }
+bravebot-config = { path = "../config" }
+bravebot-core = { path = "../core" }
+bravebot-net = { path = "../net" }
+bravebot-sandbox = { path = "../sandbox" }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -2,7 +2,7 @@
 //!
 //! Process plumbing and nothing else. Every decision about whether a pipeline may run at all is
 //! taken before anything here is called: the capability, the person's approval, and the label the
-//! output will carry all belong to [`bua_core::policy::Policy`]. This module is what happens after
+//! output will carry all belong to [`bravebot_core::policy::Policy`]. This module is what happens after
 //! those said yes, so it takes a [`Pipeline`] of plain strings and reports what came back.
 //!
 //! # No shell, at any point
@@ -26,7 +26,7 @@
 //!
 //! # Not confined
 //!
-//! Deliberately. `bua-sandbox` confines processes running code we did not write; these run with
+//! Deliberately. `bravebot-sandbox` confines processes running code we did not write; these run with
 //! whatever access the user's own shell would give them, because `git push` needs `~/.ssh` and the
 //! set of programs someone might ask for cannot be enumerated in advance. What holds is the label
 //! on the output, not any belief about the binary. Whether to confine children is issue #4.
@@ -37,8 +37,8 @@
 //! would otherwise block forever on input nobody is typing, and the turn would hang with no
 //! indication of why.
 
-use bua_core::Pipeline;
-use bua_core::cancel::Cancel;
+use bravebot_core::Pipeline;
+use bravebot_core::cancel::Cancel;
 use std::fmt;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -59,7 +59,7 @@ const TICK: Duration = Duration::from_millis(50);
 ///
 /// The text fields are what the programs printed. They are returned as plain `String`s because
 /// this module has no business labelling anything: the caller wraps them at the label
-/// [`bua_core::policy::Policy::before_run`] already decided, which is `(U,priv)` whatever is in
+/// [`bravebot_core::policy::Policy::before_run`] already decided, which is `(U,priv)` whatever is in
 /// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
@@ -150,7 +150,7 @@ pub fn run(
     }
 
     let mut children: Vec<Child> = Vec::with_capacity(pipeline.len());
-    // Nothing is typed at a program bua started, so the first stage reads an empty stdin rather
+    // Nothing is typed at a program bravebot started, so the first stage reads an empty stdin rather
     // than the terminal's. Inheriting it would let a program that reads stdin hang the turn.
     let mut upstream = Stdio::null();
     // The last stage's stdout is the pipeline's result, so it is kept here rather than handed

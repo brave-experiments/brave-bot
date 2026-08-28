@@ -5,13 +5,13 @@
 //! field of a later request. That field is routing, and the endorsement for it is the choice.
 //!
 //! The endpoint answers with a bare array rather than an OpenAI-style `{"data": [...]}` envelope,
-//! and it lists concrete models only, so [`automatic`](bua_config::DEFAULT_MODEL) is added here.
+//! and it lists concrete models only, so [`automatic`](bravebot_config::DEFAULT_MODEL) is added here.
 
-use bua_config::Config;
-use bua_core::event::Sink;
-use bua_core::label::Label;
-use bua_core::policy::Policy;
-use bua_net::{Egress, Request};
+use bravebot_config::Config;
+use bravebot_core::event::Sink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::Policy;
+use bravebot_net::{Egress, Request};
 use serde::Deserialize;
 
 use crate::ChatError;
@@ -34,14 +34,14 @@ impl Model {
     /// unrecognised name is reset to anyway, so it is the one choice that cannot fail to work.
     pub fn automatic() -> Self {
         Self {
-            key: bua_config::DEFAULT_MODEL.to_string(),
+            key: bravebot_config::DEFAULT_MODEL.to_string(),
             display_name: "Automatic".to_string(),
             premium: false,
         }
     }
 
     pub fn is_automatic(&self) -> bool {
-        self.key == bua_config::DEFAULT_MODEL
+        self.key == bravebot_config::DEFAULT_MODEL
     }
 }
 

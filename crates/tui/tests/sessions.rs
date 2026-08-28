@@ -1,18 +1,18 @@
 //! Sessions written to disk and read back.
 //!
-//! These run against a real `~/.bua`, redirected by `HOME`, because the point of the feature is
+//! These run against a real `~/.bravebot`, redirected by `HOME`, because the point of the feature is
 //! what is on the filesystem afterwards: a record that a later process can find, and an audit a
 //! person can read.
 
-use bua_agent::Conversation;
-use bua_aichat::protocol::Message;
-use bua_core::capability::Capability;
-use bua_core::event::Event;
-use bua_core::label::Label;
-use bua_core::programs::TrustedPrograms;
-use bua_core::todo::{Item, List, Row, Status, rows};
-use bua_core::trust::TrustStore;
-use bua_tui::sessions::{self, Handle, Standing};
+use bravebot_agent::Conversation;
+use bravebot_aichat::protocol::Message;
+use bravebot_core::capability::Capability;
+use bravebot_core::event::Event;
+use bravebot_core::label::Label;
+use bravebot_core::programs::TrustedPrograms;
+use bravebot_core::todo::{Item, List, Row, Status, rows};
+use bravebot_core::trust::TrustStore;
+use bravebot_tui::sessions::{self, Handle, Standing};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -40,7 +40,7 @@ impl Scratch {
         // A test that panicked while holding this poisoned nothing worth protecting: the guard
         // covers an environment variable, and the next test overwrites it anyway.
         let lock = HOME.lock().unwrap_or_else(|held| held.into_inner());
-        let root = std::env::temp_dir().join(format!("bua-sessions-test-{name}"));
+        let root = std::env::temp_dir().join(format!("bravebot-sessions-test-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let project = root.join("project");
@@ -86,8 +86,8 @@ fn a_trust_map() -> TrustStore {
 /// Two programs the user vouched for, by resolved path.
 fn a_program_list() -> TrustedPrograms {
     TrustedPrograms::from_iter([
-        bua_core::programs::Command::new("/usr/bin/git", vec!["log".to_string()]),
-        bua_core::programs::Command::new("/usr/bin/make", vec!["check".to_string()]),
+        bravebot_core::programs::Command::new("/usr/bin/git", vec!["log".to_string()]),
+        bravebot_core::programs::Command::new("/usr/bin/make", vec!["check".to_string()]),
     ])
 }
 
@@ -100,11 +100,11 @@ fn a_conversation() -> Conversation {
 
 /// Events as the trail records them, with a time on each. The times themselves do not matter to
 /// these tests; what matters is that the writer takes the event's own rather than its own.
-fn stamped(events: Vec<Event>) -> Vec<bua_tui::audit::Stamped> {
+fn stamped(events: Vec<Event>) -> Vec<bravebot_tui::audit::Stamped> {
     events
         .into_iter()
         .enumerate()
-        .map(|(n, event)| bua_tui::audit::Stamped {
+        .map(|(n, event)| bravebot_tui::audit::Stamped {
             at: 1_700_000_000 + n as u64,
             event,
         })
@@ -354,14 +354,14 @@ fn the_audit_keeps_the_time_each_event_happened() {
     handle.append_audit(
         1,
         &[
-            bua_tui::audit::Stamped {
+            bravebot_tui::audit::Stamped {
                 at: 1_700_000_000,
                 event: Event::GatePassed {
                     gate: "capability",
                     detail: "file_read granted".to_string(),
                 },
             },
-            bua_tui::audit::Stamped {
+            bravebot_tui::audit::Stamped {
                 at: 1_700_000_042,
                 event: Event::GatePassed {
                     gate: "capability",

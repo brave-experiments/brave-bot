@@ -27,10 +27,10 @@
 //! planner's context.
 
 use crate::workspace::Workspace;
-use bua_core::capability::Capability;
-use bua_core::event::Sink;
-use bua_core::policy::Policy;
-use bua_core::value::Labelled;
+use bravebot_core::capability::Capability;
+use bravebot_core::event::Sink;
+use bravebot_core::policy::Policy;
+use bravebot_core::value::Labelled;
 use std::path::Path;
 
 /// What a `SKILL.md` declares about itself.
@@ -224,7 +224,7 @@ impl Catalogue {
 
 /// The directory holding skills, inside the user's own directory and inside a project.
 const SKILLS: &str = "skills";
-const WORKSPACE_SKILLS: &str = ".bua/skills";
+const WORKSPACE_SKILLS: &str = ".bravebot/skills";
 
 /// The one file that makes a directory a skill.
 const SKILL_FILE: &str = "SKILL.md";
@@ -256,7 +256,7 @@ pub fn discover<S: Sink>(
     (catalogue, notices)
 }
 
-/// Skills from `~/.bua/skills`, labelled from where they sit.
+/// Skills from `~/.bravebot/skills`, labelled from where they sit.
 fn discover_home<S: Sink>(
     policy: &mut Policy<'_, S>,
     root: &Path,
@@ -269,7 +269,7 @@ fn discover_home<S: Sink>(
 
     for name in skill_directories(root) {
         let file = root.join(&name).join(SKILL_FILE);
-        let origin = format!("~/.bua/{SKILLS}/{name}/{SKILL_FILE}");
+        let origin = format!("~/.bravebot/{SKILLS}/{name}/{SKILL_FILE}");
 
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
@@ -302,7 +302,7 @@ fn discover_home<S: Sink>(
     }
 }
 
-/// Skills from `<workspace>/.bua/skills`, labelled by the trust map.
+/// Skills from `<workspace>/.bravebot/skills`, labelled by the trust map.
 fn discover_workspace<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,

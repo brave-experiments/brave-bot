@@ -190,12 +190,14 @@ run. See [tools.md](tools.md) for the full model.
 
 ## Layering
 
-- `bua-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
+- `bravebot-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
   decision derived from content.
-- `bua-agent` holds the tools and the turn loop. Carries labelled values; must not inspect them.
-- `bua-tui` and `bua-cli` are presentation. May display released content.
-- `bua-net` is the single egress chokepoint. All network traffic passes the policy gate here.
-- `bua-mcp`, `bua-sandbox`, `bua-signing`, `bua-config` cover extension, confinement, and auth.
+- `bravebot-agent` holds the tools and the turn loop. Carries labelled values; must not inspect
+  them.
+- `bravebot-tui` and `bravebot-cli` are presentation. May display released content.
+- `bravebot-net` is the single egress chokepoint. All network traffic passes the policy gate here.
+- `bravebot-mcp`, `bravebot-sandbox`, `bravebot-signing`, `bravebot-config` cover extension,
+  confinement, and auth.
 
 See [tools.md](tools.md) for the per-tool routing and content split, and
 [trust.md](trust.md) for the trust map specification.

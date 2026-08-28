@@ -27,14 +27,14 @@ use crate::confirm::{Confirmer, Decision, Intent, WriteRequest};
 use crate::diff::Diff;
 use crate::processor::{self, Chat};
 use crate::report::{Activity, Reporter};
-use bua_aichat::protocol::{Tool, ToolCall, Usage};
-use bua_core::ask::{self, Choice, Question, Series};
-use bua_core::event::{Role, Sink};
-use bua_core::label::Label;
-use bua_core::policy::{Destination, Policy};
-use bua_core::slot::{SlotId, SlotStore};
-use bua_core::todo::{self, Item, List, Status};
-use bua_core::value::Labelled;
+use bravebot_aichat::protocol::{Tool, ToolCall, Usage};
+use bravebot_core::ask::{self, Choice, Question, Series};
+use bravebot_core::event::{Role, Sink};
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Destination, Policy};
+use bravebot_core::slot::{SlotId, SlotStore};
+use bravebot_core::todo::{self, Item, List, Status};
+use bravebot_core::value::Labelled;
 use serde_json::{Value, json};
 
 use crate::workspace::{Page, Workspace};
@@ -539,7 +539,7 @@ pub struct Tools<'a> {
     /// The model an isolated processor runs on.
     pub chat: Chat<'a>,
     /// The turn's stop token, so a slow program does not have to be waited out.
-    pub cancel: &'a bua_core::cancel::Cancel,
+    pub cancel: &'a bravebot_core::cancel::Cancel,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -1014,7 +1014,7 @@ fn argument(arguments: &Value, key: &str) -> Option<Labelled<String>> {
     let raw = arguments.get(key)?.as_str()?.to_string();
     Some(Labelled::new(
         raw,
-        bua_core::label::Label::untrusted_public(),
+        bravebot_core::label::Label::untrusted_public(),
     ))
 }
 
@@ -1029,7 +1029,10 @@ fn references_in(arguments: &Value) -> Labelled<String> {
         .and_then(Value::as_array)
         .map(|entries| entries.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    Labelled::new(names.join(", "), bua_core::label::Label::untrusted_public())
+    Labelled::new(
+        names.join(", "),
+        bravebot_core::label::Label::untrusted_public(),
+    )
 }
 
 fn read_file<S: Sink, C: Confirmer>(
@@ -1265,7 +1268,7 @@ fn path_argument<S: Sink>(
                         .map_err(|denial| format!("refused: {denial}"))?;
                     // Untrusted and public, which is what a name out of a directory nobody
                     // vouched for is. The endorsement is what will authorise it, not its label.
-                    Labelled::new(path, bua_core::label::Label::untrusted_public())
+                    Labelled::new(path, bravebot_core::label::Label::untrusted_public())
                 }
             };
             Ok(PathArgument {
@@ -1380,7 +1383,10 @@ fn list_files<S: Sink>(
     arguments: &Value,
 ) -> Produced {
     let proposed = argument(arguments, "directory").unwrap_or_else(|| {
-        Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
+        Labelled::new(
+            ".".to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        )
     });
 
     let directory = match policy.promote_confined_read("list_files", "directory", &proposed) {
@@ -1991,7 +1997,7 @@ fn run<S: Sink, C: Confirmer>(
         };
         let program = Labelled::new(
             named.to_string(),
-            bua_core::label::Label::untrusted_public(),
+            bravebot_core::label::Label::untrusted_public(),
         )
         .declassify(&proof);
 
@@ -2004,8 +2010,11 @@ fn run<S: Sink, C: Confirmer>(
                         return problem("error: every entry in a stage's 'args' must be a string");
                     };
                     args.push(
-                        Labelled::new(text.to_string(), bua_core::label::Label::untrusted_public())
-                            .declassify(&proof),
+                        Labelled::new(
+                            text.to_string(),
+                            bravebot_core::label::Label::untrusted_public(),
+                        )
+                        .declassify(&proof),
                     );
                 }
             }
@@ -2013,9 +2022,9 @@ fn run<S: Sink, C: Confirmer>(
                 return problem("error: a stage's 'args' must be an array of strings");
             }
         }
-        stages.push(bua_core::Stage::new(program, args));
+        stages.push(bravebot_core::Stage::new(program, args));
     }
-    let pipeline = bua_core::Pipeline::new(stages);
+    let pipeline = bravebot_core::Pipeline::new(stages);
 
     // Resolved once, before anyone is asked. What the person is shown, what the trusted list
     // records, and what executes are then the same value, so `$PATH` changing afterwards cannot
@@ -2162,7 +2171,10 @@ fn spawn_processor<S: Sink>(
                 "error: every entry in 'reads' must be a reference name, e.g. \"ref:0\"",
             );
         };
-        let named = Labelled::new(name.to_string(), bua_core::label::Label::untrusted_public());
+        let named = Labelled::new(
+            name.to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        );
         match policy.accept_reference("spawn_processor", "reads", &named) {
             Ok(slot) => reads.push(slot),
             Err(denial) => return problem(format!("refused: {denial}")),
@@ -2468,7 +2480,10 @@ fn search<S: Sink>(
         return problem("error: 'pattern' is required and must be a string");
     };
     let proposed_dir = argument(arguments, "directory").unwrap_or_else(|| {
-        Labelled::new(".".to_string(), bua_core::label::Label::untrusted_public())
+        Labelled::new(
+            ".".to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        )
     });
 
     let pattern = match policy.promote_confined_read("search", "pattern", &pattern) {
@@ -2543,7 +2558,7 @@ mod tests {
     /// filename has to be the half that reaches the screen.
     #[test]
     fn a_task_list_names_the_file_a_reference_stands_for() {
-        let untrusted = bua_core::label::Label::untrusted_private();
+        let untrusted = bravebot_core::label::Label::untrusted_private();
         let named = vec![
             (SlotId::new("ref:1"), untrusted, "src/game.js".to_string()),
             (SlotId::new("ref:10"), untrusted, "server.py".to_string()),
@@ -2769,7 +2784,10 @@ mod tests {
     fn string_arguments_are_labelled_untrusted() {
         let arguments = json!({"path": "src/main.rs"});
         let value = argument(&arguments, "path").expect("present");
-        assert_eq!(value.label(), bua_core::label::Label::untrusted_public());
+        assert_eq!(
+            value.label(),
+            bravebot_core::label::Label::untrusted_public()
+        );
     }
 
     #[test]
@@ -2924,12 +2942,12 @@ mod tests {
     mod questions {
         use super::*;
         use crate::confirm::{ApproveWrites, ChoosesFirst, Unattended};
-        use bua_core::ask::{Answer, Asking};
-        use bua_core::capability::{Capability, CapabilitySet};
-        use bua_core::event::RecordingSink;
-        use bua_core::label::{Integrity, Label};
-        use bua_core::policy::{ReleasePlan, Routing};
-        use bua_core::trust::TrustStore;
+        use bravebot_core::ask::{Answer, Asking};
+        use bravebot_core::capability::{Capability, CapabilitySet};
+        use bravebot_core::event::RecordingSink;
+        use bravebot_core::label::{Integrity, Label};
+        use bravebot_core::policy::{ReleasePlan, Routing};
+        use bravebot_core::trust::TrustStore;
 
         fn routing() -> Routing {
             let mut r = Routing::new();
@@ -3346,10 +3364,10 @@ mod tests {
     mod todos {
         use super::*;
         use crate::report::RecordingReporter;
-        use bua_core::capability::{Capability, CapabilitySet};
-        use bua_core::event::RecordingSink;
-        use bua_core::label::Integrity;
-        use bua_core::policy::{ReleasePlan, Routing};
+        use bravebot_core::capability::{Capability, CapabilitySet};
+        use bravebot_core::event::RecordingSink;
+        use bravebot_core::label::Integrity;
+        use bravebot_core::policy::{ReleasePlan, Routing};
 
         fn routing() -> Routing {
             let mut r = Routing::new();

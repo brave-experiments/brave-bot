@@ -19,12 +19,12 @@
 //! with each other; that resolves to the negative answer rather than to a retry, because a
 //! decision taken against a question nobody matched is worse than no decision at all.
 
-use bua_agent::confirm::{
+use bravebot_agent::confirm::{
     Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
-use bua_agent::report::{Activity, Landing, Phase, Reporter, Shown};
-use bua_core::ask::{Answer, Asking};
-use bua_core::todo::Row;
+use bravebot_agent::report::{Activity, Landing, Phase, Reporter, Shown};
+use bravebot_core::ask::{Answer, Asking};
+use bravebot_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
 
 /// What a worker sends the main thread.
@@ -184,8 +184,8 @@ impl Reporter for RemoteReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_agent::confirm::Intent;
-    use bua_core::todo::{Item, List, Status, rows};
+    use bravebot_agent::confirm::Intent;
+    use bravebot_core::todo::{Item, List, Status, rows};
     use std::sync::mpsc::channel;
     use std::thread;
 
@@ -222,7 +222,7 @@ mod tests {
 
     fn a_run() -> RunRequest {
         RunRequest {
-            pipeline: bua_core::Pipeline::new(vec![bua_core::Stage::new(
+            pipeline: bravebot_core::Pipeline::new(vec![bravebot_core::Stage::new(
                 "git",
                 vec!["log".into()],
             )]),
@@ -298,11 +298,11 @@ mod tests {
     }
 
     fn a_series() -> Asking {
-        bua_core::ask::asking(&bua_core::ask::Series::new(vec![
-            bua_core::ask::Question::new(
+        bravebot_core::ask::asking(&bravebot_core::ask::Series::new(vec![
+            bravebot_core::ask::Question::new(
                 "Cache",
                 "Which cache layer?",
-                vec![bua_core::ask::Choice::new("HTTP", None)],
+                vec![bravebot_core::ask::Choice::new("HTTP", None)],
                 false,
             ),
         ]))

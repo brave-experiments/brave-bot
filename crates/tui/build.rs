@@ -11,7 +11,7 @@ fn main() {
     // and a change anywhere in it makes that claim false. Cargo would otherwise leave this
     // script alone while another crate changed underneath it, and the record would say clean.
     println!("cargo:rerun-if-changed=..");
-    println!("cargo:rustc-env=BUA_BUILD={}", describe());
+    println!("cargo:rustc-env=BRAVEBOT_BUILD={}", describe());
 }
 
 /// What this build is, in as much detail as the tree will give.

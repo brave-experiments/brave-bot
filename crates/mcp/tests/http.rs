@@ -3,12 +3,12 @@
 //! Confirms the gate sees MCP traffic like any other egress, that results are labelled
 //! untrusted, and that a redirecting server is revalidated rather than followed blindly.
 
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::{Event, RecordingSink};
-use bua_core::label::Label;
-use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_mcp::{HttpServer, McpError};
-use bua_net::Egress;
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::{Event, RecordingSink};
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_mcp::{HttpServer, McpError};
+use bravebot_net::Egress;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -98,7 +98,7 @@ fn a_handshake_and_tool_list_round_trip() {
 
     let mut server = HttpServer::new("remote", &url);
     server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect("handshake");
 
     let tools = server
@@ -127,7 +127,7 @@ fn a_tool_result_is_labelled_untrusted() {
 
     let mut server = HttpServer::new("remote", &url);
     server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect("handshake");
 
     let result = server
@@ -159,7 +159,7 @@ fn an_sse_framed_reply_is_handled() {
 
     let mut server = HttpServer::new("remote", &url);
     server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect("handshake over sse");
     let result = server
         .call_tool(&mut policy, &egress, "lookup", serde_json::json!({}))
@@ -183,7 +183,7 @@ fn mcp_traffic_passes_through_the_network_gate() {
 
     let mut server = HttpServer::new("remote", &url);
     server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect("handshake");
     drop(policy);
 
@@ -215,7 +215,7 @@ fn mcp_over_http_requires_the_fetch_capability() {
 
     let mut server = HttpServer::new("remote", &url);
     let error = server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect_err("must be refused without fetch");
     assert!(matches!(error, McpError::Denied(_)), "got: {error}");
 }
@@ -235,7 +235,7 @@ fn a_tool_call_requires_the_mcp_capability() {
 
     let mut server = HttpServer::new("remote", &url);
     server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect("handshake needs only fetch");
 
     let error = server
@@ -293,7 +293,7 @@ fn a_redirecting_server_is_revalidated() {
 
     let mut server = HttpServer::new("remote", format!("http://127.0.0.1:{port}/mcp"));
     server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect("redirect followed");
     drop(policy);
 
@@ -329,7 +329,7 @@ fn a_server_error_is_reported() {
 
     let mut server = HttpServer::new("remote", &url);
     let error = server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect_err("must report the error");
     assert!(
         matches!(error, McpError::Server { code: -32000, .. }),
@@ -353,7 +353,7 @@ fn a_non_json_reply_is_an_error() {
 
     let mut server = HttpServer::new("remote", &url);
     let error = server
-        .initialize(&mut policy, &egress, "bua", "0.1.0")
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
         .expect_err("must be an error");
     assert!(matches!(error, McpError::Transport(_)), "got: {error}");
 }

@@ -18,10 +18,10 @@
 //! content inspection: the bytes are never parsed to decide anything, they are handed
 //! back for the caller to label.
 
-use bua_core::event::Sink;
-use bua_core::label::Label;
-use bua_core::policy::{Denial, Policy};
-use bua_core::value::Labelled;
+use bravebot_core::event::Sink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Denial, Policy};
+use bravebot_core::value::Labelled;
 use std::fmt;
 use std::time::Duration;
 

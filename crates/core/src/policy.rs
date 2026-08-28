@@ -626,7 +626,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
     /// Label a file the user keeps their own configuration in, from where it sits.
     ///
-    /// Standing instructions and skills come from `~/.bua`, a directory whose only contents are
+    /// Standing instructions and skills come from `~/.bravebot`, a directory whose only contents are
     /// ones the person running this put there. That provenance is what the label records: the
     /// bytes are trusted for the same reason the endpoint and the model are, which is that
     /// configuring the agent is the user's own act.
@@ -639,7 +639,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// would be laundering it.
     ///
     /// The honest caveat, which the documentation states too: a skill someone downloaded into
-    /// `~/.bua/skills` is trusted on the same footing as a configuration file someone pasted.
+    /// `~/.bravebot/skills` is trusted on the same footing as a configuration file someone pasted.
     /// Putting a file there is the grant. What this does not do is assume trust from silence,
     /// since an empty directory yields nothing at all.
     pub fn label_user_configuration(&mut self, origin: &str, text: String) -> Labelled<String> {
@@ -4170,7 +4170,7 @@ mod tests {
         let mut policy = policy_trusting(&mut sink, &[]);
 
         let value = policy
-            .label_user_configuration("~/.bua/AGENTS.md", "always run make check".to_string());
+            .label_user_configuration("~/.bravebot/AGENTS.md", "always run make check".to_string());
 
         assert_eq!(value.label(), Label::trusted_public());
     }
@@ -4182,15 +4182,15 @@ mod tests {
         let mut sink = RecordingSink::new();
         {
             let mut policy = policy_trusting(&mut sink, &[]);
-            let _ =
-                policy.label_user_configuration("~/.bua/skills/commit-style/SKILL.md", "x".into());
+            let _ = policy
+                .label_user_configuration("~/.bravebot/skills/commit-style/SKILL.md", "x".into());
         }
 
         assert!(
             sink.events().iter().any(|e| matches!(
                 e,
                 Event::GatePassed { gate: "provenance", detail }
-                    if detail.contains("~/.bua/skills/commit-style/SKILL.md")
+                    if detail.contains("~/.bravebot/skills/commit-style/SKILL.md")
             )),
             "the provenance decision left no trace: {:?}",
             sink.events()

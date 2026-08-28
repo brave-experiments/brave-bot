@@ -14,7 +14,7 @@
 //!
 //! Nothing here is a decision derived from untrusted content. Filenames are content, and this
 //! walks the directory to show them to a person, which is the release
-//! [`bua_core::policy::Policy::names_for_display`] already makes for the same reason: the user owns
+//! [`bravebot_core::policy::Policy::names_for_display`] already makes for the same reason: the user owns
 //! the workspace, and an interface that will not tell them which files are in it has protected
 //! them from nothing. No name reaches a model from here.
 
@@ -152,7 +152,7 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("bua-entries-{name}"));
+            let path = std::env::temp_dir().join(format!("bravebot-entries-{name}"));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(path.join("crates/tui")).expect("create");
             std::fs::create_dir_all(path.join("target")).expect("create");
