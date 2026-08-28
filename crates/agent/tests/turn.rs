@@ -7037,3 +7037,75 @@ fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
         "the turn summarised itself {summaries} times in 16 rounds"
     );
 }
+
+/// What `/compact` runs, which is a different path from the budget's: it builds its own policy
+/// rather than borrowing a turn's, so it has to grant itself what reaching the model needs.
+/// Shipped once without that and every use of the command was refused at the egress gate.
+#[test]
+fn compacting_on_request_reaches_the_model_and_shortens_the_conversation() {
+    let (endpoint, received) = serve_sequence(vec![reply_with("they were porting the parser")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut conversation = a_long_conversation();
+    let before = conversation.len();
+
+    let done = turn::compact(
+        &config,
+        &egress,
+        &mut conversation,
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("compacting on request must not be refused")
+    .expect("a long conversation has something to summarise");
+
+    assert!(done.summarised > 0);
+    assert!(conversation.len() < before, "nothing was given up");
+
+    let body = received.recv().expect("the summariser's request");
+    assert!(body.contains("Summarise everything above"), "{body}");
+    assert!(
+        conversation.messages()[0]
+            .content
+            .as_text()
+            .is_some_and(|text| text.starts_with("Earlier in this conversation:")),
+        "the summary did not replace what it stood for"
+    );
+}
+
+/// The command asks for no more than it needs. A compaction that could read or write files would
+/// be a second turn wearing the name of a summary.
+#[test]
+fn compacting_on_request_grants_itself_nothing_but_reaching_the_model() {
+    let (endpoint, _received) = serve_sequence(vec![reply_with("a summary")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::compact(
+        &config,
+        &egress,
+        &mut a_long_conversation(),
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("compacting runs");
+
+    let granted: Vec<String> = sink
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            Event::GatePassed { gate, detail } if *gate == "capability" => Some(detail.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        granted.iter().all(|line| line.contains("web_fetch")),
+        "compacting granted itself more than reaching the model: {granted:?}"
+    );
+}

@@ -596,9 +596,10 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
 /// gate needs a turn to record itself in. Its routing is the request the user made by typing the
 /// command, which is their own words in the same sense a prompt is.
 ///
-/// No workspace, no capabilities, no confirmer. Nothing here reads a file, writes one, or asks
+/// No workspace, no confirmer, and one capability. Nothing here reads a file, writes one, or asks
 /// anybody anything: the whole of it is one model call over an exchange the planner has already
-/// seen.
+/// seen. So [`Capability::WebFetch`] is granted, because reaching the model is egress and the
+/// gate asks, and nothing else is, because there is nothing else to do.
 pub fn compact<S: Sink, R: Reporter>(
     config: &Config,
     egress: &Egress,
@@ -613,7 +614,8 @@ pub fn compact<S: Sink, R: Reporter>(
 
     // The integrity is inherited for the same reason a turn inherits it: a fresh policy is not a
     // fresh context, and a summary is a function of everything the exchange has held.
-    let mut policy = Policy::begin(routing, ReleasePlan::new(), CapabilitySet::default(), sink)?
+    let capabilities = CapabilitySet::from_iter([Capability::WebFetch]);
+    let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)?
         .with_trust(trust)
         .resuming(conversation.context());
 
