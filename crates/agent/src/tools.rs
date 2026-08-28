@@ -1085,7 +1085,10 @@ fn read_file<S: Sink>(
             format!(
                 "{shown_path} already names that file, and nothing will show you what is in \
                  it. Give {shown_path} to spawn_processor to work on, and name {shown_path} as \
-                 path_ref to write what comes back to the same file."
+                 path_ref to write what comes back to the same file. If the work would go better \
+                 with you reading it yourself, say so in your reply: the user can vouch for the \
+                 file, and then you will be shown it. They know which file {shown_path} is even \
+                 though you do not."
             ),
             format!("nothing to read: {shown_path} already holds it"),
         );
