@@ -1821,6 +1821,88 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
     }
 
+    /// Whether running this pipeline needs a person's approval.
+    ///
+    /// **Always true.** There is no read-only category and there is no way to establish one:
+    /// `foo --bar` might write to disk and nothing here can tell. A stage declaring itself
+    /// harmless would only help if the declaration were honest, and an unprompted write from one
+    /// that lied is worse than a prompt nobody wanted.
+    ///
+    /// It returns a `bool` rather than nothing so it reads like [`Policy::write_needs_approval`]
+    /// at the call site, and so the reason reaches the audit trail. Do not add a case that
+    /// returns false. Remembered argv patterns are the direction to take if the prompting becomes
+    /// tiresome, and those belong in the trust map, not here.
+    pub fn run_needs_approval(&mut self, pipeline: &crate::command::Pipeline) -> bool {
+        // Said separately because it is a second and independent reason, and because a person
+        // reading the audit trail should see which of the two applied.
+        if pipeline.releases_private() {
+            self.allow(
+                "approval",
+                "private input into a program, which releases it past this policy, asking"
+                    .to_string(),
+            );
+        }
+        self.allow(
+            "approval",
+            format!(
+                "{} stage(s): nothing can establish that a program changes nothing, asking",
+                pipeline.len()
+            ),
+        );
+        true
+    }
+
+    /// Record that a person approved this exact pipeline.
+    ///
+    /// Bound to [`crate::command::Pipeline::canonical`], so the endorsement cannot be satisfied by
+    /// a different pipeline. Only ever called after a person said yes to the rendering of this
+    /// one.
+    pub fn endorse_run(&mut self, pipeline: &crate::command::Pipeline) {
+        self.issue_grant("run", "pipeline", pipeline.canonical());
+    }
+
+    /// The gate a run passes immediately before anything executes. Returns the label its output
+    /// will carry.
+    ///
+    /// argv is routing, and the planner's words are never `(T,pub)`, so nothing here promotes
+    /// anything: promotion is for a read, which changes nothing and stays inside the workspace,
+    /// and a program is neither. What authorises the argv is that a person read this exact
+    /// rendering of it and said yes, which is what the endorsement records. A mismatch refuses.
+    ///
+    /// The output label comes from [`Capability::ShellExec`] and is `(U,priv)` for every stage,
+    /// with no argument to it. A program may print anything, including bytes an earlier stage read
+    /// out of a file an attacker wrote, so that is the only label that holds without knowing what
+    /// ran. Nothing a caller or the model can say changes it.
+    ///
+    /// [`crate::pure`] describes a narrower class whose output could carry its input's label
+    /// instead. It is deliberately not consulted here: that is issue #3, and resolving it by
+    /// wiring it in would settle an open question as a side effect of adding a tool.
+    pub fn before_run(&mut self, pipeline: &crate::command::Pipeline) -> Gated<Label> {
+        self.before_capability(Capability::ShellExec)?;
+
+        // Nothing to approve and nothing to run. Refused rather than treated as a success with no
+        // output, so a planner that sent an empty pipeline is told so.
+        if pipeline.is_empty() {
+            return Err(self.deny(
+                "run",
+                Principle::IntegrityGate,
+                "a pipeline with no stages has nothing for a person to approve".to_string(),
+            ));
+        }
+
+        self.consume_grant("run", "pipeline", &pipeline.canonical())?;
+
+        let label = Capability::ShellExec.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: "command output must have a label".to_string(),
+        })?;
+        self.allow(
+            "provenance",
+            format!("run: output labelled {label}, whatever the stages were"),
+        );
+        Ok(label)
+    }
+
     /// Issue a single-use endorsement for a routing field at an exact value.
     ///
     /// The value is recorded, so the endorsement cannot be replayed against a
@@ -2055,6 +2137,16 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             message: format!("grant check on non-trusted field '{field}'"),
         })?;
 
+        self.consume_grant(tool, field, &concrete)
+    }
+
+    /// Find and consume the endorsement for one exact value.
+    ///
+    /// Shared with [`Policy::before_run`], which has no labelled field to check: argv reaches it
+    /// as plain strings a person read, and the grant match is the whole of its authority. Keeping
+    /// the lookup in one place is what stops the two callers drifting apart on what counts as a
+    /// match.
+    fn consume_grant(&mut self, tool: &str, field: &str, concrete: &str) -> Gated<()> {
         let found = self
             .grants
             .iter()
@@ -2945,6 +3037,118 @@ mod tests {
 
         // The real path comes from precommitted routing, untouched by the injection.
         assert_eq!(policy.routing().get("path"), Some("notes.md"));
+    }
+
+    fn a_pipeline() -> crate::command::Pipeline {
+        crate::command::Pipeline::new(vec![crate::command::Stage::new("git", vec!["log".into()])])
+    }
+
+    /// The rule the whole tool rests on: nothing establishes that a program changed nothing, so
+    /// every run is put to a person. There is no case that answers false.
+    #[test]
+    fn every_run_is_put_to_a_person() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        assert!(policy.run_needs_approval(&a_pipeline()));
+        assert!(
+            policy.run_needs_approval(&crate::command::Pipeline::new(vec![
+                crate::command::Stage::new("pwd", Vec::new())
+            ])),
+            "a stage that looks harmless is still put to a person"
+        );
+    }
+
+    /// Nothing runs without an endorsement. The planner's argv is not trusted and cannot become
+    /// trusted by being proposed, so the gate refuses until a person has approved this pipeline.
+    #[test]
+    fn a_run_without_an_endorsement_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        assert!(
+            policy.before_run(&a_pipeline()).is_err(),
+            "a pipeline nobody approved was allowed to run"
+        );
+    }
+
+    /// An endorsement is for the exact pipeline a person read. A second pipeline does not match
+    /// it, so an approval cannot be redirected to different arguments after the fact.
+    #[test]
+    fn an_endorsement_does_not_authorise_a_different_pipeline() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.endorse_run(&a_pipeline());
+
+        let other = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "git",
+            vec!["push".into()],
+        )]);
+        assert!(
+            policy.before_run(&other).is_err(),
+            "an approval for one argv authorised another"
+        );
+        assert!(
+            policy.before_run(&a_pipeline()).is_ok(),
+            "the pipeline that was approved still runs"
+        );
+    }
+
+    /// Single-use, like every other endorsement: approving one run does not approve the next.
+    #[test]
+    fn an_approved_run_cannot_be_replayed() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.endorse_run(&a_pipeline());
+        assert!(policy.before_run(&a_pipeline()).is_ok());
+        assert!(
+            policy.before_run(&a_pipeline()).is_err(),
+            "one approval authorised a second run"
+        );
+    }
+
+    /// Output is `(U,priv)` for every stage, with no argument to it. A program may print anything,
+    /// including bytes read out of a file an attacker wrote, so this is the only label that holds
+    /// without knowing what ran.
+    #[test]
+    fn command_output_is_always_untrusted_and_private() {
+        for stage in ["pwd", "wc", "git", "echo"] {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+            let pipeline =
+                crate::command::Pipeline::new(vec![crate::command::Stage::new(stage, Vec::new())]);
+            policy.endorse_run(&pipeline);
+            assert_eq!(
+                policy.before_run(&pipeline).unwrap(),
+                Label::untrusted_private(),
+                "{stage} output was not quarantined"
+            );
+        }
+    }
+
+    /// A pipeline with no stages is refused rather than treated as a run that produced nothing,
+    /// since there was nothing for a person to approve either.
+    #[test]
+    fn an_empty_pipeline_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let empty = crate::command::Pipeline::new(Vec::new());
+        policy.endorse_run(&empty);
+        assert!(policy.before_run(&empty).is_err());
+    }
+
+    /// The capability is checked before the endorsement, so a turn that was never granted
+    /// execution cannot run a program even with an approval in hand.
+    #[test]
+    fn a_run_needs_the_capability_as_well_as_the_endorsement() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "summarise the readme"),
+            ReleasePlan::new(),
+            CapabilitySet::from_iter([Capability::FileRead]),
+            &mut sink,
+        )
+        .unwrap();
+        policy.endorse_run(&a_pipeline());
+        assert!(policy.before_run(&a_pipeline()).is_err());
     }
 
     #[test]

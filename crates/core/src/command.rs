@@ -147,6 +147,26 @@ impl Pipeline {
         self.stdin.is_some_and(|label| !label.is_public())
     }
 
+    /// The exact value an endorsement for this pipeline is bound to.
+    ///
+    /// Length-prefixed rather than delimited, so no argument can contain whatever a delimiter
+    /// would have been. Two pipelines encode alike only if they are the same pipeline, which is
+    /// what a single-use grant needs: a grant left unconsumed by a failed run must not be
+    /// satisfiable by a second pipeline the planner shapes to collide with the first.
+    ///
+    /// Not for a person to read. [`Pipeline::display`] is that, and the two exist separately
+    /// because a rendering has to be legible while this has to be injective.
+    pub fn canonical(&self) -> String {
+        let mut out = format!("{}|", self.stages.len());
+        for stage in &self.stages {
+            out.push_str(&format!("{}|", stage.args.len() + 1));
+            for token in std::iter::once(&stage.program).chain(&stage.args) {
+                out.push_str(&format!("{}:{token}", token.len()));
+            }
+        }
+        out
+    }
+
     /// The pipeline as a person should read it before approving.
     pub fn display(&self) -> String {
         self.stages
@@ -225,6 +245,43 @@ mod tests {
             Stage::new("head", vec!["-3".into()]),
         ]);
         assert_eq!(pipeline.display(), "git log | head -3");
+    }
+
+    /// A grant is bound to this value, so two different pipelines must never produce the same
+    /// one. Delimiting would not have held: an argument may contain any byte a delimiter could be.
+    #[test]
+    fn two_pipelines_never_encode_alike() {
+        let one = Pipeline::new(vec![Stage::new("prog", vec!["a".into(), "b".into()])]);
+        let other = Pipeline::new(vec![Stage::new("prog", vec!["a b".into()])]);
+        assert_ne!(one.canonical(), other.canonical());
+
+        let split = Pipeline::new(vec![
+            Stage::new("a", vec!["b".into()]),
+            Stage::new("c", Vec::new()),
+        ]);
+        let joined = Pipeline::new(vec![Stage::new("a", vec!["b".into(), "c".into()])]);
+        assert_ne!(
+            split.canonical(),
+            joined.canonical(),
+            "a stage boundary must be part of what is endorsed"
+        );
+    }
+
+    /// An argument holding the encoding's own punctuation is data like any other, so it cannot
+    /// forge a boundary.
+    #[test]
+    fn an_argument_cannot_forge_an_encoding_boundary() {
+        let one = Pipeline::new(vec![Stage::new("prog", vec!["1|1:x".into()])]);
+        let other = Pipeline::new(vec![Stage::new("prog", vec!["1".into(), "x".into()])]);
+        assert_ne!(one.canonical(), other.canonical());
+    }
+
+    /// The same pipeline must encode the same way every time, or an endorsement issued for one
+    /// would not match the run it was issued for.
+    #[test]
+    fn the_same_pipeline_encodes_the_same_way() {
+        let build = || Pipeline::new(vec![Stage::new("git", vec!["log".into()])]);
+        assert_eq!(build().canonical(), build().canonical());
     }
 
     fn plain() -> Pipeline {
