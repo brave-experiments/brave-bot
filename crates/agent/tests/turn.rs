@@ -989,6 +989,13 @@ impl bua_agent::Confirmer for RecordingConfirmer {
         bua_agent::RunDecision::reject()
     }
 
+    fn confirm_read_output(
+        &mut self,
+        _request: &bua_agent::confirm::OutputRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
     /// These tests are about writes. A question they did not set up gets no answer.
     fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
         Vec::new()
@@ -2428,6 +2435,13 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
 
         fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
             bua_agent::RunDecision::reject()
+        }
+
+        fn confirm_read_output(
+            &mut self,
+            _request: &bua_agent::confirm::OutputRequest,
+        ) -> bua_agent::Decision {
+            bua_agent::Decision::Reject
         }
 
         fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
@@ -5220,6 +5234,13 @@ impl bua_agent::Confirmer for AnswersWith {
         bua_agent::RunDecision::reject()
     }
 
+    fn confirm_read_output(
+        &mut self,
+        _request: &bua_agent::confirm::OutputRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
     fn ask_user(&mut self, asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
         self.asked.push(asking.clone());
         self.replies.clone()
@@ -5530,6 +5551,13 @@ impl bua_agent::Confirmer for AskedAboutRuns {
     fn confirm_run(&mut self, request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
         self.seen.lock().unwrap().push(request.clone());
         self.answer
+    }
+
+    fn confirm_read_output(
+        &mut self,
+        _request: &bua_agent::confirm::OutputRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
     }
 
     fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
@@ -5949,5 +5977,205 @@ fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
     assert!(
         !second.contains("SENTINEL-XYZZY"),
         "an assertion about one command made another command's output trusted"
+    );
+}
+
+/// A confirmer that approves a run and lets its output be read, recording what it was shown.
+struct ReadsWhatItRan {
+    allow: bool,
+    shown: std::sync::Arc<std::sync::Mutex<Vec<bua_agent::confirm::OutputRequest>>>,
+}
+
+impl ReadsWhatItRan {
+    fn new(allow: bool) -> Self {
+        Self {
+            allow,
+            shown: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl bua_agent::Confirmer for ReadsWhatItRan {
+    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
+    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+        bua_agent::RunDecision::approve()
+    }
+
+    fn confirm_read_output(
+        &mut self,
+        request: &bua_agent::confirm::OutputRequest,
+    ) -> bua_agent::Decision {
+        self.shown.lock().unwrap().push(request.clone());
+        if self.allow {
+            bua_agent::Decision::Approve
+        } else {
+            bua_agent::Decision::Reject
+        }
+    }
+
+    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+        Vec::new()
+    }
+}
+
+/// The whole point, end to end: the model runs a discovery command, cannot read the result, asks,
+/// the person is shown the actual bytes, agrees, and the bytes reach the planner's context.
+///
+/// This is the sequence three sessions in a row failed at, each ending with the model guessing or
+/// claiming success it could not see.
+#[test]
+fn output_a_person_reads_and_approves_reaches_the_planner() {
+    let scratch = Scratch::new("read-output");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    std::fs::write(scratch.path.join("where.txt"), "SENTINEL-XYZZY\n").unwrap();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"pipeline":[{"program":"cat","args":["where.txt"]}]}"#,
+        ),
+        tool_request("read_output", r#"{"ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = ReadsWhatItRan::new(true);
+    let shown = confirmer.shown.clone();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("find out"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    // The person was shown the bytes themselves, and which command printed them.
+    let asked = shown.lock().unwrap();
+    let request = asked
+        .first()
+        .expect("the user was asked to read the output");
+    assert!(request.output.contains("SENTINEL-XYZZY"));
+    assert!(
+        request.command.contains("cat"),
+        "the user was not told which command printed it: {}",
+        request.command
+    );
+    drop(asked);
+
+    let _first = received.recv().expect("first request");
+    let _second = received.recv().expect("second request");
+    let third = received.recv().expect("third request");
+    assert!(
+        third.contains("SENTINEL-XYZZY"),
+        "approved output did not reach the planner"
+    );
+}
+
+/// Refusing keeps the bytes back, and the planner is told so rather than being left to guess.
+#[test]
+fn output_a_person_refuses_stays_out_of_the_planner() {
+    let scratch = Scratch::new("read-output-no");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    std::fs::write(scratch.path.join("where.txt"), "SENTINEL-XYZZY\n").unwrap();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"pipeline":[{"program":"cat","args":["where.txt"]}]}"#,
+        ),
+        tool_request("read_output", r#"{"ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("find out"),
+        &mut bua_agent::Conversation::new(),
+        &mut ReadsWhatItRan::new(false),
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let _second = received.recv().expect("second request");
+    let third = received.recv().expect("third request");
+    assert!(
+        !third.contains("SENTINEL-XYZZY"),
+        "refused output reached the planner anyway"
+    );
+    assert!(
+        third.contains("did not let you read"),
+        "the planner was not told it had been refused"
+    );
+}
+
+/// A file is not command output. Its worth is the trust map's answer, and this must not become a
+/// second route to that decision.
+#[test]
+fn a_quarantined_file_cannot_be_read_through_the_output_route() {
+    let scratch = Scratch::new("read-output-file");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("vendor/notes.md"), "SENTINEL-XYZZY\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"vendor/notes.md"}"#),
+        tool_request("read_output", r#"{"ref":"ref:1"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = ReadsWhatItRan::new(true);
+    let shown = confirmer.shown.clone();
+
+    // Nothing is vouched for, so the file is quarantined when it is read.
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read it"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    assert!(
+        shown.lock().unwrap().is_empty(),
+        "a file was offered to the user through the command-output route"
+    );
+
+    let _first = received.recv().expect("first request");
+    let _second = received.recv().expect("second request");
+    let third = received.recv().expect("third request");
+    assert!(
+        !third.contains("SENTINEL-XYZZY"),
+        "a quarantined file reached the planner through read_output"
     );
 }

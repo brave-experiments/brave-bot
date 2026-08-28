@@ -1,6 +1,6 @@
 //! Asking the user to approve an effect, and putting the planner's questions to them.
 //!
-//! Three questions travel this way, and they differ in what is at stake. A write and a run ask for
+//! Four questions travel this way, and they differ in what is at stake. A write and a run ask for
 //! permission, and the answer decides whether an effect happens. A question the planner posed asks
 //! for information, and the answer decides nothing on its own: it is text the model reads. What
 //! they share is consent, so all three live here rather than in [`crate::report`], which announces
@@ -162,6 +162,36 @@ impl RunRequest {
     }
 }
 
+/// A command's output the planner has asked to read.
+///
+/// The bytes are here in full, released for display, because that is the entire point: a person
+/// deciding whether the model may read something must be reading it themselves. Unlike every other
+/// question in this file, the answer rests on what is in front of them rather than on a prediction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputRequest {
+    /// The command that produced it, as it was approved.
+    pub command: String,
+    /// What it printed, in full.
+    pub output: String,
+    /// The reference the planner named, for the account given afterwards.
+    pub reference: String,
+}
+
+impl OutputRequest {
+    pub fn lines(&self) -> usize {
+        self.output.lines().count()
+    }
+
+    /// A short description for a prompt line.
+    pub fn summary(&self) -> String {
+        format!(
+            "let the model read {} of output from {}",
+            tally(self.lines(), "line", "lines"),
+            self.command
+        )
+    }
+}
+
 /// What the user decided about a run.
 ///
 /// Two answers rather than one, because "yes" and "yes, and stop asking" are different things and
@@ -244,6 +274,14 @@ pub trait Confirmer {
     /// permission from a question nobody answered is worse than inferring a single one.
     fn confirm_run(&mut self, request: &RunRequest) -> RunDecision;
 
+    /// Ask whether the planner may read a command's output. Implementations must default to
+    /// refusal when they cannot ask.
+    ///
+    /// The one question in this trait whose answer rests on bytes rather than on a prediction, so
+    /// an implementation that cannot show them must refuse: approving unseen is the one thing this
+    /// question cannot mean.
+    fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision;
+
     /// Put a series of questions to the person, one answer per question in the order they were
     /// asked.
     ///
@@ -274,6 +312,10 @@ impl Confirmer for Unattended {
         RunDecision::reject()
     }
 
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -298,6 +340,10 @@ impl Confirmer for ApproveWrites {
         RunDecision::reject()
     }
 
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -314,6 +360,10 @@ impl Confirmer for ChoosesFirst {
 
     fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
         RunDecision::reject()
+    }
+
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
@@ -348,6 +398,12 @@ impl Confirmer for ApproveRuns {
         RunDecision::approve()
     }
 
+    /// Refuses. A test that wants output read says so with [`ReadsOutput`], so no test picks up
+    /// quarantined bytes it never asked for.
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -364,6 +420,32 @@ impl Confirmer for RemembersRuns {
 
     fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
         RunDecision::approve_always()
+    }
+
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+        Vec::new()
+    }
+}
+
+/// Approves a run once and lets its output be read. Test-only.
+#[derive(Debug, Default)]
+pub struct ReadsOutput;
+
+impl Confirmer for ReadsOutput {
+    fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::approve()
+    }
+
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Approve
     }
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {

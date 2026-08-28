@@ -1618,6 +1618,88 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// as changing nothing.
     ///
     /// Bookkeeping about where bytes came from, not about what they say. The driver passes two
+    /// Record that a slot holds what a program printed.
+    ///
+    /// Only such a slot may be offered to the user for reading. A file's trust belongs to the
+    /// trust map, which `@`, `/add-dir` and the startup question already answer; a second route to
+    /// the same decision would be a way to disagree with it.
+    pub fn came_from_command(
+        &mut self,
+        slot: &SlotId,
+        command: &str,
+        slots: &mut crate::slot::SlotStore,
+    ) {
+        slots.mark_from_command(slot, command);
+        self.allow(
+            "slot",
+            format!("{slot} holds what `{command}` printed, so the user may choose to read it"),
+        );
+    }
+
+    /// Take a person's word that they have read a command's output and it may enter the planner's
+    /// context.
+    ///
+    /// **Not a relabel.** [`Labelled::relabel`] refuses to upgrade and labels only ever degrade,
+    /// so nothing here touches the slot: the slot keeps the label it was quarantined at, and what
+    /// comes back is a new value whose first label is assigned from the provenance the kernel
+    /// tracked, exactly as [`Policy::label_model_output`] assigns one. The provenance here is a
+    /// person having read the bytes on their screen and said the planner may have them.
+    ///
+    /// That is the strongest assertion available anywhere in this system, and it is stronger than
+    /// the one behind a vouched command: vouching for `git log` is a prediction about output that
+    /// does not exist yet, while this is a statement about bytes the person has just read. It is
+    /// still an assertion, and nothing here checks it.
+    ///
+    /// The result is `(T,priv)`. Trusted, so the planner may read it; private, because the bytes
+    /// may have come out of the workspace and nothing about being read aloud makes them public.
+    ///
+    /// Three things must hold, and each refuses rather than degrading:
+    ///
+    /// - the slot must hold what a program printed, so a file cannot be promoted this way;
+    /// - a single-use endorsement for this exact slot must be present, which only an approval
+    ///   mints, so the planner cannot read its way through the quarantine unaided;
+    /// - the slot must have been written, since a reference to nothing has nothing to show.
+    pub fn read_output(
+        &mut self,
+        slot: &SlotId,
+        slots: &crate::slot::SlotStore,
+    ) -> Gated<Labelled<String>> {
+        if !slots.is_from_command(slot) {
+            return Err(self.deny(
+                "read_output",
+                Principle::Confinement,
+                format!(
+                    "{slot} is not something a program printed. Only command output may be read \
+                     this way; what a file is worth is the trust map's answer"
+                ),
+            ));
+        }
+
+        self.consume_grant("read_output", "ref", slot.as_str())?;
+
+        let content = slots.take_for_effect(slot).map_err(|e| Denial {
+            principle: Principle::Confinement,
+            message: format!("{slot} could not be read: {e}"),
+        })?;
+
+        // The bytes leave the slot at the label they were quarantined at, and are dropped here
+        // without being inspected. What is returned is a new value at a label the person's reading
+        // established, not this one carried across.
+        let was = content.label();
+        let proof = Declassification::authorise("output a person read and vouched for");
+        let text = content.declassify(&proof);
+
+        let label = Label::trusted_private();
+        self.allow(
+            "read_output",
+            format!(
+                "{slot} was {was}; the user read it and vouched for it, so the planner is given \
+                 {label}"
+            ),
+        );
+        Ok(Labelled::new(text, label))
+    }
+
     /// slot names it was given and reads neither.
     pub fn copied_from(
         &mut self,
@@ -3469,6 +3551,135 @@ mod tests {
             &["-la"],
         )]));
         assert!(policy.programs().contains("/bin/ls", &["-la".to_string()]));
+    }
+
+    /// A slot holding command output, as a run leaves one.
+    fn printed(text: &str) -> (SlotStore, SlotId) {
+        let mut slots = SlotStore::new();
+        let slot = SlotId::new("ref:1");
+        slots
+            .writer_for(slot.clone(), Label::untrusted_private())
+            .unwrap()
+            .write(text)
+            .unwrap();
+        slots.mark_from_command(&slot, "a command");
+        (slots, slot)
+    }
+
+    /// The planner cannot read its way out of the quarantine on its own. Without an endorsement,
+    /// which only a person's approval mints, the bytes stay where they are.
+    #[test]
+    fn output_cannot_be_read_without_an_endorsement() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let (slots, slot) = printed("Darwin\n");
+        assert!(
+            policy.read_output(&slot, &slots).is_err(),
+            "the planner read quarantined output with nobody's approval"
+        );
+    }
+
+    /// What the person's reading buys: the bytes come back trusted, so the planner may have them.
+    #[test]
+    fn output_a_person_vouched_for_comes_back_trusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let (slots, slot) = printed("Darwin\n");
+        policy.issue_grant("read_output", "ref", slot.as_str());
+
+        let given = policy.read_output(&slot, &slots).expect("approved");
+        assert_eq!(given.label(), Label::trusted_private());
+    }
+
+    /// Trusted, not public. The bytes may have come out of the workspace, and nothing about a
+    /// person reading them aloud makes them fit to leave.
+    #[test]
+    fn output_a_person_vouched_for_is_still_private() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let (slots, slot) = printed("Darwin\n");
+        policy.issue_grant("read_output", "ref", slot.as_str());
+
+        let given = policy.read_output(&slot, &slots).expect("approved");
+        assert_ne!(
+            given.label(),
+            Label::trusted_public(),
+            "output a person read became routing-safe on its own"
+        );
+    }
+
+    /// The slot itself is untouched. Nothing is relabelled: the quarantined value keeps the label
+    /// it was written at, and what the planner gets is a separate value.
+    #[test]
+    fn vouching_for_output_does_not_relabel_the_slot() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let (slots, slot) = printed("Darwin\n");
+        policy.issue_grant("read_output", "ref", slot.as_str());
+        policy.read_output(&slot, &slots).expect("approved");
+
+        assert_eq!(
+            slots.label_of(&slot),
+            Some(Label::untrusted_private()),
+            "the slot was upgraded rather than a new value being labelled"
+        );
+    }
+
+    /// Single-use, like every other endorsement. One approval reads one result.
+    #[test]
+    fn an_approval_to_read_output_cannot_be_replayed() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let (slots, slot) = printed("Darwin\n");
+        policy.issue_grant("read_output", "ref", slot.as_str());
+        assert!(policy.read_output(&slot, &slots).is_ok());
+        assert!(
+            policy.read_output(&slot, &slots).is_err(),
+            "one approval read the same output twice"
+        );
+    }
+
+    /// An approval for one result does not read another. The endorsement names the slot.
+    #[test]
+    fn an_approval_for_one_result_does_not_read_another() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        for id in ["ref:1", "ref:2"] {
+            let slot = SlotId::new(id);
+            slots
+                .writer_for(slot.clone(), Label::untrusted_private())
+                .unwrap()
+                .write("something")
+                .unwrap();
+            slots.mark_from_command(&slot, "a command");
+        }
+        policy.issue_grant("read_output", "ref", "ref:1");
+        assert!(
+            policy.read_output(&SlotId::new("ref:2"), &slots).is_err(),
+            "an approval for one result read another"
+        );
+    }
+
+    /// A file is not command output. What a file is worth is the trust map's answer, and a second
+    /// route to it would be a way to disagree with it.
+    #[test]
+    fn a_file_cannot_be_promoted_by_reading_it_aloud() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let mut slots = SlotStore::new();
+        let slot = SlotId::new("ref:1");
+        slots
+            .writer_for(slot.clone(), Label::untrusted_private())
+            .unwrap()
+            .write("what a file holds")
+            .unwrap();
+        // Deliberately not marked: this came from a read, not from a run.
+        policy.issue_grant("read_output", "ref", slot.as_str());
+        assert!(
+            policy.read_output(&slot, &slots).is_err(),
+            "a file's contents were promoted through the output route"
+        );
     }
 
     #[test]

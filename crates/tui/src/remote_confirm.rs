@@ -19,7 +19,9 @@
 //! with each other; that resolves to the negative answer rather than to a retry, because a
 //! decision taken against a question nobody matched is worse than no decision at all.
 
-use bua_agent::confirm::{Confirmer, Decision, RunDecision, RunRequest, WriteRequest};
+use bua_agent::confirm::{
+    Confirmer, Decision, OutputRequest, RunDecision, RunRequest, WriteRequest,
+};
 use bua_agent::report::{Activity, Landing, Phase, Reporter, Shown};
 use bua_core::ask::{Answer, Asking};
 use bua_core::todo::Row;
@@ -32,6 +34,9 @@ pub enum ToMain {
     Write(WriteRequest),
     /// A pipeline needs approval before it runs. The main thread must reply.
     Run(RunRequest),
+    /// A command's output needs a person to read it before the planner may. The main thread
+    /// must reply.
+    ReadOutput(OutputRequest),
     /// The task list changed. No reply.
     /// The planner is asking the user something. The main thread must reply.
     Ask(Asking),
@@ -57,6 +62,7 @@ pub enum ToMain {
 pub enum Reply {
     Write(Decision),
     Run(RunDecision),
+    ReadOutput(Decision),
     Ask(Vec<Answer>),
 }
 
@@ -94,6 +100,15 @@ impl Confirmer for RemoteConfirmer {
             // A reply tagged as answering the write question is not an answer to this one, and
             // running a program on it would be acting on consent nobody gave.
             _ => RunDecision::reject(),
+        }
+    }
+
+    fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
+        match self.exchange(ToMain::ReadOutput(request.clone())) {
+            Some(Reply::ReadOutput(decision)) => decision,
+            // A reply to a different question is not consent to put these bytes in the planner's
+            // context.
+            _ => Decision::Reject,
         }
     }
 
@@ -471,6 +486,7 @@ mod tests {
                 match message {
                     ToMain::Ask(_) => seen.push("ask"),
                     ToMain::Run(_) => seen.push("run"),
+                    ToMain::ReadOutput(_) => seen.push("read_output"),
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),
                     ToMain::Phase(_) => seen.push("phase"),
