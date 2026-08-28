@@ -1344,10 +1344,16 @@ fn compact_animated(
             .draw(|frame| render::draw(frame, session))
             .map_err(io::Error::other)?;
 
-        // Input is still read, so a long summary does not leave the interface deaf. There is
-        // nothing to cancel, so a key that would stop a turn only says so.
+        // Input is still read, so a long summary does not leave the interface deaf.
         while event::poll(Duration::ZERO)? {
             match event::read()? {
+                // A summary is one request, so there is no round for a cancel to land between and
+                // nothing here can stop it. Said once, because the alternative is a key that does
+                // nothing and says nothing, which reads as the interface having hung at the one
+                // moment it is working hardest.
+                TermEvent::Key(key) if wants_cancel(key) => {
+                    session.note_once("summarising cannot be interrupted; it takes one request");
+                }
                 TermEvent::Key(key) => {
                     handle_key_while_working(session, key);
                 }
@@ -2662,6 +2668,19 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("how does /compact work".to_string())
         );
+    }
+
+    /// Escape and ctrl-c stop a turn, and a person who has just typed /compact will try them.
+    /// Nothing here can stop one request, so the key has to be answered rather than swallowed: a
+    /// key that does nothing and says nothing reads as an interface that has hung.
+    #[test]
+    fn a_key_that_would_stop_a_turn_is_answered_during_a_summary() {
+        for key in [key(KeyCode::Esc), ctrl('c')] {
+            assert!(
+                wants_cancel(key),
+                "{key:?} should read as a request to stop"
+            );
+        }
     }
 
     /// COMMANDS is the one place the set is written down, so a command missing from it is a
