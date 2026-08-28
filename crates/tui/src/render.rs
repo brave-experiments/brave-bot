@@ -442,10 +442,12 @@ fn trail_line(recorded: &TrailLine) -> Line<'static> {
 
 /// Columns available for input text inside the box.
 ///
-/// Two for the borders and two for the `> ` prompt, so a wrap computed against this matches what
-/// the terminal will actually show.
+/// Two for the borders, two for the `> ` prompt, and one for the caret, so a wrap computed against
+/// this matches what the terminal will actually show. The caret takes a column only past the end of
+/// the text, where it has no character to sit on and is drawn as a highlighted space, but the row
+/// it ends up on is not known before wrapping, so the column is kept on every row.
 fn input_text_width(total: u16) -> usize {
-    (total as usize).saturating_sub(4).max(1)
+    (total as usize).saturating_sub(5).max(1)
 }
 
 /// Rows the input box needs, borders included.
@@ -467,12 +469,37 @@ fn input_height(session: &Session, width: u16, height: u16) -> u16 {
         return 3.min(ceiling) as u16;
     }
 
-    let rows = wrap::wrap(&session.input, input_text_width(width))
+    let rows = wrap::wrap(session.input(), input_text_width(width), session.caret())
         .rows
         .len()
         .min(wrap::MAX_ROWS);
 
     (rows + 2).min(ceiling) as u16
+}
+
+/// The row the caret is on, drawn as a block over the character it sits on.
+///
+/// A block rather than a glyph inserted between two characters, because inserting one moves
+/// everything after it by a column: the text shifted left and right under the caret as it moved,
+/// which is far more distracting than the caret itself. Nothing moves now, since the caret occupies
+/// a cell that was already there.
+///
+/// Past the end of the line there is no cell to occupy, so a highlighted space is added. That is
+/// the one place the caret still takes a column, and [`input_text_width`] reserves it.
+fn caret_spans(row: &str, at: usize, colour: Color) -> Vec<Span<'static>> {
+    // Reversed rather than a chosen pair of colours, so the cell inverts whatever the terminal's
+    // own foreground and background happen to be and stays legible on either kind of theme.
+    let block = Style::default().fg(colour).add_modifier(Modifier::REVERSED);
+
+    let mut spans = vec![Span::raw(row[..at].to_string())];
+    match row[at..].chars().next() {
+        Some(on) => {
+            spans.push(Span::styled(on.to_string(), block));
+            spans.push(Span::raw(row[at + on.len_utf8()..].to_string()));
+        }
+        None => spans.push(Span::styled(" ", block)),
+    }
+    spans
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
@@ -523,7 +550,11 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
         lines.extend(todo_lines(&session.todos).into_iter().take(room));
         lines
     } else {
-        let wrapped = wrap::wrap(&session.input, input_text_width(area.width));
+        let wrapped = wrap::wrap(
+            session.input(),
+            input_text_width(area.width),
+            session.caret(),
+        );
         let visible = (area.height as usize).saturating_sub(2).max(1);
         let (first, rows) = wrapped.window(visible);
 
@@ -549,12 +580,11 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
                 } else {
                     "> "
                 };
-                let mut spans = vec![
-                    Span::styled(lead, Style::default().fg(colour)),
-                    Span::raw(row.clone()),
-                ];
+                let mut spans = vec![Span::styled(lead, Style::default().fg(colour))];
                 if index == wrapped.cursor_row {
-                    spans.push(Span::styled("▌", Style::default().fg(colour)));
+                    spans.extend(caret_spans(row, wrapped.cursor_index, colour));
+                } else {
+                    spans.push(Span::raw(row.clone()));
                 }
                 Line::from(spans)
             })
@@ -1350,6 +1380,22 @@ mod tests {
         session
     }
 
+    /// Where the caret is on screen, and what it is drawn over.
+    ///
+    /// Found by the reversed cell rather than by a glyph, because the caret is a style over a
+    /// character the user typed: there is nothing in the text to search for.
+    fn caret_cell(session: &Session, width: u16, height: u16) -> Option<(u16, u16, String)> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, session))
+            .expect("draw succeeds");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .flat_map(|row| (0..width).map(move |column| (column, row)))
+            .find(|at| buffer[*at].modifier.contains(Modifier::REVERSED))
+            .map(|(column, row)| (column, row, buffer[(column, row)].symbol().to_string()))
+    }
+
     /// The bug: text past the right edge used to be clipped, cursor included, which looked like
     /// the program had stopped taking keys.
     #[test]
@@ -1361,7 +1407,63 @@ mod tests {
             output.contains("TAIL"),
             "the end of the input was clipped: {output}"
         );
-        assert!(output.contains('▌'), "the cursor was clipped: {output}");
+        assert!(
+            caret_cell(&typed(&text), 50, 14).is_some(),
+            "the cursor was clipped: {output}"
+        );
+    }
+
+    /// The caret sits on the character the next keystroke will land before, which need not be the
+    /// end of the line: a caret that stayed at the end would point at the wrong place after every
+    /// Left press.
+    #[test]
+    fn the_caret_is_drawn_where_it_sits() {
+        let mut session = typed("abcd");
+        session.move_left();
+        session.move_left();
+
+        let (_, _, on) = caret_cell(&session, 40, 12).expect("the caret was not drawn");
+        assert_eq!(on, "c", "the caret was not on the character it precedes");
+    }
+
+    /// The bug this replaced a glyph to fix: a caret inserted between two characters pushed
+    /// everything after it along, so the text shifted left and right as the caret moved.
+    #[test]
+    fn the_caret_does_not_move_the_text_it_passes_over() {
+        let mut session = typed("abcd");
+        let settled = rendered_at(&session, 40, 12);
+
+        for _ in 0..4 {
+            session.move_left();
+            assert_eq!(
+                rendered_at(&session, 40, 12),
+                settled,
+                "the text moved under the caret"
+            );
+        }
+    }
+
+    /// Past the end of the line the caret has no character to sit on, so it is drawn as a
+    /// highlighted space rather than vanishing at the one moment typing is about to happen.
+    #[test]
+    fn the_caret_past_the_end_of_the_line_is_a_block() {
+        let (_, _, on) = caret_cell(&typed("abc"), 40, 12).expect("the caret was not drawn");
+        assert_eq!(on, " ");
+    }
+
+    /// The row is measured with a column spare for the caret past the end of it, so a full row
+    /// keeps every character it was given.
+    #[test]
+    fn a_full_row_is_not_clipped() {
+        let width = 24u16;
+        let session = typed(&"x".repeat(input_text_width(width)));
+        let output = rendered_at(&session, width, 12);
+
+        assert_eq!(
+            output.matches('x').count(),
+            input_text_width(width),
+            "a character was pushed off the edge: {output}"
+        );
     }
 
     /// The box grows with the text rather than staying one line.
@@ -1391,7 +1493,7 @@ mod tests {
             output.contains("TAIL"),
             "the cursor's row scrolled away: {output}"
         );
-        assert!(output.contains('▌'));
+        assert!(caret_cell(&typed(&text), 40, 20).is_some());
     }
 
     /// A short terminal must still show some transcript and the hint line.

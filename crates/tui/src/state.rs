@@ -201,7 +201,17 @@ pub enum Offered {
 #[derive(Debug)]
 pub struct Session {
     pub transcript: Vec<Entry>,
-    pub input: String,
+    /// The line being typed.
+    ///
+    /// Private, with `caret`, because the two are one value: a caret is an offset into this string
+    /// and nothing may shorten the string without moving it. Read it with [`Session::input`].
+    input: String,
+    /// Where the next keystroke lands, as a byte offset into `input`.
+    ///
+    /// A byte offset rather than a character index because every use of it is a slice of `input`,
+    /// and it is kept on a character boundary by everything that moves it. Anything that replaces
+    /// the line puts it at the end, which is where the line was left off.
+    caret: usize,
     /// Whether the line being typed is a command for the shell rather than a prompt for the model.
     ///
     /// Entered by typing `!` on an empty line and left by deleting back past it, so the `!` is a
@@ -300,6 +310,7 @@ impl Session {
         Self {
             transcript: Vec::new(),
             input: String::new(),
+            caret: 0,
             shell: false,
             status: Status::Idle,
             show_trail: false,
@@ -578,10 +589,183 @@ impl Session {
         // Editing a recalled prompt makes it the working line rather than a view of history,
         // so the position indicator goes away as soon as a key is pressed.
         self.history.leave();
-        self.input.push(c);
+        self.input.insert(self.caret, c);
+        self.caret += c.len_utf8();
         // Back to the top of whatever is now offered. A cursor left where it was would sit on a
         // different command after one more letter, so the highlighted row would drift as the list
         // narrowed under it.
+        self.completion = 0;
+    }
+
+    /// The line being typed.
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// Where the next keystroke will land, as a byte offset into the line.
+    pub fn caret(&self) -> usize {
+        self.caret
+    }
+
+    /// Replace the line, leaving the caret where the user would carry on typing.
+    ///
+    /// Everything that puts a whole line in the box goes through here, so no path can leave the
+    /// caret pointing into a line that is no longer there.
+    fn set_input(&mut self, line: impl Into<String>) {
+        self.input = line.into();
+        self.caret = self.input.len();
+    }
+
+    /// Whether the line has more than one line in it, which is what gives Up and Down something
+    /// to move between.
+    pub fn is_multiline(&self) -> bool {
+        self.input.contains('\n')
+    }
+
+    /// The line the caret is on, as byte offsets into the input.
+    fn caret_line(&self) -> (usize, usize) {
+        let start = self.input[..self.caret]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        let end = self.input[self.caret..]
+            .find('\n')
+            .map_or(self.input.len(), |newline| self.caret + newline);
+        (start, end)
+    }
+
+    /// Move the caret one character towards the start.
+    pub fn move_left(&mut self) {
+        if let Some(c) = self.input[..self.caret].chars().next_back() {
+            self.caret -= c.len_utf8();
+        }
+    }
+
+    /// Move the caret one character towards the end.
+    pub fn move_right(&mut self) {
+        if let Some(c) = self.input[self.caret..].chars().next() {
+            self.caret += c.len_utf8();
+        }
+    }
+
+    /// Move the caret to the start of the word before it.
+    ///
+    /// Words are runs of anything but whitespace, which is what makes a path or a flag one word:
+    /// stopping inside `--file` or `src/main.rs` would be several presses to cross something the
+    /// user thinks of as one thing.
+    pub fn move_word_left(&mut self) {
+        while self.input[..self.caret]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_whitespace)
+        {
+            self.move_left();
+        }
+        while self.input[..self.caret]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            self.move_left();
+        }
+    }
+
+    /// Move the caret to the end of the word after it.
+    pub fn move_word_right(&mut self) {
+        while self.input[self.caret..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+        {
+            self.move_right();
+        }
+        while self.input[self.caret..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            self.move_right();
+        }
+    }
+
+    /// Move the caret to the start of the line it is on.
+    pub fn move_to_line_start(&mut self) {
+        self.caret = self.caret_line().0;
+    }
+
+    /// Move the caret to the end of the line it is on.
+    pub fn move_to_line_end(&mut self) {
+        self.caret = self.caret_line().1;
+    }
+
+    /// Move the caret to the line above, keeping its position along the line where it can.
+    ///
+    /// `false` when there is no line above, which is what leaves Up to the history it belongs to
+    /// on a line with nothing to move within.
+    pub fn move_up_a_line(&mut self) -> bool {
+        let (start, _) = self.caret_line();
+        if start == 0 {
+            return false;
+        }
+        let above = self.input[..start - 1]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        self.caret = along(&self.input[above..start - 1], self.column()) + above;
+        true
+    }
+
+    /// Move the caret to the line below, keeping its position along the line where it can.
+    pub fn move_down_a_line(&mut self) -> bool {
+        let (_, end) = self.caret_line();
+        if end == self.input.len() {
+            return false;
+        }
+        let below = end + 1;
+        let ends = self.input[below..]
+            .find('\n')
+            .map_or(self.input.len(), |newline| below + newline);
+        self.caret = along(&self.input[below..ends], self.column()) + below;
+        true
+    }
+
+    /// How many characters along its line the caret is.
+    fn column(&self) -> usize {
+        let (start, _) = self.caret_line();
+        self.input[start..self.caret].chars().count()
+    }
+
+    /// Delete the character after the caret.
+    pub fn delete_forward(&mut self) {
+        if self.caret == self.input.len() {
+            return;
+        }
+        self.history.leave();
+        self.input.remove(self.caret);
+        self.completion = 0;
+    }
+
+    /// Delete the word before the caret.
+    pub fn delete_word_before(&mut self) {
+        self.history.leave();
+        let was = self.caret;
+        self.move_word_left();
+        self.input.replace_range(self.caret..was, "");
+        self.completion = 0;
+    }
+
+    /// Delete from the caret back to the start of its line.
+    pub fn delete_to_line_start(&mut self) {
+        self.history.leave();
+        let (start, _) = self.caret_line();
+        self.input.replace_range(start..self.caret, "");
+        self.caret = start;
+        self.completion = 0;
+    }
+
+    /// Delete from the caret to the end of its line.
+    pub fn delete_to_line_end(&mut self) {
+        self.history.leave();
+        let (_, end) = self.caret_line();
+        self.input.replace_range(self.caret..end, "");
         self.completion = 0;
     }
 
@@ -708,22 +892,23 @@ impl Session {
                 let Some(command) = self.highlighted_completion() else {
                     return;
                 };
-                self.input = if command.argument.is_empty() {
+                let line = if command.argument.is_empty() {
                     command.name.to_string()
                 } else {
                     format!("{} ", command.name)
                 };
+                self.set_input(line);
             }
             Offered::Files(_) => {
                 let Some(entry) = self.highlighted_entry() else {
                     return;
                 };
                 let kept = match self.input.rfind('@') {
-                    Some(at) => &self.input[..at],
+                    Some(at) => self.input[..at].to_string(),
                     None => return,
                 };
                 let trailing = if entry.is_directory { "" } else { " " };
-                self.input = format!("{kept}@{}{trailing}", entry.path);
+                self.set_input(format!("{kept}@{}{trailing}", entry.path));
             }
             Offered::Nothing => return,
         }
@@ -820,22 +1005,28 @@ impl Session {
     /// and the box draws them.
     pub fn paste(&mut self, text: &str) {
         self.history.leave();
-        self.input
-            .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        self.input.insert_str(self.caret, &text);
+        self.caret += text.len();
     }
 
-    /// Delete the last character, or leave shell mode where there is nothing left to delete.
+    /// Delete the character before the caret, or leave shell mode where there is nothing left to
+    /// delete.
     ///
     /// Deleting back past the `!` leaves the mode, which is where the marker appears to be: a user
     /// who typed it by mistake gets rid of it the way they got rid of any other character. Without
     /// this the mode could only be left by clearing the whole line.
     pub fn backspace(&mut self) {
         self.history.leave();
-        if self.input.is_empty() && self.shell {
+        // Nothing before the caret is where the marker appears to be, so this is the press that
+        // deletes it. Whatever follows stays and becomes an ordinary prompt: the mode is what was
+        // deleted, not the words.
+        if self.caret == 0 {
             self.shell = false;
             return;
         }
-        self.input.pop();
+        self.move_left();
+        self.input.remove(self.caret);
         self.completion = 0;
     }
 
@@ -878,7 +1069,7 @@ impl Session {
         // Only where the box is empty. A user who typed while the turn ran meant those words,
         // and putting the old prompt over the top of them would lose the newer of the two.
         if self.input.trim().is_empty() {
-            self.input = prompt.into();
+            self.set_input(prompt);
         }
         // Discarded rather than kept: the prompt is going back into the box as though it had never
         // been sent, so a plan for a turn that is being un-sent has nothing to describe.
@@ -892,7 +1083,7 @@ impl Session {
     pub fn clear_input(&mut self) {
         if self.status == Status::Idle {
             self.history.leave();
-            self.input.clear();
+            self.set_input(String::new());
             // The mode goes with the line. Escape means "never mind this", and leaving the marker
             // behind would arm the next thing typed as a command.
             self.shell = false;
@@ -913,7 +1104,7 @@ impl Session {
         // A recalled prompt that has been through an editor is the working line now, exactly as
         // it would be after a keystroke.
         self.history.leave();
-        self.input = line.into();
+        self.set_input(line);
         self.completion = 0;
     }
 
@@ -923,7 +1114,7 @@ impl Session {
             return;
         }
         if let Some(prompt) = self.history.older(&self.input) {
-            self.input = prompt;
+            self.set_input(prompt);
         }
     }
 
@@ -933,7 +1124,7 @@ impl Session {
             return;
         }
         if let Some(prompt) = self.history.newer() {
-            self.input = prompt;
+            self.set_input(prompt);
         }
     }
 
@@ -950,7 +1141,7 @@ impl Session {
         if line.is_empty() {
             return None;
         }
-        self.input.clear();
+        self.set_input(String::new());
         self.shell = false;
         self.completion = 0;
         self.history.push(line.clone());
@@ -1007,7 +1198,7 @@ impl Session {
         if prompt.is_empty() {
             return None;
         }
-        self.input.clear();
+        self.set_input(String::new());
         self.history.push(prompt.clone());
         if self.persist {
             crate::store::append_history(&prompt);
@@ -1156,6 +1347,15 @@ impl Session {
     pub fn scroll_down(&mut self, lines: u16) {
         self.scroll = self.scroll.saturating_sub(lines);
     }
+}
+
+/// The byte offset `column` characters into `line`, or its end where it is shorter.
+///
+/// What keeps the caret roughly where it looked while moving between lines of unequal length.
+fn along(line: &str, column: usize) -> usize {
+    line.char_indices()
+        .nth(column)
+        .map_or(line.len(), |(index, _)| index)
 }
 
 #[cfg(test)]
@@ -1651,8 +1851,10 @@ mod tests {
             s.type_char(c);
         }
         s.submit();
-        // `submit` takes the text, so put something back the way only a bug could.
-        s.input.push_str("mid-turn");
+        // `submit` takes the text, and typing during the turn is how a user puts more back.
+        for c in "mid-turn".chars() {
+            s.type_char(c);
+        }
 
         s.clear_input();
         assert_eq!(s.input, "mid-turn", "the input was cleared mid-turn");

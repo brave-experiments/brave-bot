@@ -1,9 +1,9 @@
 //! Editing the prompt in the user's own editor.
 //!
-//! A prompt worth thinking about outgrows the box it is typed in. There is no way back to a word
-//! once it has scrolled off, and the keys that would move there belong to the history and the
-//! transcript, so a long prompt is written blind. Ctrl-G hands the line to whatever the user
-//! edits text with, waits for them to finish, and takes back what they saved.
+//! A prompt worth thinking about outgrows the box it is typed in. The caret reaches any word of it
+//! now, but the box is still ten rows at most and has nothing to search, fold or reflow with.
+//! Ctrl-G hands the line to whatever the user edits text with, waits for them to finish, and takes
+//! back what they saved.
 //!
 //! Nothing labelled passes through here. The line is the user's own words on their way from the
 //! keyboard to their editor and back, and nothing read out of the workspace joins them.

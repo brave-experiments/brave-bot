@@ -149,7 +149,7 @@ fn a_session_recalls_a_prompt_stored_by_an_earlier_session() {
         let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         session.recall_older();
 
-        assert_eq!(session.input, "a question from before");
+        assert_eq!(session.input(), "a question from before");
         assert_eq!(session.history.position(), Some((1, 1)));
     });
 }

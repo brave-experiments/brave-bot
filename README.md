@@ -32,11 +32,17 @@ bravebot doctor                           # check configuration and confinement
 bravebot import-leo-creds                 # use a Leo Premium subscription
 ```
 
-In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, Ctrl-T
-toggles the audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back
-what you saved, Esc cancels a running turn. Add `--trace` to a one-shot run for the
-same audit trail: which gate checked what, the label every value carried, and what was
-released.
+In the prompt: Left/Right move a character and Ctrl-Left/Ctrl-Right a word, Home/End reach
+the ends of the line, Delete and Backspace take a character either side of the caret, and
+Ctrl-W, Ctrl-U and Ctrl-K take a word, the start of the line or the rest of it. The readline
+bindings Ctrl-A, Ctrl-E, Ctrl-B and Ctrl-F work too, for terminals that send nothing for the
+named keys.
+
+In a session: the mouse wheel scrolls, as do Up/Down once the prompt has no line left to
+move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
+audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back what you
+saved, Esc cancels a running turn. Add `--trace` to a one-shot run for the same audit trail:
+which gate checked what, the label every value carried, and what was released.
 
 ## What it will and will not do for you
 

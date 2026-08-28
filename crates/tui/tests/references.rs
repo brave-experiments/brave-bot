@@ -78,7 +78,7 @@ fn tab_completes_a_reference_without_disturbing_the_sentence() {
     typing(&mut session, "please read @READ");
 
     assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::Redraw);
-    assert_eq!(session.input, "please read @README.md ");
+    assert_eq!(session.input(), "please read @README.md ");
 }
 
 /// A directory completes without a trailing space, so the path can be typed onwards into it. A file
@@ -89,11 +89,11 @@ fn a_directory_completes_so_typing_can_continue_into_it() {
     let mut session = session(&scratch);
     typing(&mut session, "@sr");
     handle_key(&mut session, key(KeyCode::Tab));
-    assert_eq!(session.input, "@src/");
+    assert_eq!(session.input(), "@src/");
 
     typing(&mut session, "mai");
     handle_key(&mut session, key(KeyCode::Tab));
-    assert_eq!(session.input, "@src/main.rs ");
+    assert_eq!(session.input(), "@src/main.rs ");
 }
 
 /// The arrows walk the offered files, and Enter takes one rather than sending a half-typed path.
@@ -109,7 +109,7 @@ fn the_arrows_and_enter_choose_among_the_offered_files() {
         handle_key(&mut session, key(KeyCode::Enter)),
         Action::Redraw
     );
-    assert_eq!(session.input, "@README.md ", "the third entry");
+    assert_eq!(session.input(), "@README.md ", "the third entry");
     assert!(
         session.transcript.is_empty(),
         "a half-typed reference was sent"
@@ -155,7 +155,7 @@ fn a_cursor_past_the_end_of_a_narrowed_list_still_names_a_file() {
 
     handle_paste(&mut session, "Car");
     handle_key(&mut session, key(KeyCode::Tab));
-    assert_eq!(session.input, "@Cargo.toml ");
+    assert_eq!(session.input(), "@Cargo.toml ");
 }
 
 /// An ordinary sentence containing an address is not a reference: only a word beginning with `@`
@@ -206,7 +206,7 @@ fn enter_completes_a_prompt_that_ends_in_a_half_typed_reference() {
         handle_key(&mut session, key(KeyCode::Enter)),
         Action::Redraw
     );
-    assert_eq!(session.input, "explain @README.md ");
+    assert_eq!(session.input(), "explain @README.md ");
 }
 
 /// The reading the event loop does when it builds a turn, kept beside the typing tests so the two

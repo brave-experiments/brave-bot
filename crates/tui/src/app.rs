@@ -182,18 +182,64 @@ pub enum Action {
     Quit,
 }
 
+/// Move the caret or delete around it, and say whether the key was one that does.
+///
+/// Shared by the idle and mid-turn handlers, because what has been typed can be edited in both:
+/// the box holds the same line either way, and only sending it is refused while a turn runs.
+///
+/// Both Ctrl and Alt are read as the word modifier, since terminals disagree about which they send
+/// for Ctrl-Left.
+fn edit_line(session: &mut Session, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let word = ctrl || alt;
+
+    match key.code {
+        KeyCode::Left if word => session.move_word_left(),
+        KeyCode::Right if word => session.move_word_right(),
+        KeyCode::Left => session.move_left(),
+        KeyCode::Right => session.move_right(),
+        // Bare, because the ends of the line being typed are what these mean in every other text
+        // field. The transcript keeps them under Ctrl.
+        KeyCode::Home if !ctrl => session.move_to_line_start(),
+        KeyCode::End if !ctrl => session.move_to_line_end(),
+        KeyCode::Delete => session.delete_forward(),
+        // With a modifier only: a bare Backspace is also how shell mode is left, so it stays
+        // where that is decided.
+        KeyCode::Backspace if word => session.delete_word_before(),
+        // The readline bindings as well as the named keys, because a terminal or an ssh session
+        // with a keymap of its own may deliver none of the above, and then the middle of a line
+        // could not be reached at all.
+        KeyCode::Char('a') if ctrl => session.move_to_line_start(),
+        KeyCode::Char('e') if ctrl => session.move_to_line_end(),
+        KeyCode::Char('b') if word => session.move_word_left(),
+        KeyCode::Char('f') if word => session.move_word_right(),
+        KeyCode::Char('w') if ctrl => session.delete_word_before(),
+        KeyCode::Char('u') if ctrl => session.delete_to_line_start(),
+        KeyCode::Char('k') if ctrl => session.delete_to_line_end(),
+        _ => return false,
+    }
+    true
+}
+
 /// Interpret a key press against the session.
 ///
 /// Separated from the loop so it can be tested without a terminal.
 pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+    // Before the match, since a key that moves the caret cannot also be one of the keys below:
+    // the ones this answers are exactly the ones nothing else claims.
+    if edit_line(session, key) {
+        return Action::Redraw;
+    }
+
     match key.code {
         KeyCode::Char('c') if ctrl => {
             session.quit();
             Action::Quit
         }
-        KeyCode::Char('d') if ctrl && session.input.is_empty() => {
+        KeyCode::Char('d') if ctrl && session.input().is_empty() => {
             session.quit();
             Action::Quit
         }
@@ -201,15 +247,16 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.toggle_trail();
             Action::Redraw
         }
-        // The box holds one line at a time and cannot be moved around in. A prompt worth more
-        // than a sentence is written blind here, so it goes somewhere with room instead.
+        // The box can be moved around in now, but it is still capped at ten rows and has none of
+        // what someone reaches for on a long prompt. A paragraph worth thinking about goes
+        // somewhere with room instead.
         KeyCode::Char('g') if ctrl => Action::Edit,
         // Escape means "stop what is happening" before it means anything else, so a turn in
         // flight is cancelled first. The prompt comes back for editing rather than being lost.
         KeyCode::Esc if session.status == Status::Working => Action::Cancel,
         // Then it discards a half-typed prompt, and only leaves once the line is already empty.
         // Pressing it to abandon a thought should not also end the session.
-        KeyCode::Esc if !session.input.is_empty() => {
+        KeyCode::Esc if !session.input().is_empty() => {
             session.clear_input();
             Action::Redraw
         }
@@ -224,32 +271,32 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             None => Action::None,
         },
         // Typed before submitting, so the word never reaches the planner as a prompt.
-        KeyCode::Enter if session.input.trim() == EXIT_COMMAND => {
+        KeyCode::Enter if session.input().trim() == EXIT_COMMAND => {
             session.clear_input();
             session.quit();
             Action::Quit
         }
-        KeyCode::Enter if session.input.trim() == MODEL_COMMAND => {
+        KeyCode::Enter if session.input().trim() == MODEL_COMMAND => {
             session.clear_input();
             Action::ChooseModel
         }
-        KeyCode::Enter if session.input.trim() == STATUS_COMMAND => {
+        KeyCode::Enter if session.input().trim() == STATUS_COMMAND => {
             session.clear_input();
             Action::Status
         }
-        KeyCode::Enter if session.input.trim() == CLEAR_COMMAND => {
+        KeyCode::Enter if session.input().trim() == CLEAR_COMMAND => {
             session.clear_input();
             Action::Clear
         }
-        KeyCode::Enter if argument_to(&session.input, ADD_DIR_COMMAND).is_some() => {
-            let directory = argument_to(&session.input, ADD_DIR_COMMAND)
+        KeyCode::Enter if argument_to(session.input(), ADD_DIR_COMMAND).is_some() => {
+            let directory = argument_to(session.input(), ADD_DIR_COMMAND)
                 .expect("the guard just matched")
                 .to_string();
             session.clear_input();
             Action::AddDirectory(directory)
         }
-        KeyCode::Enter if argument_to(&session.input, RENAME_COMMAND).is_some() => {
-            let name = argument_to(&session.input, RENAME_COMMAND)
+        KeyCode::Enter if argument_to(session.input(), RENAME_COMMAND).is_some() => {
+            let name = argument_to(session.input(), RENAME_COMMAND)
                 .expect("the guard just matched")
                 .to_string();
             session.clear_input();
@@ -291,6 +338,11 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.next_completion();
             Action::Redraw
         }
+        // A pasted paragraph has rows of its own, and moving between them is what these keys mean
+        // inside it. Only while there is a row to move to: at the top of the line they go back to
+        // the history below, the way they do in a shell.
+        KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
+        KeyCode::Down if session.is_multiline() && session.move_down_a_line() => Action::Redraw,
         // Up and Down walk the prompt history, which is what they do in a shell and so what a
         // user expects at a prompt. Scrolling the transcript keeps the wheel and the page keys,
         // and Up still scrolls once there is no history left to walk.
@@ -318,12 +370,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.scroll_down(10);
             Action::Redraw
         }
-        // Jump to either end of the transcript.
-        KeyCode::Home => {
+        // Jump to either end of the transcript. Under Ctrl, because bare Home and End belong to
+        // the line being typed: they were the transcript's before there was a caret to move.
+        KeyCode::Home if ctrl => {
             session.scroll_up(u16::MAX);
             Action::Redraw
         }
-        KeyCode::End => {
+        KeyCode::End if ctrl => {
             session.scroll_down(u16::MAX);
             Action::Redraw
         }
@@ -349,6 +402,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
 /// therefore watched their words go nowhere, with nothing on the screen to say why, which is
 /// indistinguishable from an interface that has stopped responding.
 pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action {
+    // Before the modifier guard, since the readline bindings are how the caret moves on a terminal
+    // that sends nothing for the named keys, and a line that can be typed mid-turn has to be
+    // editable mid-turn: the alternative is a box that takes words and will not let them be fixed.
+    if edit_line(session, key) {
+        return Action::Redraw;
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::None;
     }
@@ -362,6 +422,8 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
             session.backspace();
             Action::Redraw
         }
+        KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
+        KeyCode::Down if session.is_multiline() && session.move_down_a_line() => Action::Redraw,
         KeyCode::PageUp => {
             session.scroll_up(10);
             Action::Redraw
@@ -562,7 +624,7 @@ fn edit_prompt(
     hand_back_terminal(terminal.backend_mut())?;
     terminal.show_cursor()?;
 
-    let edited = crate::editor::edit(&session.input);
+    let edited = crate::editor::edit(session.input());
 
     take_over_terminal(terminal.backend_mut())?;
     terminal.clear()?;
@@ -1336,6 +1398,19 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    /// A session with `text` typed into the box, one key at a time.
+    fn typed_into(text: &str) -> Session {
+        let mut session = Session::new("none");
+        for c in text.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        session
+    }
+
     fn drag(kind: MouseEventKind, row: u16, column: u16) -> MouseEvent {
         MouseEvent {
             kind,
@@ -1448,7 +1523,7 @@ mod tests {
         let action = handle_paste(&mut session, "write me a game\n");
 
         assert_eq!(action, Action::Redraw);
-        assert_eq!(session.input, "write me a game\n");
+        assert_eq!(session.input(), "write me a game\n");
         assert_eq!(session.status, Status::Idle, "the paste started a turn");
         assert!(session.transcript.is_empty(), "the paste sent something");
     }
@@ -1472,7 +1547,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Char('a'))),
             Action::Redraw
         );
-        assert_eq!(session.input, "a");
+        assert_eq!(session.input(), "a");
     }
 
     #[test]
@@ -1518,7 +1593,7 @@ mod tests {
         }
 
         assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
-        assert!(session.input.is_empty(), "the input was not cleared");
+        assert!(session.input().is_empty(), "the input was not cleared");
         assert!(
             !session.is_quitting(),
             "clearing the input ended the session"
@@ -1536,7 +1611,8 @@ mod tests {
 
         assert_eq!(handle_key(&mut session, ctrl('g')), Action::Edit);
         assert_eq!(
-            session.input, "half a thought",
+            session.input(),
+            "half a thought",
             "the line was disturbed before the editor saw it"
         );
     }
@@ -1601,7 +1677,10 @@ mod tests {
         assert!(!session.is_quitting());
 
         handle_key(&mut session, key(KeyCode::Backspace));
-        assert!(session.input.is_empty(), "backspace did not clear the line");
+        assert!(
+            session.input().is_empty(),
+            "backspace did not clear the line"
+        );
         assert_eq!(handle_key(&mut session, ctrl('d')), Action::Quit);
     }
 
@@ -1621,7 +1700,7 @@ mod tests {
 
         assert!(session.shell, "the mode did not turn on");
         assert!(
-            session.input.is_empty(),
+            session.input().is_empty(),
             "the marker was typed into the line"
         );
     }
@@ -1696,6 +1775,21 @@ mod tests {
         assert!(!session.shell, "the mode outlived the marker");
     }
 
+    /// The marker sits before the caret, not before the line, so Backspace with the caret moved to
+    /// the start is the press that deletes it. What follows was typed on purpose and stays: the
+    /// mode is what was deleted, and the words become an ordinary prompt.
+    #[test]
+    fn backspacing_at_the_start_leaves_the_mode_and_keeps_the_line() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!ls -la");
+
+        handle_key(&mut session, key(KeyCode::Home));
+        handle_key(&mut session, key(KeyCode::Backspace));
+
+        assert!(!session.shell, "the mode outlived the marker");
+        assert_eq!(session.input(), "ls -la", "the line went with the marker");
+    }
+
     /// Escape abandons the line, and the mode is part of the line: leaving it armed would send the
     /// next thing typed to a shell.
     #[test]
@@ -1706,7 +1800,7 @@ mod tests {
         handle_key(&mut session, key(KeyCode::Esc));
 
         assert!(!session.shell, "the mode survived being cancelled");
-        assert!(session.input.is_empty());
+        assert!(session.input().is_empty());
     }
 
     /// A `!` mid-sentence is punctuation. Treating it as the mode would make "no way!" a command.
@@ -1788,7 +1882,7 @@ mod tests {
         handle_key_while_working(&mut session, key(KeyCode::Char('!')));
 
         assert!(!session.shell, "the mode turned on mid-turn");
-        assert_eq!(session.input, "!", "the keystroke was dropped");
+        assert_eq!(session.input(), "!", "the keystroke was dropped");
     }
 
     /// Enter on a bare marker would run an empty line, which a shell accepts and which would put a
@@ -1812,7 +1906,7 @@ mod tests {
 
         assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::Quit);
         assert!(session.is_quitting());
-        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(session.input().is_empty(), "the command stayed on the line");
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
@@ -1846,7 +1940,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::ChooseModel
         );
-        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(session.input().is_empty(), "the command stayed on the line");
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
@@ -1880,7 +1974,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::AddDirectory("~/notes".to_string())
         );
-        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(session.input().is_empty(), "the command stayed on the line");
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
@@ -1939,7 +2033,7 @@ mod tests {
         }
 
         assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::Clear);
-        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(session.input().is_empty(), "the command stayed on the line");
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
@@ -1972,7 +2066,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Rename("the parser bug".to_string())
         );
-        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(session.input().is_empty(), "the command stayed on the line");
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
@@ -2054,7 +2148,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Char(c)));
         }
         assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::Redraw);
-        assert_eq!(session.input, MODEL_COMMAND, "no argument, so no space");
+        assert_eq!(session.input(), MODEL_COMMAND, "no argument, so no space");
 
         let mut session = Session::new("none");
         for c in "/add".chars() {
@@ -2062,7 +2156,7 @@ mod tests {
         }
         handle_key(&mut session, key(KeyCode::Tab));
         assert_eq!(
-            session.input,
+            session.input(),
             format!("{ADD_DIR_COMMAND} "),
             "argument follows"
         );
@@ -2081,7 +2175,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Redraw
         );
-        assert_eq!(session.input, MODEL_COMMAND);
+        assert_eq!(session.input(), MODEL_COMMAND);
         assert!(session.transcript.is_empty(), "a fragment was sent");
     }
 
@@ -2182,7 +2276,7 @@ mod tests {
             "the cursor pointed past the narrowed list"
         );
         handle_key(&mut session, key(KeyCode::Tab));
-        assert_eq!(session.input, CLEAR_COMMAND);
+        assert_eq!(session.input(), CLEAR_COMMAND);
     }
 
     /// With nothing being offered, Tab must not insert anything and the arrows go back to what they
@@ -2194,7 +2288,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Char(c)));
         }
         assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::None);
-        assert_eq!(session.input, "an ordinary prompt");
+        assert_eq!(session.input(), "an ordinary prompt");
     }
 
     #[test]
@@ -2208,7 +2302,7 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Status
         );
-        assert!(session.input.is_empty(), "the command stayed on the line");
+        assert!(session.input().is_empty(), "the command stayed on the line");
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
@@ -2273,7 +2367,7 @@ mod tests {
         session.complete("an answer", Vec::new(), 0);
 
         assert_eq!(handle_key(&mut session, key(KeyCode::Up)), Action::Redraw);
-        assert_eq!(session.input, "first question");
+        assert_eq!(session.input(), "first question");
         assert_eq!(session.scroll, 0, "recall scrolled the transcript as well");
     }
 
@@ -2291,11 +2385,12 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Char(c)));
         }
         handle_key(&mut session, key(KeyCode::Up));
-        assert_eq!(session.input, "sent");
+        assert_eq!(session.input(), "sent");
 
         handle_key(&mut session, key(KeyCode::Down));
         assert_eq!(
-            session.input, "being typed",
+            session.input(),
+            "being typed",
             "the half-typed line was not restored"
         );
     }
@@ -2326,7 +2421,7 @@ mod tests {
         assert!(session.history.is_browsing());
         handle_key(&mut session, key(KeyCode::Esc));
         assert!(!session.history.is_browsing());
-        assert!(session.input.is_empty());
+        assert!(session.input().is_empty());
     }
 
     #[test]
@@ -2338,13 +2433,197 @@ mod tests {
         assert_eq!(session.scroll, 0);
     }
 
+    /// Under Ctrl, because the bare keys belong to the line being typed.
     #[test]
     fn home_and_end_jump_to_the_extremes() {
         let mut session = Session::new("none");
-        handle_key(&mut session, key(KeyCode::Home));
+        handle_key(&mut session, ctrl_key(KeyCode::Home));
         assert_eq!(session.scroll, u16::MAX);
-        handle_key(&mut session, key(KeyCode::End));
+        handle_key(&mut session, ctrl_key(KeyCode::End));
         assert_eq!(session.scroll, 0);
+    }
+
+    /// The keys that move around a line of text, which is what makes the box editable rather than
+    /// only appendable.
+    #[test]
+    fn the_arrows_move_the_caret_through_the_line() {
+        let mut session = typed_into("abc");
+        assert_eq!(session.caret(), 3);
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Left)), Action::Redraw);
+        assert_eq!(session.caret(), 2);
+        handle_key(&mut session, key(KeyCode::Right));
+        assert_eq!(session.caret(), 3);
+
+        // And they stop at the ends rather than wrapping or panicking.
+        handle_key(&mut session, key(KeyCode::Right));
+        assert_eq!(session.caret(), 3);
+        for _ in 0..5 {
+            handle_key(&mut session, key(KeyCode::Left));
+        }
+        assert_eq!(session.caret(), 0);
+    }
+
+    /// The bug this exists for: typing used to only ever append, so a correction meant deleting
+    /// back to it and retyping the rest.
+    #[test]
+    fn typing_lands_where_the_caret_is() {
+        let mut session = typed_into("ac");
+        handle_key(&mut session, key(KeyCode::Left));
+        handle_key(&mut session, key(KeyCode::Char('b')));
+        assert_eq!(session.input(), "abc");
+        assert_eq!(
+            session.caret(),
+            2,
+            "the caret did not follow what was typed"
+        );
+    }
+
+    /// Home and End reach the ends of the line, which is what they do in every other text field.
+    #[test]
+    fn home_and_end_reach_the_ends_of_the_line() {
+        let mut session = typed_into("a sentence");
+        handle_key(&mut session, key(KeyCode::Home));
+        assert_eq!(session.caret(), 0);
+        assert_eq!(session.scroll, 0, "the transcript scrolled instead");
+        handle_key(&mut session, key(KeyCode::End));
+        assert_eq!(session.caret(), "a sentence".len());
+    }
+
+    /// Backspace deletes before the caret rather than at the end of the line.
+    #[test]
+    fn backspace_deletes_at_the_caret() {
+        let mut session = typed_into("abc");
+        handle_key(&mut session, key(KeyCode::Left));
+        handle_key(&mut session, key(KeyCode::Backspace));
+        assert_eq!(session.input(), "ac");
+        assert_eq!(session.caret(), 1);
+    }
+
+    /// Delete takes the character after the caret, which is the half Backspace cannot reach.
+    #[test]
+    fn delete_takes_the_character_after_the_caret() {
+        let mut session = typed_into("abc");
+        handle_key(&mut session, key(KeyCode::Home));
+        handle_key(&mut session, key(KeyCode::Delete));
+        assert_eq!(session.input(), "bc");
+        assert_eq!(session.caret(), 0);
+    }
+
+    /// A word at a time, since a path or a flag is one thing to cross rather than a dozen.
+    #[test]
+    fn the_word_keys_cross_a_word_at_a_time() {
+        let mut session = typed_into("read src/main.rs now");
+        handle_key(&mut session, ctrl_key(KeyCode::Left));
+        assert_eq!(session.caret(), "read src/main.rs ".len());
+        handle_key(&mut session, ctrl_key(KeyCode::Left));
+        assert_eq!(session.caret(), "read ".len());
+        handle_key(&mut session, ctrl_key(KeyCode::Right));
+        assert_eq!(session.caret(), "read src/main.rs".len());
+    }
+
+    /// The readline bindings, because a terminal may send nothing at all for the named keys and
+    /// then the middle of a line would be unreachable.
+    #[test]
+    fn the_readline_bindings_move_and_delete_too() {
+        let mut session = typed_into("some words here");
+        handle_key(&mut session, ctrl('a'));
+        assert_eq!(session.caret(), 0);
+        handle_key(&mut session, ctrl('e'));
+        assert_eq!(session.caret(), "some words here".len());
+
+        handle_key(&mut session, ctrl('w'));
+        assert_eq!(session.input(), "some words ");
+        handle_key(&mut session, ctrl('u'));
+        assert_eq!(session.input(), "");
+    }
+
+    /// Ctrl-K takes the rest of the line, which is the other half of Ctrl-U.
+    #[test]
+    fn ctrl_k_takes_the_rest_of_the_line() {
+        let mut session = typed_into("keep this drop that");
+        for _ in 0..2 {
+            handle_key(&mut session, ctrl_key(KeyCode::Left));
+        }
+        handle_key(&mut session, ctrl('k'));
+        assert_eq!(session.input(), "keep this ");
+    }
+
+    /// The keys that used to be typed as characters, and now must not be: Ctrl-A on an empty line
+    /// once inserted a literal 'a'.
+    #[test]
+    fn the_editing_keys_are_not_typed_as_characters() {
+        let mut session = Session::new("none");
+        for binding in ['a', 'e', 'b', 'f', 'w', 'u', 'k'] {
+            handle_key(&mut session, ctrl(binding));
+        }
+        assert!(
+            session.input().is_empty(),
+            "a binding was typed: {}",
+            session.input()
+        );
+    }
+
+    /// A pasted paragraph has rows, and Up and Down move between them before they reach for the
+    /// history: a line the user can see is the one they meant to edit.
+    #[test]
+    fn up_and_down_move_within_a_pasted_paragraph() {
+        let mut session = Session::new("none");
+        handle_paste(&mut session, "first line\nsecond row");
+        assert_eq!(handle_key(&mut session, key(KeyCode::Up)), Action::Redraw);
+        assert_eq!(session.caret(), "first line".len());
+        handle_key(&mut session, key(KeyCode::Down));
+        assert_eq!(session.caret(), "first line\nsecond row".len());
+    }
+
+    /// The caret keeps its place along the line, and clamps to the end of a shorter one rather
+    /// than off it.
+    #[test]
+    fn moving_between_lines_keeps_the_place_along_them() {
+        let mut session = Session::new("none");
+        handle_paste(&mut session, "a longer first line\nshort\nlast");
+        handle_key(&mut session, key(KeyCode::Home));
+        for _ in 0..3 {
+            handle_key(&mut session, key(KeyCode::Right));
+        }
+        handle_key(&mut session, key(KeyCode::Up));
+        assert_eq!(session.caret(), "a longer first line\nsho".len());
+
+        // "last" is shorter than where the caret is, so it clamps to the end of it.
+        handle_key(&mut session, key(KeyCode::End));
+        handle_key(&mut session, key(KeyCode::Down));
+        handle_key(&mut session, key(KeyCode::Down));
+        assert_eq!(session.caret(), session.input().len());
+    }
+
+    /// Off the top of the line, Up is the history's again, so a one-line prompt is unaffected and
+    /// a paragraph does not trap the keys.
+    #[test]
+    fn up_reaches_history_from_the_top_of_the_line() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('a')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("ok", Vec::new(), 0);
+
+        handle_paste(&mut session, "one\ntwo");
+        handle_key(&mut session, key(KeyCode::Up));
+        handle_key(&mut session, key(KeyCode::Up));
+        assert!(session.history.is_browsing(), "history was unreachable");
+    }
+
+    /// The line can be typed mid-turn, so it has to be editable mid-turn: a box that takes words
+    /// and will not let them be fixed is worse than one that takes none.
+    #[test]
+    fn the_caret_moves_while_a_turn_runs() {
+        let mut session = typed_into("ac");
+        handle_key(&mut session, key(KeyCode::Enter));
+        for c in "ac".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+
+        handle_key_while_working(&mut session, key(KeyCode::Left));
+        handle_key_while_working(&mut session, key(KeyCode::Char('b')));
+        assert_eq!(session.input(), "abc");
     }
 
     /// The wheel is what most people reach for, so it scrolls with no modifier.
@@ -2391,7 +2670,7 @@ mod tests {
         }
         handle_key(&mut session, key(KeyCode::Up));
         handle_key(&mut session, key(KeyCode::Down));
-        assert_eq!(session.input, "hello", "scrolling altered the input");
+        assert_eq!(session.input(), "hello", "scrolling altered the input");
     }
 
     #[test]
@@ -2399,7 +2678,7 @@ mod tests {
         let mut session = Session::new("none");
         handle_key(&mut session, key(KeyCode::Char('a')));
         handle_key(&mut session, key(KeyCode::Backspace));
-        assert!(session.input.is_empty());
+        assert!(session.input().is_empty());
     }
 
     /// Keys that mean nothing here must be ignored rather than mishandled.
