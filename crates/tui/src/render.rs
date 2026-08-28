@@ -20,10 +20,17 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use crate::audit::TrailLine;
 use crate::markdown;
 use crate::state::{Session, Speaker, Status};
+use crate::table;
 use crate::wrap;
 
 /// Marks a turn boundary in the transcript.
 const TURN_MARKER: &str = "⏺";
+
+/// Columns the transcript's own lead occupies before a reply's text.
+///
+/// A table is budgeted against what is left after it. Given the full width it would be two
+/// columns too wide on every row, and the paragraph would soft-wrap the columns it just aligned.
+const LEAD: usize = 2;
 /// Marks a detail belonging to the entry above it.
 const DETAIL_MARKER: &str = "⎿";
 /// Joins the first task to the line above it, so the list reads as belonging to that turn.
@@ -264,7 +271,9 @@ pub fn draw(frame: &mut Frame, session: &Session) {
 }
 
 /// Build the transcript as lines, so height is known before rendering.
-fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
+///
+/// `width` is the terminal's, and a table is laid out against what is left of it after the lead.
+fn transcript_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
 
     if session.transcript.is_empty() {
@@ -296,15 +305,37 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
             // The model writes markdown whether or not it is asked to, so the reply is styled
             // rather than shown with its markers.
             Speaker::Assistant => {
-                for (index, text) in entry.text.lines().enumerate() {
-                    let lead = if index == 0 {
+                let source: Vec<&str> = entry.text.lines().collect();
+                let room = (width as usize).saturating_sub(LEAD);
+                let lead = |at: usize| {
+                    if at == 0 {
                         Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Green))
                     } else {
                         Span::raw("  ")
-                    };
-                    let mut spans = vec![lead];
-                    spans.extend(markdown::spans(text, Style::default()));
-                    lines.push(Line::from(spans));
+                    }
+                };
+
+                let mut at = 0;
+                while at < source.len() {
+                    // A table is several source lines drawn as one block, so it is tried first
+                    // and the lines it consumed are skipped. Anything that is not one falls
+                    // through to the styling every other line gets.
+                    match table::table(&source[at..], room, Style::default()) {
+                        Some(laid) => {
+                            for (index, row) in laid.rows.into_iter().enumerate() {
+                                let mut spans = vec![lead(at + index)];
+                                spans.extend(row);
+                                lines.push(Line::from(spans));
+                            }
+                            at += laid.consumed;
+                        }
+                        None => {
+                            let mut spans = vec![lead(at)];
+                            spans.extend(markdown::spans(source[at], Style::default()));
+                            lines.push(Line::from(spans));
+                            at += 1;
+                        }
+                    }
                 }
             }
             Speaker::System => {
@@ -353,7 +384,7 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
 }
 
 fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
-    let lines = transcript_lines(session);
+    let lines = transcript_lines(session, area.width);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
     // Scroll counts up from the bottom, so new output stays in view by default. The count has to
@@ -783,7 +814,7 @@ mod tests {
                 session.finish_activity(Activity::running("Read", path).done("1 line"));
             }
 
-            let blanks = transcript_lines(&session)
+            let blanks = transcript_lines(&session, 90)
                 .iter()
                 .filter(|line| line.to_string().trim().is_empty())
                 .count();
@@ -1012,6 +1043,129 @@ mod tests {
         );
     }
 
+    /// A table shown as its source is the one markdown form that reads worse than prose, since
+    /// the cells are not as wide as their headings and nothing lines up.
+    #[test]
+    fn a_reply_containing_a_table_is_drawn_as_one() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete(
+            "| gate | answer |\n| --- | --- |\n| edit_file | refuses |",
+            Vec::new(),
+            0,
+        );
+
+        let output = rendered_at(&session, 90, 24);
+        assert!(output.contains("refuses"), "not drawn: {output}");
+        assert!(
+            output.contains('\u{2500}'),
+            "no rule under the header: {output}"
+        );
+        assert!(!output.contains('|'), "the pipes are still shown: {output}");
+    }
+
+    /// Refusing is a supported outcome, not a failure. The reader gets the model's own
+    /// characters, which is what they got before tables were drawn at all.
+    #[test]
+    fn a_table_too_wide_for_the_terminal_falls_back_to_its_source() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete(
+            "| a | b | c | d | e | f |\n| --- | --- | --- | --- | --- | --- |\n| 1 | 2 | 3 | 4 | 5 | 6 |",
+            Vec::new(),
+            0,
+        );
+
+        let output = rendered_at(&session, 20, 24);
+        assert!(output.contains('|'), "the source was not shown: {output}");
+    }
+
+    /// A table is a block in the middle of a reply, not the whole of it, so the prose either
+    /// side of one has to survive being skipped over.
+    #[test]
+    fn prose_around_a_table_is_still_prose() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete(
+            "before the table\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter the table",
+            Vec::new(),
+            0,
+        );
+
+        let output = rendered_at(&session, 90, 24);
+        assert!(
+            output.contains("before the table"),
+            "lost the lead-in: {output}"
+        );
+        assert!(
+            output.contains("after the table"),
+            "lost the follow-on: {output}"
+        );
+        assert!(output.contains(TURN_MARKER));
+    }
+
+    /// The common false positive: a vertical bar in a sentence is punctuation, and rearranging
+    /// the sentence into columns because of it would lose what the model said.
+    #[test]
+    fn a_pipe_in_a_sentence_is_still_a_pipe() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete("choose one | or the other", Vec::new(), 0);
+
+        assert!(rendered_at(&session, 90, 24).contains("choose one | or the other"));
+    }
+
+    /// Untrusted content is drawn raw behind the bar. Columns inside a marked block are
+    /// structure the content chose for itself, and the margin is the one thing it may not
+    /// imitate.
+    #[test]
+    fn a_quarantined_preview_is_never_drawn_as_a_table() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete("read it", Vec::new(), 0);
+        session.transcript.last_mut().expect("an entry").shown = Some(Shown {
+            origin: "notes.md".into(),
+            reach: bravebot_agent::report::Reach::NotThePlanner,
+            label: "(U,priv)".to_string(),
+            preview: vec![
+                "| a | b |".into(),
+                "| --- | --- |".into(),
+                "| 1 | 2 |".into(),
+            ],
+            lines: 3,
+        });
+
+        let lines = transcript_lines(&session, 90);
+        let marked: Vec<String> = lines
+            .iter()
+            .map(|line| line.to_string())
+            .filter(|line| line.contains(QUARANTINE_BAR))
+            .collect();
+        assert_eq!(marked.len(), 4, "the block lost a line: {marked:?}");
+        for line in &marked {
+            assert!(
+                line.starts_with(&format!("  {QUARANTINE_BAR} ")),
+                "unmarked: {line}"
+            );
+        }
+        assert!(
+            marked.iter().any(|line| line.contains("---")),
+            "the preview was reshaped: {marked:?}"
+        );
+    }
+
+    /// `LEAD` is the width a table is budgeted against. If the marker were wider than it, the
+    /// first row would overflow and the paragraph would wrap the columns it just aligned.
+    #[test]
+    fn the_lead_is_as_wide_as_the_marker_it_stands_for() {
+        assert_eq!(crate::wrap::display_width(TURN_MARKER) + 1, LEAD);
+    }
+
     /// The trail is hidden until asked for, so ordinary use is not noisy.
     #[test]
     fn the_trail_is_hidden_by_default() {
@@ -1069,7 +1223,7 @@ mod tests {
 
     /// The style of the marker on the first drawn line.
     fn marker_style(session: &Session) -> Style {
-        transcript_lines(session)
+        transcript_lines(session, 90)
             .first()
             .and_then(|line| line.spans.first())
             .map(|span| span.style)

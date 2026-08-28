@@ -10,8 +10,10 @@
 //! decides anything: the input is already released for the screen, and the only output is
 //! styling.
 //!
-//! Deliberately absent: fenced blocks, lists, and links. They are block structure rather than
-//! inline styling, and each needs a layout decision this module has no business making.
+//! Block structure lives elsewhere. A table is a layout decision, so it is made in
+//! [`crate::table`], which calls back here for the contents of each cell and never the other way
+//! round. Still deliberately absent: fenced blocks, lists, and links, each of which needs a
+//! layout decision nobody has made yet.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
