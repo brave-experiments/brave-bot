@@ -16,6 +16,7 @@
 
 use bua_config::Config;
 use bua_core::label::Integrity;
+use bua_core::programs::TrustedPrograms;
 use bua_core::trust::TrustStore;
 use std::path::Path;
 
@@ -69,6 +70,7 @@ pub struct Facts<'a> {
     pub turns: usize,
     pub tokens: u64,
     pub trust: &'a TrustStore,
+    pub programs: &'a TrustedPrograms,
 }
 
 /// Compose the report.
@@ -142,6 +144,28 @@ pub fn report(facts: &Facts<'_>) -> Report {
         }
     }
 
+    // A standing permission the user gave earlier and cannot otherwise see. Every other prompt in
+    // this session announces itself by appearing; this is the one that stops appearing, so without
+    // a line here there is nothing to tell them a program now runs unasked.
+    let vouched: Vec<&str> = facts.programs.iter().collect();
+    if vouched.is_empty() {
+        lines.push(Line::new("Programs", "every run is put to you"));
+    } else {
+        lines.push(
+            Line::new("Programs", plural(vouched.len(), "program"))
+                .with_note("run without asking, whatever the arguments"),
+        );
+        for path in vouched.iter().take(MAX_RULES) {
+            lines.push(Line::new("", *path));
+        }
+        if vouched.len() > MAX_RULES {
+            lines.push(Line::new(
+                "",
+                format!("… and {} more", vouched.len() - MAX_RULES),
+            ));
+        }
+    }
+
     Report { lines }
 }
 
@@ -211,12 +235,18 @@ mod tests {
         .expect("config")
     }
 
+    /// Leaked once so a `Facts` built by the helper can borrow it for the test's lifetime.
+    static NOTHING_VOUCHED: std::sync::LazyLock<TrustedPrograms> =
+        std::sync::LazyLock::new(TrustedPrograms::new);
+
     fn trusting() -> TrustStore {
         let mut trust = TrustStore::new();
         trust.trust(".");
         trust
     }
 
+    /// Facts with nothing vouched for, which is what a session that has not been asked looks like.
+    /// Tests about the programs line build their own list and set it.
     fn facts<'a>(config: &'a Config, trust: &'a TrustStore) -> Facts<'a> {
         Facts {
             session_name: "the parser bug",
@@ -229,7 +259,37 @@ mod tests {
             turns: 4,
             tokens: 12_400,
             trust,
+            programs: &NOTHING_VOUCHED,
         }
+    }
+
+    /// The one standing permission that stops announcing itself. Every other prompt in a session
+    /// is visible by appearing; this is the one that makes prompts stop, so without a line here a
+    /// user has no way to find out that a program now runs unasked.
+    #[test]
+    fn the_report_names_the_programs_that_run_without_asking() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let vouched = TrustedPrograms::from_iter(["/usr/bin/git", "/usr/bin/make"]);
+        let mut facts = facts(&config, &trust);
+        facts.programs = &vouched;
+
+        let shown = rendered(&report(&facts));
+        assert!(shown.contains("/usr/bin/git"), "{shown}");
+        assert!(shown.contains("/usr/bin/make"), "{shown}");
+        // The widening, said where the user can see it: vouching ignores the arguments.
+        assert!(shown.contains("whatever the arguments"), "{shown}");
+    }
+
+    /// The ordinary case has to say so rather than say nothing, or a user reading the report
+    /// cannot tell the difference between "no program is vouched for" and "this report does not
+    /// cover programs".
+    #[test]
+    fn a_session_that_vouched_for_nothing_says_every_run_is_asked_about() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let shown = rendered(&report(&facts(&config, &trust)));
+        assert!(shown.contains("every run is put to you"), "{shown}");
     }
 
     fn rendered(report: &Report) -> String {

@@ -654,6 +654,7 @@ fn event_loop(
                     turns: session.turns,
                     tokens: session.tokens,
                     trust: &trust,
+                    programs: &programs,
                 });
                 session.report(report);
                 needs_draw = true;
