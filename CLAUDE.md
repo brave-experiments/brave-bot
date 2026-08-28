@@ -296,16 +296,32 @@ The rules `run` lives under, none of which may be relaxed to make something work
   model can declare changes it. This is the property the whole tool rests on.
 - Private input asks, even though the labels would permit it, because handing the user's data to a
   program releases it somewhere this policy stops governing.
-- Every run asks. There is no read-only category: nothing here can tell whether `foo --bar` writes,
-  and a stage declaring itself harmless only helps if the declaration is honest. Do not add one to
-  reduce prompting; remembered argv patterns are the direction, and an unprompted write is worse
-  than an unwanted prompt.
+- Every run asks, unless the user has already vouched for every program in it. There is no
+  read-only category: nothing here can tell whether `foo --bar` writes, and a stage declaring
+  itself harmless only helps if the declaration is honest. A person having answered the question
+  before, in this session, for this program is the **only** thing that may answer it: never a
+  property of the argv, never a declaration by a stage, and never anything derived from what a
+  program printed. An unprompted write is worse than an unwanted prompt.
 
 Programs are **not** confined and **not** enumerated. They run with the access the user's shell
 would give them, because `git push` needs `~/.ssh` and the set of programs someone might ask for
 cannot be listed in advance. Do not add an allowlist and treat it as the safety property: what holds
 is the label on the output, not a belief about the binary. Whether to confine children is issue #4;
 whether output can ever be trusted is issue #3. Neither may be resolved by weakening the labels.
+
+`TrustedPrograms` is **not** that allowlist and must never become one. It decides only whether the
+person is asked again, never what may run: a program nobody has vouched for still runs after a
+prompt, nothing is refused for being absent, and the set is empty at the start of every session. It
+is keyed by **resolved path**, because `$PATH` and shell aliases decide what a name means and an
+approval must not follow a name onto a different binary. Like the trust map it belongs to the
+session, is written into the session record, and is restored on resume but never inherited by a
+fresh session in the same directory.
+
+Remembering by program is coarser than remembering the argv, which is what this file used to point
+at. Vouching for `git` after reading `git log` also stops `git push` being asked about for that
+session. That is a real widening, taken deliberately, and the prompt says so in as many words. Do
+not make it quieter. Private input asks every time whatever is remembered, since vouching for a
+program is not consenting to hand it the user's data.
 
 ## Committing
 

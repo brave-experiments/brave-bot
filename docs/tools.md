@@ -282,6 +282,9 @@ There is no allowlist and nothing to configure. `sed`, `awk`, `jq`, `rg`, `gh`, 
 installed, all work without being named anywhere. They also run with whatever access your own shell
 would give them: `bua` does not sandbox them.
 
+The trusted list below is not an exception to this. It decides whether you are *asked* again, never
+what may run.
+
 That is deliberate. `git push` needs `~/.ssh`, `npm install` reads `~/.npmrc` and writes
 `node_modules`, and the set of programs you might reasonably ask for cannot be listed in advance. A
 confinement profile narrow enough to be worth having would break ordinary tools, so instead of
@@ -320,3 +323,29 @@ Private input is a second and independent reason to ask. Untrusted input is fine
 bytes decides nothing, but private input hands your data to a program, and that releases it somewhere
 this policy no longer governs. Trusted-but-private asks too: vouching for what a file contains is not
 the same as consenting to send it somewhere.
+
+### Unless you have said "always"
+
+The prompt offers three answers, not two:
+
+```
+  y run it    a always    n don't    ctrl-c stop the turn
+```
+
+`a` runs it and adds that program to the session's trusted list, so you are not asked about it
+again. That is the only thing that can answer the question for you. Nothing about the arguments,
+nothing a stage declares about itself, and nothing a program printed will ever skip the prompt.
+
+Three properties are worth knowing before pressing it:
+
+- **It is by program, not by argument vector.** Vouching after reading `git log` also stops
+  `git push` being asked about. The prompt says so on the line above the keys.
+- **It is by resolved path.** The prompt shows the binary under the name, and that is what is
+  recorded. `$PATH` and aliases decide what `grep` means, so an approval does not follow the name
+  onto a different binary.
+- **It belongs to the session.** It is written into the session record and comes back with
+  `--resume`, because the person resuming is the person who gave it. A new session in the same
+  directory starts with an empty list and asks again, exactly as the trust map does.
+
+Private input is the exception that stays an exception: those runs ask every time, so `a` is not
+offered for them at all.
