@@ -861,10 +861,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // Cleared only by a failure. A summary that could not be made once will not be made on the
     // next round either, and a turn should not spend a request per round finding that out.
     let mut may_compact = true;
-    // Whether the person has been told there is nothing to summarise. Said once rather than every
-    // round: a later round may well have something to give up, so the answer is worth asking for
-    // again, and it costs nothing to ask.
-    let mut said_nothing_to_compact = false;
     let completion = loop {
         // Checked before each request rather than mid-flight: a request already on the wire has
         // to finish, but nothing new needs to start.
@@ -889,25 +885,23 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 Ok(Some(done)) => {
                     tokens += done.usage.total();
                     output_tokens += done.usage.completion_tokens;
-                    said_nothing_to_compact = false;
                     reporter.narration(format!(
                         "the conversation was getting long, so {} earlier messages were \
                          summarised and the last {} kept as they are",
                         done.summarised, done.kept
                     ));
                 }
-                // Nothing to shorten yet. Nothing was sent, so asking again next round is free,
-                // and a round or two later there usually is something. Said at all because a turn
-                // about to run out of room should not do so silently.
-                Ok(None) => {
-                    if !said_nothing_to_compact {
-                        said_nothing_to_compact = true;
-                        reporter.narration(
-                            "the conversation is long and there is nothing to summarise yet"
-                                .to_string(),
-                        );
-                    }
-                }
+                // Nothing to shorten yet, which is the ordinary answer and not worth a word.
+                // Nothing was sent, so asking again next round is free, and a round or two later
+                // there usually is something.
+                //
+                // Said nothing rather than saying so. Once a conversation is past the budget and
+                // cannot get under it, this is the answer on nearly every round of every turn for
+                // the rest of the session, and a line the user can do nothing about, repeated
+                // forever, buries the ones they can. What it was there to prevent, a session
+                // running out of room with no warning, is the context gauge's job, and the gauge
+                // does it better: it is always on screen, and it says nothing twice.
+                Ok(None) => {}
                 // The conversation is untouched, so the turn carries on with the history it had.
                 // Failing the turn over this would turn a request that might still have fit into
                 // one that certainly does not happen.
