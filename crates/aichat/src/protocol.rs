@@ -401,6 +401,15 @@ pub struct ChatChunk {
     /// Present only on the final chunk, and only when usage was requested.
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// What the backend counted the request at, in its own final event.
+    ///
+    /// The deployed server does not answer `include_usage` with an OpenAI `usage` block. It sends
+    /// a `brave-chat.contentReceipt` event instead, whose `total_tokens` is the input it counted
+    /// after its own trimming. That is the only figure either side has for how large a request
+    /// was, so it is read here rather than left on the floor: without it every prompt count in
+    /// this crate is zero, which reads as a measurement and is not one.
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,6 +463,8 @@ pub struct StreamAccumulator {
     content: String,
     model: Option<String>,
     usage: Option<Usage>,
+    /// What the backend said the request came to, where it said so in its own shape.
+    receipt: Option<u64>,
     /// Calls under construction, keyed by the index the server gave them.
     calls: Vec<(usize, PartialCall)>,
     /// Chunks carrying text, which is the only honest live measure of output before the server
@@ -481,6 +492,12 @@ impl StreamAccumulator {
         // Usage arrives once, on the final chunk, and is authoritative over anything counted here.
         if chunk.usage.is_some() {
             self.usage = chunk.usage;
+        }
+        // The other shape the same fact arrives in. Kept apart from `usage` because it reports
+        // the input only: treating it as a usage block would say the reply was zero tokens long
+        // and throw away the live count that had been on the screen all the way through.
+        if let Some(total) = chunk.total_tokens {
+            self.receipt = Some(total);
         }
 
         for choice in chunk.choices {
@@ -542,8 +559,15 @@ impl StreamAccumulator {
         self.model.as_deref()
     }
 
+    /// What the reply cost, in whichever shape the server reported it.
+    ///
+    /// Falls back to the receipt for the input and to the live estimate for the output, so a
+    /// server that reports only one of the two does not zero the other.
     pub fn usage(&self) -> Usage {
-        self.usage.unwrap_or_default()
+        self.usage.unwrap_or(Usage {
+            prompt_tokens: self.receipt.unwrap_or_default(),
+            completion_tokens: self.content_chunks,
+        })
     }
 
     /// The finished tool calls, in the order the server indexed them.
@@ -580,7 +604,7 @@ impl StreamAccumulator {
     pub fn finish(self) -> (String, Option<String>, Vec<ToolCall>, Usage) {
         let calls = self.tool_calls();
         let usage = self.usage.unwrap_or(Usage {
-            prompt_tokens: 0,
+            prompt_tokens: self.receipt.unwrap_or_default(),
             completion_tokens: self.content_chunks,
         });
         (self.content, self.model, calls, usage)
@@ -678,6 +702,74 @@ mod tests {
 
     mod streaming {
         use super::*;
+
+        /// The shape the deployed backend actually answers in. It never sends an OpenAI `usage`
+        /// block, so without reading its own receipt every prompt count here is zero, and
+        /// anything deciding from how large a request was decides from nothing.
+        #[test]
+        fn the_backends_own_receipt_is_read_as_the_prompt_count() {
+            let mut accumulated = StreamAccumulator::new();
+            accumulated.push(
+                serde_json::from_str(
+                    r#"{"model":"claude-4-6-sonnet","choices":[{"delta":{"content":"hello"}}]}"#,
+                )
+                .expect("a chunk"),
+            );
+            accumulated.push(
+                serde_json::from_str(
+                    r#"{"total_tokens":4530,"trimmed_tokens":0,"object":"brave-chat.contentReceipt"}"#,
+                )
+                .expect("a receipt"),
+            );
+
+            let (_, _, _, usage) = accumulated.finish();
+            assert_eq!(usage.prompt_tokens, 4530);
+        }
+
+        /// The receipt reports the input and nothing else. Read as a usage block it would say the
+        /// reply was zero tokens long, throwing away the live count the screen had been showing.
+        #[test]
+        fn a_receipt_does_not_zero_the_output_count() {
+            let mut accumulated = StreamAccumulator::new();
+            for piece in ["one", "two", "three"] {
+                accumulated.push(
+                    serde_json::from_str(&format!(
+                        r#"{{"choices":[{{"delta":{{"content":"{piece}"}}}}]}}"#
+                    ))
+                    .expect("a chunk"),
+                );
+            }
+            accumulated.push(
+                serde_json::from_str(r#"{"total_tokens":4530,"trimmed_tokens":0}"#)
+                    .expect("a receipt"),
+            );
+
+            assert_eq!(accumulated.output_tokens(), 3, "the live estimate was lost");
+            assert!(
+                !accumulated.usage_is_reported(),
+                "a receipt reports no output, so the count it shows is still an estimate"
+            );
+            let (_, _, _, usage) = accumulated.finish();
+            assert_eq!(usage.completion_tokens, 3);
+        }
+
+        /// A server that does send a usage block is still believed over the receipt, since that
+        /// one reports both halves.
+        #[test]
+        fn an_openai_usage_block_still_wins() {
+            let mut accumulated = StreamAccumulator::new();
+            accumulated.push(serde_json::from_str(r#"{"total_tokens":4530}"#).expect("a receipt"));
+            accumulated.push(
+                serde_json::from_str(
+                    r#"{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":22}}"#,
+                )
+                .expect("a usage chunk"),
+            );
+
+            let (_, _, _, usage) = accumulated.finish();
+            assert_eq!(usage.prompt_tokens, 11);
+            assert_eq!(usage.completion_tokens, 22);
+        }
 
         /// A streamed request must ask for usage too, or the turn would trade the cost figure for
         /// the live one.
