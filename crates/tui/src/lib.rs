@@ -13,7 +13,7 @@ pub mod editor;
 pub mod entries;
 pub mod history;
 pub mod indicator;
-pub mod lion;
+pub mod logo;
 pub mod markdown;
 pub mod model_prompt;
 pub mod remote_confirm;

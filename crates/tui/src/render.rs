@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::audit::TrailLine;
+use crate::logo;
 use crate::markdown;
 use crate::state::{Session, Speaker, Status};
 use crate::table;
@@ -306,21 +307,23 @@ pub fn draw(frame: &mut Frame, session: &Session) {
 /// Build the transcript as lines, so height is known before rendering.
 ///
 /// `width` is the terminal's, and a table is laid out against what is left of it after the lead.
-fn transcript_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
+/// `height` is the transcript area's, which only the opening mark uses: it floats down from the
+/// top edge by a share of whatever room there is.
+fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
 
-    if session.transcript.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Cyan)),
-            Span::styled("bravebot", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  ·  confinement {}", session.confinement), dim()),
-        ]));
+    // Nothing has been said yet, so the screen opens on the mark, laid out against the height
+    // rather than stacked into the top corner. A note is not a conversation: the transcript
+    // already holds what starting up reported, and that belongs under the mark rather than in
+    // place of it, which is why this is not a test for an empty transcript. It was one, and the
+    // mark was never drawn at all, since the trust answer is noted before the first frame.
+    let opening = session
+        .transcript
+        .iter()
+        .all(|entry| entry.speaker == Speaker::System);
+    if opening {
+        lines.extend(logo::lines(&session.confinement, width, height));
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "  Ask a question about this workspace.".to_string(),
-            dim(),
-        )));
-        return lines;
     }
 
     for entry in &session.transcript {
@@ -435,11 +438,20 @@ fn transcript_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
         }
     }
 
+    // One blank above it and no more. Every entry already leaves a trailing blank behind it, so
+    // an invitation that carried its own would sit two rows below whatever startup reported.
+    if opening {
+        if lines.last().is_none_or(|line| line.width() != 0) {
+            lines.push(Line::raw(""));
+        }
+        lines.push(logo::invitation());
+    }
+
     lines
 }
 
 fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
-    let lines = transcript_lines(session, area.width);
+    let lines = transcript_lines(session, area.width, area.height);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
     // Scroll counts up from the bottom, so new output stays in view by default. The count has to
@@ -952,7 +964,7 @@ mod tests {
                 session.finish_activity(Activity::running("Read", path).done("1 line"));
             }
 
-            let blanks = transcript_lines(&session, 90)
+            let blanks = transcript_lines(&session, 90, 24)
                 .iter()
                 .filter(|line| line.to_string().trim().is_empty())
                 .count();
@@ -966,6 +978,38 @@ mod tests {
         let output = rendered(&session);
         assert!(output.contains("Ask a question"), "no hint shown");
         assert!(output.contains("bravebot"));
+    }
+
+    /// The trust answer is noted before the first frame is drawn, so by the time anyone sees the
+    /// opening screen the transcript is not empty. Testing for an empty one meant the mark was
+    /// never drawn in a real session at all, only in tests that forgot to note anything.
+    #[test]
+    fn the_mark_survives_the_note_that_starting_up_leaves() {
+        let mut session = Session::new("kernel-enforced");
+        session.note("trusting /tmp/x");
+
+        let output = rendered(&session);
+        assert!(output.contains('█'), "the mark was not drawn: {output}");
+        assert!(output.contains("trusting /tmp/x"), "the note was lost");
+        assert!(output.contains("Ask a question"), "no hint shown");
+    }
+
+    /// And it gives way the moment there is a conversation to read instead.
+    #[test]
+    fn the_mark_goes_when_the_first_prompt_is_sent() {
+        let mut session = Session::new("kernel-enforced");
+        session.note("trusting /tmp/x");
+        for character in "hello".chars() {
+            session.type_char(character);
+        }
+        session.submit();
+
+        let output = rendered(&session);
+        assert!(!output.contains('█'), "the mark outstayed its welcome");
+        assert!(
+            !output.contains("Ask a question"),
+            "the hint outstayed its welcome"
+        );
     }
 
     /// Confinement belongs on screen at all times, not only in doctor.
@@ -1278,7 +1322,7 @@ mod tests {
             lines: 3,
         });
 
-        let lines = transcript_lines(&session, 90);
+        let lines = transcript_lines(&session, 90, 24);
         let marked: Vec<String> = lines
             .iter()
             .map(|line| line.to_string())
@@ -1361,7 +1405,7 @@ mod tests {
 
     /// The style of the marker on the first drawn line.
     fn marker_style(session: &Session) -> Style {
-        transcript_lines(session, 90)
+        transcript_lines(session, 90, 24)
             .first()
             .and_then(|line| line.spans.first())
             .map(|span| span.style)
