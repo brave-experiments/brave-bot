@@ -7,6 +7,7 @@
 pub mod confirm;
 pub mod conversation;
 pub mod diff;
+pub mod exec;
 pub mod glob;
 pub mod home;
 pub mod preamble;
