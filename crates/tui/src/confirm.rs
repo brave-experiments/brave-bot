@@ -96,6 +96,9 @@ pub fn ask<B: Backend>(terminal: &mut Terminal<B>, request: &WriteRequest) -> An
         }
 
         match event::read() {
+            // Presses only: asking for disambiguated keys reports releases too, and a release
+            // taken for a press approves whatever the press had just approved, twice.
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
             Ok(TermEvent::Key(key)) => match answer_for(key) {
                 Some(Response::Answer(answer)) => return answer,
                 Some(Response::Scroll(by)) => {
@@ -380,6 +383,9 @@ pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> 
         }
 
         match event::read() {
+            // Presses only: asking for disambiguated keys reports releases too, and a release
+            // taken for a press approves whatever the press had just approved, twice.
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
             Ok(TermEvent::Key(key)) => match run_answer_for(key) {
                 Some(RunResponse::Answer(answer)) => return answer,
                 Some(RunResponse::Scroll(by)) => {
@@ -614,6 +620,9 @@ pub fn ask_output<B: Backend>(terminal: &mut Terminal<B>, request: &OutputReques
         }
 
         match event::read() {
+            // Presses only: asking for disambiguated keys reports releases too, and a release
+            // taken for a press approves whatever the press had just approved, twice.
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
             Ok(TermEvent::Key(key)) => match answer_for(key) {
                 Some(Response::Answer(answer)) => return answer,
                 Some(Response::Scroll(by)) => {
@@ -758,6 +767,9 @@ pub fn ask_vouch<B: Backend>(terminal: &mut Terminal<B>, request: &VouchRequest)
         }
 
         match event::read() {
+            // Presses only: asking for disambiguated keys reports releases too, and a release
+            // taken for a press approves whatever the press had just approved, twice.
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
             Ok(TermEvent::Key(key)) => match answer_for(key) {
                 Some(Response::Answer(answer)) => return answer,
                 Some(Response::Scroll(by)) => {

@@ -597,6 +597,20 @@ impl Session {
         self.completion = 0;
     }
 
+    /// Start a new line in the prompt without sending it.
+    ///
+    /// Not [`Session::type_char`] with a newline, because that would read a leading `!` as shell
+    /// mode and would let the character be typed by any path that thinks it is typing text. A
+    /// newline in the prompt is one deliberate keystroke.
+    pub fn type_newline(&mut self) {
+        self.history.leave();
+        self.input.insert(self.caret, '\n');
+        self.caret += 1;
+        // A command is one line by definition, and a reference ends at whitespace, so a newline
+        // closes whatever was being offered rather than narrowing it.
+        self.completion = 0;
+    }
+
     /// The line being typed.
     pub fn input(&self) -> &str {
         &self.input

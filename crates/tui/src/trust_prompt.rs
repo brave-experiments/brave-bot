@@ -68,6 +68,9 @@ fn trust_for(answer: Answer) -> Option<TrustStore> {
 fn read_answer() -> Answer {
     loop {
         match event::read() {
+            // Presses only: the interface asks for disambiguated keys, so a release arrives too,
+            // and answering a question twice grants standing permission on one keystroke.
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
             Ok(TermEvent::Key(key)) => match answer_for(key) {
                 Some(answer) => return answer,
                 None => continue,

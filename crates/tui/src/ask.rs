@@ -66,7 +66,10 @@ pub fn ask<B: Backend>(terminal: &mut Terminal<B>, asking: &Asking) -> Vec<Answe
         }
 
         let key = match event::read() {
-            Ok(TermEvent::Key(key)) => key.code,
+            // Presses only. The interface asks the terminal for disambiguated keys, which reports
+            // releases too, and a release taken for a press answers the next question with the key
+            // that answered this one.
+            Ok(TermEvent::Key(key)) if key.kind == event::KeyEventKind::Press => key.code,
             Ok(_) => continue,
             // Losing the event stream must not invent an answer.
             Err(_) => return Vec::new(),

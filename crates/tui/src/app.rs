@@ -21,11 +21,14 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as TermEvent, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -264,6 +267,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.quit();
             Action::Quit
         }
+        // Before every arm that sends, because Shift-Enter is the one Enter that does not: a
+        // paragraph is written in the box rather than only pasted into it, and the box grows to
+        // hold it. Shell mode too, where a multi-line command is a `for` loop somebody typed.
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            session.type_newline();
+            Action::Redraw
+        }
         // Before every command arm, because in shell mode the line is a command and nothing else.
         // `/status` is a path to a program somebody might have, and `!` is how they said so.
         KeyCode::Enter if session.shell => match session.submit_command() {
@@ -422,6 +432,12 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
             session.backspace();
             Action::Redraw
         }
+        // A paragraph can be written while a turn runs, like everything else typed here. Plain
+        // Enter is still refused: only this one does not send.
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            session.type_newline();
+            Action::Redraw
+        }
         KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
         KeyCode::Down if session.is_multiline() && session.move_down_a_line() => Action::Redraw,
         KeyCode::PageUp => {
@@ -575,6 +591,13 @@ pub fn run(
 /// delivers a paste as ordinary keystrokes, and the newline most clipboards carry at the end
 /// arrives as Enter.
 ///
+/// Disambiguated keys are what makes Shift-Enter reach the interface at all. A terminal sends the
+/// same byte for Enter however it was pressed, so without this the modifier is not merely ignored,
+/// it never arrives, and a newline in the prompt would be unreachable.
+///
+/// Asked for only where the terminal says it understands the request. Sending it blind to one that
+/// does not leaves the escape sequence on the screen.
+///
 /// One definition rather than one per caller, because the interface gives the terminal away and
 /// takes it back again whenever the prompt is edited elsewhere, and a difference between the two
 /// setups would show as a mode that only survives until the first edit.
@@ -587,6 +610,13 @@ fn take_over_terminal<W: Write>(out: &mut W) -> io::Result<()> {
         EnableBracketedPaste
     )?;
 
+    if enhanced_keys() {
+        execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+
     // Mouse capture asks for motion reported whether or not a button is down, which is a stream
     // of events for a pointer merely crossing the window and a redraw for each one. Only the
     // drag matters here, so all-motion reporting goes back off: what stays on reports the
@@ -598,6 +628,10 @@ fn take_over_terminal<W: Write>(out: &mut W) -> io::Result<()> {
 /// Put the terminal back the way it was found.
 fn hand_back_terminal<W: Write>(out: &mut W) -> io::Result<()> {
     disable_raw_mode()?;
+    // Popped before the modes below, so the stack is unwound in the order it was built.
+    if enhanced_keys() {
+        execute!(out, PopKeyboardEnhancementFlags)?;
+    }
     execute!(
         out,
         DisableBracketedPaste,
@@ -605,6 +639,16 @@ fn hand_back_terminal<W: Write>(out: &mut W) -> io::Result<()> {
         LeaveAlternateScreen
     )?;
     out.flush()
+}
+
+/// Whether the terminal understands the request for disambiguated keys.
+///
+/// Asked once and remembered, because answering means writing a query and waiting for a reply, and
+/// doing that on every handover to an editor would cost a round trip each time.
+fn enhanced_keys() -> bool {
+    use std::sync::OnceLock;
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| supports_keyboard_enhancement().unwrap_or(false))
 }
 
 /// Hand the terminal to the user's editor, and take back whatever they saved.
@@ -738,6 +782,9 @@ fn event_loop(
         }
 
         let action = match event::read()? {
+            // Presses only. Asking for disambiguated keys asks for releases as well, and a release
+            // handled as a press types every character twice.
+            TermEvent::Key(key) if key.kind == KeyEventKind::Release => Action::None,
             TermEvent::Key(key) => handle_key(&mut session, key),
             TermEvent::Mouse(mouse) => handle_mouse(&mut session, mouse),
             TermEvent::Paste(text) => handle_paste(&mut session, &text),
@@ -1047,6 +1094,7 @@ fn run_command(
 
         while event::poll(Duration::ZERO)? {
             match event::read()? {
+                TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
                 TermEvent::Key(key) if wants_cancel(key) => {
                     cancel.cancel();
                     session.note("stopping…");
@@ -1182,6 +1230,10 @@ fn run_turn_animated(
         // drag read one event at a time would take seconds to catch up with the pointer.
         while event::poll(Duration::ZERO)? {
             match event::read()? {
+                // Presses only, for the reason the outer loop ignores releases: a release taken
+                // for a press would type every character twice, and cancel the turn on the way up
+                // from the Escape that already cancelled it.
+                TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
                 TermEvent::Key(key) if wants_cancel(key) => {
                     cancel.cancel();
                     session.note("cancelling…");
@@ -1402,6 +1454,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
+    fn shift(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::SHIFT)
+    }
+
     /// A session with `text` typed into the box, one key at a time.
     fn typed_into(text: &str) -> Session {
         let mut session = Session::new("none");
@@ -1526,6 +1582,89 @@ mod tests {
         assert_eq!(session.input(), "write me a game\n");
         assert_eq!(session.status, Status::Idle, "the paste started a turn");
         assert!(session.transcript.is_empty(), "the paste sent something");
+    }
+
+    /// A paragraph can be written in the box rather than only pasted into it. Shift-Enter is the
+    /// one Enter that does not send.
+    #[test]
+    fn shift_enter_starts_a_line_instead_of_sending() {
+        let mut session = typed_into("first");
+        assert_eq!(
+            handle_key(&mut session, shift(KeyCode::Enter)),
+            Action::Redraw
+        );
+        for c in "second".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(session.input(), "first\nsecond");
+        assert_eq!(session.status, Status::Idle, "the newline started a turn");
+        assert!(session.transcript.is_empty(), "the newline sent something");
+    }
+
+    /// The newline lands at the caret like any other keystroke, not at the end of the line.
+    #[test]
+    fn a_newline_lands_at_the_caret() {
+        let mut session = typed_into("ab");
+        handle_key(&mut session, key(KeyCode::Left));
+        handle_key(&mut session, shift(KeyCode::Enter));
+
+        assert_eq!(session.input(), "a\nb");
+        assert_eq!(session.caret(), 2);
+    }
+
+    /// And plain Enter still sends the paragraph, once: the two are not the same key.
+    #[test]
+    fn enter_still_sends_a_paragraph_written_with_shift_enter() {
+        let mut session = typed_into("first");
+        handle_key(&mut session, shift(KeyCode::Enter));
+        for c in "second".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("first\nsecond".to_string())
+        );
+    }
+
+    /// A `!` after a newline is punctuation in a sentence, not a request for a shell: the mode is
+    /// only ever armed by the first character of an empty line.
+    #[test]
+    fn a_newline_does_not_arm_shell_mode() {
+        let mut session = typed_into("wait");
+        handle_key(&mut session, shift(KeyCode::Enter));
+        handle_key(&mut session, key(KeyCode::Char('!')));
+
+        assert!(!session.shell, "a newline left the box looking empty");
+        assert_eq!(session.input(), "wait\n!");
+    }
+
+    /// A multi-line command is a `for` loop somebody typed, so the mode gets the key too.
+    #[test]
+    fn shift_enter_works_in_shell_mode() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!for f in *; do");
+        handle_key(&mut session, shift(KeyCode::Enter));
+        type_line(&mut session, "  echo $f");
+
+        assert!(session.shell, "the mode was left by a newline");
+        assert_eq!(session.input(), "for f in *; do\n  echo $f");
+    }
+
+    /// A turn in flight refuses Enter but not this one: what can be typed mid-turn can be written
+    /// as a paragraph mid-turn.
+    #[test]
+    fn shift_enter_works_while_a_turn_runs() {
+        let mut session = typed_into("go");
+        handle_key(&mut session, key(KeyCode::Enter));
+        handle_key_while_working(&mut session, key(KeyCode::Char('a')));
+
+        assert_eq!(
+            handle_key_while_working(&mut session, shift(KeyCode::Enter)),
+            Action::Redraw
+        );
+        assert_eq!(session.input(), "a\n");
     }
 
     /// And it is still one prompt afterwards: Enter sends what was pasted, once.

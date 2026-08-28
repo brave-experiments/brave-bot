@@ -36,7 +36,11 @@ In the prompt: Left/Right move a character and Ctrl-Left/Ctrl-Right a word, Home
 the ends of the line, Delete and Backspace take a character either side of the caret, and
 Ctrl-W, Ctrl-U and Ctrl-K take a word, the start of the line or the rest of it. The readline
 bindings Ctrl-A, Ctrl-E, Ctrl-B and Ctrl-F work too, for terminals that send nothing for the
-named keys.
+named keys. Shift-Enter starts a new line instead of sending, and the box grows to hold it.
+
+Shift-Enter needs a terminal that reports which modifier was held with Enter, since most send
+the same byte either way. Ghostty, Kitty and WezTerm do; inside `tmux` nothing does, and there
+Shift-Enter sends like a plain Enter. Ctrl-G opens an editor wherever that is the case.
 
 In a session: the mouse wheel scrolls, as do Up/Down once the prompt has no line left to
 move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
