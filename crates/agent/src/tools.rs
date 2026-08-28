@@ -2437,6 +2437,10 @@ mod tests {
                 Decision::Reject
             }
 
+            fn confirm_run(&mut self, _request: &crate::confirm::RunRequest) -> Decision {
+                Decision::Reject
+            }
+
             fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
                 self.seen.push(asking.clone());
                 self.reply.clone()

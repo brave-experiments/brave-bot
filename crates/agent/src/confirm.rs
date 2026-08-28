@@ -1,10 +1,10 @@
-//! Asking the user to approve a write, and putting the planner's questions to them.
+//! Asking the user to approve an effect, and putting the planner's questions to them.
 //!
-//! Two questions travel this way, and they differ in what is at stake. A write asks for
-//! permission, and the answer decides whether an effect happens. A question the planner posed
-//! asks for information, and the answer decides nothing on its own: it is text the model reads.
-//! What they share is consent, so both live here rather than in [`crate::report`], which
-//! announces and expects no reply.
+//! Three questions travel this way, and they differ in what is at stake. A write and a run ask for
+//! permission, and the answer decides whether an effect happens. A question the planner posed asks
+//! for information, and the answer decides nothing on its own: it is text the model reads. What
+//! they share is consent, so all three live here rather than in [`crate::report`], which announces
+//! and expects no reply.
 //!
 //! A model-proposed write path cannot be promoted the way a read path can: a read that
 //! goes to the wrong file wastes a step, while a write to the wrong file destroys work.
@@ -18,6 +18,7 @@
 //! decorative, and a whole-file body asks them to spot the difference themselves.
 
 use crate::diff::Diff;
+use bua_core::Pipeline;
 use bua_core::ask::{Answer, Asking};
 use std::fmt;
 
@@ -96,6 +97,56 @@ impl WriteRequest {
     }
 }
 
+/// A pipeline the model has asked to run.
+///
+/// Carries the [`Pipeline`] itself rather than a rendering of it, because the whole point of an
+/// argv vector is that the boundaries between arguments are real: a reviewer is shown each
+/// argument as its own thing, and nothing has to trust a rendering to have got the boundaries
+/// right.
+///
+/// There is no `needs_approval` field, and there is no variant of this that skips the prompt.
+/// Every run asks. See [`bua_core::policy::Policy::run_needs_approval`] for why that has no
+/// exceptions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunRequest {
+    /// The stages, in order, exactly as they will be executed.
+    pub pipeline: Pipeline,
+    /// The directory the stages will run in, for the person to read.
+    ///
+    /// Shown because a program's effect depends on where it runs at least as much as on its
+    /// arguments, and `git clean -fd` is a different proposition in two different trees.
+    pub directory: String,
+}
+
+impl RunRequest {
+    /// Whether approving this would hand the user's own data to a program.
+    ///
+    /// A second and independent reason to be careful, on confidentiality rather than integrity:
+    /// bytes going into a program are released somewhere this policy stops governing.
+    pub fn releases_private(&self) -> bool {
+        self.pipeline.releases_private()
+    }
+
+    /// A short description for a prompt line.
+    pub fn summary(&self) -> String {
+        format!(
+            "run {} in {}",
+            tally(self.pipeline.len(), "stage", "stages"),
+            self.directory
+        )
+    }
+}
+
+/// `1 stage`, `2 stages`. Local rather than shared, since this crate's other copy is private to
+/// the tools module.
+fn tally(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        format!("{count} {one}")
+    } else {
+        format!("{count} {many}")
+    }
+}
+
 /// What the user decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -108,12 +159,19 @@ pub enum Decision {
 /// A trait so the kernel and the agent never depend on a terminal: the interactive session
 /// prompts, a one-shot run refuses, and tests decide without either.
 ///
-/// Neither method has a default body. Failing closed is the behaviour that matters most here, so
-/// it is written out at every implementation rather than inherited from a trait an implementor
-/// never read.
+/// No method has a default body. Failing closed is the behaviour that matters most here, so it is
+/// written out at every implementation rather than inherited from a trait an implementor never
+/// read.
 pub trait Confirmer {
     /// Ask about a write. Implementations must default to refusal when they cannot ask.
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision;
+
+    /// Ask about running a pipeline. Implementations must default to refusal when they cannot ask.
+    ///
+    /// Separate from [`Confirmer::confirm_write`] because the two are not the same question and a
+    /// reviewer needs them not to look alike: a write shows a diff of a file, and a run shows argv
+    /// that is about to execute with the access the user's own shell has.
+    fn confirm_run(&mut self, request: &RunRequest) -> Decision;
 
     /// Put a series of questions to the person, one answer per question in the order they were
     /// asked.
@@ -141,6 +199,10 @@ impl Confirmer for Unattended {
         Decision::Reject
     }
 
+    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -158,6 +220,13 @@ impl Confirmer for ApproveWrites {
         Decision::Approve
     }
 
+    /// Refuses. The name says writes, and a test that wanted a program to run should have to say
+    /// so: approving execution as a side effect of approving writes is how a test ends up running
+    /// something nobody meant it to.
+    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
@@ -172,6 +241,10 @@ impl Confirmer for ChoosesFirst {
         Decision::Reject
     }
 
+    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
         asking
             .prompts
@@ -182,6 +255,27 @@ impl Confirmer for ChoosesFirst {
                 None => Answer::Declined,
             })
             .collect()
+    }
+}
+
+/// Approves every run and every write. Test-only, and named so its use is conspicuous.
+///
+/// Exists because a test of the `run` tool needs the approval to succeed, and [`ApproveWrites`]
+/// deliberately refuses runs.
+#[derive(Debug, Default)]
+pub struct ApproveRuns;
+
+impl Confirmer for ApproveRuns {
+    fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+        Decision::Approve
+    }
+
+    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
+        Decision::Approve
+    }
+
+    fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+        Vec::new()
     }
 }
 

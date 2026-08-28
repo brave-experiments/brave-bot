@@ -1,4 +1,4 @@
-//! Asking the user about a write, in the terminal.
+//! Asking the user about a write or a run, in the terminal.
 //!
 //! Turns run synchronously, so this can draw a prompt and block on a keypress from inside
 //! the turn that requested the write. The alternative, collecting writes and asking
@@ -7,7 +7,7 @@
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.
 
-use bua_agent::confirm::{Confirmer, Decision, Intent, WriteRequest};
+use bua_agent::confirm::{Confirmer, Decision, Intent, RunRequest, WriteRequest};
 use bua_agent::diff::Change;
 use bua_core::ask::{Answer as UserAnswer, Asking};
 use ratatui::Terminal;
@@ -35,6 +35,10 @@ impl<'t, B: Backend> TerminalConfirmer<'t, B> {
 impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
         ask(self.terminal, request).decision()
+    }
+
+    fn confirm_run(&mut self, request: &RunRequest) -> Decision {
+        ask_run(self.terminal, request).decision()
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<UserAnswer> {
@@ -282,6 +286,171 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     frame.render_widget(Paragraph::new(keys), rows[1]);
 
     furthest
+}
+
+/// Draw the prompt for a run and wait for an answer.
+///
+/// Standalone as well as available through [`TerminalConfirmer`], for the same reason the write
+/// prompt is: a turn on a worker thread cannot hold the terminal, so the main thread calls this on
+/// its behalf.
+pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> Answer {
+    let mut scroll = 0u16;
+    loop {
+        let mut most = 0u16;
+        // A terminal that cannot be drawn to cannot carry a question, so refuse rather than run
+        // something unseen.
+        if terminal
+            .draw(|frame| most = draw_run(frame, request, scroll))
+            .is_err()
+        {
+            return Answer::Reject;
+        }
+
+        match event::read() {
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(Response::Answer(answer)) => return answer,
+                Some(Response::Scroll(by)) => {
+                    scroll = scroll.saturating_add_signed(by).min(most);
+                }
+                None => continue,
+            },
+            Ok(_) => continue,
+            // Losing the event stream must not run anything.
+            Err(_) => return Answer::Reject,
+        }
+    }
+}
+
+/// Draw the run confirmation, returning how far its body can be scrolled.
+///
+/// One line per stage, rendered by [`bua_core::Stage::display`], which quotes unambiguously: two
+/// different argument vectors cannot come out looking alike, so what the reviewer reads names
+/// exactly the argv the endorsement will be bound to.
+fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u16 {
+    let area = centred(frame.area());
+    frame.render_widget(Clear, area);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "Run ",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                crate::confirm::stage_count(request.pipeline.len()),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  in {}", request.directory),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::raw(""),
+    ];
+
+    for (index, stage) in request.pipeline.stages.iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}  ", index + 1),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                stage.display(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Said every time, because it is true every time and it is the thing a reviewer is most likely
+    // to assume otherwise. A program here is not sandboxed and runs with the access the user's own
+    // shell would give it.
+    lines.push(Line::from(Span::styled(
+        "  this is not sandboxed: it runs with the access your own shell has",
+        Style::default().fg(Color::Yellow),
+    )));
+
+    // The second and independent reason to be careful, on confidentiality rather than integrity.
+    // Only said when it applies, so it does not become noise that hides the case it is for.
+    if request.releases_private() {
+        lines.push(Line::from(Span::styled(
+            "  it is also being fed your own data, which leaves here with it",
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    let keys = Line::from(vec![
+        Span::styled(
+            "  y",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" run it    "),
+        Span::styled(
+            "n",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" don't    "),
+        Span::styled(
+            "ctrl-c",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title(" run this? ");
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+
+    // One row for the keys, the rest for the stages, split before the body is laid out so the
+    // question keeps its row whatever the body turns out to be.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inside);
+
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let drawn = body.line_count(rows[0].width) as u16;
+    let furthest = drawn.saturating_sub(rows[0].height);
+    let offset = scroll.min(furthest);
+    frame.render_widget(body.scroll((offset, 0)), rows[0]);
+
+    let mut keys = keys;
+    if furthest > 0 {
+        let below = furthest - offset;
+        keys.push_span(Span::styled(
+            if below > 0 {
+                format!("   ↑↓ {below} more")
+            } else {
+                "   ↑↓ back".to_string()
+            },
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    frame.render_widget(Paragraph::new(keys), rows[1]);
+
+    furthest
+}
+
+/// `1 stage`, `2 stages`.
+fn stage_count(count: usize) -> String {
+    if count == 1 {
+        format!("{count} stage")
+    } else {
+        format!("{count} stages")
+    }
 }
 
 /// A centred box, sized to the terminal but never larger than it.

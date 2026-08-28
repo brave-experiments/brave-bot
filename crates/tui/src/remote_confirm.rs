@@ -7,7 +7,7 @@
 //!
 //! The messages behave in two ways, and the difference is consent:
 //!
-//! - A write and a question **ask**. The worker blocks until an answer arrives, and every
+//! - A write, a run, and a question **ask**. The worker blocks until an answer arrives, and every
 //!   failure resolves to the negative one: a channel that cannot carry the question cannot carry
 //!   consent either, and a reply that never came is not an answer to report as the user's.
 //! - Progress **announces**. There is no reply to wait for and nothing to refuse, so a listener
@@ -19,7 +19,7 @@
 //! with each other; that resolves to the negative answer rather than to a retry, because a
 //! decision taken against a question nobody matched is worse than no decision at all.
 
-use bua_agent::confirm::{Confirmer, Decision, WriteRequest};
+use bua_agent::confirm::{Confirmer, Decision, RunRequest, WriteRequest};
 use bua_agent::report::{Activity, Landing, Phase, Reporter, Shown};
 use bua_core::ask::{Answer, Asking};
 use bua_core::todo::Row;
@@ -30,6 +30,8 @@ use std::sync::mpsc::{Receiver, Sender};
 pub enum ToMain {
     /// A write needs approval. The main thread must reply.
     Write(WriteRequest),
+    /// A pipeline needs approval before it runs. The main thread must reply.
+    Run(RunRequest),
     /// The task list changed. No reply.
     /// The planner is asking the user something. The main thread must reply.
     Ask(Asking),
@@ -54,6 +56,7 @@ pub enum ToMain {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Write(Decision),
+    Run(Decision),
     Ask(Vec<Answer>),
 }
 
@@ -81,6 +84,15 @@ impl Confirmer for RemoteConfirmer {
         match self.exchange(ToMain::Write(request.clone())) {
             Some(Reply::Write(decision)) => decision,
             // No reply, or a reply to something else. Neither is consent.
+            _ => Decision::Reject,
+        }
+    }
+
+    fn confirm_run(&mut self, request: &RunRequest) -> Decision {
+        match self.exchange(ToMain::Run(request.clone())) {
+            Some(Reply::Run(decision)) => decision,
+            // A reply tagged as answering the write question is not an answer to this one, and
+            // running a program on it would be acting on consent nobody gave.
             _ => Decision::Reject,
         }
     }
@@ -181,6 +193,71 @@ mod tests {
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
         assert_eq!(confirmer.confirm_write(&request()), Decision::Approve);
         responder.join().expect("responder finished");
+    }
+
+    fn a_run() -> RunRequest {
+        RunRequest {
+            pipeline: bua_core::Pipeline::new(vec![bua_core::Stage::new(
+                "git",
+                vec!["log".into()],
+            )]),
+            directory: "/tmp/project".into(),
+        }
+    }
+
+    /// The run question reaches the other side and the answer comes back.
+    #[test]
+    fn a_run_answer_travels_back_to_the_worker() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (answer_tx, answer_rx) = channel();
+
+        let responder = thread::spawn(move || {
+            match inbound.recv().expect("a message arrived") {
+                ToMain::Run(asked) => assert_eq!(asked.pipeline.len(), 1),
+                other => panic!("expected a run question, got {other:?}"),
+            }
+            answer_tx
+                .send(Reply::Run(Decision::Approve))
+                .expect("answered");
+        });
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert_eq!(confirmer.confirm_run(&a_run()), Decision::Approve);
+        responder.join().expect("responder finished");
+    }
+
+    /// An approval for a write is not an approval to run a program. The two questions are
+    /// different, so a reply tagged as answering one must not settle the other.
+    #[test]
+    fn an_approved_write_does_not_approve_a_run() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (answer_tx, answer_rx) = channel();
+
+        let responder = thread::spawn(move || {
+            inbound.recv().expect("a message arrived");
+            answer_tx
+                .send(Reply::Write(Decision::Approve))
+                .expect("answered");
+        });
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert_eq!(
+            confirmer.confirm_run(&a_run()),
+            Decision::Reject,
+            "consent to a write was taken as consent to run a program"
+        );
+        responder.join().expect("responder finished");
+    }
+
+    /// Nobody is there to ask, so nothing runs.
+    #[test]
+    fn a_closed_channel_refuses_a_run() {
+        let (outbound, inbound) = channel::<ToMain>();
+        let (_answer_tx, answer_rx) = channel::<Reply>();
+        drop(inbound);
+
+        let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
+        assert_eq!(confirmer.confirm_run(&a_run()), Decision::Reject);
     }
 
     fn a_series() -> Asking {
@@ -381,6 +458,7 @@ mod tests {
             while let Ok(message) = inbound.recv() {
                 match message {
                     ToMain::Ask(_) => seen.push("ask"),
+                    ToMain::Run(_) => seen.push("run"),
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),
                     ToMain::Phase(_) => seen.push("phase"),

@@ -962,6 +962,16 @@ fn run_turn_animated(
                 // answer and the loop below will collect its result.
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Write(answer.decision()));
             }
+            Ok(crate::remote_confirm::ToMain::Run(request)) => {
+                let answer = crate::confirm::ask_run(terminal, &request);
+                // Ctrl-C at the prompt is the same request it is anywhere else in a turn: stop.
+                // Set before the answer goes back, so the worker sees it as soon as it wakes.
+                if answer == crate::confirm::Answer::Interrupt {
+                    cancel.cancel();
+                    session.note("cancelling…");
+                }
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Run(answer.decision()));
+            }
             Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
                 // A planner that loops back over the same decision should not make the user
                 // restate it. The note is what keeps that from being invisible: an answer given

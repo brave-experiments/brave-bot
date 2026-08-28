@@ -984,6 +984,11 @@ impl bua_agent::Confirmer for RecordingConfirmer {
         self.decision
     }
 
+    /// These tests are about writes. A run they did not set up is refused.
+    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
     /// These tests are about writes. A question they did not set up gets no answer.
     fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
         Vec::new()
@@ -2419,6 +2424,10 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.cancel.cancel();
             bua_agent::Decision::Approve
+        }
+
+        fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::Decision {
+            bua_agent::Decision::Reject
         }
 
         fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
@@ -5191,6 +5200,10 @@ impl AnswersWith {
 
 impl bua_agent::Confirmer for AnswersWith {
     fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
+    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::Decision {
         bua_agent::Decision::Reject
     }
 
