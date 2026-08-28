@@ -85,17 +85,17 @@ pub struct Record {
     /// as an empty map: nothing recorded is not the same as nothing trusted.
     #[serde(default)]
     pub trust: Option<Vec<StoredRule>>,
-    /// Which programs this session's user vouched for, by resolved path.
+    /// Which commands this session's user vouched for: resolved path and exact arguments.
     ///
-    /// Belongs to the session for the same reason the trust map does: vouching for a program is a
-    /// standing permission, and a list kept per directory would grant it on behalf of a user who
-    /// was never asked. Resuming inherits it because the person resuming is the person who gave
-    /// it.
+    /// Belongs to the session for the same reason the trust map does: vouching for a command is a
+    /// standing permission over both its side effects and the trust of its output, and a list kept
+    /// per directory would grant that on behalf of a user who was never asked. Resuming inherits
+    /// it because the person resuming is the person who gave it.
     ///
-    /// Absent, unlike the map, needs no question: an empty list means every run asks, which is
-    /// what a session that recorded nothing should do.
+    /// Absent, unlike the map, needs no question: an empty list means every run asks and no
+    /// output is trusted, which is what a session that recorded nothing should do.
     #[serde(default)]
-    pub programs: Vec<String>,
+    pub programs: Vec<StoredCommand>,
     /// Which build wrote this record: the version, the commit, and whether the tree was
     /// modified. See [`crate::BUILD`].
     ///
@@ -120,6 +120,18 @@ pub struct StoredRule {
 /// The word for a trusted rule. Anything else reads as untrusted.
 const TRUSTED: &str = "trusted";
 const UNTRUSTED: &str = "untrusted";
+
+/// One vouched-for command as it is written down.
+///
+/// The arguments are kept as a list rather than joined into a line, because they are matched
+/// exactly and a rendering that had to be re-split would be a parser deciding what the user
+/// vouched for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredCommand {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
 
 /// One task as it is written down.
 ///
@@ -165,7 +177,11 @@ impl Record {
     /// An empty list where a record predates this being kept, which is the safe direction: every
     /// run asks, rather than a resumed session inheriting a permission nobody recorded.
     pub fn trusted_programs(&self) -> TrustedPrograms {
-        TrustedPrograms::from_iter(self.programs.clone())
+        TrustedPrograms::from_iter(
+            self.programs
+                .iter()
+                .map(|c| bua_core::programs::Command::new(c.program.clone(), c.args.clone())),
+        )
     }
 
     /// The task lists this session kept, shaped for a screen.
@@ -343,7 +359,14 @@ impl Handle {
                     })
                     .collect(),
             ),
-            programs: standing.programs.iter().map(str::to_string).collect(),
+            programs: standing
+                .programs
+                .iter()
+                .map(|c| StoredCommand {
+                    program: c.program.clone(),
+                    args: c.args.clone(),
+                })
+                .collect(),
             build: Some(crate::BUILD.to_string()),
             conversation: standing.conversation.clone(),
         };
@@ -776,12 +799,25 @@ mod tests {
     #[test]
     fn the_programs_a_session_vouched_for_come_back() {
         let mut record = a_record();
-        record.programs = vec!["/usr/bin/git".to_string(), "/bin/ls".to_string()];
+        record.programs = vec![
+            StoredCommand {
+                program: "/usr/bin/git".to_string(),
+                args: vec!["log".to_string()],
+            },
+            StoredCommand {
+                program: "/bin/ls".to_string(),
+                args: Vec::new(),
+            },
+        ];
         let vouched = record.trusted_programs();
-        assert!(vouched.contains("/usr/bin/git"));
-        assert!(vouched.contains("/bin/ls"));
+        assert!(vouched.contains("/usr/bin/git", &["log".to_string()]));
+        assert!(vouched.contains("/bin/ls", &[]));
         assert!(
-            !vouched.contains("/opt/homebrew/bin/git"),
+            !vouched.contains("/usr/bin/git", &["push".to_string()]),
+            "a record vouched for a command it never named"
+        );
+        assert!(
+            !vouched.contains("/opt/homebrew/bin/git", &["log".to_string()]),
             "a record vouched for a binary it never named"
         );
     }

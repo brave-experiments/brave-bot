@@ -1909,11 +1909,11 @@ fn run<S: Sink, C: Confirmer>(
                     .to_string(),
             );
         }
-        // Recorded before the run, so a second stage of the same program later in this turn is
-        // not asked about again. The policy carries it out of the turn and the session records it.
+        // Recorded before the run, so a repeat of the same command later in this turn is not
+        // asked about again. The policy carries it out of the turn and the session records it.
         if answer.remember {
-            for program in request.would_vouch_for() {
-                policy.remember_program(&program);
+            for command in request.would_vouch_for() {
+                policy.remember_command(command);
             }
         }
     }
@@ -1921,7 +1921,7 @@ fn run<S: Sink, C: Confirmer>(
     // The approval is what makes this argv trustworthy, and it is bound to this exact pipeline.
     policy.endorse_run(&pipeline);
 
-    let label = match policy.before_run(&pipeline) {
+    let label = match policy.before_run(&pipeline, &shown) {
         Ok(label) => label,
         Err(denial) => return problem(format!("refused: {denial}")),
     };

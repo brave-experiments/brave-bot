@@ -178,10 +178,15 @@ would break `git push` and `npm install`, and the set of tools a user might ask 
 stdout and stderr are always untrusted and private, which holds without knowing what ran, and a run
 is approved by a person because nothing here can establish that a program is harmless.
 
-A person may answer that question once per program rather than once per run, by pressing `a` at the
-prompt. That records the resolved binary on the session, so they are not asked about it again until
-the session ends. It is not an allowlist and does not decide what may run: a program nobody has
-vouched for still runs after a prompt. See [tools.md](tools.md) for the full model.
+A person may answer that question once per command rather than once per run, by pressing `a` at the
+prompt. That records the resolved binary and its exact arguments on the session, and it grants two
+things together: the command runs unasked, and what it prints is trusted so the model may read it.
+
+The second is a human assertion rather than an inference, and it is admissible for the same reason
+the trust map is: a directory's contents are trusted because the user said so, not because anything
+inspected them. Nothing infers it, and an entry covers one command rather than one program, so
+`git log` says nothing about `git push`. It is still not an allowlist and does not decide what may
+run. See [tools.md](tools.md) for the full model.
 
 ## Layering
 

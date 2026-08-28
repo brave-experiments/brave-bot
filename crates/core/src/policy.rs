@@ -307,16 +307,21 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         &self.programs
     }
 
-    /// Record that the user vouched for the program at this resolved path.
+    /// Record that the user vouched for this exact command, its side effects and its output.
     ///
-    /// Only ever called because a person, looking at the argv and the resolved path, asked for it.
-    /// Nothing derives membership from what a program did or from what it printed: its output is
-    /// `(U,priv)` and could say anything.
-    pub fn remember_program(&mut self, resolved: &str) {
-        self.programs.trust(resolved);
+    /// Only ever called because a person, looking at the argv and the resolved path, asked for it
+    /// in those terms. Nothing derives membership from what a program did or from what it printed:
+    /// the assertion is the user's and the system does not check it, exactly as it does not check
+    /// a directory the user vouched for.
+    pub fn remember_command(&mut self, command: crate::programs::Command) {
+        let shown = command.display();
+        self.programs.trust(command);
         self.allow(
             "approval",
-            format!("{resolved}: vouched for by the user, so this session stops asking about it"),
+            format!(
+                "{shown}: the user vouched for this command and its output, so it runs unasked \
+                 and what it prints is trusted"
+            ),
         );
     }
 
@@ -1896,37 +1901,40 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             return true;
         }
 
-        let unknown: Vec<&String> = resolved
-            .iter()
-            .filter(|path| !self.programs.contains(path))
-            .collect();
-
-        if unknown.is_empty() {
-            // Every stage is a program this session's user read the argv of once and vouched for.
+        if self.every_stage_vouched(pipeline, resolved) {
             self.allow(
                 "approval",
-                format!(
-                    "every program is one the user vouched for this session ({}), no prompt",
-                    resolved.join(", ")
-                ),
+                "every stage is a command the user vouched for this session, no prompt".to_string(),
             );
             return false;
         }
 
         self.allow(
             "approval",
-            format!(
-                "nothing can establish that a program changes nothing, and {} {} not vouched for, \
-                 asking",
-                unknown
-                    .iter()
-                    .map(|path| path.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if unknown.len() == 1 { "is" } else { "are" }
-            ),
+            "nothing can establish that a program changes nothing, and not every stage was \
+             vouched for, asking"
+                .to_string(),
         );
         true
+    }
+
+    /// Whether every stage of the pipeline is a command the user vouched for, argv and all.
+    ///
+    /// Every stage, not any stage, and it decides both the prompt and the output label. An
+    /// unvouched stage anywhere in a pipeline is a transformation nobody answered for, and its
+    /// output is what the next stage reads, so one such stage makes the whole pipeline's output
+    /// untrusted however familiar the stages either side of it are.
+    fn every_stage_vouched(
+        &self,
+        pipeline: &crate::command::Pipeline,
+        resolved: &[String],
+    ) -> bool {
+        resolved.len() == pipeline.len()
+            && pipeline
+                .stages
+                .iter()
+                .zip(resolved)
+                .all(|(stage, path)| self.programs.contains(path, &stage.args))
     }
 
     /// Record that a person approved this exact pipeline.
@@ -1946,15 +1954,33 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// and a program is neither. What authorises the argv is that a person read this exact
     /// rendering of it and said yes, which is what the endorsement records. A mismatch refuses.
     ///
-    /// The output label comes from [`Capability::ShellExec`] and is `(U,priv)` for every stage,
-    /// with no argument to it. A program may print anything, including bytes an earlier stage read
-    /// out of a file an attacker wrote, so that is the only label that holds without knowing what
-    /// ran. Nothing a caller or the model can say changes it.
+    /// The output label is `(U,priv)` unless **every** stage is a command this session's user
+    /// vouched for, in which case it is `(T,priv)`.
     ///
-    /// [`crate::pure`] describes a narrower class whose output could carry its input's label
-    /// instead. It is deliberately not consulted here: that is issue #3, and resolving it by
-    /// wiring it in would settle an open question as a side effect of adding a tool.
-    pub fn before_run(&mut self, pipeline: &crate::command::Pipeline) -> Gated<Label> {
+    /// `(U,priv)` is the default and the only label that holds without knowing what ran: a program
+    /// may print anything, including bytes an earlier stage read out of a file an attacker wrote.
+    /// Nothing a caller or the model can say changes it.
+    ///
+    /// What can change it is a person. Vouching for a command is an assertion about its output as
+    /// well as about its side effects, made by the user in those terms at the prompt, and it is
+    /// the same kind of assertion [`crate::trust::TrustStore`] rests on: a directory's contents
+    /// are trusted because the user said so, not because anything inspected them. Nothing here
+    /// checks it, and nothing here could. See [`crate::programs`].
+    ///
+    /// It stays **private** either way. Trusted says the planner may read it; private says it does
+    /// not leave without a declassification, which is right for bytes that may have come out of
+    /// the workspace. So vouched output can be read and acted on but is still not routing-safe on
+    /// its own.
+    ///
+    /// [`crate::pure`] reaches the same label by a different road, proving from `(program, argv)`
+    /// that a stage can read nothing the label does not account for. It remains unwired, and this
+    /// does not settle it: that table is a proof about a program, and this is a person taking
+    /// responsibility for one.
+    pub fn before_run(
+        &mut self,
+        pipeline: &crate::command::Pipeline,
+        resolved: &[String],
+    ) -> Gated<Label> {
         self.before_capability(Capability::ShellExec)?;
 
         // Nothing to approve and nothing to run. Refused rather than treated as a success with no
@@ -1969,14 +1995,25 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
         self.consume_grant("run", "pipeline", &pipeline.canonical())?;
 
-        let label = Capability::ShellExec.output_label().ok_or_else(|| Denial {
+        // The pessimistic label is the floor, taken from the capability so it cannot drift from
+        // what every other observation of a command is labelled.
+        let opaque = Capability::ShellExec.output_label().ok_or_else(|| Denial {
             principle: Principle::Capability,
             message: "command output must have a label".to_string(),
         })?;
-        self.allow(
-            "provenance",
-            format!("run: output labelled {label}, whatever the stages were"),
-        );
+
+        let (label, why) = if self.every_stage_vouched(pipeline, resolved) {
+            (
+                Label::trusted_private(),
+                "every stage is a command the user vouched for, output and all",
+            )
+        } else {
+            (
+                opaque,
+                "a program may print anything, and not every stage was vouched for",
+            )
+        };
+        self.allow("provenance", format!("run: output labelled {label}, {why}"));
         Ok(label)
     }
 
@@ -3120,39 +3157,53 @@ mod tests {
         crate::command::Pipeline::new(vec![crate::command::Stage::new("git", vec!["log".into()])])
     }
 
-    /// Nothing establishes that a program changed nothing, so a program nobody has vouched for is
+    fn vouched(program: &str, args: &[&str]) -> crate::programs::Command {
+        crate::programs::Command::new(program, args.iter().map(|a| a.to_string()).collect())
+    }
+
+    /// Nothing establishes that a program changed nothing, so a command nobody has vouched for is
     /// put to a person however innocuous it looks.
     #[test]
-    fn a_program_nobody_vouched_for_is_put_to_a_person() {
+    fn a_command_nobody_vouched_for_is_put_to_a_person() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
         assert!(policy.run_needs_approval(&a_pipeline(), &["/usr/bin/git".to_string()]));
-        assert!(
-            policy.run_needs_approval(
-                &crate::command::Pipeline::new(vec![crate::command::Stage::new("pwd", Vec::new())]),
-                &["/bin/pwd".to_string()]
-            ),
-            "a stage that looks harmless is still put to a person"
-        );
     }
 
-    /// The point of the list: having read the argv once and said yes, a person is not asked again
-    /// for the rest of the session.
+    /// The point of the list: having read the argv once and vouched for it, a person is not asked
+    /// again for the rest of the session.
     #[test]
-    fn a_program_the_user_vouched_for_is_not_asked_about_again() {
+    fn a_vouched_command_is_not_asked_about_again() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
-        policy.remember_program("/usr/bin/git");
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
         assert!(!policy.run_needs_approval(&a_pipeline(), &["/usr/bin/git".to_string()]));
     }
 
-    /// Every stage, not any stage. A pipeline is as consequential as its least familiar program,
-    /// so one unremembered stage puts the whole pipeline to a person.
+    /// Vouching is for one command, not one program. `git log` says nothing about `git push`:
+    /// they do different things and print different things.
+    #[test]
+    fn vouching_for_one_command_does_not_cover_another_of_the_same_program() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+
+        let push = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "git",
+            vec!["push".into()],
+        )]);
+        assert!(
+            policy.run_needs_approval(&push, &["/usr/bin/git".to_string()]),
+            "an assertion about one command covered a different one"
+        );
+    }
+
+    /// Every stage, not any stage. A pipeline is as answerable as its least familiar stage.
     #[test]
     fn one_unvouched_stage_puts_the_whole_pipeline_to_a_person() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
-        policy.remember_program("/usr/bin/git");
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
         let pipeline = crate::command::Pipeline::new(vec![
             crate::command::Stage::new("git", vec!["log".into()]),
             crate::command::Stage::new("curl", vec!["-T".into(), "-".into()]),
@@ -3166,54 +3217,236 @@ mod tests {
         );
     }
 
-    /// Matched on the resolved path, so an approval does not follow a name onto a different
+    /// Matched on the resolved path, so an assertion does not follow a name onto a different
     /// binary when `$PATH` or an alias changes what the name means.
     #[test]
     fn vouching_does_not_follow_a_name_onto_a_different_binary() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
-        policy.remember_program("/usr/bin/grep");
-        let pipeline = crate::command::Pipeline::new(vec![crate::command::Stage::new(
-            "grep",
-            vec!["x".into()],
-        )]);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
         assert!(
-            policy.run_needs_approval(&pipeline, &["/opt/homebrew/bin/grep".to_string()]),
-            "an approval followed the name rather than the program"
+            policy.run_needs_approval(&a_pipeline(), &["/opt/homebrew/bin/git".to_string()]),
+            "an assertion followed the name rather than the program"
         );
     }
 
-    /// Private input asks whatever is remembered. Vouching for a program says it may run; it does
-    /// not say the user's own data may be handed to it.
+    /// Private input asks whatever is vouched for. Vouching for a command says it may run and
+    /// that its output is yours to answer for; it does not say your own data may be handed to it.
     #[test]
-    fn private_input_asks_even_for_a_vouched_program() {
+    fn private_input_asks_even_for_a_vouched_command() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
-        policy.remember_program("/usr/bin/git");
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
         let pipeline = a_pipeline().with_stdin(Label::trusted_private());
         assert!(
             policy.run_needs_approval(&pipeline, &["/usr/bin/git".to_string()]),
-            "a remembered program was handed private data with no prompt"
+            "a vouched command was handed private data with no prompt"
         );
     }
 
-    /// Where the programs could not be resolved, nothing is matched and the answer is to ask. The
-    /// alternative is running something on a guess about which binary it is.
+    /// Where the programs could not be resolved, nothing is matched and the answer is to ask.
     #[test]
     fn an_unresolved_program_is_asked_about() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
-        policy.remember_program("/usr/bin/git");
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+        assert!(policy.run_needs_approval(&a_pipeline(), &[]));
+    }
+
+    /// Nothing runs without an endorsement. The planner's argv is not trusted and cannot become
+    /// trusted by being proposed.
+    #[test]
+    fn a_run_without_an_endorsement_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
         assert!(
-            policy.run_needs_approval(&a_pipeline(), &[]),
-            "a pipeline whose programs were not resolved skipped the prompt"
+            policy
+                .before_run(&a_pipeline(), &["/usr/bin/git".to_string()])
+                .is_err(),
+            "a pipeline nobody approved was allowed to run"
         );
     }
 
-    /// The list is granted, never assumed: a fresh policy vouches for nothing, so the first run of
-    /// anything asks.
+    /// An endorsement is for the exact pipeline a person read, so an approval cannot be
+    /// redirected to different arguments after the fact.
     #[test]
-    fn a_fresh_policy_vouches_for_no_program() {
+    fn an_endorsement_does_not_authorise_a_different_pipeline() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.endorse_run(&a_pipeline());
+
+        let other = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "git",
+            vec!["push".into()],
+        )]);
+        assert!(
+            policy
+                .before_run(&other, &["/usr/bin/git".to_string()])
+                .is_err(),
+            "an approval for one argv authorised another"
+        );
+        assert!(
+            policy
+                .before_run(&a_pipeline(), &["/usr/bin/git".to_string()])
+                .is_ok(),
+            "the pipeline that was approved still runs"
+        );
+    }
+
+    /// Single-use, like every other endorsement: approving one run does not approve the next.
+    #[test]
+    fn an_approved_run_cannot_be_replayed() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.endorse_run(&a_pipeline());
+        let resolved = ["/usr/bin/git".to_string()];
+        assert!(policy.before_run(&a_pipeline(), &resolved).is_ok());
+        assert!(
+            policy.before_run(&a_pipeline(), &resolved).is_err(),
+            "one approval authorised a second run"
+        );
+    }
+
+    /// The default, and the only label that holds without knowing what ran: a program may print
+    /// anything, including bytes an earlier stage read out of a file an attacker wrote.
+    #[test]
+    fn output_nobody_vouched_for_is_untrusted_and_private() {
+        for stage in ["pwd", "wc", "git", "echo"] {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+            let pipeline =
+                crate::command::Pipeline::new(vec![crate::command::Stage::new(stage, Vec::new())]);
+            policy.endorse_run(&pipeline);
+            assert_eq!(
+                policy
+                    .before_run(&pipeline, &[format!("/bin/{stage}")])
+                    .unwrap(),
+                Label::untrusted_private(),
+                "{stage} output was not quarantined"
+            );
+        }
+    }
+
+    /// What the user asked for: having vouched for a command and its output, the planner may read
+    /// what it prints. The assertion is the user's, and nothing here checks it.
+    #[test]
+    fn output_of_a_vouched_command_is_trusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+        policy.endorse_run(&a_pipeline());
+        let label = policy
+            .before_run(&a_pipeline(), &["/usr/bin/git".to_string()])
+            .unwrap();
+        assert!(label.is_trusted(), "vouched output did not become readable");
+    }
+
+    /// Trusted, but still private. Trusted says the planner may read it; private says it does not
+    /// leave without a declassification, which is right for bytes that may have come out of the
+    /// workspace. Vouched output is therefore not routing-safe on its own.
+    #[test]
+    fn output_of_a_vouched_command_is_still_private() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+        policy.endorse_run(&a_pipeline());
+        let label = policy
+            .before_run(&a_pipeline(), &["/usr/bin/git".to_string()])
+            .unwrap();
+        assert_eq!(label, Label::trusted_private());
+        assert_ne!(
+            label,
+            Label::trusted_public(),
+            "command output became routing-safe on its own"
+        );
+    }
+
+    /// One unvouched stage makes the whole pipeline's output untrusted, however familiar the
+    /// stages either side of it are: its output is what the next stage read.
+    #[test]
+    fn one_unvouched_stage_makes_the_whole_output_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+        policy.remember_command(vouched("/usr/bin/tail", &["-5"]));
+
+        let pipeline = crate::command::Pipeline::new(vec![
+            crate::command::Stage::new("git", vec!["log".into()]),
+            crate::command::Stage::new("sed", vec!["-n".into(), "1p".into()]),
+            crate::command::Stage::new("tail", vec!["-5".into()]),
+        ]);
+        policy.endorse_run(&pipeline);
+        let label = policy
+            .before_run(
+                &pipeline,
+                &[
+                    "/usr/bin/git".to_string(),
+                    "/usr/bin/sed".to_string(),
+                    "/usr/bin/tail".to_string(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            label,
+            Label::untrusted_private(),
+            "an unvouched stage in the middle passed trusted output through"
+        );
+    }
+
+    /// Vouching for `git log` must not make `git push` output trusted, since the label follows the
+    /// same entry the prompt does.
+    #[test]
+    fn output_of_a_different_command_of_the_same_program_is_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+
+        let push = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "git",
+            vec!["push".into()],
+        )]);
+        policy.endorse_run(&push);
+        assert_eq!(
+            policy
+                .before_run(&push, &["/usr/bin/git".to_string()])
+                .unwrap(),
+            Label::untrusted_private()
+        );
+    }
+
+    /// A pipeline with no stages is refused rather than treated as a run that produced nothing.
+    #[test]
+    fn an_empty_pipeline_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        let empty = crate::command::Pipeline::new(Vec::new());
+        policy.endorse_run(&empty);
+        assert!(policy.before_run(&empty, &[]).is_err());
+    }
+
+    /// The capability is checked before the endorsement, so a turn never granted execution
+    /// cannot run a program even with an approval in hand.
+    #[test]
+    fn a_run_needs_the_capability_as_well_as_the_endorsement() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "summarise the readme"),
+            ReleasePlan::new(),
+            CapabilitySet::from_iter([Capability::FileRead]),
+            &mut sink,
+        )
+        .unwrap();
+        policy.endorse_run(&a_pipeline());
+        assert!(
+            policy
+                .before_run(&a_pipeline(), &["/usr/bin/git".to_string()])
+                .is_err()
+        );
+    }
+
+    /// The list is granted, never assumed: a fresh policy vouches for nothing.
+    #[test]
+    fn a_fresh_policy_vouches_for_no_command() {
         let mut sink = RecordingSink::new();
         let policy = open_policy(&mut sink);
         assert!(policy.programs().is_empty());
@@ -3231,101 +3464,11 @@ mod tests {
             &mut sink,
         )
         .unwrap()
-        .with_programs(crate::programs::TrustedPrograms::from_iter(["/bin/ls"]));
-        assert!(policy.programs().contains("/bin/ls"));
-    }
-
-    /// Nothing runs without an endorsement. The planner's argv is not trusted and cannot become
-    /// trusted by being proposed, so the gate refuses until a person has approved this pipeline.
-    #[test]
-    fn a_run_without_an_endorsement_is_refused() {
-        let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
-        assert!(
-            policy.before_run(&a_pipeline()).is_err(),
-            "a pipeline nobody approved was allowed to run"
-        );
-    }
-
-    /// An endorsement is for the exact pipeline a person read. A second pipeline does not match
-    /// it, so an approval cannot be redirected to different arguments after the fact.
-    #[test]
-    fn an_endorsement_does_not_authorise_a_different_pipeline() {
-        let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
-        policy.endorse_run(&a_pipeline());
-
-        let other = crate::command::Pipeline::new(vec![crate::command::Stage::new(
-            "git",
-            vec!["push".into()],
-        )]);
-        assert!(
-            policy.before_run(&other).is_err(),
-            "an approval for one argv authorised another"
-        );
-        assert!(
-            policy.before_run(&a_pipeline()).is_ok(),
-            "the pipeline that was approved still runs"
-        );
-    }
-
-    /// Single-use, like every other endorsement: approving one run does not approve the next.
-    #[test]
-    fn an_approved_run_cannot_be_replayed() {
-        let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
-        policy.endorse_run(&a_pipeline());
-        assert!(policy.before_run(&a_pipeline()).is_ok());
-        assert!(
-            policy.before_run(&a_pipeline()).is_err(),
-            "one approval authorised a second run"
-        );
-    }
-
-    /// Output is `(U,priv)` for every stage, with no argument to it. A program may print anything,
-    /// including bytes read out of a file an attacker wrote, so this is the only label that holds
-    /// without knowing what ran.
-    #[test]
-    fn command_output_is_always_untrusted_and_private() {
-        for stage in ["pwd", "wc", "git", "echo"] {
-            let mut sink = RecordingSink::new();
-            let mut policy = open_policy(&mut sink);
-            let pipeline =
-                crate::command::Pipeline::new(vec![crate::command::Stage::new(stage, Vec::new())]);
-            policy.endorse_run(&pipeline);
-            assert_eq!(
-                policy.before_run(&pipeline).unwrap(),
-                Label::untrusted_private(),
-                "{stage} output was not quarantined"
-            );
-        }
-    }
-
-    /// A pipeline with no stages is refused rather than treated as a run that produced nothing,
-    /// since there was nothing for a person to approve either.
-    #[test]
-    fn an_empty_pipeline_is_refused() {
-        let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
-        let empty = crate::command::Pipeline::new(Vec::new());
-        policy.endorse_run(&empty);
-        assert!(policy.before_run(&empty).is_err());
-    }
-
-    /// The capability is checked before the endorsement, so a turn that was never granted
-    /// execution cannot run a program even with an approval in hand.
-    #[test]
-    fn a_run_needs_the_capability_as_well_as_the_endorsement() {
-        let mut sink = RecordingSink::new();
-        let mut policy = Policy::begin(
-            routing_with("task", "summarise the readme"),
-            ReleasePlan::new(),
-            CapabilitySet::from_iter([Capability::FileRead]),
-            &mut sink,
-        )
-        .unwrap();
-        policy.endorse_run(&a_pipeline());
-        assert!(policy.before_run(&a_pipeline()).is_err());
+        .with_programs(crate::programs::TrustedPrograms::from_iter([vouched(
+            "/bin/ls",
+            &["-la"],
+        )]));
+        assert!(policy.programs().contains("/bin/ls", &["-la".to_string()]));
     }
 
     #[test]

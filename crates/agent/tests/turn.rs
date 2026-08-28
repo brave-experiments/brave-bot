@@ -5678,8 +5678,12 @@ fn vouching_for_a_program_carries_out_of_the_turn() {
         "the program was not recorded on the session"
     );
     assert!(
-        outcome.programs.iter().next().unwrap().ends_with("touch"),
-        "recorded something other than the resolved binary"
+        outcome
+            .programs
+            .iter()
+            .next()
+            .is_some_and(|c| c.program.ends_with("touch") && c.args == ["vouched.txt"]),
+        "recorded something other than the resolved binary and its exact arguments"
     );
 }
 
@@ -5717,7 +5721,10 @@ fn a_vouched_program_runs_without_asking() {
         &scratch,
         r#"{"pipeline":[{"program":"touch","args":["quiet.txt"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::from_iter([touch.display().to_string()]),
+        bua_core::programs::TrustedPrograms::from_iter([bua_core::programs::Command::new(
+            touch.display().to_string(),
+            vec!["quiet.txt".to_string()],
+        )]),
     )
     .expect("the turn runs");
 
@@ -5799,5 +5806,104 @@ fn a_command_line_in_the_program_field_is_refused_with_an_explanation() {
     assert!(
         seen.lock().unwrap().is_empty(),
         "a command line got as far as asking the user"
+    );
+}
+
+/// The point of vouching for a command's output. Having said "I trust this command and what it
+/// prints", the planner reads what it prints instead of getting a reference to it.
+///
+/// Nothing here checks the assertion, and nothing could: `cat secret.txt` prints whatever is in
+/// the file. What makes the output trusted is that a person said so, exactly as a directory's
+/// contents are trusted because a person said so.
+#[test]
+fn a_vouched_commands_output_reaches_the_planner() {
+    let scratch = Scratch::new("run-vouched-output");
+    std::fs::write(scratch.path.join("secret.txt"), "SENTINEL-XYZZY\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let cat = bua_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"pipeline":[{"program":"cat","args":["secret.txt"]}]}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bua_agent::Conversation::new(),
+        // Rejects, and is never consulted: the command is already vouched for.
+        &mut AskedAboutRuns::answering(bua_agent::RunDecision::reject()),
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bua_core::programs::TrustedPrograms::from_iter([bua_core::programs::Command::new(
+            cat.display().to_string(),
+            vec!["secret.txt".to_string()],
+        )]),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("SENTINEL-XYZZY"),
+        "a vouched command's output did not reach the planner"
+    );
+}
+
+/// Vouching for one command must not make another command of the same program readable. The label
+/// follows the same entry the prompt does, so `cat secret.txt` says nothing about `cat other.txt`.
+#[test]
+fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
+    let scratch = Scratch::new("run-vouched-other");
+    std::fs::write(scratch.path.join("other.txt"), "SENTINEL-XYZZY\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let cat = bua_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"pipeline":[{"program":"cat","args":["other.txt"]}]}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bua_agent::Conversation::new(),
+        // Approves this once, without vouching for it.
+        &mut AskedAboutRuns::answering(bua_agent::RunDecision::approve()),
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        // A different argument list, so this entry does not cover the call above.
+        bua_core::programs::TrustedPrograms::from_iter([bua_core::programs::Command::new(
+            cat.display().to_string(),
+            vec!["secret.txt".to_string()],
+        )]),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("SENTINEL-XYZZY"),
+        "an assertion about one command made another command's output trusted"
     );
 }

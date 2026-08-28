@@ -294,7 +294,8 @@ restricting what a program can touch, what is controlled is what its output can 
 |---|---|---|
 | Program and arguments | must be `(T,pub)` | you approve the exact argv |
 | Standard input | may be untrusted | you approve when it is private |
-| Standard output and error | always untrusted, always private | quarantined, per R1 |
+| Standard output and error | untrusted and private by default | quarantined, per R1 |
+| …for a command you vouched for | trusted, still private | you said you trust its output |
 
 Arguments are **routing**: they decide what happens and where it lands, so they may not be derived
 from untrusted bytes. Your approval is what makes them trustworthy, and it is bound to that exact
@@ -306,11 +307,12 @@ meaning `sed` and `awk` work on a file nobody vouched for without the planner or
 reading it. That is the point of the split: both trusted and untrusted data reach real tools, and
 only the routing part has to be trustworthy.
 
-Output is **always** untrusted and private. Every stage, no exceptions, nothing that changes it. A
-program may print anything, including bytes an earlier stage read out of a file an attacker wrote, so
-that is the only label that holds without knowing what ran. The model therefore receives a reference
-rather than text and cannot read what it just ran, which is a real limitation. Whether some narrower
-class of output could ever be trusted is an open question rather than a settled one.
+Output is untrusted and private by default, and nothing the model or a stage can say changes that.
+A program may print anything, including bytes an earlier stage read out of a file an attacker wrote,
+so that is the only label that holds without knowing what ran. The model therefore receives a
+reference rather than text and cannot read what it just ran.
+
+The one thing that changes it is you, saying so. See "Unless you have said always" below.
 
 ### Every run asks
 
@@ -332,20 +334,38 @@ The prompt offers three answers, not two:
   y run it    a always    n don't    ctrl-c stop the turn
 ```
 
-`a` runs it and adds that program to the session's trusted list, so you are not asked about it
-again. That is the only thing that can answer the question for you. Nothing about the arguments,
-nothing a stage declares about itself, and nothing a program printed will ever skip the prompt.
+`a` adds that command to the session's trusted list. It grants two things at once, and the prompt
+asks for both in those terms, because the second is the one nothing else would tell you:
+
+1. **It runs again unasked**, side effects and all.
+2. **What it prints is trusted**, so the model reads it instead of a reference.
+
+The second is your assertion, not a deduction. Nothing here establishes that a command is
+side-effect-free or that its output is free of influence, and nothing tries: `git log` prints
+commit messages written by whoever contributed to the repository. It is trusted for exactly the
+reason a directory you vouched for is trusted, which is that you said so.
+
+So the question `a` is really asking is: *do you take responsibility for what this command does and
+for what it prints?* For `make check` in your own tree, usually yes. For `git log` in a repository
+with outside contributors, think about it: the commit messages are not yours.
 
 Three properties are worth knowing before pressing it:
 
-- **It is by program, not by argument vector.** Vouching after reading `git log` also stops
-  `git push` being asked about. The prompt says so on the line above the keys.
+- **It is one command, not one program.** The entry is the program *and its exact arguments*.
+  Vouching for `git log` says nothing about `git push`, and nothing about `git log --all` either.
 - **It is by resolved path.** The prompt shows the binary under the name, and that is what is
-  recorded. `$PATH` and aliases decide what `grep` means, so an approval does not follow the name
+  recorded. `$PATH` and aliases decide what `grep` means, so an assertion does not follow the name
   onto a different binary.
 - **It belongs to the session.** It is written into the session record and comes back with
   `--resume`, because the person resuming is the person who gave it. A new session in the same
   directory starts with an empty list and asks again, exactly as the trust map does.
 
+In a pipeline, **every** stage must be vouched for or the whole output stays untrusted. An
+unvouched stage in the middle is a transformation nobody answered for, and its output is what the
+next stage read.
+
 Private input is the exception that stays an exception: those runs ask every time, so `a` is not
 offered for them at all.
+
+`/status` lists what you have vouched for. It is the one permission whose whole effect is that
+prompts *stop*, so that is where to look if you want to know what you granted.

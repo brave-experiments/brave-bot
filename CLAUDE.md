@@ -292,15 +292,18 @@ The rules `run` lives under, none of which may be relaxed to make something work
   text never becomes an argument.
 - stdin is content, so it may be untrusted. This is what lets untrusted data reach a command line
   without the planner or the driver reading it.
-- stdout and stderr are **always** `(U,priv)`. Every stage, no exceptions, nothing a caller or the
-  model can declare changes it. This is the property the whole tool rests on.
+- stdout and stderr are `(U,priv)` unless the user has vouched for **every** stage, argv and all,
+  in which case they are `(T,priv)`. The pessimistic label is the default and the only one that
+  holds without knowing what ran. Nothing a caller, a stage, or the model can declare changes it:
+  the single exception is a person saying, at the prompt and in those terms, that they trust the
+  command and its output. Never widen that to anything the system infers.
 - Private input asks, even though the labels would permit it, because handing the user's data to a
   program releases it somewhere this policy stops governing.
-- Every run asks, unless the user has already vouched for every program in it. There is no
+- Every run asks, unless the user has already vouched for every command in it. There is no
   read-only category: nothing here can tell whether `foo --bar` writes, and a stage declaring
   itself harmless only helps if the declaration is honest. A person having answered the question
-  before, in this session, for this program is the **only** thing that may answer it: never a
-  property of the argv, never a declaration by a stage, and never anything derived from what a
+  before, in this session, for this exact command is the **only** thing that may answer it: never
+  a property of the argv, never a declaration by a stage, and never anything derived from what a
   program printed. An unprompted write is worse than an unwanted prompt.
 
 Programs are **not** confined and **not** enumerated. They run with the access the user's shell
@@ -309,19 +312,39 @@ cannot be listed in advance. Do not add an allowlist and treat it as the safety 
 is the label on the output, not a belief about the binary. Whether to confine children is issue #4;
 whether output can ever be trusted is issue #3. Neither may be resolved by weakening the labels.
 
-`TrustedPrograms` is **not** that allowlist and must never become one. It decides only whether the
-person is asked again, never what may run: a program nobody has vouched for still runs after a
-prompt, nothing is refused for being absent, and the set is empty at the start of every session. It
-is keyed by **resolved path**, because `$PATH` and shell aliases decide what a name means and an
-approval must not follow a name onto a different binary. Like the trust map it belongs to the
-session, is written into the session record, and is restored on resume but never inherited by a
-fresh session in the same directory.
+`TrustedPrograms` is **not** that allowlist and must never become one. It never decides what may
+run: a command nobody has vouched for still runs after a prompt, nothing is refused for being
+absent from it, and the set is empty at the start of every session.
 
-Remembering by program is coarser than remembering the argv, which is what this file used to point
-at. Vouching for `git` after reading `git log` also stops `git push` being asked about for that
-session. That is a real widening, taken deliberately, and the prompt says so in as many words. Do
-not make it quieter. Private input asks every time whatever is remembered, since vouching for a
-program is not consenting to hand it the user's data.
+What it does decide is two things, and an entry grants both together because that is what the
+person was asked for:
+
+1. the command runs again without being asked, side effects and all;
+2. what it prints is `(T,priv)`, so the planner reads it instead of a reference.
+
+The second is a **human assertion, not an inference**. Nothing establishes that a vouched command
+is side-effect-free or that its output is free of influence, and nothing tries: `git log` prints
+commit messages that whoever contributed to the repository wrote. It is trusted for exactly the
+reason a directory in the trust map is trusted, which is that the user said so and not that
+anything inspected it. That equivalence is the whole justification, so do not reach for a stronger
+one and do not let anything else mint an entry. The prompt must keep asking for both halves in
+those terms, and `/status` must keep showing what was granted.
+
+Entries are keyed by **resolved path and exact arguments**, both. `$PATH` and shell aliases decide
+what a name means, so an assertion must not follow a name onto a different binary; and `git log`
+says nothing about `git push`, which do different things and print different things. Never widen an
+entry to a program alone. **Every** stage of a pipeline must be vouched for or the whole output is
+untrusted: an unvouched stage in the middle is a transformation nobody answered for, and its output
+is what the next stage read.
+
+Like the trust map it belongs to the session, is written into the session record, and is restored
+on resume but never inherited by a fresh session in the same directory. Private input asks every
+time whatever is vouched for, since trusting a command is not consenting to hand it the user's data.
+
+[`crate::pure`] reaches the same label by the other road, proving from `(program, argv)` that a
+stage can read nothing the label does not account for. It is a proof about a program where this is
+a person taking responsibility for one, and the two must not be merged. It remains unwired: issue
+#3 is still open.
 
 ## Committing
 

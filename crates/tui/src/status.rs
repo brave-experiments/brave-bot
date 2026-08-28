@@ -146,17 +146,18 @@ pub fn report(facts: &Facts<'_>) -> Report {
 
     // A standing permission the user gave earlier and cannot otherwise see. Every other prompt in
     // this session announces itself by appearing; this is the one that stops appearing, so without
-    // a line here there is nothing to tell them a program now runs unasked.
-    let vouched: Vec<&str> = facts.programs.iter().collect();
+    // a line here there is nothing to tell them a command now runs unasked and that what it prints
+    // is being read as trusted.
+    let vouched: Vec<&bua_core::programs::Command> = facts.programs.iter().collect();
     if vouched.is_empty() {
         lines.push(Line::new("Programs", "every run is put to you"));
     } else {
         lines.push(
-            Line::new("Programs", plural(vouched.len(), "program"))
-                .with_note("run without asking, whatever the arguments"),
+            Line::new("Trusted commands", plural(vouched.len(), "command"))
+                .with_note("run unasked, and their output is trusted"),
         );
-        for path in vouched.iter().take(MAX_RULES) {
-            lines.push(Line::new("", *path));
+        for command in vouched.iter().take(MAX_RULES) {
+            lines.push(Line::new("", command.display()));
         }
         if vouched.len() > MAX_RULES {
             lines.push(Line::new(
@@ -270,15 +271,20 @@ mod tests {
     fn the_report_names_the_programs_that_run_without_asking() {
         let config = config_for("http://127.0.0.1:1", None);
         let trust = trusting();
-        let vouched = TrustedPrograms::from_iter(["/usr/bin/git", "/usr/bin/make"]);
+        let vouched = TrustedPrograms::from_iter([
+            bua_core::programs::Command::new("/usr/bin/git", vec!["log".to_string()]),
+            bua_core::programs::Command::new("/usr/bin/make", vec!["check".to_string()]),
+        ]);
         let mut facts = facts(&config, &trust);
         facts.programs = &vouched;
 
         let shown = rendered(&report(&facts));
-        assert!(shown.contains("/usr/bin/git"), "{shown}");
-        assert!(shown.contains("/usr/bin/make"), "{shown}");
-        // The widening, said where the user can see it: vouching ignores the arguments.
-        assert!(shown.contains("whatever the arguments"), "{shown}");
+        // The arguments are part of what was vouched for, so they are part of what is reported:
+        // "git" alone would not tell a reader which command they trusted.
+        assert!(shown.contains("/usr/bin/git log"), "{shown}");
+        assert!(shown.contains("/usr/bin/make check"), "{shown}");
+        // Both halves of the grant, said where the user can see them.
+        assert!(shown.contains("output is trusted"), "{shown}");
     }
 
     /// The ordinary case has to say so rather than say nothing, or a user reading the report

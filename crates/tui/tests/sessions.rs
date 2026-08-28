@@ -85,7 +85,10 @@ fn a_trust_map() -> TrustStore {
 
 /// Two programs the user vouched for, by resolved path.
 fn a_program_list() -> TrustedPrograms {
-    TrustedPrograms::from_iter(["/usr/bin/git", "/usr/bin/make"])
+    TrustedPrograms::from_iter([
+        bua_core::programs::Command::new("/usr/bin/git", vec!["log".to_string()]),
+        bua_core::programs::Command::new("/usr/bin/make", vec!["check".to_string()]),
+    ])
 }
 
 fn a_conversation() -> Conversation {
@@ -283,8 +286,12 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     // The programs go with the session too, and for the same reason: the person resuming is the
     // person who vouched for them, so they are not asked about the same program again.
     let vouched = record.trusted_programs();
-    assert!(vouched.contains("/usr/bin/git"));
-    assert!(vouched.contains("/usr/bin/make"));
+    assert!(vouched.contains("/usr/bin/git", &["log".to_string()]));
+    assert!(vouched.contains("/usr/bin/make", &["check".to_string()]));
+    assert!(
+        !vouched.contains("/usr/bin/git", &["push".to_string()]),
+        "a resumed session vouched for a command it was never given"
+    );
     assert_eq!(vouched.len(), 2, "the list came back with something extra");
 
     // A session that declined recorded that it declined, which is not the same as a record that

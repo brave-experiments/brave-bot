@@ -142,16 +142,20 @@ impl RunRequest {
         )
     }
 
-    /// The programs this would add to the trusted list, without repeats and in stage order.
+    /// The commands this would add to the trusted list, without repeats and in stage order.
     ///
     /// Named for the prompt, which has to say what vouching would cover. A pipeline of two stages
     /// vouches for both, since a run that still had to ask about one of them would not have
-    /// stopped asking.
-    pub fn would_vouch_for(&self) -> Vec<String> {
-        let mut named: Vec<String> = Vec::new();
-        for path in &self.resolved {
-            if !named.iter().any(|seen| seen == path) {
-                named.push(path.clone());
+    /// stopped asking, and its output would still be untrusted.
+    ///
+    /// Each entry is a program **and its exact arguments**. Vouching for `git log` says nothing
+    /// about `git push`.
+    pub fn would_vouch_for(&self) -> Vec<bua_core::programs::Command> {
+        let mut named: Vec<bua_core::programs::Command> = Vec::new();
+        for (stage, path) in self.pipeline.stages.iter().zip(&self.resolved) {
+            let command = bua_core::programs::Command::new(path.clone(), stage.args.clone());
+            if !named.contains(&command) {
+                named.push(command);
             }
         }
         named
@@ -469,14 +473,23 @@ mod tests {
             directory: "/tmp".into(),
         };
         assert_eq!(
-            request.would_vouch_for(),
-            vec!["/usr/bin/git".to_string(), "/usr/bin/sed".to_string()]
+            request
+                .would_vouch_for()
+                .iter()
+                .map(bua_core::programs::Command::display)
+                .collect::<Vec<_>>(),
+            vec![
+                "/usr/bin/git log".to_string(),
+                "/usr/bin/sed -n".to_string()
+            ],
+            "vouching must name the arguments, since they are part of what is vouched for"
         );
     }
 
-    /// The same program twice is one entry, so the prompt does not offer to vouch for it twice.
+    /// The same program with different arguments is two entries, because vouching is for a
+    /// command and not for a program: `sed -n` and `sed -e` do different things.
     #[test]
-    fn a_program_used_twice_is_named_once() {
+    fn the_same_program_with_different_arguments_is_two_entries() {
         let request = RunRequest {
             pipeline: Pipeline::new(vec![
                 bua_core::Stage::new("sed", vec!["-n".into()]),
@@ -485,7 +498,22 @@ mod tests {
             resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
             directory: "/tmp".into(),
         };
-        assert_eq!(request.would_vouch_for(), vec!["/usr/bin/sed".to_string()]);
+        assert_eq!(request.would_vouch_for().len(), 2);
+    }
+
+    /// The identical command twice is one entry, so the prompt does not offer to vouch for it
+    /// twice.
+    #[test]
+    fn the_identical_command_twice_is_named_once() {
+        let request = RunRequest {
+            pipeline: Pipeline::new(vec![
+                bua_core::Stage::new("sed", vec!["-n".into()]),
+                bua_core::Stage::new("sed", vec!["-n".into()]),
+            ]),
+            resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
+            directory: "/tmp".into(),
+        };
+        assert_eq!(request.would_vouch_for().len(), 1);
     }
 
     /// Approving writes must not approve running programs. A test that wanted a program to run

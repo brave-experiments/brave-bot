@@ -455,18 +455,34 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         )));
     }
 
-    // What `a` would actually grant, in as many words. Remembering is by program and not by
-    // argument vector, so vouching after reading `git log` also stops `git push` being asked
-    // about. A person agreeing to that should be agreeing to the thing it does, and the only
-    // place to say so is here.
+    // What `a` would actually grant, in as many words. It is two things, not one, and the second
+    // is the one nothing else in the interface would tell them: what the command prints stops
+    // being quarantined and the model reads it. Nothing checks that assertion, so the person
+    // making it has to be asked for it in those terms.
     let vouching = request.would_vouch_for();
     if !request.releases_private() {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            format!(
-                "  a: stop asking about {} for the rest of this session, whatever the arguments",
-                vouching.join(", ")
-            ),
+            "  a: trust this command for the rest of this session, meaning both:",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "       it runs again unasked, side effects and all",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "       what it prints is trusted, and the model reads it",
+            Style::default().fg(Color::Yellow),
+        )));
+        for command in &vouching {
+            lines.push(Line::from(Span::styled(
+                format!("       {}", command.display()),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        // Exact arguments, so the narrowness is visible rather than assumed the other way.
+        lines.push(Line::from(Span::styled(
+            "       these arguments only: git log is not git push",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -670,17 +686,40 @@ mod tests {
         assert!(rendered_run(&a_run(false)).contains("not sandboxed"));
     }
 
-    /// Vouching is by program and not by argument vector, so a person agreeing to it is agreeing
-    /// that any arguments to that program will run unasked for the rest of the session. The
-    /// prompt has to say so; nothing else in the interface will.
+    /// Vouching grants two things, and the prompt has to ask for both in as many words. The
+    /// second is the one nothing else in the interface would reveal: what the command prints stops
+    /// being quarantined and the model reads it. Nothing checks that assertion, so the person
+    /// making it must be asked for it explicitly.
     #[test]
-    fn a_run_prompt_says_what_vouching_would_actually_cover() {
+    fn a_run_prompt_asks_for_the_side_effects_and_the_output_together() {
         let drawn = rendered_run(&a_run(false));
         assert!(
-            drawn.contains("whatever the arguments"),
-            "the prompt does not say vouching ignores the arguments: {drawn}"
+            drawn.contains("runs again unasked"),
+            "the prompt does not say vouching covers running it again: {drawn}"
         );
-        assert!(drawn.contains("/usr/bin/git"), "{drawn}");
+        assert!(
+            drawn.contains("side effects"),
+            "the prompt does not say vouching covers the side effects: {drawn}"
+        );
+        assert!(
+            drawn.contains("what it prints is trusted"),
+            "the prompt does not say vouching trusts the output: {drawn}"
+        );
+    }
+
+    /// The entry is a command, not a program, and the prompt shows it with its arguments so the
+    /// narrowness is visible rather than assumed the other way around.
+    #[test]
+    fn a_run_prompt_names_the_exact_command_it_would_vouch_for() {
+        let drawn = rendered_run(&a_run(false));
+        assert!(
+            drawn.contains("/usr/bin/git log --oneline"),
+            "the prompt does not name the arguments being vouched for: {drawn}"
+        );
+        assert!(
+            drawn.contains("git log is not git push"),
+            "the prompt does not say the entry is one command: {drawn}"
+        );
     }
 
     /// Private input asks every time whatever is remembered, so the key that offers to stop
