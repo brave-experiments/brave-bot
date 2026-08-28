@@ -395,6 +395,11 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.scroll_down(1);
             Action::Redraw
         }
+        // The page keys walk the prompt first: the start of this line, then the line before, and
+        // the same downwards. Only while there is somewhere to go, so at the ends of the prompt they
+        // fall through to the transcript below, which is what they did before there was a caret.
+        KeyCode::PageUp if session.page_up() => Action::Redraw,
+        KeyCode::PageDown if session.page_down() => Action::Redraw,
         KeyCode::PageUp => {
             session.scroll_up(10);
             Action::Redraw
@@ -464,6 +469,8 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         }
         KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
         KeyCode::Down if session.is_multiline() && session.move_down_a_line() => Action::Redraw,
+        KeyCode::PageUp if session.page_up() => Action::Redraw,
+        KeyCode::PageDown if session.page_down() => Action::Redraw,
         KeyCode::PageUp => {
             session.scroll_up(10);
             Action::Redraw
@@ -2627,6 +2634,8 @@ mod tests {
         assert!(session.input().is_empty());
     }
 
+    /// With nothing typed the prompt has nowhere to go, so the keys are the transcript's, which is
+    /// what they were before there was a caret to move.
     #[test]
     fn page_keys_scroll_further() {
         let mut session = Session::new("none");
@@ -2634,6 +2643,73 @@ mod tests {
         assert_eq!(session.scroll, 10);
         handle_key(&mut session, key(KeyCode::PageDown));
         assert_eq!(session.scroll, 0);
+    }
+
+    /// The first press takes the start of the line and the second the line before it, so someone
+    /// who wanted this line's start gets it without losing their place in the paragraph.
+    #[test]
+    fn page_up_takes_the_start_of_the_line_then_the_line_before() {
+        let mut session = Session::new("none");
+        handle_paste(&mut session, "first line\nsecond line\nthird line");
+
+        handle_key(&mut session, key(KeyCode::PageUp));
+        assert_eq!(session.caret(), "first line\nsecond line\n".len());
+        handle_key(&mut session, key(KeyCode::PageUp));
+        assert_eq!(session.caret(), "first line\n".len());
+        handle_key(&mut session, key(KeyCode::PageUp));
+        assert_eq!(session.caret(), 0);
+    }
+
+    /// And the same downwards, by line ends.
+    #[test]
+    fn page_down_takes_the_end_of_the_line_then_the_line_after() {
+        let mut session = Session::new("none");
+        handle_paste(&mut session, "first line\nsecond line\nthird line");
+        // Up to the very start, which is where paging down has somewhere to go from.
+        for _ in 0..3 {
+            handle_key(&mut session, key(KeyCode::PageUp));
+        }
+        assert_eq!(session.caret(), 0);
+
+        handle_key(&mut session, key(KeyCode::PageDown));
+        assert_eq!(session.caret(), "first line".len());
+        handle_key(&mut session, key(KeyCode::PageDown));
+        assert_eq!(session.caret(), "first line\nsecond line".len());
+    }
+
+    /// Off the ends of the prompt the keys go back to the transcript, so a paragraph does not trap
+    /// them and scrolling stays reachable.
+    #[test]
+    fn the_page_keys_reach_the_transcript_from_the_ends_of_the_prompt() {
+        let mut session = Session::new("none");
+        handle_paste(&mut session, "one\ntwo");
+
+        // The caret starts at the end, so the start of "two" and then the start of "one".
+        handle_key(&mut session, key(KeyCode::PageUp));
+        handle_key(&mut session, key(KeyCode::PageUp));
+        assert_eq!(session.caret(), 0);
+
+        handle_key(&mut session, key(KeyCode::PageUp));
+        assert_eq!(session.scroll, 10, "the transcript was unreachable");
+
+        // And back down: the end of "one", then the end of "two".
+        handle_key(&mut session, key(KeyCode::PageDown));
+        handle_key(&mut session, key(KeyCode::PageDown));
+        assert_eq!(session.caret(), session.input().len());
+
+        handle_key(&mut session, key(KeyCode::PageDown));
+        assert_eq!(session.scroll, 0);
+    }
+
+    /// A single-line prompt has ends too, so the keys reach them before the transcript.
+    #[test]
+    fn the_page_keys_work_on_one_line() {
+        let mut session = typed_into("a sentence");
+        handle_key(&mut session, key(KeyCode::PageUp));
+        assert_eq!(session.caret(), 0);
+        assert_eq!(session.scroll, 0, "the transcript scrolled instead");
+        handle_key(&mut session, key(KeyCode::PageDown));
+        assert_eq!(session.caret(), "a sentence".len());
     }
 
     /// Under Ctrl, because the bare keys belong to the line being typed.

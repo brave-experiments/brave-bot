@@ -711,6 +711,47 @@ impl Session {
         self.caret = self.caret_line().1;
     }
 
+    /// Move the caret to the start of its line, or to the start of the line above when it is
+    /// already there.
+    ///
+    /// `false` when there was nowhere left to go, so the caller can leave the key to the transcript
+    /// at the top of the prompt rather than having it do nothing.
+    ///
+    /// Two presses to cross a line boundary, which is what makes the first press cheap: someone who
+    /// wanted the start of this line gets it without also losing their place in the paragraph.
+    pub fn page_up(&mut self) -> bool {
+        let (start, _) = self.caret_line();
+        if self.caret > start {
+            self.caret = start;
+            return true;
+        }
+        if start == 0 {
+            return false;
+        }
+        self.caret = self.input[..start - 1]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        true
+    }
+
+    /// Move the caret to the end of its line, or to the end of the line below when it is already
+    /// there.
+    pub fn page_down(&mut self) -> bool {
+        let (_, end) = self.caret_line();
+        if self.caret < end {
+            self.caret = end;
+            return true;
+        }
+        if end == self.input.len() {
+            return false;
+        }
+        let below = end + 1;
+        self.caret = self.input[below..]
+            .find('\n')
+            .map_or(self.input.len(), |newline| below + newline);
+        true
+    }
+
     /// Move the caret to the line above, keeping its position along the line where it can.
     ///
     /// `false` when there is no line above, which is what leaves Up to the history it belongs to

@@ -36,7 +36,9 @@ In the prompt: Left/Right move a character and Ctrl-Left/Ctrl-Right a word, Home
 the ends of the line, Delete and Backspace take a character either side of the caret, and
 Ctrl-W, Ctrl-U and Ctrl-K take a word, the start of the line or the rest of it. The readline
 bindings Ctrl-A, Ctrl-E, Ctrl-B and Ctrl-F work too, for terminals that send nothing for the
-named keys. Shift-Enter starts a new line instead of sending, and the box grows to hold it.
+named keys. PageUp takes the start of the line and then the line before it, PageDown the end of
+the line and then the line after. Shift-Enter starts a new line instead of sending, and the box
+grows to hold it.
 
 Most terminals send the same byte for Enter whichever modifier was held, so Shift-Enter needs
 either a terminal that reports the modifier (Ghostty, Kitty, WezTerm) or one configured to send
@@ -44,8 +46,8 @@ a newline for the chord. In iTerm2 that is Settings, Keys, Key Bindings: add Shi
 choose "Send Text" with `\n`. Terminal.app is Settings, Profiles, Keyboard. Ctrl-J does the same
 thing everywhere and needs no configuration at all.
 
-In a session: the mouse wheel scrolls, as do Up/Down once the prompt has no line left to
-move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
+In a session: the mouse wheel scrolls, as do Up/Down and the page keys once the prompt has
+nowhere left to move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
 audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back what you
 saved, Esc cancels a running turn. Add `--trace` to a one-shot run for the same audit trail:
 which gate checked what, the label every value carried, and what was released.
