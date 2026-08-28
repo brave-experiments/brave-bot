@@ -585,7 +585,19 @@ pub const RESUMED_PREFIX: &str = "This session was resumed.";
 ///
 /// Public for the same reason as the others: a transcript has to tell it from a prompt, and a
 /// literal repeated in two crates is a literal that will disagree with itself.
-pub const COMPACTED_PREFIX: &str = "Earlier in this conversation:";
+/// The whole introduction, not an opening fragment of one. A prefix kept separately from the
+/// words it is a prefix of is two literals that have to agree, and they stop agreeing.
+///
+/// The wording is load-bearing, which is not obvious until it goes wrong. Introduced as "earlier
+/// in this conversation", a planner reading its own summary treated it as hearsay: asked what the
+/// user's favourite colour was, it answered that there had been a claim of one, but that it was
+/// text observed in a message rather than something the user had said. That instinct is the right
+/// one and the system prompt teaches it, so the fix is to say plainly what this is rather than
+/// leave a planner to work out that its own memory counts.
+pub const COMPACTED_PREFIX: &str = "This is the record of what you and the user said earlier in \
+this conversation. Those messages are no longer being sent and this stands in their place. You \
+wrote it, from the messages themselves, so it is your own memory rather than something you were \
+told: what it says the user asked for, the user asked for.";
 
 /// What to tell the planner about the references it was handed before the resume.
 ///

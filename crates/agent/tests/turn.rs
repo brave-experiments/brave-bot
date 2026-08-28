@@ -7022,7 +7022,7 @@ fn a_long_turn_summarises_its_earlier_rounds_partway_through() {
         bodies
             .last()
             .expect("a last request")
-            .contains("Earlier in this conversation:"),
+            .contains(bravebot_agent::conversation::COMPACTED_PREFIX),
         "the summary never reached a later round"
     );
 
@@ -7071,7 +7071,7 @@ fn compacting_on_request_reaches_the_model_and_shortens_the_conversation() {
         conversation.messages()[0]
             .content
             .as_text()
-            .is_some_and(|text| text.starts_with("Earlier in this conversation:")),
+            .is_some_and(|text| text.starts_with(bravebot_agent::conversation::COMPACTED_PREFIX)),
         "the summary did not replace what it stood for"
     );
 }
