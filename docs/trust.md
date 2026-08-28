@@ -89,6 +89,39 @@ A directory is somewhere to type through rather than a file to read, so naming o
 References cannot leave the workspace: `..` and an absolute path are refused rather than resolved,
 exactly as they are everywhere else.
 
+## Being asked when the model runs into one
+
+The startup question and `@` both come before the work. The third moment is during it: when the
+model tries to read a file nobody has vouched for, you are shown the path and the first lines of it
+and asked whether to trust it.
+
+```
+╭ let the model read this file? ────────────────────────────╮
+│Trust game.js                                              │
+│                                                           │
+│  the model cannot read this file, so it is working blind   │
+│  on it. Vouching lets it read this file for the rest of    │
+│  this session, here and in every later read.               │
+│                                                           │
+│┃ const SPEED = 100;                                       │
+│                                                           │
+│  y trust it    n leave it quarantined    ctrl-c stop      │
+╰───────────────────────────────────────────────────────────╯
+```
+
+Answering yes writes exactly the rule `@game.js` would have written, so this is the same decision
+offered at the moment it matters rather than a second way of making it. Everything above about that
+rule holds: it is for that file, it outlives the read, and `/status` lists it.
+
+It is asked once per file per turn, and only for a file that is quarantined, so a workspace you
+vouched for at startup never raises it. Declining leaves the file as it was and the model carries on
+with a reference, which is what it would have had anyway.
+
+The reason this exists is a session that did not have it. Asked to fix a bug in a game it could not
+read, the model pointed an isolated processor at the file, wrote the answer back unseen, and
+finished by saying it could not confirm any of what it had done. One prompt would have let it read
+the file.
+
 ## Opening another directory
 
 `/add-dir ~/notes` opens a second directory for the rest of the session. Two things have to happen

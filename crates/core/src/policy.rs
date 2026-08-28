@@ -175,6 +175,13 @@ pub struct Policy<'sink, S: Sink> {
     trust: TrustStore,
     /// Which programs the user has stopped being asked about, by resolved path.
     programs: crate::programs::TrustedPrograms,
+    /// Paths this turn has already offered to the user to vouch for.
+    ///
+    /// Turn-scoped, and deliberately not recorded anywhere longer-lived. A yes goes into the trust
+    /// map and needs no remembering; a no is worth honouring for the rest of the turn so a planner
+    /// retrying a read does not put the same question up twice, but it is not a standing refusal
+    /// and the next turn may ask again.
+    vouch_asked: std::collections::BTreeSet<String>,
     /// The integrity of every observation this turn has made, met together.
     ///
     /// Starts trusted, since the task is the user's own words, and drops to untrusted the moment
@@ -231,6 +238,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             denials: 0,
             trust: TrustStore::new(),
             programs: crate::programs::TrustedPrograms::new(),
+            vouch_asked: std::collections::BTreeSet::new(),
             context: Integrity::Trusted,
         })
     }
@@ -305,6 +313,27 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The programs vouched for, including any this turn recorded.
     pub fn programs(&self) -> &crate::programs::TrustedPrograms {
         &self.programs
+    }
+
+    /// Whether the user should be offered the chance to vouch for this path.
+    ///
+    /// True once per path per turn, and only where the path is quarantined and so the offer would
+    /// change something. Records the asking, so a planner retrying a read does not put the same
+    /// question up twice.
+    ///
+    /// This offers the trust map's own decision at the moment it bites. It is not a second route
+    /// to trusting content: what a yes writes is a rule in the map, the same rule `@` and the
+    /// startup question write, so the answer stays consistent for every later read of that path.
+    pub fn should_offer_vouch(&mut self, path: &str) -> bool {
+        if !self.read_is_quarantined(path) || self.vouch_asked.contains(path) {
+            return false;
+        }
+        self.vouch_asked.insert(path.to_string());
+        self.allow(
+            "approval",
+            format!("{path}: quarantined, so the user is offered the chance to vouch for it"),
+        );
+        true
     }
 
     /// Record that the user vouched for this exact command, its side effects and its output.

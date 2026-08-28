@@ -20,7 +20,7 @@
 //! decision taken against a question nobody matched is worse than no decision at all.
 
 use bua_agent::confirm::{
-    Confirmer, Decision, OutputRequest, RunDecision, RunRequest, WriteRequest,
+    Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
 use bua_agent::report::{Activity, Landing, Phase, Reporter, Shown};
 use bua_core::ask::{Answer, Asking};
@@ -37,6 +37,8 @@ pub enum ToMain {
     /// A command's output needs a person to read it before the planner may. The main thread
     /// must reply.
     ReadOutput(OutputRequest),
+    /// A quarantined file the model would like to read. The main thread must reply.
+    Vouch(VouchRequest),
     /// The task list changed. No reply.
     /// The planner is asking the user something. The main thread must reply.
     Ask(Asking),
@@ -63,6 +65,7 @@ pub enum Reply {
     Write(Decision),
     Run(RunDecision),
     ReadOutput(Decision),
+    Vouch(Decision),
     Ask(Vec<Answer>),
 }
 
@@ -108,6 +111,13 @@ impl Confirmer for RemoteConfirmer {
             Some(Reply::ReadOutput(decision)) => decision,
             // A reply to a different question is not consent to put these bytes in the planner's
             // context.
+            _ => Decision::Reject,
+        }
+    }
+
+    fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
+        match self.exchange(ToMain::Vouch(request.clone())) {
+            Some(Reply::Vouch(decision)) => decision,
             _ => Decision::Reject,
         }
     }
@@ -487,6 +497,7 @@ mod tests {
                     ToMain::Ask(_) => seen.push("ask"),
                     ToMain::Run(_) => seen.push("run"),
                     ToMain::ReadOutput(_) => seen.push("read_output"),
+                    ToMain::Vouch(_) => seen.push("vouch"),
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),
                     ToMain::Phase(_) => seen.push("phase"),

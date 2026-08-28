@@ -996,6 +996,13 @@ impl bua_agent::Confirmer for RecordingConfirmer {
         bua_agent::Decision::Reject
     }
 
+    fn confirm_vouch(
+        &mut self,
+        _request: &bua_agent::confirm::VouchRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
     /// These tests are about writes. A question they did not set up gets no answer.
     fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
         Vec::new()
@@ -2440,6 +2447,13 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
         fn confirm_read_output(
             &mut self,
             _request: &bua_agent::confirm::OutputRequest,
+        ) -> bua_agent::Decision {
+            bua_agent::Decision::Reject
+        }
+
+        fn confirm_vouch(
+            &mut self,
+            _request: &bua_agent::confirm::VouchRequest,
         ) -> bua_agent::Decision {
             bua_agent::Decision::Reject
         }
@@ -5241,6 +5255,13 @@ impl bua_agent::Confirmer for AnswersWith {
         bua_agent::Decision::Reject
     }
 
+    fn confirm_vouch(
+        &mut self,
+        _request: &bua_agent::confirm::VouchRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
     fn ask_user(&mut self, asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
         self.asked.push(asking.clone());
         self.replies.clone()
@@ -5556,6 +5577,13 @@ impl bua_agent::Confirmer for AskedAboutRuns {
     fn confirm_read_output(
         &mut self,
         _request: &bua_agent::confirm::OutputRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
+    fn confirm_vouch(
+        &mut self,
+        _request: &bua_agent::confirm::VouchRequest,
     ) -> bua_agent::Decision {
         bua_agent::Decision::Reject
     }
@@ -6016,6 +6044,13 @@ impl bua_agent::Confirmer for ReadsWhatItRan {
         }
     }
 
+    fn confirm_vouch(
+        &mut self,
+        _request: &bua_agent::confirm::VouchRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
     fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
         Vec::new()
     }
@@ -6284,5 +6319,228 @@ fn a_quarantined_read_tells_the_planner_the_user_can_vouch() {
     assert!(
         !third.contains("game.js"),
         "the hint leaked the filename it is about"
+    );
+}
+
+/// A confirmer that vouches for whatever quarantined file it is offered.
+struct VouchesForFiles {
+    allow: bool,
+    offered: std::sync::Arc<std::sync::Mutex<Vec<bua_agent::confirm::VouchRequest>>>,
+}
+
+impl VouchesForFiles {
+    fn new(allow: bool) -> Self {
+        Self {
+            allow,
+            offered: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl bua_agent::Confirmer for VouchesForFiles {
+    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
+    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+        bua_agent::RunDecision::reject()
+    }
+
+    fn confirm_read_output(
+        &mut self,
+        _request: &bua_agent::confirm::OutputRequest,
+    ) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
+    fn confirm_vouch(&mut self, request: &bua_agent::confirm::VouchRequest) -> bua_agent::Decision {
+        self.offered.lock().unwrap().push(request.clone());
+        if self.allow {
+            bua_agent::Decision::Approve
+        } else {
+            bua_agent::Decision::Reject
+        }
+    }
+
+    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+        Vec::new()
+    }
+}
+
+/// The trust question, put where it bites. A session rewrote a user's game through a processor it
+/// could not see, when one prompt would have let it read the file.
+#[test]
+fn a_quarantined_read_offers_the_user_the_chance_to_vouch() {
+    let scratch = Scratch::new("vouch-offer");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"game.js"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = VouchesForFiles::new(true);
+    let offered = confirmer.offered.clone();
+
+    let outcome = turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    // The person was shown the path and enough of the file to know what it is.
+    let asked = offered.lock().unwrap();
+    let request = asked.first().expect("the user was offered the file");
+    assert_eq!(request.path, "game.js");
+    assert!(request.preview.contains("SPEED"));
+    drop(asked);
+
+    // Vouching is a standing decision, so it is in the map the session carries forward.
+    assert!(
+        outcome.trust.is_trusted("game.js"),
+        "vouching did not record a rule in the trust map"
+    );
+
+    // And the read went through, so the planner has the file rather than a reference to it.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("SPEED"),
+        "the file was vouched for and still not shown to the planner"
+    );
+}
+
+/// Declining leaves everything as it was: the file stays quarantined and nothing is recorded.
+#[test]
+fn declining_to_vouch_leaves_the_file_quarantined() {
+    let scratch = Scratch::new("vouch-declined");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"game.js"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let outcome = turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut VouchesForFiles::new(false),
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        !outcome.trust.is_trusted("game.js"),
+        "declining recorded a rule anyway"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("SPEED"),
+        "a file the user declined to vouch for reached the planner"
+    );
+}
+
+/// A file already vouched for is not asked about, or every read of a trusted workspace would
+/// interrupt the user.
+#[test]
+fn a_trusted_file_is_not_offered_for_vouching() {
+    let scratch = Scratch::new("vouch-trusted");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"game.js"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = VouchesForFiles::new(true);
+    let offered = confirmer.offered.clone();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        offered.lock().unwrap().is_empty(),
+        "a file nobody needed to vouch for was put to the user anyway"
+    );
+}
+
+/// Asked once per path per turn. A planner retrying a read it was refused must not put the same
+/// question up again.
+#[test]
+fn the_same_file_is_offered_once_per_turn() {
+    let scratch = Scratch::new("vouch-once");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"game.js"}"#),
+        tool_request("read_file", r#"{"path":"game.js"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = VouchesForFiles::new(false);
+    let offered = confirmer.offered.clone();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix the speed bug"),
+        &mut bua_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        offered.lock().unwrap().len(),
+        1,
+        "the same file was put to the user twice in one turn"
     );
 }
