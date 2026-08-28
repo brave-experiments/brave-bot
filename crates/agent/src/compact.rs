@@ -45,15 +45,22 @@ entirely: it is the only thing that will remain of it, so anything you leave out
 The most recent exchanges are not shown to you. They are kept exactly as they are, so do not try \
 to account for them and do not write a conclusion.
 
+Be exact about who said what, and prefer a name to a pronoun. Call the person \"the user\" and \
+the agent \"you\". Never write \"your\" for something of the user's: an agent reading \"your \
+favourite colour is teal\" back takes it as its own favourite colour and says so. Write \"the \
+user's favourite colour is teal\". The same goes the other way: what the agent did is what you \
+did, not what the user did.
+
 Keep, in whatever order reads best:
 
-- what the person asked for, in their own words wherever the words matter
+- what the user asked for, in their own words wherever the words matter, attributed to them
 - what was decided, and what was decided against, and why
 - every path read, written or created, spelled exactly as it appeared
 - commands that were run, and what came of them
 - what is finished, what is half done, and what has not been started
 - every ref:N that was mentioned, and what each one was about
-- anything the person corrected the agent about
+- anything the user corrected the agent about
+- facts the user gave about themselves or their work, attributed to the user
 - questions still outstanding
 
 Leave out the agent's account of how it got somewhere, and anything later work superseded.
