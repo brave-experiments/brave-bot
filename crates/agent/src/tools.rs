@@ -1822,20 +1822,28 @@ fn run<S: Sink, C: Confirmer>(
         return problem("error: 'pipeline' needs at least one stage");
     }
 
-    // Assembled from the planner's own words, which are untrusted, and released only for display.
-    // A person reading argv is the legitimate destination for it: it is what an approval is.
+    // Assembled from the planner's own words, which are untrusted. Every field is wrapped as it is
+    // taken and released through one witness, so the audit trail records that a command line was
+    // released rather than leaving it to happen implicitly. A person reading argv is the
+    // legitimate destination for it: their reading it is what an approval is.
     let proof = policy.authorise_display_release("a proposed command line");
     let mut stages = Vec::with_capacity(entries.len());
     for entry in entries {
-        let Some(program) = entry.get("program").and_then(Value::as_str) else {
+        let Some(named) = entry.get("program").and_then(Value::as_str) else {
             return problem(
                 "error: every stage needs a 'program', which must be a string naming one program",
             );
         };
+        let program = Labelled::new(
+            named.to_string(),
+            bua_core::label::Label::untrusted_public(),
+        )
+        .declassify(&proof);
+
         // A command line in the program field is the mistake to catch, because it would otherwise
-        // become one program with a very odd name and fail to resolve with no explanation. This is
-        // a comparison on the planner's own output, not on workspace content: it decides what to
-        // say back, and nothing about where anything lands.
+        // become one program with a very odd name and fail to resolve with no explanation. A test
+        // on the shape of the planner's own argument, deciding what to say back to it: nothing
+        // about where anything lands, and nothing read out of the workspace.
         if program.contains(char::is_whitespace) {
             return problem(format!(
                 "error: '{program}' is not a program name. There is no shell here, so a command \
@@ -1843,6 +1851,7 @@ fn run<S: Sink, C: Confirmer>(
                  own entry of 'args'."
             ));
         }
+
         let mut args = Vec::new();
         match entry.get("args") {
             None => {}
@@ -1851,18 +1860,18 @@ fn run<S: Sink, C: Confirmer>(
                     let Some(text) = arg.as_str() else {
                         return problem("error: every entry in a stage's 'args' must be a string");
                     };
-                    args.push(text.to_string());
+                    args.push(
+                        Labelled::new(text.to_string(), bua_core::label::Label::untrusted_public())
+                            .declassify(&proof),
+                    );
                 }
             }
             Some(_) => {
                 return problem("error: a stage's 'args' must be an array of strings");
             }
         }
-        stages.push(bua_core::Stage::new(program.to_string(), args));
+        stages.push(bua_core::Stage::new(program, args));
     }
-    // Held so the release is recorded once for the whole call rather than pretending each field
-    // was released separately.
-    let _ = &proof;
     let pipeline = bua_core::Pipeline::new(stages);
 
     // Resolved once, before anyone is asked. What the person is shown, what the trusted list
