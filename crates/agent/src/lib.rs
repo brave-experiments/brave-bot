@@ -12,6 +12,7 @@ pub mod glob;
 pub mod home;
 pub mod preamble;
 pub mod processor;
+pub mod programs;
 pub mod replace;
 pub mod report;
 pub mod skills;

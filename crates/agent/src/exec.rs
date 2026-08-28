@@ -17,6 +17,13 @@
 //! child's stdin as a file descriptor. The operating system moves the bytes, so a large
 //! intermediate result cannot deadlock against a buffer we forgot to drain.
 //!
+//! # What runs is what was resolved
+//!
+//! Each stage is spawned by the resolved path its caller worked out, not by the name in the
+//! [`Pipeline`]. The name was resolved once, before the person was asked; spawning by name here
+//! would resolve it a second time, leaving a window in which `$PATH` changed and something other
+//! than what they approved ran. See [`crate::programs`].
+//!
 //! # Not confined
 //!
 //! Deliberately. `bua-sandbox` confines processes running code we did not write; these run with
@@ -129,11 +136,17 @@ impl std::error::Error for ExecError {}
 /// effect in progress, and the request to stop is precisely a request to end it.
 pub fn run(
     pipeline: &Pipeline,
+    resolved: &[std::path::PathBuf],
     directory: &std::path::Path,
     cancel: &Cancel,
 ) -> Result<Ran, ExecError> {
     if pipeline.is_empty() {
         return Err(ExecError::Io("no stages to run".to_string()));
+    }
+    if resolved.len() != pipeline.len() {
+        return Err(ExecError::Io(
+            "every stage must have been resolved to a program before it runs".to_string(),
+        ));
     }
 
     let mut children: Vec<Child> = Vec::with_capacity(pipeline.len());
@@ -147,7 +160,10 @@ pub fn run(
     let last = pipeline.len() - 1;
 
     for (index, stage) in pipeline.stages.iter().enumerate() {
-        let mut command = Command::new(&stage.program);
+        // The resolved path, never the name. The name was resolved once, before the person was
+        // asked, and running it again by name would leave a window in which `$PATH` changed and
+        // something other than what they approved executed.
+        let mut command = Command::new(&resolved[index]);
         // The vector, never a string. Nothing here builds a command line, so nothing has to
         // unbuild one.
         command

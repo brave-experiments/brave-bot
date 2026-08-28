@@ -29,8 +29,26 @@ impl Drop for Scratch {
     }
 }
 
+/// Resolve every stage the way the tool does, then run it.
 fn run(pipeline: Pipeline, at: &std::path::Path) -> Result<exec::Ran, ExecError> {
-    exec::run(&pipeline, at, &Cancel::new())
+    let resolved = resolve_all(&pipeline, at)?;
+    exec::run(&pipeline, &resolved, at, &Cancel::new())
+}
+
+fn resolve_all(
+    pipeline: &Pipeline,
+    at: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, ExecError> {
+    pipeline
+        .stages
+        .iter()
+        .map(|stage| {
+            bua_agent::programs::resolve(&stage.program, at).ok_or_else(|| ExecError::NotStarted {
+                program: stage.program.clone(),
+                detail: "not found".to_string(),
+            })
+        })
+        .collect()
 }
 
 #[test]
@@ -203,8 +221,9 @@ fn cancelling_stops_a_running_pipeline() {
     });
 
     let pipeline = Pipeline::new(vec![Stage::new("sleep", vec!["30".into()])]);
+    let resolved = resolve_all(&pipeline, &scratch.path).expect("sleep is installed");
     let started = std::time::Instant::now();
-    let error = exec::run(&pipeline, &scratch.path, &cancel).expect_err("cancelled");
+    let error = exec::run(&pipeline, &resolved, &scratch.path, &cancel).expect_err("cancelled");
     assert!(matches!(error, ExecError::Cancelled));
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
@@ -227,4 +246,44 @@ fn a_large_result_does_not_deadlock() {
     )
     .expect("the pipeline runs");
     assert_eq!(ran.stdout.trim(), "200000");
+}
+
+/// What executes is the path that was resolved, not the name. Resolving again at spawn time would
+/// leave a window in which `$PATH` changed and something other than what was approved ran.
+#[test]
+fn a_stage_runs_the_binary_it_was_resolved_to() {
+    let scratch = Scratch::new("resolved");
+    let shadow = scratch.path.join("echo");
+    std::fs::write(&shadow, "#!/bin/sh\necho shadowed\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shadow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // The pipeline says `echo`, but the resolution handed over the shadow. What runs is the
+    // resolution.
+    let pipeline = Pipeline::new(vec![Stage::new("echo", vec!["ignored".into()])]);
+    let ran = exec::run(
+        &pipeline,
+        &[shadow.canonicalize().unwrap()],
+        &scratch.path,
+        &Cancel::new(),
+    )
+    .expect("the resolved program runs");
+    assert_eq!(ran.stdout.trim(), "shadowed");
+}
+
+/// A pipeline whose stages were not all resolved does not run. Spawning by name for the remainder
+/// would be running something nobody resolved and nobody approved.
+#[test]
+fn a_pipeline_with_missing_resolutions_does_not_run() {
+    let scratch = Scratch::new("unresolved");
+    let pipeline = Pipeline::new(vec![
+        Stage::new("echo", vec!["a".into()]),
+        Stage::new("wc", vec!["-l".into()]),
+    ]);
+    let error = exec::run(&pipeline, &[], &scratch.path, &Cancel::new())
+        .expect_err("nothing runs without a resolution per stage");
+    assert!(matches!(error, ExecError::Io(_)));
 }
