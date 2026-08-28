@@ -1,5 +1,5 @@
 [package]
-name = "bua-net"
+name = "bravebot-net"
 description = "The single network egress path, gated by the information-flow policy"
 version.workspace = true
 edition.workspace = true
@@ -8,5 +8,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bua-core = { path = "../core" }
+bravebot-core = { path = "../core" }
 ureq = { workspace = true }

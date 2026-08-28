@@ -180,7 +180,7 @@ separates the model's decisions from yours.
 A write is different: the wrong file destroys work rather than wasting a step. So the model
 never gets to decide one. Your approval is what mints a single-use endorsement bound to that
 exact path, so an approval cannot be replayed or redirected. Where nobody can be asked, such
-as a one-shot `bua "..."` run, writes are refused rather than applied unseen.
+as a one-shot `bravebot "..."` run, writes are refused rather than applied unseen.
 
 ## Reviewable writes
 
@@ -248,10 +248,10 @@ An answer you type is different again: those bytes came from your keyboard, the 
 the task itself, so they are trusted the way your prompt is. That is a first label rather than an
 upgrade, and it is still refused when the question you were answering was not itself trustworthy.
 
-Where nobody can be asked, such as a one-shot `bua "..."` run, every question is declined rather
-than answered on your behalf. The model is told the reply came from a person, so inventing one
-would be worse than not asking. An answer given once is remembered for the session, question by
-question, so a model that loops back over the same decision does not make you restate it, and a
+Where nobody can be asked, such as a one-shot `bravebot "..."` run, every question is declined
+rather than answered on your behalf. The model is told the reply came from a person, so inventing
+one would be worse than not asking. An answer given once is remembered for the session, question
+by question, so a model that loops back over the same decision does not make you restate it, and a
 set where you have already settled some shows you only the rest.
 
 ## Running programs
@@ -280,7 +280,7 @@ pipeline rather than a single program: narrowing output is a stage, not a pipe c
 
 There is no allowlist and nothing to configure. `sed`, `awk`, `jq`, `rg`, `gh`, `npm`, anything
 installed, all work without being named anywhere. They also run with whatever access your own shell
-would give them: `bua` does not sandbox them.
+would give them: `bravebot` does not sandbox them.
 
 The trusted list below is not an exception to this. It decides whether you are *asked* again, never
 what may run.
@@ -303,9 +303,9 @@ argv so it cannot be reused for a different one.
 
 Standard input is **content**: carried into the process, never consulted. So untrusted data *can* be
 fed to a command line. The model names a quarantined reference and the kernel supplies the bytes,
-meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bua` itself ever
-reading it. That is the point of the split: both trusted and untrusted data reach real tools, and
-only the routing part has to be trustworthy.
+meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bravebot`
+itself ever reading it. That is the point of the split: both trusted and untrusted data reach
+real tools, and only the routing part has to be trustworthy.
 
 Output is untrusted and private by default, and nothing the model or a stage can say changes that.
 A program may print anything, including bytes an earlier stage read out of a file an attacker wrote,

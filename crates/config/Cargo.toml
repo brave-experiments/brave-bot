@@ -1,5 +1,5 @@
 [package]
-name = "bua-config"
+name = "bravebot-config"
 description = "Environment-derived configuration for the aichat backend"
 version.workspace = true
 edition.workspace = true

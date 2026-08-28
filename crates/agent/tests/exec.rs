@@ -4,9 +4,9 @@
 //! a shell would chain them, whether an argument survives intact, and whether a run that goes
 //! wrong comes back with what it produced instead of nothing.
 
-use bua_agent::exec::{self, ExecError};
-use bua_core::cancel::Cancel;
-use bua_core::{Pipeline, Stage};
+use bravebot_agent::exec::{self, ExecError};
+use bravebot_core::cancel::Cancel;
+use bravebot_core::{Pipeline, Stage};
 use std::path::PathBuf;
 
 /// A scratch directory that removes itself, so tests do not leave state behind.
@@ -16,7 +16,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("bua-exec-{name}"));
+        let path = std::env::temp_dir().join(format!("bravebot-exec-{name}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create scratch");
         Self { path }
@@ -43,9 +43,11 @@ fn resolve_all(
         .stages
         .iter()
         .map(|stage| {
-            bua_agent::programs::resolve(&stage.program, at).ok_or_else(|| ExecError::NotStarted {
-                program: stage.program.clone(),
-                detail: "not found".to_string(),
+            bravebot_agent::programs::resolve(&stage.program, at).ok_or_else(|| {
+                ExecError::NotStarted {
+                    program: stage.program.clone(),
+                    detail: "not found".to_string(),
+                }
             })
         })
         .collect()
@@ -132,7 +134,7 @@ fn a_stage_runs_in_the_directory_it_was_given() {
     .expect("pwd runs");
     // The scratch path may be reached through a symlink, so the tail is what is compared.
     assert!(
-        ran.stdout.trim().ends_with("bua-exec-cwd"),
+        ran.stdout.trim().ends_with("bravebot-exec-cwd"),
         "ran somewhere else: {}",
         ran.stdout.trim()
     );
@@ -182,19 +184,22 @@ fn an_early_stage_failing_makes_the_whole_pipeline_fail() {
 fn a_program_that_does_not_exist_is_reported_by_name() {
     let scratch = Scratch::new("missing");
     let error = run(
-        Pipeline::new(vec![Stage::new("bua-no-such-program-anywhere", Vec::new())]),
+        Pipeline::new(vec![Stage::new(
+            "bravebot-no-such-program-anywhere",
+            Vec::new(),
+        )]),
         &scratch.path,
     )
     .expect_err("a missing program cannot run");
     match error {
         ExecError::NotStarted { program, .. } => {
-            assert_eq!(program, "bua-no-such-program-anywhere");
+            assert_eq!(program, "bravebot-no-such-program-anywhere");
         }
         other => panic!("expected NotStarted, got {other:?}"),
     }
 }
 
-/// Nothing is typed at a program bua started, so a stage that reads stdin gets an empty one.
+/// Nothing is typed at a program bravebot started, so a stage that reads stdin gets an empty one.
 /// Inheriting the terminal's would hang the turn on input nobody is going to provide.
 #[test]
 fn a_stage_that_reads_stdin_is_given_nothing_rather_than_the_terminal() {

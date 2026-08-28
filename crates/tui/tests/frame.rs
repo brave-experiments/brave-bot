@@ -1,7 +1,7 @@
 #[test]
 fn a_default_terminal_size_renders_content() {
-    use bua_tui::render;
-    use bua_tui::state::Session;
+    use bravebot_tui::render;
+    use bravebot_tui::state::Session;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -16,7 +16,7 @@ fn a_default_terminal_size_renders_content() {
         .map(|c| c.symbol())
         .collect();
     assert!(
-        text.contains("bua"),
+        text.contains("bravebot"),
         "status bar missing: {:?}",
         &text[..200.min(text.len())]
     );

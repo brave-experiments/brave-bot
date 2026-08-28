@@ -2,7 +2,7 @@
 //!
 //! Uses a temporary HOME so the developer's own history is never read or written.
 
-use bua_tui::store;
+use bravebot_tui::store;
 use std::sync::Mutex;
 
 /// One lock for the whole file, not one per test.
@@ -16,7 +16,7 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 fn with_temp_home<T>(name: &str, body: impl FnOnce() -> T) -> T {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let dir = std::env::temp_dir().join(format!("bua-home-{name}"));
+    let dir = std::env::temp_dir().join(format!("bravebot-home-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch home");
 
@@ -146,7 +146,7 @@ fn a_session_recalls_a_prompt_stored_by_an_earlier_session() {
         // An earlier session left this behind.
         store::append_history("a question from before");
 
-        let mut session = bua_tui::state::Session::new("test").with_stored_history();
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         session.recall_older();
 
         assert_eq!(session.input, "a question from before");
@@ -158,7 +158,7 @@ fn a_session_recalls_a_prompt_stored_by_an_earlier_session() {
 #[test]
 fn a_prompt_sent_now_is_stored_for_next_time() {
     with_temp_home("session-write", || {
-        let mut session = bua_tui::state::Session::new("test").with_stored_history();
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         for c in "asked now".chars() {
             session.type_char(c);
         }
@@ -172,7 +172,7 @@ fn a_prompt_sent_now_is_stored_for_next_time() {
 #[test]
 fn a_cancelled_prompt_is_removed_from_the_stored_history() {
     with_temp_home("session-cancel", || {
-        let mut session = bua_tui::state::Session::new("test").with_stored_history();
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         for c in "abandoned".chars() {
             session.type_char(c);
         }
@@ -193,7 +193,7 @@ fn a_cancelled_prompt_is_removed_from_the_stored_history() {
 #[test]
 fn the_interface_and_the_agent_agree_on_where_home_is() {
     with_temp_home("agreement", || {
-        assert_eq!(store::directory(), bua_agent::home::directory());
+        assert_eq!(store::directory(), bravebot_agent::home::directory());
         assert!(store::directory().is_some(), "no home was found at all");
     });
 }

@@ -1,6 +1,6 @@
 //! Where the user's own files live.
 //!
-//! `~/.bua` holds what should outlive a session: prompt history, session records, and now
+//! `~/.bravebot` holds what should outlive a session: prompt history, session records, and now
 //! standing instructions and skills. One definition of where that is, so the interface and the
 //! agent cannot drift apart about it.
 //!
@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// The name of the directory inside the user's home.
-const DIRECTORY: &str = ".bua";
+const DIRECTORY: &str = ".bravebot";
 
 /// The user's own directory, or `None` when there is no home to put it in.
 pub fn directory() -> Option<PathBuf> {

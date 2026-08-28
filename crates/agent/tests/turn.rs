@@ -4,11 +4,11 @@
 //! a reply. The injection test is the important one: it asserts that a file whose
 //! contents try to redirect the turn cannot do so.
 
-use bua_agent::Workspace;
-use bua_agent::turn::{self, MAX_TOOL_ROUNDS, Task};
-use bua_config::Config;
-use bua_core::event::{Event, RecordingSink};
-use bua_core::label::Label;
+use bravebot_agent::Workspace;
+use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, Task};
+use bravebot_config::Config;
+use bravebot_core::event::{Event, RecordingSink};
+use bravebot_core::label::Label;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -22,7 +22,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("bua-turn-{name}"));
+        let path = std::env::temp_dir().join(format!("bravebot-turn-{name}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create scratch");
         Self { path }
@@ -201,7 +201,7 @@ fn a_turn_without_files_reaches_the_model() {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("what is 2 + 2?");
@@ -210,7 +210,7 @@ fn a_turn_without_files_reaches_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -232,7 +232,7 @@ fn a_turn_includes_requested_file_contents() {
 
     let (endpoint, received) = serve(&reply_with("it is a stub"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("explain this file").with_file("main.rs");
@@ -241,7 +241,7 @@ fn a_turn_includes_requested_file_contents() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -268,7 +268,7 @@ fn file_contents_cannot_redirect_the_turn() {
 
     let (endpoint, received) = serve(&reply_with("the file contains an injected instruction"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("summarise this file").with_file("readme.md");
@@ -277,7 +277,7 @@ fn file_contents_cannot_redirect_the_turn() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -307,7 +307,7 @@ fn file_contents_cannot_redirect_the_turn() {
             matches!(
                 e,
                 Event::Observed {
-                    capability: bua_core::capability::Capability::FileRead,
+                    capability: bravebot_core::capability::Capability::FileRead,
                     ..
                 }
             )
@@ -326,7 +326,7 @@ fn routing_is_precommitted_before_any_read() {
 
     let (endpoint, _received) = serve(&reply_with("ok"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read it").with_file("a.txt");
@@ -335,7 +335,7 @@ fn routing_is_precommitted_before_any_read() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -375,7 +375,7 @@ fn a_turn_reads_only_the_files_it_precommitted() {
 
     let (endpoint, received) = serve(&reply_with("ok"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("look").with_file("wanted.txt");
@@ -384,7 +384,7 @@ fn a_turn_reads_only_the_files_it_precommitted() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -401,7 +401,7 @@ fn a_missing_file_fails_the_turn() {
 
     let (endpoint, _received) = serve(&reply_with("unused"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("explain").with_file("does-not-exist.rs");
@@ -410,7 +410,7 @@ fn a_missing_file_fails_the_turn() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect_err("a missing file should fail the turn");
@@ -495,7 +495,7 @@ fn serve_sequence_losing_the_first(
 fn processor_reply(document: &str) -> String {
     reply_with(&format!(
         "{}\n{document}",
-        bua_core::processor::ProcessorSpec::NOTE_MARKER
+        bravebot_core::processor::ProcessorSpec::NOTE_MARKER
     ))
 }
 
@@ -535,7 +535,7 @@ fn a_turn_is_not_cut_off_after_a_fixed_number_of_rounds() {
 
     let (endpoint, _received) = serve_sequence(replies);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("keep going");
@@ -544,7 +544,7 @@ fn a_turn_is_not_cut_off_after_a_fixed_number_of_rounds() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -566,7 +566,7 @@ fn the_model_can_call_a_tool_and_then_answer() {
         reply_with("the file says: the file body"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("what does target.txt say?");
@@ -575,7 +575,7 @@ fn the_model_can_call_a_tool_and_then_answer() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -606,7 +606,7 @@ fn a_model_chosen_path_is_promoted_and_recorded() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read a.txt");
@@ -615,7 +615,7 @@ fn a_model_chosen_path_is_promoted_and_recorded() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -645,7 +645,7 @@ fn a_model_cannot_escape_the_workspace() {
         reply_with("could not read it"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read the passwd file");
@@ -654,7 +654,7 @@ fn a_model_cannot_escape_the_workspace() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -684,13 +684,13 @@ fn a_runaway_tool_loop_stops_when_it_is_cancelled() {
     struct CancelAfter {
         seen: usize,
         limit: usize,
-        cancel: bua_core::cancel::Cancel,
+        cancel: bravebot_core::cancel::Cancel,
     }
 
-    impl bua_agent::report::Reporter for CancelAfter {
-        fn todos(&mut self, _rows: Vec<bua_core::todo::Row>) {}
+    impl bravebot_agent::report::Reporter for CancelAfter {
+        fn todos(&mut self, _rows: Vec<bravebot_core::todo::Row>) {}
 
-        fn tool_started(&mut self, _activity: bua_agent::report::Activity) {
+        fn tool_started(&mut self, _activity: bravebot_agent::report::Activity) {
             self.seen += 1;
             if self.seen >= self.limit {
                 self.cancel.cancel();
@@ -708,10 +708,10 @@ fn a_runaway_tool_loop_stops_when_it_is_cancelled() {
         .collect();
     let (endpoint, _received) = serve_sequence(replies);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let cancel = bua_core::cancel::Cancel::new();
+    let cancel = bravebot_core::cancel::Cancel::new();
     let mut reporter = CancelAfter {
         seen: 0,
         limit: 3,
@@ -724,7 +724,7 @@ fn a_runaway_tool_loop_stops_when_it_is_cancelled() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
@@ -750,7 +750,7 @@ fn an_unknown_tool_is_reported_to_the_model() {
         reply_with("that tool does not exist"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("delete it all");
@@ -759,7 +759,7 @@ fn an_unknown_tool_is_reported_to_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -791,7 +791,7 @@ fn an_approved_write_is_applied() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("write out.txt");
@@ -800,7 +800,7 @@ fn an_approved_write_is_applied() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -826,7 +826,7 @@ fn a_refused_write_does_not_happen() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("write out.txt");
@@ -835,7 +835,7 @@ fn a_refused_write_does_not_happen() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -866,7 +866,7 @@ fn a_refused_overwrite_leaves_the_original() {
         reply_with("ok"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("replace keep.txt");
@@ -875,7 +875,7 @@ fn a_refused_overwrite_leaves_the_original() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -892,18 +892,22 @@ fn a_refused_overwrite_leaves_the_original() {
 fn an_approved_write_cannot_escape_the_workspace() {
     let scratch = Scratch::new("write-escape");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
-    let outside = scratch.path.parent().unwrap().join("bua-escaped-write.txt");
+    let outside = scratch
+        .path
+        .parent()
+        .unwrap()
+        .join("bravebot-escaped-write.txt");
     let _ = std::fs::remove_file(&outside);
 
     let (endpoint, _received) = serve_sequence(vec![
         tool_request_2(
             "write_file",
-            r#"{"path":"../bua-escaped-write.txt","contents":"escaped"}"#,
+            r#"{"path":"../bravebot-escaped-write.txt","contents":"escaped"}"#,
         ),
         reply_with("could not"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("write outside");
@@ -912,7 +916,7 @@ fn an_approved_write_cannot_escape_the_workspace() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -935,7 +939,7 @@ fn an_approved_write_is_recorded_as_endorsed() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("write a.txt");
@@ -944,7 +948,7 @@ fn an_approved_write_is_recorded_as_endorsed() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -958,60 +962,69 @@ fn an_approved_write_is_recorded_as_endorsed() {
 /// Records what the user was shown, so a test can assert on the review itself rather than
 /// only on the outcome.
 struct RecordingConfirmer {
-    seen: Vec<bua_agent::WriteRequest>,
-    decision: bua_agent::Decision,
+    seen: Vec<bravebot_agent::WriteRequest>,
+    decision: bravebot_agent::Decision,
 }
 
 impl RecordingConfirmer {
     fn approving() -> Self {
         Self {
             seen: Vec::new(),
-            decision: bua_agent::Decision::Approve,
+            decision: bravebot_agent::Decision::Approve,
         }
     }
 
     fn rejecting() -> Self {
         Self {
             seen: Vec::new(),
-            decision: bua_agent::Decision::Reject,
+            decision: bravebot_agent::Decision::Reject,
         }
     }
 }
 
-impl bua_agent::Confirmer for RecordingConfirmer {
-    fn confirm_write(&mut self, request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+impl bravebot_agent::Confirmer for RecordingConfirmer {
+    fn confirm_write(
+        &mut self,
+        request: &bravebot_agent::WriteRequest,
+    ) -> bravebot_agent::Decision {
         self.seen.push(request.clone());
         self.decision
     }
 
     /// These tests are about writes. A run they did not set up is refused.
-    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
-        bua_agent::RunDecision::reject()
+    fn confirm_run(
+        &mut self,
+        _request: &bravebot_agent::RunRequest,
+    ) -> bravebot_agent::RunDecision {
+        bravebot_agent::RunDecision::reject()
     }
 
     fn confirm_read_output(
         &mut self,
-        _request: &bua_agent::confirm::OutputRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::OutputRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
     fn confirm_vouch(
         &mut self,
-        _request: &bua_agent::confirm::VouchRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::VouchRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
     /// These tests are about writes. A question they did not set up gets no answer.
-    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+    fn ask_user(
+        &mut self,
+        _asking: &bravebot_core::ask::Asking,
+    ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
     }
 }
 
 /// A trust map vouching for the whole workspace, as the startup prompt would produce.
-fn trusting_the_workspace() -> bua_core::trust::TrustStore {
-    let mut trust = bua_core::trust::TrustStore::new();
+fn trusting_the_workspace() -> bravebot_core::trust::TrustStore {
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
     trust
 }
@@ -1032,20 +1045,20 @@ fn what_the_model_says_between_tool_calls_reaches_the_interface() {
     );
     let (endpoint, _received) = serve_sequence(vec![saying, reply_with("it says body")]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("what is in a.txt?"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -1069,28 +1082,28 @@ fn the_first_wait_is_reported_as_planning() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("read a.txt"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
     assert_eq!(
         reporter.phases,
         vec![
-            bua_agent::report::Phase::Planning,
-            bua_agent::report::Phase::Thinking
+            bravebot_agent::report::Phase::Planning,
+            bravebot_agent::report::Phase::Thinking
         ],
         "every round reported the same word"
     );
@@ -1109,20 +1122,20 @@ fn each_tool_call_is_announced_before_it_runs_and_summarised_after() {
         reply_with("three lines"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("read it"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -1146,20 +1159,20 @@ fn a_refused_call_is_reported_as_one() {
         reply_with("could not read it"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("read outside"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -1183,9 +1196,9 @@ fn an_approved_edit_reports_what_changed() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::run_cancellable(
         &config,
@@ -1196,7 +1209,7 @@ fn an_approved_edit_reports_what_changed() {
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -1209,7 +1222,7 @@ fn an_approved_edit_reports_what_changed() {
     assert!(
         finished
             .changes
-            .contains(&bua_agent::diff::Change::Added("new".to_string())),
+            .contains(&bravebot_agent::diff::Change::Added("new".to_string())),
         "the change was reported without the lines that changed: {:?}",
         finished.changes
     );
@@ -1230,7 +1243,7 @@ fn an_approved_edit_changes_only_the_matched_passage() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -1270,13 +1283,13 @@ fn an_edit_is_reviewed_as_a_diff() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
     // Trusted so the passage can be located, but the destination is a path the user did not
     // vouch for, so the write itself is still reviewed.
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust("a.txt");
     trust.distrust("out");
 
@@ -1317,13 +1330,13 @@ fn a_reviewed_edit_carries_both_sides_of_the_diff() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
     // The file is readable as trusted, but a fetch taints the context, so the resulting data
     // is untrusted and the write must be reviewed.
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
 
     let task = Task::new("edit a.txt");
@@ -1361,7 +1374,7 @@ fn a_refused_edit_does_not_happen() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::rejecting();
 
@@ -1399,7 +1412,7 @@ fn an_ambiguous_edit_is_refused_without_asking() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -1439,7 +1452,7 @@ fn an_approved_edit_is_recorded_as_endorsed() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("edit a.txt");
@@ -1448,7 +1461,7 @@ fn an_approved_edit_is_recorded_as_endorsed() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1474,7 +1487,7 @@ fn an_edit_cannot_escape_the_workspace() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -1510,7 +1523,7 @@ fn a_truncated_search_tells_the_model_it_is_incomplete() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("find needle");
@@ -1519,7 +1532,7 @@ fn a_truncated_search_tells_the_model_it_is_incomplete() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1546,7 +1559,7 @@ fn a_complete_search_makes_no_truncation_claim() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("find needle");
@@ -1555,7 +1568,7 @@ fn a_complete_search_makes_no_truncation_claim() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -1582,7 +1595,7 @@ fn a_paged_read_tells_the_model_there_is_more() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read big.txt");
@@ -1591,7 +1604,7 @@ fn a_paged_read_tells_the_model_there_is_more() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1622,7 +1635,7 @@ fn the_model_can_ask_for_a_later_page() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read the middle of big.txt");
@@ -1631,7 +1644,7 @@ fn the_model_can_ask_for_a_later_page() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1661,7 +1674,7 @@ fn a_small_read_has_no_paging_notice() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read a.txt");
@@ -1670,7 +1683,7 @@ fn a_small_read_has_no_paging_notice() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1697,7 +1710,7 @@ fn a_binary_read_tells_the_model_it_is_binary() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read bin.dat");
@@ -1706,7 +1719,7 @@ fn a_binary_read_tells_the_model_it_is_binary() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -1742,7 +1755,7 @@ fn a_binary_file_does_not_break_search() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("find needle");
@@ -1751,7 +1764,7 @@ fn a_binary_file_does_not_break_search() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1779,7 +1792,7 @@ fn the_model_can_narrow_a_listing_by_glob() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("list the rust files");
@@ -1788,7 +1801,7 @@ fn the_model_can_narrow_a_listing_by_glob() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -1818,7 +1831,7 @@ fn the_model_can_limit_a_search_to_matching_files() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("find needle in rust files");
@@ -1827,7 +1840,7 @@ fn the_model_can_limit_a_search_to_matching_files() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -1857,12 +1870,12 @@ fn trusted_data_into_a_distrusted_path_is_silent_and_trusts_the_path() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     // Rejects everything, so the write happening proves nothing was asked.
     let mut confirmer = RecordingConfirmer::rejecting();
 
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
     trust.distrust("vendor");
 
@@ -1912,11 +1925,11 @@ fn untrusted_data_into_an_untrusted_path_is_silent() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::rejecting();
 
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
     trust.distrust("vendor");
 
@@ -1958,7 +1971,7 @@ fn editing_an_untrusted_file_is_refused() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -2014,11 +2027,11 @@ fn untrusted_bytes_written_into_a_trusted_tree_are_reviewed() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
     trust.distrust("vendor");
 
@@ -2065,11 +2078,11 @@ fn what_the_planner_writes_after_a_quarantined_read_stays_trusted() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
     trust.distrust("vendor");
 
@@ -2111,7 +2124,7 @@ fn untrusted_file_content_never_reaches_the_model() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     // No trust map: nothing is vouched for, so the file is untrusted.
@@ -2121,7 +2134,7 @@ fn untrusted_file_content_never_reaches_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2161,7 +2174,7 @@ fn naming_one_file_leaves_the_rest_of_the_workspace_quarantined() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("summarise it").with_file("notes.md");
@@ -2170,7 +2183,7 @@ fn naming_one_file_leaves_the_rest_of_the_workspace_quarantined() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2184,7 +2197,7 @@ fn naming_one_file_leaves_the_rest_of_the_workspace_quarantined() {
     assert!(second.contains("quarantined"));
 }
 
-/// The property `-p` rests on. `gh pr diff | bua -p "review this"` pipes in whatever the author
+/// The property `-p` rests on. `gh pr diff | bravebot -p "review this"` pipes in whatever the author
 /// of the pull request wrote, so those bytes must reach the planner as a reference and nothing
 /// else. An implementation that appended stdin to the prompt would pass every other test here.
 #[test]
@@ -2196,7 +2209,7 @@ fn piped_input_is_never_shown_to_the_planner() {
 
     let (endpoint, received) = serve_sequence(vec![reply_with("understood")]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("explain this build error")
@@ -2206,7 +2219,7 @@ fn piped_input_is_never_shown_to_the_planner() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2235,7 +2248,7 @@ fn trusted_file_content_is_shown_to_the_model() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read mine.rs");
@@ -2244,7 +2257,7 @@ fn trusted_file_content_is_shown_to_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -2273,7 +2286,7 @@ fn untrusted_search_results_never_reach_the_model() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("find needle");
@@ -2282,7 +2295,7 @@ fn untrusted_search_results_never_reach_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2308,7 +2321,7 @@ fn untrusted_listings_never_reach_the_model() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("list files");
@@ -2317,7 +2330,7 @@ fn untrusted_listings_never_reach_the_model() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2343,7 +2356,7 @@ fn token_usage_accumulates_across_rounds() {
         reply_with_usage("done", 300, 40),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("read a.txt");
@@ -2352,7 +2365,7 @@ fn token_usage_accumulates_across_rounds() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -2370,7 +2383,7 @@ fn a_turn_without_reported_usage_reports_what_it_counted() {
 
     let (endpoint, _received) = serve_sequence(vec![reply_with("done")]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run(
@@ -2378,7 +2391,7 @@ fn a_turn_without_reported_usage_reports_what_it_counted() {
         &egress,
         &workspace,
         &Task::new("hello"),
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -2397,10 +2410,10 @@ fn a_cancelled_turn_stops_before_the_first_request() {
 
     // No server is needed: cancellation is checked before anything goes out.
     let config = config_for("http://127.0.0.1:1");
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let cancel = bua_core::cancel::Cancel::new();
+    let cancel = bravebot_core::cancel::Cancel::new();
     cancel.cancel();
 
     let error = turn::run_cancellable(
@@ -2408,10 +2421,10 @@ fn a_cancelled_turn_stops_before_the_first_request() {
         &egress,
         &workspace,
         &Task::new("do something"),
-        &mut bua_agent::Unattended,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::Unattended,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
         &cancel,
     )
     .expect_err("a cancelled turn must not succeed");
@@ -2428,37 +2441,46 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
     /// Cancels the turn the moment it is consulted, then approves anyway. The approval must
     /// still not reach the second call.
     struct CancelWhenAsked {
-        cancel: bua_core::cancel::Cancel,
+        cancel: bravebot_core::cancel::Cancel,
         asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl bua_agent::Confirmer for CancelWhenAsked {
-        fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+    impl bravebot_agent::Confirmer for CancelWhenAsked {
+        fn confirm_write(
+            &mut self,
+            _request: &bravebot_agent::WriteRequest,
+        ) -> bravebot_agent::Decision {
             self.asked
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.cancel.cancel();
-            bua_agent::Decision::Approve
+            bravebot_agent::Decision::Approve
         }
 
-        fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
-            bua_agent::RunDecision::reject()
+        fn confirm_run(
+            &mut self,
+            _request: &bravebot_agent::RunRequest,
+        ) -> bravebot_agent::RunDecision {
+            bravebot_agent::RunDecision::reject()
         }
 
         fn confirm_read_output(
             &mut self,
-            _request: &bua_agent::confirm::OutputRequest,
-        ) -> bua_agent::Decision {
-            bua_agent::Decision::Reject
+            _request: &bravebot_agent::confirm::OutputRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
         }
 
         fn confirm_vouch(
             &mut self,
-            _request: &bua_agent::confirm::VouchRequest,
-        ) -> bua_agent::Decision {
-            bua_agent::Decision::Reject
+            _request: &bravebot_agent::confirm::VouchRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
         }
 
-        fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+        fn ask_user(
+            &mut self,
+            _asking: &bravebot_core::ask::Asking,
+        ) -> Vec<bravebot_core::ask::Answer> {
             Vec::new()
         }
     }
@@ -2475,10 +2497,10 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let cancel = bua_core::cancel::Cancel::new();
+    let cancel = bravebot_core::cancel::Cancel::new();
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut confirmer = CancelWhenAsked {
         cancel: cancel.clone(),
@@ -2491,9 +2513,9 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
         &workspace,
         &Task::new("write both"),
         &mut confirmer,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
         &cancel,
     )
     .expect_err("a cancelled turn must not succeed");
@@ -2522,7 +2544,7 @@ fn an_uncancelled_turn_completes_normally() {
 
     let (endpoint, _received) = serve_sequence(vec![reply_with("the answer")]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run_cancellable(
@@ -2530,11 +2552,11 @@ fn an_uncancelled_turn_completes_normally() {
         &egress,
         &workspace,
         &Task::new("ask"),
-        &mut bua_agent::Unattended,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::Unattended,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("an uncancelled turn runs");
 
@@ -2551,20 +2573,20 @@ fn output_tokens_are_reported_as_the_reply_arrives() {
     let (endpoint, _received) =
         serve_sequence(vec![reply_with_usage("a longer reply here", 100, 4)]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     let outcome = turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("hello"),
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -2597,20 +2619,20 @@ fn output_tokens_accumulate_across_tool_rounds() {
         reply_with_usage("all done now", 80, 3),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     let outcome = turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("read it"),
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -2642,7 +2664,7 @@ fn a_context_file_and_a_tool_result_get_distinct_slots() {
         reply_with("read them both"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("compare these").with_file("context.rs");
@@ -2651,7 +2673,7 @@ fn a_context_file_and_a_tool_result_get_distinct_slots() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
     )
     .expect("a turn that quarantines a file and then a tool result must still run");
@@ -2669,20 +2691,20 @@ fn a_turn_survives_a_connection_that_died_mid_request() {
     let (endpoint, _received) =
         serve_sequence_losing_the_first(1, vec![reply_with("the answer, eventually")]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     let outcome = turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("what is 2 + 2?"),
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn survives the lost connection");
 
@@ -2692,7 +2714,7 @@ fn a_turn_survives_a_connection_that_died_mid_request() {
     assert!(
         reporter
             .phases
-            .contains(&bua_agent::report::Phase::Reconnecting),
+            .contains(&bravebot_agent::report::Phase::Reconnecting),
         "the pause was not explained: {:?}",
         reporter.phases
     );
@@ -2702,11 +2724,11 @@ fn a_turn_survives_a_connection_that_died_mid_request() {
 fn take_a_turn(
     config: &Config,
     workspace: &Workspace,
-    conversation: &mut bua_agent::Conversation,
-    trust: bua_core::trust::TrustStore,
+    conversation: &mut bravebot_agent::Conversation,
+    trust: bravebot_core::trust::TrustStore,
     task: Task,
 ) -> Result<turn::Outcome, turn::TurnError> {
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     turn::resume(
         config,
@@ -2714,12 +2736,12 @@ fn take_a_turn(
         workspace,
         &task,
         conversation,
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trust,
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
 }
 
@@ -2735,7 +2757,7 @@ fn a_later_turn_knows_what_the_earlier_one_was_asked() {
         reply_with("still four"),
     ]);
     let config = config_for(&endpoint);
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
 
     take_a_turn(
         &config,
@@ -2776,7 +2798,7 @@ fn an_answer_is_read_back_when_the_session_has_met_nothing_untrusted() {
     let (endpoint, received) =
         serve_sequence(vec![reply_with("the answer is four"), reply_with("four")]);
     let config = config_for(&endpoint);
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
 
     take_a_turn(
         &config,
@@ -2816,7 +2838,7 @@ fn an_answer_is_read_back_even_after_a_quarantined_read() {
     let (endpoint, received) =
         serve_sequence(vec![reply_with("here is a summary"), reply_with("second")]);
     let config = config_for(&endpoint);
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
 
     // Piped in rather than named: naming a file vouches for it, and this turn needs a read the
     // planner is not shown.
@@ -2824,7 +2846,7 @@ fn an_answer_is_read_back_even_after_a_quarantined_read() {
         &config,
         &workspace,
         &mut conversation,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
         Task::new("summarise this").with_piped_input("notes from elsewhere"),
     )
     .expect("the first turn runs");
@@ -2833,7 +2855,7 @@ fn an_answer_is_read_back_even_after_a_quarantined_read() {
         &config,
         &workspace,
         &mut conversation,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
         Task::new("and again"),
     )
     .expect("the second turn runs");
@@ -2863,7 +2885,7 @@ fn a_turn_that_failed_is_still_part_of_the_conversation() {
         reply_with("four"),
     ]);
     let config = config_for(&endpoint);
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
 
     take_a_turn(
         &config,
@@ -2909,12 +2931,12 @@ fn a_session_shown_only_references_keeps_writing_trusted_output() {
 
     // Piped in, so the first turn is handed a reference and never shown the bytes. A named file
     // would not do: naming it is a grant, and the turn would be shown it.
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
     take_a_turn(
         &config,
         &workspace,
         &mut conversation,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
         Task::new("summarise this").with_piped_input("notes from elsewhere"),
     )
     .expect("the first turn runs");
@@ -2923,14 +2945,14 @@ fn a_session_shown_only_references_keeps_writing_trusted_output() {
         &config,
         &workspace,
         &mut conversation,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
         Task::new("now write out.txt"),
     )
     .expect("the second turn runs");
 
     assert_eq!(
         outcome.trust.integrity_of("out.txt"),
-        Some(bua_core::label::Integrity::Trusted),
+        Some(bravebot_core::label::Integrity::Trusted),
         "the planner's own words were labelled from a file it was never shown"
     );
 }
@@ -2951,7 +2973,7 @@ fn a_session_that_has_read_nothing_untrusted_writes_trusted_output() {
     ]);
     let config = config_for(&endpoint);
 
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
     take_a_turn(
         &config,
         &workspace,
@@ -2972,7 +2994,7 @@ fn a_session_that_has_read_nothing_untrusted_writes_trusted_output() {
 
     assert_eq!(
         outcome.trust.integrity_of("out.txt"),
-        Some(bua_core::label::Integrity::Trusted)
+        Some(bravebot_core::label::Integrity::Trusted)
     );
 }
 
@@ -2993,7 +3015,7 @@ fn a_round_shows_the_model_what_it_asked_for() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -3001,7 +3023,7 @@ fn a_round_shows_the_model_what_it_asked_for() {
         &egress,
         &workspace,
         &Task::new("make a space invaders game"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -3075,7 +3097,7 @@ fn a_round_is_read_back_even_after_a_quarantined_read() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -3085,9 +3107,9 @@ fn a_round_is_read_back_even_after_a_quarantined_read() {
         // Not named: the quarantined read is the one the planner asks for itself, since naming
         // the file would vouch for it and there would be nothing quarantined to replay past.
         &Task::new("summarise this"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
     )
     .expect("turn runs");
 
@@ -3126,7 +3148,7 @@ fn a_round_is_sent_in_the_shape_the_api_defines() {
     ]);
     std::fs::write(scratch.path.join("a.txt"), "contents\n").unwrap();
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -3134,7 +3156,7 @@ fn a_round_is_sent_in_the_shape_the_api_defines() {
         &egress,
         &workspace,
         &Task::new("look around"),
-        &mut bua_agent::Unattended,
+        &mut bravebot_agent::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -3181,20 +3203,20 @@ fn the_model_is_told_when_a_write_replaced_something() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &Task::new("write the page"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trusting_the_workspace(),
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3248,7 +3270,7 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("add error handling to parse_config");
@@ -3257,7 +3279,7 @@ fn a_quarantined_file_is_rewritten_by_a_processor() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -3332,7 +3354,7 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -3341,13 +3363,13 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
         &egress,
         &workspace,
         &Task::new("the game runs too fast"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
     assert!(outcome.clean, "no gate should have refused");
@@ -3395,7 +3417,7 @@ fn every_write_through_a_reference_is_shown() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -3404,13 +3426,13 @@ fn every_write_through_a_reference_is_shown() {
         &egress,
         &workspace,
         &Task::new("write it twice"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3440,7 +3462,7 @@ fn a_read_through_a_reference_still_withholds_the_name() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -3448,7 +3470,7 @@ fn a_read_through_a_reference_still_withholds_the_name() {
         &egress,
         &workspace,
         &Task::new("look at what is here"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -3478,7 +3500,7 @@ fn reading_a_reference_does_not_mint_another_one() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -3486,7 +3508,7 @@ fn reading_a_reference_does_not_mint_another_one() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -3534,7 +3556,7 @@ fn a_write_through_a_reference_says_what_landed_and_that_it_is_done() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -3542,7 +3564,7 @@ fn a_write_through_a_reference_says_what_landed_and_that_it_is_done() {
         &egress,
         &workspace,
         &Task::new("halve the speed"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -3589,7 +3611,7 @@ fn a_fenced_answer_is_unwrapped_before_it_becomes_a_file() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -3597,7 +3619,7 @@ fn a_fenced_answer_is_unwrapped_before_it_becomes_a_file() {
         &egress,
         &workspace,
         &Task::new("fix it"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -3630,22 +3652,22 @@ fn quarantined_content_reaches_the_person_and_not_the_planner() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("halve the speed"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3710,22 +3732,22 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("halve the speed"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3785,7 +3807,7 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -3794,13 +3816,13 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3841,7 +3863,7 @@ fn each_result_says_whether_the_model_can_read_it() {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
     // The directory is vouched for, one file in it is not: both kinds in one turn.
-    let mut trust = bua_core::trust::TrustStore::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust(".");
     trust.distrust("fetched.md");
 
@@ -3851,26 +3873,26 @@ fn each_result_says_whether_the_model_can_read_it() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("read both"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
         trust,
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
-    use bua_agent::report::Landing;
+    use bravebot_agent::report::Landing;
     assert_eq!(
         reporter.landed,
         vec![Landing::Context, Landing::Reserved],
@@ -3886,19 +3908,19 @@ fn each_result_says_whether_the_model_can_read_it() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let mut again = bua_agent::report::RecordingReporter::default();
+    let mut again = bravebot_agent::report::RecordingReporter::default();
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("look again"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut again,
         &mut RecordingSink::new(),
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3938,7 +3960,7 @@ fn what_a_processor_says_reaches_the_person_and_no_model() {
         ),
         reply_with(&format!(
             "This is a server, not the game.\n{}\nprint('serving faster')\n",
-            bua_core::processor::ProcessorSpec::NOTE_MARKER
+            bravebot_core::processor::ProcessorSpec::NOTE_MARKER
         )),
         tool_request(
             "write_file",
@@ -3947,22 +3969,22 @@ fn what_a_processor_says_reaches_the_person_and_no_model() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -4021,7 +4043,7 @@ fn an_answer_about_nothing_in_particular_can_be_written_nowhere() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -4030,13 +4052,13 @@ fn an_answer_about_nothing_in_particular_can_be_written_nowhere() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -4075,7 +4097,7 @@ fn an_answer_cannot_be_written_to_a_file_it_is_not_about() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -4083,7 +4105,7 @@ fn an_answer_cannot_be_written_to_a_file_it_is_not_about() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -4117,22 +4139,22 @@ fn an_answer_that_names_no_document_is_written_nowhere() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut reporter = bua_agent::report::RecordingReporter::default();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
 
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -4171,7 +4193,7 @@ fn a_processors_output_cannot_be_a_destination() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -4180,13 +4202,13 @@ fn a_processors_output_cannot_be_a_destination() {
         &egress,
         &workspace,
         &Task::new("rewrite it"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -4221,7 +4243,7 @@ fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
 
     let (endpoint, received) = serve_sequence(replies);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("fix the bug");
@@ -4230,7 +4252,7 @@ fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("the turn finishes");
@@ -4284,7 +4306,7 @@ fn calls_made_after_the_budget_is_spent_are_not_run() {
 
     let (endpoint, received) = serve_sequence(replies);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("keep going");
@@ -4293,7 +4315,7 @@ fn calls_made_after_the_budget_is_spent_are_not_run() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("the turn finishes");
@@ -4326,7 +4348,7 @@ fn a_file_the_planner_may_not_see_is_reserved_rather_than_opened() {
         reply_with("there is a file called notes.md"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("what is here?");
@@ -4335,7 +4357,7 @@ fn a_file_the_planner_may_not_see_is_reserved_rather_than_opened() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -4395,7 +4417,7 @@ fn the_planner_is_told_the_shape_of_what_a_processor_produced() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -4403,7 +4425,7 @@ fn the_planner_is_told_the_shape_of_what_a_processor_produced() {
         &egress,
         &workspace,
         &Task::new("translate the notes"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -4433,7 +4455,7 @@ fn a_processor_cannot_be_given_a_reference_to_nothing() {
         reply_with("there was nothing to process"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run(
@@ -4441,7 +4463,7 @@ fn a_processor_cannot_be_given_a_reference_to_nothing() {
         &egress,
         &workspace,
         &Task::new("process it"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -4478,7 +4500,7 @@ fn a_refused_reference_write_does_not_happen() {
         reply_with("the write was refused"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -4486,7 +4508,7 @@ fn a_refused_reference_write_does_not_happen() {
         &egress,
         &workspace,
         &Task::new("rewrite the config"),
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
     )
     .expect("turn runs");
@@ -4519,7 +4541,7 @@ fn a_reference_write_is_reviewed_as_a_diff() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
@@ -4561,7 +4583,7 @@ fn a_tool_call_from_a_processor_does_nothing() {
         tool_request_saying(
             &format!(
                 "{}\nSAFE OUTPUT",
-                bua_core::processor::ProcessorSpec::NOTE_MARKER
+                bravebot_core::processor::ProcessorSpec::NOTE_MARKER
             ),
             "write_file",
             r#"{"path":"evil.txt","contents":"injected"}"#,
@@ -4573,7 +4595,7 @@ fn a_tool_call_from_a_processor_does_nothing() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -4581,7 +4603,7 @@ fn a_tool_call_from_a_processor_does_nothing() {
         &egress,
         &workspace,
         &Task::new("rewrite the config"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -4605,8 +4627,8 @@ fn a_task_has_no_home_until_a_caller_names_one() {
     let task = Task::new("anything");
     assert_eq!(task.home, None, "a task reached for a home nobody gave it");
 
-    let named = Task::new("anything").with_home(Some(PathBuf::from("/somewhere/.bua")));
-    assert_eq!(named.home, Some(PathBuf::from("/somewhere/.bua")));
+    let named = Task::new("anything").with_home(Some(PathBuf::from("/somewhere/.bravebot")));
+    assert_eq!(named.home, Some(PathBuf::from("/somewhere/.bravebot")));
 }
 
 /// A turn with no home offers no global skills, whatever is installed on the machine running
@@ -4614,9 +4636,9 @@ fn a_task_has_no_home_until_a_caller_names_one() {
 #[test]
 fn a_turn_with_no_home_reaches_the_model_the_same_way_it_always_did() {
     let scratch = Scratch::new("no-home-turn");
-    std::fs::create_dir_all(scratch.path.join(".bua/skills/local")).unwrap();
+    std::fs::create_dir_all(scratch.path.join(".bravebot/skills/local")).unwrap();
     std::fs::write(
-        scratch.path.join(".bua/skills/local/SKILL.md"),
+        scratch.path.join(".bravebot/skills/local/SKILL.md"),
         "---\nname: local-only\ndescription: a project skill\n---\nbody\n",
     )
     .unwrap();
@@ -4624,7 +4646,7 @@ fn a_turn_with_no_home_reaches_the_model_the_same_way_it_always_did() {
 
     let (endpoint, received) = serve(&reply_with("done"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("do the work");
@@ -4634,7 +4656,7 @@ fn a_turn_with_no_home_reaches_the_model_the_same_way_it_always_did() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4646,7 +4668,7 @@ fn a_turn_with_no_home_reaches_the_model_the_same_way_it_always_did() {
 
 /// Write a project skill into the workspace, which is where a turn discovers it.
 fn write_project_skill(root: &std::path::Path, dir: &str, name: &str, body: &str) {
-    let at = root.join(".bua/skills").join(dir);
+    let at = root.join(".bravebot/skills").join(dir);
     std::fs::create_dir_all(&at).expect("create skill directory");
     std::fs::write(
         at.join("SKILL.md"),
@@ -4673,7 +4695,7 @@ fn loading_a_skill_puts_its_body_in_the_context() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -4681,7 +4703,7 @@ fn loading_a_skill_puts_its_body_in_the_context() {
         &egress,
         &workspace,
         &Task::new("commit this"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4716,7 +4738,7 @@ fn a_skill_name_from_the_model_cannot_escape_the_skills_directory() {
             reply_with("gave up"),
         ]);
         let config = config_for(&endpoint);
-        let egress = bua_net::Egress::new();
+        let egress = bravebot_net::Egress::new();
         let mut sink = RecordingSink::new();
 
         turn::run_with_trust(
@@ -4724,7 +4746,7 @@ fn a_skill_name_from_the_model_cannot_escape_the_skills_directory() {
             &egress,
             &workspace,
             &Task::new("load it"),
-            &mut bua_agent::confirm::ApproveWrites,
+            &mut bravebot_agent::confirm::ApproveWrites,
             &mut sink,
             trusting_the_workspace(),
         )
@@ -4758,7 +4780,7 @@ fn loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -4766,7 +4788,7 @@ fn loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed() {
         &egress,
         &workspace,
         &Task::new("commit this"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4794,7 +4816,7 @@ fn a_promoted_skill_name_is_recorded_as_the_models_choice() {
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -4802,7 +4824,7 @@ fn a_promoted_skill_name_is_recorded_as_the_models_choice() {
         &egress,
         &workspace,
         &Task::new("commit this"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4832,7 +4854,7 @@ fn an_untrusted_workspace_agents_file_never_reaches_the_system_prompt() {
 
     let (endpoint, received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run_cancellable(
@@ -4840,11 +4862,11 @@ fn an_untrusted_workspace_agents_file_never_reaches_the_system_prompt() {
         &egress,
         &workspace,
         &Task::new("do the work"),
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -4874,7 +4896,7 @@ fn a_trusted_workspace_agents_file_reaches_the_system_prompt() {
 
     let (endpoint, received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -4882,7 +4904,7 @@ fn a_trusted_workspace_agents_file_reaches_the_system_prompt() {
         &egress,
         &workspace,
         &Task::new("do the work"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4903,7 +4925,7 @@ fn a_missing_agents_file_is_not_an_error() {
 
     let (endpoint, _received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run_with_trust(
@@ -4911,7 +4933,7 @@ fn a_missing_agents_file_is_not_an_error() {
         &egress,
         &workspace,
         &Task::new("do the work"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4940,7 +4962,7 @@ fn a_skill_body_stays_out_of_the_context_until_it_is_asked_for() {
 
     let (endpoint, received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -4948,7 +4970,7 @@ fn a_skill_body_stays_out_of_the_context_until_it_is_asked_for() {
         &egress,
         &workspace,
         &Task::new("do the work"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -4978,9 +5000,9 @@ fn the_preamble_is_not_stored_in_the_conversation() {
         reply_with("second answer"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
-    let mut conversation = bua_agent::Conversation::new();
+    let mut conversation = bravebot_agent::Conversation::new();
 
     for prompt in ["first", "second"] {
         turn::resume(
@@ -4989,12 +5011,12 @@ fn the_preamble_is_not_stored_in_the_conversation() {
             &workspace,
             &Task::new(prompt),
             &mut conversation,
-            &mut bua_agent::confirm::ApproveWrites,
-            &mut bua_agent::IgnoreReports,
+            &mut bravebot_agent::confirm::ApproveWrites,
+            &mut bravebot_agent::IgnoreReports,
             &mut sink,
             trusting_the_workspace(),
-            bua_core::programs::TrustedPrograms::new(),
-            &bua_core::cancel::Cancel::new(),
+            bravebot_core::programs::TrustedPrograms::new(),
+            &bravebot_core::cancel::Cancel::new(),
         )
         .expect("turn runs");
     }
@@ -5020,7 +5042,7 @@ fn an_untrusted_directory_is_not_reported_as_a_refusal() {
 
     let (endpoint, _received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run_cancellable(
@@ -5028,11 +5050,11 @@ fn an_untrusted_directory_is_not_reported_as_a_refusal() {
         &egress,
         &workspace,
         &Task::new("do the work"),
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -5057,7 +5079,7 @@ fn a_single_skipped_skill_is_counted_in_the_singular() {
 
     let (endpoint, _received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::run_cancellable(
@@ -5065,11 +5087,11 @@ fn a_single_skipped_skill_is_counted_in_the_singular() {
         &egress,
         &workspace,
         &Task::new("do the work"),
-        &mut bua_agent::confirm::ApproveWrites,
-        &mut bua_agent::IgnoreReports,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -5090,7 +5112,7 @@ fn a_chosen_model_is_the_one_requested() {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("anything").with_model(Some("claude-3-sonnet".to_string()));
@@ -5099,7 +5121,7 @@ fn a_chosen_model_is_the_one_requested() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -5119,7 +5141,7 @@ fn without_a_choice_the_configured_default_is_requested() {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("anything");
@@ -5128,7 +5150,7 @@ fn without_a_choice_the_configured_default_is_requested() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -5159,7 +5181,7 @@ fn a_turn_can_read_a_file_in_an_added_directory() {
         reply_with("read it"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     // Trusted the way `/add-dir` records it: by the canonical absolute path.
@@ -5171,7 +5193,7 @@ fn a_turn_can_read_a_file_in_an_added_directory() {
         &egress,
         &workspace,
         &Task::new("read the note"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trust,
     )
@@ -5202,7 +5224,7 @@ fn a_turn_cannot_read_outside_the_workspace_without_adding_it() {
         reply_with("could not"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -5210,7 +5232,7 @@ fn a_turn_cannot_read_outside_the_workspace_without_adding_it() {
         &egress,
         &workspace,
         &Task::new("read the note"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -5226,12 +5248,12 @@ fn a_turn_cannot_read_outside_the_workspace_without_adding_it() {
 
 /// Answers a series with fixed replies, and records what it was shown.
 struct AnswersWith {
-    replies: Vec<bua_core::ask::Answer>,
-    asked: Vec<bua_core::ask::Asking>,
+    replies: Vec<bravebot_core::ask::Answer>,
+    asked: Vec<bravebot_core::ask::Asking>,
 }
 
 impl AnswersWith {
-    fn new(replies: Vec<bua_core::ask::Answer>) -> Self {
+    fn new(replies: Vec<bravebot_core::ask::Answer>) -> Self {
         Self {
             replies,
             asked: Vec::new(),
@@ -5239,30 +5261,36 @@ impl AnswersWith {
     }
 }
 
-impl bua_agent::Confirmer for AnswersWith {
-    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+impl bravebot_agent::Confirmer for AnswersWith {
+    fn confirm_write(
+        &mut self,
+        _request: &bravebot_agent::WriteRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
-        bua_agent::RunDecision::reject()
+    fn confirm_run(
+        &mut self,
+        _request: &bravebot_agent::RunRequest,
+    ) -> bravebot_agent::RunDecision {
+        bravebot_agent::RunDecision::reject()
     }
 
     fn confirm_read_output(
         &mut self,
-        _request: &bua_agent::confirm::OutputRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::OutputRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
     fn confirm_vouch(
         &mut self,
-        _request: &bua_agent::confirm::VouchRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::VouchRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn ask_user(&mut self, asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+    fn ask_user(&mut self, asking: &bravebot_core::ask::Asking) -> Vec<bravebot_core::ask::Answer> {
         self.asked.push(asking.clone());
         self.replies.clone()
     }
@@ -5283,12 +5311,12 @@ fn every_answer_in_a_series_reaches_the_planner() {
         reply_with("caching at the query layer, migration out of scope"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let mut confirmer = AnswersWith::new(vec![
-        bua_core::ask::Answer::Chosen(vec![1]),
-        bua_core::ask::Answer::Chosen(vec![1]),
+        bravebot_core::ask::Answer::Chosen(vec![1]),
+        bravebot_core::ask::Answer::Chosen(vec![1]),
     ]);
     let task = Task::new("add caching");
     turn::run_with_trust(
@@ -5343,12 +5371,12 @@ fn a_skipped_question_comes_back_as_a_decline_beside_the_rest() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let mut confirmer = AnswersWith::new(vec![
-        bua_core::ask::Answer::Declined,
-        bua_core::ask::Answer::Chosen(vec![0]),
+        bravebot_core::ask::Answer::Declined,
+        bravebot_core::ask::Answer::Chosen(vec![0]),
     ]);
     turn::run_with_trust(
         &config,
@@ -5382,7 +5410,7 @@ fn an_unattended_run_declines_every_question_in_the_series() {
         reply_with("I will decide myself"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run_with_trust(
@@ -5390,7 +5418,7 @@ fn an_unattended_run_declines_every_question_in_the_series() {
         &egress,
         &workspace,
         &Task::new("push the change"),
-        &mut bua_agent::confirm::Unattended,
+        &mut bravebot_agent::confirm::Unattended,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -5427,11 +5455,11 @@ fn a_quarantined_read_does_not_stop_the_planner_asking() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     // No trust map: nothing in this workspace is vouched for, so the read is quarantined.
-    let mut confirmer = AnswersWith::new(vec![bua_core::ask::Answer::Chosen(vec![0])]);
+    let mut confirmer = AnswersWith::new(vec![bravebot_core::ask::Answer::Chosen(vec![0])]);
     turn::run(
         &config,
         &egress,
@@ -5473,7 +5501,7 @@ fn a_turn_includes_referenced_file_contents() {
 
     let (endpoint, received) = serve(&reply_with("read it"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     // Exactly what the event loop builds from the line "summarise @notes.md".
@@ -5483,7 +5511,7 @@ fn a_turn_includes_referenced_file_contents() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trusting_the_workspace(),
     )
@@ -5513,7 +5541,7 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
 
     let (endpoint, received) = serve(&reply_with("read it"));
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let task = Task::new("summarise @notes.md").with_file("notes.md");
@@ -5522,9 +5550,9 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
         &egress,
         &workspace,
         &task,
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
-        bua_core::trust::TrustStore::new(),
+        bravebot_core::trust::TrustStore::new(),
     )
     .expect("turn runs");
     assert!(outcome.clean, "a gate refused the referenced file");
@@ -5551,12 +5579,12 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
 
 /// A confirmer that records what it was asked about a run and answers as it was told.
 struct AskedAboutRuns {
-    answer: bua_agent::RunDecision,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<bua_agent::RunRequest>>>,
+    answer: bravebot_agent::RunDecision,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::RunRequest>>>,
 }
 
 impl AskedAboutRuns {
-    fn answering(answer: bua_agent::RunDecision) -> Self {
+    fn answering(answer: bravebot_agent::RunDecision) -> Self {
         Self {
             answer,
             seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -5564,31 +5592,37 @@ impl AskedAboutRuns {
     }
 }
 
-impl bua_agent::Confirmer for AskedAboutRuns {
-    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+impl bravebot_agent::Confirmer for AskedAboutRuns {
+    fn confirm_write(
+        &mut self,
+        _request: &bravebot_agent::WriteRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn confirm_run(&mut self, request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+    fn confirm_run(&mut self, request: &bravebot_agent::RunRequest) -> bravebot_agent::RunDecision {
         self.seen.lock().unwrap().push(request.clone());
         self.answer
     }
 
     fn confirm_read_output(
         &mut self,
-        _request: &bua_agent::confirm::OutputRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::OutputRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
     fn confirm_vouch(
         &mut self,
-        _request: &bua_agent::confirm::VouchRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::VouchRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+    fn ask_user(
+        &mut self,
+        _asking: &bravebot_core::ask::Asking,
+    ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
     }
 }
@@ -5598,26 +5632,26 @@ fn a_run_turn(
     scratch: &Scratch,
     arguments: &str,
     confirmer: &mut AskedAboutRuns,
-    programs: bua_core::programs::TrustedPrograms,
+    programs: bravebot_core::programs::TrustedPrograms,
 ) -> Result<turn::Outcome, turn::TurnError> {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, _received) =
         serve_sequence(vec![tool_request("run", arguments), reply_with("done")]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     turn::resume(
         &config,
         &egress,
         &workspace,
         &Task::new("run it"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
         programs,
-        &bua_core::cancel::Cancel::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
 }
 
@@ -5626,14 +5660,14 @@ fn a_run_turn(
 #[test]
 fn a_refused_run_executes_nothing() {
     let scratch = Scratch::new("run-refused");
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::reject());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::reject());
     let seen = confirmer.seen.clone();
 
     a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"touch","args":["evidence.txt"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn completes even though the run was refused");
 
@@ -5648,14 +5682,14 @@ fn a_refused_run_executes_nothing() {
 #[test]
 fn an_approved_run_executes_and_the_user_saw_what_it_was() {
     let scratch = Scratch::new("run-approved");
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
     let seen = confirmer.seen.clone();
 
     a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"touch","args":["made.txt"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn runs");
 
@@ -5689,7 +5723,7 @@ fn an_unattended_turn_runs_no_program() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::resume(
@@ -5697,13 +5731,13 @@ fn an_unattended_turn_runs_no_program() {
         &egress,
         &workspace,
         &Task::new("run it"),
-        &mut bua_agent::Conversation::new(),
-        &mut bua_agent::confirm::Unattended,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn completes");
 
@@ -5718,13 +5752,13 @@ fn an_unattended_turn_runs_no_program() {
 #[test]
 fn vouching_for_a_program_carries_out_of_the_turn() {
     let scratch = Scratch::new("run-always");
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve_always());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always());
 
     let outcome = a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"touch","args":["vouched.txt"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn runs");
 
@@ -5748,13 +5782,13 @@ fn vouching_for_a_program_carries_out_of_the_turn() {
 #[test]
 fn approving_once_leaves_the_session_vouching_for_nothing() {
     let scratch = Scratch::new("run-once");
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
 
     let outcome = a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"touch","args":["once.txt"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn runs");
 
@@ -5769,18 +5803,21 @@ fn approving_once_leaves_the_session_vouching_for_nothing() {
 #[test]
 fn a_vouched_program_runs_without_asking() {
     let scratch = Scratch::new("run-vouched");
-    let touch = bua_agent::programs::resolve("touch", &scratch.path).expect("touch is installed");
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::reject());
+    let touch =
+        bravebot_agent::programs::resolve("touch", &scratch.path).expect("touch is installed");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::reject());
     let seen = confirmer.seen.clone();
 
     a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"touch","args":["quiet.txt"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::from_iter([bua_core::programs::Command::new(
-            touch.display().to_string(),
-            vec!["quiet.txt".to_string()],
-        )]),
+        bravebot_core::programs::TrustedPrograms::from_iter([
+            bravebot_core::programs::Command::new(
+                touch.display().to_string(),
+                vec!["quiet.txt".to_string()],
+            ),
+        ]),
     )
     .expect("the turn runs");
 
@@ -5812,7 +5849,7 @@ fn what_a_program_printed_does_not_reach_the_planner() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::resume(
@@ -5820,13 +5857,13 @@ fn what_a_program_printed_does_not_reach_the_planner() {
         &egress,
         &workspace,
         &Task::new("run it"),
-        &mut bua_agent::Conversation::new(),
-        &mut AskedAboutRuns::answering(bua_agent::RunDecision::approve()),
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn runs");
 
@@ -5848,14 +5885,14 @@ fn what_a_program_printed_does_not_reach_the_planner() {
 #[test]
 fn a_command_line_in_the_program_field_is_refused_with_an_explanation() {
     let scratch = Scratch::new("run-cmdline");
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
     let seen = confirmer.seen.clone();
 
     a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"git log --oneline"}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn completes");
 
@@ -5887,14 +5924,14 @@ echo started
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
     let seen = confirmer.seen.clone();
 
     a_run_turn(
         &scratch,
         r#"{"pipeline":[{"program":"./Some App.app/Some Program","args":["--flag"]}]}"#,
         &mut confirmer,
-        bua_core::programs::TrustedPrograms::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn completes");
 
@@ -5920,7 +5957,7 @@ fn a_vouched_commands_output_reaches_the_planner() {
     let scratch = Scratch::new("run-vouched-output");
     std::fs::write(scratch.path.join("secret.txt"), "SENTINEL-XYZZY\n").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
-    let cat = bua_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
+    let cat = bravebot_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
 
     let (endpoint, received) = serve_sequence(vec![
         tool_request(
@@ -5930,7 +5967,7 @@ fn a_vouched_commands_output_reaches_the_planner() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::resume(
@@ -5938,17 +5975,19 @@ fn a_vouched_commands_output_reaches_the_planner() {
         &egress,
         &workspace,
         &Task::new("run it"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         // Rejects, and is never consulted: the command is already vouched for.
-        &mut AskedAboutRuns::answering(bua_agent::RunDecision::reject()),
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::reject()),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        bua_core::programs::TrustedPrograms::from_iter([bua_core::programs::Command::new(
-            cat.display().to_string(),
-            vec!["secret.txt".to_string()],
-        )]),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::from_iter([
+            bravebot_core::programs::Command::new(
+                cat.display().to_string(),
+                vec!["secret.txt".to_string()],
+            ),
+        ]),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn runs");
 
@@ -5967,7 +6006,7 @@ fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
     let scratch = Scratch::new("run-vouched-other");
     std::fs::write(scratch.path.join("other.txt"), "SENTINEL-XYZZY\n").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
-    let cat = bua_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
+    let cat = bravebot_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
 
     let (endpoint, received) = serve_sequence(vec![
         tool_request(
@@ -5977,7 +6016,7 @@ fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::resume(
@@ -5985,18 +6024,20 @@ fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
         &egress,
         &workspace,
         &Task::new("run it"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         // Approves this once, without vouching for it.
-        &mut AskedAboutRuns::answering(bua_agent::RunDecision::approve()),
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
         // A different argument list, so this entry does not cover the call above.
-        bua_core::programs::TrustedPrograms::from_iter([bua_core::programs::Command::new(
-            cat.display().to_string(),
-            vec!["secret.txt".to_string()],
-        )]),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::from_iter([
+            bravebot_core::programs::Command::new(
+                cat.display().to_string(),
+                vec!["secret.txt".to_string()],
+            ),
+        ]),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn runs");
 
@@ -6011,7 +6052,7 @@ fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
 /// A confirmer that approves a run and lets its output be read, recording what it was shown.
 struct ReadsWhatItRan {
     allow: bool,
-    shown: std::sync::Arc<std::sync::Mutex<Vec<bua_agent::confirm::OutputRequest>>>,
+    shown: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::confirm::OutputRequest>>>,
 }
 
 impl ReadsWhatItRan {
@@ -6023,35 +6064,44 @@ impl ReadsWhatItRan {
     }
 }
 
-impl bua_agent::Confirmer for ReadsWhatItRan {
-    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+impl bravebot_agent::Confirmer for ReadsWhatItRan {
+    fn confirm_write(
+        &mut self,
+        _request: &bravebot_agent::WriteRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
-        bua_agent::RunDecision::approve()
+    fn confirm_run(
+        &mut self,
+        _request: &bravebot_agent::RunRequest,
+    ) -> bravebot_agent::RunDecision {
+        bravebot_agent::RunDecision::approve()
     }
 
     fn confirm_read_output(
         &mut self,
-        request: &bua_agent::confirm::OutputRequest,
-    ) -> bua_agent::Decision {
+        request: &bravebot_agent::confirm::OutputRequest,
+    ) -> bravebot_agent::Decision {
         self.shown.lock().unwrap().push(request.clone());
         if self.allow {
-            bua_agent::Decision::Approve
+            bravebot_agent::Decision::Approve
         } else {
-            bua_agent::Decision::Reject
+            bravebot_agent::Decision::Reject
         }
     }
 
     fn confirm_vouch(
         &mut self,
-        _request: &bua_agent::confirm::VouchRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::VouchRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+    fn ask_user(
+        &mut self,
+        _asking: &bravebot_core::ask::Asking,
+    ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
     }
 }
@@ -6076,7 +6126,7 @@ fn output_a_person_reads_and_approves_reaches_the_planner() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = ReadsWhatItRan::new(true);
     let shown = confirmer.shown.clone();
@@ -6086,13 +6136,13 @@ fn output_a_person_reads_and_approves_reaches_the_planner() {
         &egress,
         &workspace,
         &Task::new("find out"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn runs");
 
@@ -6134,7 +6184,7 @@ fn output_a_person_refuses_stays_out_of_the_planner() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::resume(
@@ -6142,13 +6192,13 @@ fn output_a_person_refuses_stays_out_of_the_planner() {
         &egress,
         &workspace,
         &Task::new("find out"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut ReadsWhatItRan::new(false),
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn runs");
 
@@ -6180,7 +6230,7 @@ fn a_quarantined_file_cannot_be_read_through_the_output_route() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = ReadsWhatItRan::new(true);
     let shown = confirmer.shown.clone();
@@ -6191,13 +6241,13 @@ fn a_quarantined_file_cannot_be_read_through_the_output_route() {
         &egress,
         &workspace,
         &Task::new("read it"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn runs");
 
@@ -6247,7 +6297,7 @@ fn a_refusal_does_not_spell_out_a_quarantined_filename() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     turn::run(
@@ -6255,7 +6305,7 @@ fn a_refusal_does_not_spell_out_a_quarantined_filename() {
         &egress,
         &workspace,
         &Task::new("fix it"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -6294,7 +6344,7 @@ fn a_quarantined_read_tells_the_planner_the_user_can_vouch() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     // Nothing vouched for, so the listing and the file are both quarantined.
@@ -6303,7 +6353,7 @@ fn a_quarantined_read_tells_the_planner_the_user_can_vouch() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
@@ -6325,7 +6375,7 @@ fn a_quarantined_read_tells_the_planner_the_user_can_vouch() {
 /// A confirmer that vouches for whatever quarantined file it is offered.
 struct VouchesForFiles {
     allow: bool,
-    offered: std::sync::Arc<std::sync::Mutex<Vec<bua_agent::confirm::VouchRequest>>>,
+    offered: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::confirm::VouchRequest>>>,
 }
 
 impl VouchesForFiles {
@@ -6337,32 +6387,44 @@ impl VouchesForFiles {
     }
 }
 
-impl bua_agent::Confirmer for VouchesForFiles {
-    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+impl bravebot_agent::Confirmer for VouchesForFiles {
+    fn confirm_write(
+        &mut self,
+        _request: &bravebot_agent::WriteRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
-        bua_agent::RunDecision::reject()
+    fn confirm_run(
+        &mut self,
+        _request: &bravebot_agent::RunRequest,
+    ) -> bravebot_agent::RunDecision {
+        bravebot_agent::RunDecision::reject()
     }
 
     fn confirm_read_output(
         &mut self,
-        _request: &bua_agent::confirm::OutputRequest,
-    ) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+        _request: &bravebot_agent::confirm::OutputRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
     }
 
-    fn confirm_vouch(&mut self, request: &bua_agent::confirm::VouchRequest) -> bua_agent::Decision {
+    fn confirm_vouch(
+        &mut self,
+        request: &bravebot_agent::confirm::VouchRequest,
+    ) -> bravebot_agent::Decision {
         self.offered.lock().unwrap().push(request.clone());
         if self.allow {
-            bua_agent::Decision::Approve
+            bravebot_agent::Decision::Approve
         } else {
-            bua_agent::Decision::Reject
+            bravebot_agent::Decision::Reject
         }
     }
 
-    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+    fn ask_user(
+        &mut self,
+        _asking: &bravebot_core::ask::Asking,
+    ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
     }
 }
@@ -6380,7 +6442,7 @@ fn a_quarantined_read_offers_the_user_the_chance_to_vouch() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = VouchesForFiles::new(true);
     let offered = confirmer.offered.clone();
@@ -6390,13 +6452,13 @@ fn a_quarantined_read_offers_the_user_the_chance_to_vouch() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -6434,7 +6496,7 @@ fn declining_to_vouch_leaves_the_file_quarantined() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let outcome = turn::resume(
@@ -6442,13 +6504,13 @@ fn declining_to_vouch_leaves_the_file_quarantined() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut VouchesForFiles::new(false),
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -6478,7 +6540,7 @@ fn a_trusted_file_is_not_offered_for_vouching() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = VouchesForFiles::new(true);
     let offered = confirmer.offered.clone();
@@ -6488,13 +6550,13 @@ fn a_trusted_file_is_not_offered_for_vouching() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -6518,7 +6580,7 @@ fn the_same_file_is_offered_once_per_turn() {
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
     let mut confirmer = VouchesForFiles::new(false);
     let offered = confirmer.offered.clone();
@@ -6528,13 +6590,13 @@ fn the_same_file_is_offered_once_per_turn() {
         &egress,
         &workspace,
         &Task::new("fix the speed bug"),
-        &mut bua_agent::Conversation::new(),
+        &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
-        &mut bua_agent::report::RecordingReporter::default(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        bua_core::trust::TrustStore::new(),
-        bua_core::programs::TrustedPrograms::new(),
-        &bua_core::cancel::Cancel::new(),
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 

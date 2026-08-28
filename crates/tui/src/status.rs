@@ -5,7 +5,7 @@
 //!
 //! # What it deliberately leaves out
 //!
-//! Not the endpoint host and not the key id, though `bua doctor` prints both. A status panel is the
+//! Not the endpoint host and not the key id, though `bravebot doctor` prints both. A status panel is the
 //! thing people paste into an issue or a screenshot, and an internal hostname is the part worth not
 //! spreading. Which environment is in use answers the question people actually have, which is
 //! whether they are pointed at dev or prod.
@@ -14,10 +14,10 @@
 //! are workspace-relative names shown to the person who owns the workspace, and the counts are this
 //! program's own arithmetic. No model reads any of it.
 
-use bua_config::Config;
-use bua_core::label::Integrity;
-use bua_core::programs::TrustedPrograms;
-use bua_core::trust::TrustStore;
+use bravebot_config::Config;
+use bravebot_core::label::Integrity;
+use bravebot_core::programs::TrustedPrograms;
+use bravebot_core::trust::TrustStore;
 use std::path::Path;
 
 /// How many trust rules are listed before the rest become a count.
@@ -148,7 +148,7 @@ pub fn report(facts: &Facts<'_>) -> Report {
     // this session announces itself by appearing; this is the one that stops appearing, so without
     // a line here there is nothing to tell them a command now runs unasked and that what it prints
     // is being read as trusted.
-    let vouched: Vec<&bua_core::programs::Command> = facts.programs.iter().collect();
+    let vouched: Vec<&bravebot_core::programs::Command> = facts.programs.iter().collect();
     if vouched.is_empty() {
         lines.push(Line::new("Programs", "every run is put to you"));
     } else {
@@ -272,8 +272,8 @@ mod tests {
         let config = config_for("http://127.0.0.1:1", None);
         let trust = trusting();
         let vouched = TrustedPrograms::from_iter([
-            bua_core::programs::Command::new("/usr/bin/git", vec!["log".to_string()]),
-            bua_core::programs::Command::new("/usr/bin/make", vec!["check".to_string()]),
+            bravebot_core::programs::Command::new("/usr/bin/git", vec!["log".to_string()]),
+            bravebot_core::programs::Command::new("/usr/bin/make", vec!["check".to_string()]),
         ]);
         let mut facts = facts(&config, &trust);
         facts.programs = &vouched;
@@ -436,7 +436,10 @@ mod tests {
             return;
         };
         let home = Path::new(&home);
-        assert_eq!(abbreviate(&home.join("projects/bua")), "~/projects/bua");
+        assert_eq!(
+            abbreviate(&home.join("projects/bravebot")),
+            "~/projects/bravebot"
+        );
         assert_eq!(abbreviate(Path::new("/tmp/elsewhere")), "/tmp/elsewhere");
     }
 }

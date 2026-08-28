@@ -1,7 +1,7 @@
 //! Choosing which model to think with.
 //!
 //! Shown by `/model`. The list comes from the endpoint rather than from a set compiled in, so it
-//! is whatever the backend actually offers today, and the choice is written to `~/.bua`: it
+//! is whatever the backend actually offers today, and the choice is written to `~/.bravebot`: it
 //! outlives the session that made it and applies in every directory.
 //!
 //! Nothing labelled is involved and nothing is quarantined. The names never reach a model: they
@@ -9,7 +9,7 @@
 //! requests. That field is routing, and a person choosing it off a list they read is the
 //! endorsement for it, the same way a person approving a write destination is.
 
-use bua_aichat::models::Model;
+use bravebot_aichat::models::Model;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;

@@ -4,8 +4,8 @@
 //! context, because the user typed the path. These check the way there, since a completion that
 //! offered the wrong file would be admitting the wrong contents.
 
-use bua_tui::Session;
-use bua_tui::app::{Action, handle_key, handle_paste};
+use bravebot_tui::Session;
+use bravebot_tui::app::{Action, handle_key, handle_paste};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
@@ -15,7 +15,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("bua-references-{name}"));
+        let path = std::env::temp_dir().join(format!("bravebot-references-{name}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(path.join("src")).expect("create");
         std::fs::write(path.join("Cargo.toml"), "[package]").expect("write");
@@ -54,7 +54,9 @@ fn an_at_sign_offers_the_workspace() {
 
     assert!(session.is_completing(), "nothing was offered");
     let offered: Vec<String> = match session.offered() {
-        bua_tui::state::Offered::Files(entries) => entries.into_iter().map(|e| e.path).collect(),
+        bravebot_tui::state::Offered::Files(entries) => {
+            entries.into_iter().map(|e| e.path).collect()
+        }
         other => panic!("files were not offered: {other:?}"),
     };
     assert_eq!(
@@ -169,7 +171,7 @@ fn an_address_in_a_sentence_is_not_a_reference() {
 /// A directory is somewhere to type through, not a file to read, so naming one includes nothing.
 #[test]
 fn a_directory_reference_is_not_included_as_a_file() {
-    assert!(bua_tui::entries::referenced("look in @src/").is_empty());
+    assert!(bravebot_tui::entries::referenced("look in @src/").is_empty());
 }
 
 /// A prompt ending in a finished reference sends on Enter. It reads as still being completed, since
@@ -222,7 +224,7 @@ fn the_files_a_submitted_line_would_include() {
         other => panic!("the line was not sent: {other:?}"),
     };
     assert_eq!(
-        bua_tui::entries::referenced(&prompt),
+        bravebot_tui::entries::referenced(&prompt),
         vec!["src/main.rs".to_string(), "README.md".to_string()]
     );
 }

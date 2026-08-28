@@ -9,14 +9,14 @@
 //! the reply arrives. That is honest about what is happening, and it keeps two turns from
 //! ever being in flight together.
 
-use bua_agent::Workspace;
-use bua_agent::conversation::Conversation;
-use bua_agent::turn::{self, Task};
-use bua_config::Config;
-use bua_core::cancel::Cancel;
-use bua_core::programs::TrustedPrograms;
-use bua_core::trust::TrustStore;
-use bua_net::Egress;
+use bravebot_agent::Workspace;
+use bravebot_agent::conversation::Conversation;
+use bravebot_agent::turn::{self, Task};
+use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
+use bravebot_core::programs::TrustedPrograms;
+use bravebot_core::trust::TrustStore;
+use bravebot_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
@@ -582,7 +582,7 @@ fn event_loop(
     // (the session record, where AGENTS.md is looked for) moves underneath.
     let mut workspace = workspace.clone();
 
-    // The one place persistence is turned on: history in ~/.bua outlives the session.
+    // The one place persistence is turned on: history in ~/.bravebot outlives the session.
     let mut session = Session::new(confinement)
         .with_stored_history()
         .in_workspace(workspace.root());
@@ -757,7 +757,7 @@ fn event_loop(
 
                 // Written after each turn rather than at the end, because the end may never
                 // come: the session worth resuming is the one whose machine slept and never
-                // woke. Best-effort, like everything else under ~/.bua.
+                // woke. Best-effort, like everything else under ~/.bravebot.
                 stored.save(
                     &prompt,
                     crate::sessions::Standing {
@@ -852,23 +852,24 @@ fn choose_model(
     let mut sink = Trail::new();
     let egress = Egress::new();
 
-    // A policy exists because `bua-net` is the only way out to the network and its gate takes one.
+    // A policy exists because `bravebot-net` is the only way out to the network and its gate takes one.
     // Routing is the listing itself: this is not a turn, nothing is read from the workspace, and no
     // model is involved, so there is no prompt to anchor it to.
-    let mut routing = bua_core::policy::Routing::new();
+    let mut routing = bravebot_core::policy::Routing::new();
     routing.insert_trusted("models", config.models_url());
 
-    let models = bua_core::policy::Policy::begin(
+    let models = bravebot_core::policy::Policy::begin(
         routing,
-        bua_core::policy::ReleasePlan::new(),
-        bua_core::capability::CapabilitySet::from_iter([
-            bua_core::capability::Capability::WebFetch,
+        bravebot_core::policy::ReleasePlan::new(),
+        bravebot_core::capability::CapabilitySet::from_iter([
+            bravebot_core::capability::Capability::WebFetch,
         ]),
         &mut sink,
     )
     .map_err(|denial| denial.to_string())
     .and_then(|mut policy| {
-        bua_aichat::models::list(&mut policy, config, &egress).map_err(|error| error.to_string())
+        bravebot_aichat::models::list(&mut policy, config, &egress)
+            .map_err(|error| error.to_string())
     });
 
     match models {
@@ -952,7 +953,7 @@ fn run_turn_animated(
     // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
     // sent and the files that came with it cannot disagree.
     let mut task = Task::new(prompt)
-        .with_home(bua_agent::home::directory())
+        .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string));
     for file in crate::entries::referenced(prompt) {
         task = task.with_file(file);
@@ -1075,7 +1076,7 @@ fn run_turn_animated(
                 // A planner that loops back over the same decision should not make the user
                 // restate it. The note is what keeps that from being invisible: an answer given
                 // once and reused silently would look like a question that was never asked.
-                let known: Vec<Option<bua_core::ask::Answer>> = asking
+                let known: Vec<Option<bravebot_core::ask::Answer>> = asking
                     .prompts
                     .iter()
                     .map(|prompt| session.recall_answer(&prompt.key))
@@ -1088,7 +1089,7 @@ fn run_turn_animated(
 
                 // Only what is still outstanding is drawn, so the count in the title is the
                 // number of questions the person actually has to answer.
-                let outstanding = bua_core::ask::Asking {
+                let outstanding = bravebot_core::ask::Asking {
                     prompts: asking
                         .prompts
                         .iter()

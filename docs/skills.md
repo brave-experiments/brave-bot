@@ -4,10 +4,10 @@ Two kinds of file steer a turn before you type anything: **AGENTS.md**, which sa
 done somewhere, and a **skill**, which says how one kind of task is done.
 
 ```
-~/.bua/AGENTS.md                          applies to every project
-~/.bua/skills/<name>/SKILL.md             available in every project
+~/.bravebot/AGENTS.md                          applies to every project
+~/.bravebot/skills/<name>/SKILL.md             available in every project
 <workspace>/AGENTS.md                     applies to this project
-<workspace>/.bua/skills/<name>/SKILL.md   available in this project
+<workspace>/.bravebot/skills/<name>/SKILL.md   available in this project
 ```
 
 Both AGENTS.md files are read, the global one first, so the project's own has the last word. A
@@ -40,28 +40,29 @@ the task.
 The name, the description, and the body of a skill all go to the model as instructions, so they
 have to come from somewhere nothing hostile can reach.
 
-**`~/.bua` is trusted because it is yours.** It is the directory holding your history and your
+**`~/.bravebot` is trusted because it is yours.** It is the directory holding your history and your
 sessions, and its contents are ones you put there. That is the same standing the configuration
 picking your model and endpoint already has. Nothing is assumed from silence: an empty directory
 offers nothing, and the grant is the act of putting a file there.
 
 Stated plainly, because it is the one thing worth knowing before you install anything:
 
-> **A skill you downloaded into `~/.bua/skills` is trusted exactly as far as a config file you
+> **A skill you downloaded into `~/.bravebot/skills` is trusted exactly as far as a config file you
 > pasted is.** Read one before you install it. Nothing downstream will second-guess it, because
 > everything downstream is built to trust what you vouched for.
 
-**A project's files are trusted only if you said so.** `AGENTS.md` and `.bua/skills` in a working
-directory are read through the trust map, so they load when you answered yes at startup and are
-**left out entirely** when you did not. They are not quarantined into a reference the way a file
-the agent reads is, because a reference to an instruction is no use to anyone: an instruction is
-either followed or absent, and one from a directory nobody vouched for has to be absent.
+**A project's files are trusted only if you said so.** `AGENTS.md` and `.bravebot/skills` in a
+working directory are read through the trust map, so they load when you answered yes at startup
+and are **left out entirely** when you did not. They are not quarantined into a reference the way
+a file the agent reads is, because a reference to an instruction is no use to anyone: an
+instruction is either followed or absent, and one from a directory nobody vouched for has to be
+absent.
 
 You are told when that happens, once per session:
 
 ```
 AGENTS.md was not loaded: this directory is not trusted
-2 skills in .bua/skills were not loaded: this directory is not trusted
+2 skills in .bravebot/skills were not loaded: this directory is not trusted
 ```
 
 Note the second line counts them rather than naming them. A directory in an untrusted project can

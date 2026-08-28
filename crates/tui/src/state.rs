@@ -5,8 +5,8 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use crate::audit::TrailLine;
-use bua_agent::report::{Activity, Landing, Phase, Shown};
-use bua_core::event::Event;
+use bravebot_agent::report::{Activity, Landing, Phase, Shown};
+use bravebot_core::event::Event;
 use std::time::{Duration, Instant};
 
 /// Who produced a transcript entry.
@@ -37,7 +37,7 @@ pub struct Entry {
     ///
     /// Held on the entry rather than in one place so the scrollback shows what each turn did.
     /// A live list belongs to the turn in flight and goes here when that turn ends.
-    pub todos: Vec<bua_core::todo::Row>,
+    pub todos: Vec<bravebot_core::todo::Row>,
     /// The call this entry describes, for a [`Speaker::Tool`] entry.
     ///
     /// Carries the note and the hunks separately from `text` so the interface can style them
@@ -128,7 +128,7 @@ impl Entry {
     }
 
     /// Attach the task list the turn finished with.
-    pub fn with_todos(mut self, todos: Vec<bua_core::todo::Row>) -> Self {
+    pub fn with_todos(mut self, todos: Vec<bravebot_core::todo::Row>) -> Self {
         self.todos = todos;
         self
     }
@@ -193,7 +193,7 @@ pub struct Session {
     /// Already shaped and released: these rows came out of the kernel's render gate, so drawing
     /// them decides nothing and needs no label. Cleared when a turn starts, so one turn's plan
     /// never appears beneath another's work.
-    pub todos: Vec<bua_core::todo::Row>,
+    pub todos: Vec<bravebot_core::todo::Row>,
     /// What the turn in flight is waiting on, when it is waiting on the model.
     ///
     /// Cleared between turns. `None` before the first request goes out, which is the only
@@ -211,7 +211,7 @@ pub struct Session {
     /// that loops back over the same decision should not make the user restate it. Kept in the
     /// interface rather than the kernel: it is a convenience for the person, not a rule about
     /// labels, and the key is trusted text by the time it reaches here.
-    pub answers: Vec<(String, bua_core::ask::Answer)>,
+    pub answers: Vec<(String, bravebot_core::ask::Answer)>,
     /// Whether history is written to disk.
     ///
     /// Off by default so constructing a session does no I/O: a test would otherwise read and
@@ -232,7 +232,7 @@ pub struct Session {
     started: Option<Instant>,
     /// The model the user chose, or `None` to use the configured default.
     ///
-    /// Read from `~/.bua` at startup and rewritten when `/model` picks one, so the choice outlives
+    /// Read from `~/.bravebot` at startup and rewritten when `/model` picks one, so the choice outlives
     /// the session that made it and applies in every directory.
     model: Option<String>,
     /// Which offered command is under the cursor while one is being typed.
@@ -367,7 +367,7 @@ impl Session {
     }
 
     /// Record the task list the turn just reported.
-    pub fn set_todos(&mut self, rows: Vec<bua_core::todo::Row>) {
+    pub fn set_todos(&mut self, rows: Vec<bravebot_core::todo::Row>) {
         self.todos = rows;
     }
 
@@ -416,7 +416,9 @@ impl Session {
     /// already where a finished turn's list lives: `complete` moves it there so the scrollback
     /// shows what each turn set out to do. Turn numbers are counted the way `replay` counts them,
     /// so a list written under turn three comes back under turn three.
-    pub fn todos_by_turn(&self) -> std::collections::BTreeMap<usize, Vec<bua_core::todo::Row>> {
+    pub fn todos_by_turn(
+        &self,
+    ) -> std::collections::BTreeMap<usize, Vec<bravebot_core::todo::Row>> {
         let mut by_turn = std::collections::BTreeMap::new();
         let mut turn = 0;
         for entry in &self.transcript {
@@ -677,11 +679,11 @@ impl Session {
     /// record of a turn that was refused before it could answer.
     pub fn replay(
         &mut self,
-        conversation: &bua_agent::Conversation,
+        conversation: &bravebot_agent::Conversation,
         title: &str,
         recalled: &crate::sessions::Recalled,
     ) {
-        use bua_agent::conversation::Said;
+        use bravebot_agent::conversation::Said;
 
         self.note(format!("resumed session: {title}"));
 
@@ -981,7 +983,7 @@ impl Session {
     }
 
     /// What the user said last time this exact question was asked, if they were asked it.
-    pub fn recall_answer(&self, key: &str) -> Option<bua_core::ask::Answer> {
+    pub fn recall_answer(&self, key: &str) -> Option<bravebot_core::ask::Answer> {
         self.answers
             .iter()
             .find(|(asked, _)| asked == key)
@@ -989,7 +991,7 @@ impl Session {
     }
 
     /// Remember an answer, replacing any earlier one for the same question.
-    pub fn remember_answer(&mut self, key: String, answer: bua_core::ask::Answer) {
+    pub fn remember_answer(&mut self, key: String, answer: bravebot_core::ask::Answer) {
         match self.answers.iter_mut().find(|(asked, _)| *asked == key) {
             Some(slot) => slot.1 = answer,
             None => self.answers.push((key, answer)),
@@ -1020,7 +1022,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_core::ask::Answer;
+    use bravebot_core::ask::Answer;
 
     /// A question nobody has been asked has no answer to recall, which is what makes the memo
     /// safe to consult for every question in a series.
@@ -1058,7 +1060,7 @@ mod tests {
         session.remember_answer("q".into(), Answer::Declined);
         assert_eq!(session.recall_answer("q"), Some(Answer::Declined));
     }
-    use bua_core::label::Label;
+    use bravebot_core::label::Label;
 
     fn session() -> Session {
         Session::new("kernel-enforced")
@@ -1248,7 +1250,7 @@ mod tests {
         s.complete(
             "reply",
             vec![Event::Observed {
-                capability: bua_core::capability::Capability::FileRead,
+                capability: bravebot_core::capability::Capability::FileRead,
                 label: Label::untrusted_private(),
             }],
             0,
@@ -1354,9 +1356,12 @@ mod tests {
         let mut s = session();
         s.type_char('a');
         s.submit();
-        s.set_todos(bua_core::todo::rows(&bua_core::todo::List::new(vec![
-            bua_core::todo::Item::new("something", bua_core::todo::Status::Active),
-        ])));
+        s.set_todos(bravebot_core::todo::rows(&bravebot_core::todo::List::new(
+            vec![bravebot_core::todo::Item::new(
+                "something",
+                bravebot_core::todo::Status::Active,
+            )],
+        )));
         s.complete("an answer", Vec::new(), 10);
         s.scroll_up(5);
 
@@ -1614,9 +1619,9 @@ mod tests {
     }
     mod todos {
         use super::*;
-        use bua_core::todo::{Item, List, Status, rows};
+        use bravebot_core::todo::{Item, List, Status, rows};
 
-        fn list(entries: &[(&str, Status)]) -> Vec<bua_core::todo::Row> {
+        fn list(entries: &[(&str, Status)]) -> Vec<bravebot_core::todo::Row> {
             rows(&List::new(
                 entries
                     .iter()
@@ -1804,7 +1809,7 @@ mod tests {
 
     mod progress {
         use super::*;
-        use bua_agent::report::{Activity, Phase};
+        use bravebot_agent::report::{Activity, Phase};
 
         fn working() -> Session {
             let mut s = session();
@@ -1935,9 +1940,12 @@ mod tests {
             let mut s = working();
             s.set_phase(Phase::Thinking);
             let word = s.indicator().expect("working").verb.to_string();
-            s.set_todos(bua_core::todo::rows(&bua_core::todo::List::new(vec![
-                bua_core::todo::Item::new("Add prompt history", bua_core::todo::Status::Active),
-            ])));
+            s.set_todos(bravebot_core::todo::rows(&bravebot_core::todo::List::new(
+                vec![bravebot_core::todo::Item::new(
+                    "Add prompt history",
+                    bravebot_core::todo::Status::Active,
+                )],
+            )));
             assert_eq!(s.indicator().expect("working").verb, word);
         }
 
@@ -2012,8 +2020,8 @@ mod tests {
 
     mod replay {
         use super::*;
-        use bua_agent::Conversation;
-        use bua_aichat::protocol::Message;
+        use bravebot_agent::Conversation;
+        use bravebot_aichat::protocol::Message;
         use std::collections::BTreeMap;
 
         fn line(text: &str) -> TrailLine {
@@ -2132,7 +2140,7 @@ mod tests {
         /// was blank under every turn of a resumed one.
         #[test]
         fn a_resumed_turn_shows_the_plan_it_worked_to() {
-            use bua_core::todo::{Item, List, Status, rows};
+            use bravebot_core::todo::{Item, List, Status, rows};
 
             let plan = rows(&List::new(vec![
                 Item::new("read the file", Status::Done),
@@ -2171,7 +2179,7 @@ mod tests {
         /// a turn it was never part of.
         #[test]
         fn the_turn_a_plan_is_written_under_is_the_turn_it_comes_back_under() {
-            use bua_core::todo::{Item, List, Status, rows};
+            use bravebot_core::todo::{Item, List, Status, rows};
 
             let plan = rows(&List::new(vec![Item::new("do it", Status::Active)]));
 
@@ -2210,7 +2218,7 @@ mod tests {
         /// account of a turn that spent most of itself reading.
         #[test]
         fn a_resumed_transcript_shows_the_calls_the_turn_made() {
-            use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
+            use bravebot_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
 
             let call = ToolCallRequest {
                 id: "call-1".to_string(),
@@ -2242,7 +2250,7 @@ mod tests {
         /// turn said. Anything else would put the trail above work it covers.
         #[test]
         fn a_trail_lands_after_the_calls_the_turn_made() {
-            use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
+            use bravebot_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
 
             let call = ToolCallRequest {
                 id: "call-1".to_string(),

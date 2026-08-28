@@ -59,7 +59,7 @@ unsafe fn set(name: &str, value: Option<&str>) {
 
 /// A program that saves `contents` over the file it is given, which is what an editor does.
 fn saves(contents: &str, name: &str) -> PathBuf {
-    let source = std::env::temp_dir().join(format!("bua-editor-{name}"));
+    let source = std::env::temp_dir().join(format!("bravebot-editor-{name}"));
     std::fs::write(&source, contents).expect("scratch source");
     source
 }
@@ -69,7 +69,7 @@ fn saves(contents: &str, name: &str) -> PathBuf {
 fn what_the_editor_saved_becomes_the_line() {
     let source = saves("the considered version\n", "saved");
     let edited = with_editor(&format!("cp {}", source.display()), || {
-        bua_tui::editor::edit("the first thing that came to mind")
+        bravebot_tui::editor::edit("the first thing that came to mind")
     })
     .expect("the editor ran");
 
@@ -81,8 +81,8 @@ fn what_the_editor_saved_becomes_the_line() {
 /// comes back is what went in: not saving costs the edits, never the prompt.
 #[test]
 fn an_editor_that_saved_nothing_gives_the_line_back() {
-    let edited =
-        with_editor("true", || bua_tui::editor::edit("half a thought")).expect("the editor ran");
+    let edited = with_editor("true", || bravebot_tui::editor::edit("half a thought"))
+        .expect("the editor ran");
 
     assert_eq!(edited, "half a thought");
 }
@@ -91,7 +91,7 @@ fn an_editor_that_saved_nothing_gives_the_line_back() {
 /// editor that can be abandoned and one whose window is a commitment.
 #[test]
 fn an_editor_that_refuses_leaves_the_line_alone() {
-    let failure = with_editor("false", || bua_tui::editor::edit("half a thought"))
+    let failure = with_editor("false", || bravebot_tui::editor::edit("half a thought"))
         .expect_err("a non-zero exit is not an edit");
 
     assert!(
@@ -106,7 +106,7 @@ fn an_editor_that_refuses_leaves_the_line_alone() {
 #[test]
 fn a_configured_editor_that_is_missing_is_not_replaced_by_a_guess() {
     let failure = with_editor("no-such-editor-anywhere", || {
-        bua_tui::editor::edit("a line")
+        bravebot_tui::editor::edit("a line")
     })
     .expect_err("a missing editor is not an edit");
 
@@ -119,13 +119,13 @@ fn a_configured_editor_that_is_missing_is_not_replaced_by_a_guess() {
 /// space as the end of the program would send a user's editor a file it never opened.
 #[test]
 fn an_editor_path_with_a_space_in_it_is_one_program() {
-    let editor = std::env::temp_dir().join("bua editor with spaces.sh");
+    let editor = std::env::temp_dir().join("bravebot editor with spaces.sh");
     std::fs::write(&editor, "#!/bin/sh\nprintf 'edited\\n' > \"$1\"\n").expect("scratch editor");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("mode");
 
     let edited = with_editor(&editor.display().to_string(), || {
-        bua_tui::editor::edit("a line")
+        bravebot_tui::editor::edit("a line")
     })
     .expect("the editor ran");
 
@@ -143,7 +143,7 @@ fn visual_is_the_one_that_runs() {
     let edited = with_both(
         Some(&format!("cp {}", wanted.display())),
         Some(&format!("cp {}", unwanted.display())),
-        || bua_tui::editor::edit("a line"),
+        || bravebot_tui::editor::edit("a line"),
     )
     .expect("the editor ran");
 

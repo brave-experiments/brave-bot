@@ -12,19 +12,19 @@
 //!   taint over the inputs and is written straight into a slot. Nobody reads it on the way.
 //!
 //! What confines a processor is therefore the shape of this call, not an operating-system
-//! boundary. `bua-sandbox` confines processes that run code we did not write; the code here is
+//! boundary. `bravebot-sandbox` confines processes that run code we did not write; the code here is
 //! the driver's own, and putting it in a subprocess would confine the wrong thing while leaving
 //! the model's output exactly as trusted as it was.
 
-use bua_aichat::protocol::{ChatRequest, Message, Usage};
-use bua_aichat::{AichatClient, ChatError, Subscription};
-use bua_config::Config;
-use bua_core::event::Sink;
-use bua_core::policy::{Denial, Policy};
-use bua_core::processor::ProcessorSpec;
-use bua_core::slot::SlotStore;
-use bua_core::value::Labelled;
-use bua_net::Egress;
+use bravebot_aichat::protocol::{ChatRequest, Message, Usage};
+use bravebot_aichat::{AichatClient, ChatError, Subscription};
+use bravebot_config::Config;
+use bravebot_core::event::Sink;
+use bravebot_core::policy::{Denial, Policy};
+use bravebot_core::processor::ProcessorSpec;
+use bravebot_core::slot::SlotStore;
+use bravebot_core::value::Labelled;
+use bravebot_net::Egress;
 use std::fmt;
 
 /// What a processor is told about itself.
@@ -110,7 +110,7 @@ pub struct Processed {
     /// What it wanted to say about what it did. Goes to the person watching and no further.
     pub note: Option<Labelled<String>>,
     /// The input it stands for, where it answered that the document should not change.
-    pub unchanged_from: Option<bua_core::slot::SlotId>,
+    pub unchanged_from: Option<bravebot_core::slot::SlotId>,
     /// The model the server reported using, which may differ from the one asked for.
     pub model: String,
     /// What the run cost, so a turn can report the whole of what it spent.
@@ -170,7 +170,7 @@ pub fn run<S: Sink>(
              says so or because it turns out not to be the document the instruction is about, \
              reply with exactly {} and nothing else. Do not reproduce it and do not explain: \
              what you were given is what will be used, and it is the whole answer.",
-            bua_core::processor::ProcessorSpec::UNCHANGED
+            bravebot_core::processor::ProcessorSpec::UNCHANGED
         ),
         None => String::new(),
     };

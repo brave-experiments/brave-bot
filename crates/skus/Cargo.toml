@@ -1,5 +1,5 @@
 [package]
-name = "bua-skus"
+name = "bravebot-skus"
 description = "Imports a Leo Premium subscription from a local Brave install by registering as a new device"
 version.workspace = true
 edition.workspace = true

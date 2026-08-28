@@ -1,4 +1,4 @@
-//! Where `~/.bua` is.
+//! Where `~/.bravebot` is.
 //!
 //! `HOME` is process-wide, so these tests are the only ones in the crate that touch it and they
 //! are kept in a file of their own. Everything else the agent reads from the home directory takes
@@ -18,7 +18,7 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 fn with_temp_home<T>(name: &str, body: impl FnOnce(&PathBuf) -> T) -> T {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let dir = std::env::temp_dir().join(format!("bua-agent-home-{name}"));
+    let dir = std::env::temp_dir().join(format!("bravebot-agent-home-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch home");
 
@@ -41,7 +41,10 @@ fn with_temp_home<T>(name: &str, body: impl FnOnce(&PathBuf) -> T) -> T {
 #[test]
 fn the_home_directory_is_the_one_the_environment_names() {
     with_temp_home("named", |home| {
-        assert_eq!(bua_agent::home::directory(), Some(home.join(".bua")));
+        assert_eq!(
+            bravebot_agent::home::directory(),
+            Some(home.join(".bravebot"))
+        );
     });
 }
 
@@ -55,7 +58,7 @@ fn an_absent_home_is_not_an_error() {
     // SAFETY: single-threaded within the lock, and restored before returning.
     unsafe { std::env::remove_var("HOME") };
 
-    let found = bua_agent::home::directory();
+    let found = bravebot_agent::home::directory();
 
     if let Some(value) = previous {
         unsafe { std::env::set_var("HOME", value) };
@@ -64,7 +67,7 @@ fn an_absent_home_is_not_an_error() {
 }
 
 /// An empty HOME is a misconfigured environment, not the filesystem root. Joining onto it would
-/// put the user's own files in `/.bua`.
+/// put the user's own files in `/.bravebot`.
 #[test]
 fn an_empty_home_is_treated_as_no_home_at_all() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -73,7 +76,7 @@ fn an_empty_home_is_treated_as_no_home_at_all() {
     // SAFETY: single-threaded within the lock, and restored before returning.
     unsafe { std::env::set_var("HOME", "") };
 
-    let found = bua_agent::home::directory();
+    let found = bravebot_agent::home::directory();
 
     match previous {
         Some(value) => unsafe { std::env::set_var("HOME", value) },

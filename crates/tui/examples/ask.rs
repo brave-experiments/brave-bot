@@ -1,7 +1,7 @@
 //! Drive the question picker by hand, with no model, no network and no credentials.
 //!
 //! ```sh
-//! cargo run -p bua-tui --example ask
+//! cargo run -p bravebot-tui --example ask
 //! ```
 //!
 //! The series below stands in for one the planner would have sent: a question with details on
@@ -12,7 +12,7 @@
 //! Worth pressing: enter and escape on each question, space on the multiple-answer one, the
 //! arrow keys down onto the free-text row, and ctrl-c to confirm it does not answer anything.
 
-use bua_core::ask::{Choice, Question, Series};
+use bravebot_core::ask::{Choice, Question, Series};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
@@ -52,14 +52,14 @@ fn main() -> io::Result<()> {
             false,
         ),
     ]);
-    let asking = bua_core::ask::asking(&series);
+    let asking = bravebot_core::ask::asking(&series);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let answers = bua_tui::ask::ask(&mut terminal, &asking);
+    let answers = bravebot_tui::ask::ask(&mut terminal, &asking);
 
     // Restored before anything is printed, so the report lands on the ordinary screen rather
     // than on one that is about to be torn down.
@@ -67,6 +67,6 @@ fn main() -> io::Result<()> {
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
     println!("what the planner would be told:\n");
-    println!("{}", bua_core::ask::describe_series(&series, &answers));
+    println!("{}", bravebot_core::ask::describe_series(&series, &answers));
     Ok(())
 }

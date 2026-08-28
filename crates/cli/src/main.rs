@@ -2,12 +2,12 @@
 
 mod progress;
 
-use bua_agent::Workspace;
-use bua_agent::turn::{self, Task};
-use bua_config::Config;
-use bua_core::cancel::Cancel;
-use bua_core::event::{Event, RecordingSink, Role};
-use bua_core::trust::TrustStore;
+use bravebot_agent::Workspace;
+use bravebot_agent::turn::{self, Task};
+use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
+use bravebot_core::event::{Event, RecordingSink, Role};
+use bravebot_core::trust::TrustStore;
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
@@ -20,7 +20,7 @@ fn main() -> ExitCode {
         Some("--version" | "-V") => {
             // The same words a session record writes down, so the two can be compared without
             // anyone having to work out what "the current build" means.
-            println!("bua {}", bua_tui::BUILD);
+            println!("bravebot {}", bravebot_tui::BUILD);
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") => {
@@ -28,13 +28,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // With no arguments the interactive session is the natural default.
-        None => interactive(bua_tui::app::Start::Fresh),
+        None => interactive(bravebot_tui::app::Start::Fresh),
         // Picking up where a session left off, chosen from a list or named outright.
         Some("--resume" | "-r") => match args.get(1) {
             Some(id) => resume_named(id),
-            None => interactive(bua_tui::app::Start::Choose),
+            None => interactive(bravebot_tui::app::Start::Choose),
         },
-        // The flag may lead, as it does for every other agent: `bua -p "task"`. Without this arm
+        // The flag may lead, as it does for every other agent: `bravebot -p "task"`. Without this arm
         // it would be caught below as an unknown option.
         Some("-p" | "--print") => run_task(&args),
         Some("doctor") => doctor(),
@@ -50,15 +50,15 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    println!("bua {VERSION}: a coding agent resistant to prompt injection");
+    println!("bravebot {VERSION}: a coding agent resistant to prompt injection");
     println!();
     println!("Usage:");
-    println!("  bua                               Start an interactive session");
-    println!("  bua \"<task>\" [--file <path>]...   Run a single task");
-    println!("  cat file | bua -p \"<task>\"        ...with piped input, never trusted");
-    println!("  bua --resume [id]                 Pick up a session in this directory");
-    println!("  bua doctor                        Check configuration and confinement");
-    println!("  bua import-leo-creds [channel]    Import a Leo Premium subscription");
+    println!("  bravebot                               Start an interactive session");
+    println!("  bravebot \"<task>\" [--file <path>]...   Run a single task");
+    println!("  cat file | bravebot -p \"<task>\"        ...with piped input, never trusted");
+    println!("  bravebot --resume [id]                 Pick up a session in this directory");
+    println!("  bravebot doctor                        Check configuration and confinement");
+    println!("  bravebot import-leo-creds [channel]    Import a Leo Premium subscription");
     println!();
     println!("Interactive keys:");
     println!("  Enter                 Send");
@@ -72,7 +72,7 @@ fn print_help() {
     // Listed from the commands themselves, so one renamed or added cannot leave this advertising a
     // word that no longer works. The interface offers the same list when a slash is typed.
     println!("Interactive commands:");
-    for command in bua_tui::app::COMMANDS {
+    for command in bravebot_tui::app::COMMANDS {
         let word = if command.argument.is_empty() {
             command.name.to_string()
         } else {
@@ -133,7 +133,7 @@ fn run_task(args: &[String]) -> ExitCode {
         }
     }
 
-    // Read before the emptiness check below, since `cat notes.md | bua -p` is a complete
+    // Read before the emptiness check below, since `cat notes.md | bravebot -p` is a complete
     // invocation: the pipe is the input and the prompt may be left off.
     let piped = if print {
         let stdin = std::io::stdin();
@@ -170,15 +170,15 @@ fn run_task(args: &[String]) -> ExitCode {
         }
     };
 
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     // The same choice the interface records. A preference about which model to think with is the
     // user's, not the interface's, so a one-shot run honours it rather than reverting to the
     // default the environment happens to name.
     let mut task = Task::new(prompt)
-        .with_home(bua_agent::home::directory())
-        .with_model(bua_tui::store::load_model());
+        .with_home(bravebot_agent::home::directory())
+        .with_model(bravebot_tui::store::load_model());
     for file in files {
         task = task.with_file(file);
     }
@@ -188,7 +188,7 @@ fn run_task(args: &[String]) -> ExitCode {
 
     // A one-shot run has nobody to ask about a write, so writes are refused rather than
     // silently applied.
-    let mut confirmer = bua_agent::Unattended;
+    let mut confirmer = bravebot_agent::Unattended;
 
     // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes
     // the command pipeable. Without it a long turn prints nothing until it is over.
@@ -236,7 +236,7 @@ fn run_task(args: &[String]) -> ExitCode {
 
 /// What a pipe may carry before it is refused.
 ///
-/// Matches the cap other agents document, and exists because the alternative is a `bua -p` that a
+/// Matches the cap other agents document, and exists because the alternative is a `bravebot -p` that a
 /// stray `cat` of a disk image holds open while it fills memory.
 const PIPE_CAP: usize = 10 * 1024 * 1024;
 
@@ -322,8 +322,8 @@ fn resume_named(id: &str) -> ExitCode {
         eprintln!("cannot tell which directory this is");
         return ExitCode::FAILURE;
     };
-    match bua_tui::sessions::load(&directory, id) {
-        Some(record) => interactive(bua_tui::app::Start::Resuming(Box::new(record))),
+    match bravebot_tui::sessions::load(&directory, id) {
+        Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
         None => {
             eprintln!("no session {id} in this directory");
             ExitCode::FAILURE
@@ -331,7 +331,7 @@ fn resume_named(id: &str) -> ExitCode {
     }
 }
 
-fn interactive(start: bua_tui::app::Start) -> ExitCode {
+fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
@@ -350,12 +350,12 @@ fn interactive(start: bua_tui::app::Start) -> ExitCode {
 
     // Reported in the status bar so the guarantee in force is visible for the whole
     // session rather than assumed.
-    let confinement = match bua_sandbox::for_current_platform() {
+    let confinement = match bravebot_sandbox::for_current_platform() {
         Ok(sandbox) => sandbox.capabilities().level.to_string(),
         Err(_) => "none".to_string(),
     };
 
-    match bua_tui::app::run(&config, &workspace, confinement, start) {
+    match bravebot_tui::app::run(&config, &workspace, confinement, start) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("interface error: {err}");
@@ -388,7 +388,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
                 eprintln!("unknown option: {other}");
                 return ExitCode::FAILURE;
             }
-            other => match bua_skus::Channel::parse(other) {
+            other => match bravebot_skus::Channel::parse(other) {
                 Some(parsed) => channel = Some(parsed),
                 None => {
                     eprintln!("unknown channel: {other}");
@@ -400,10 +400,10 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     }
 
     // Stable is what someone importing without saying which install means.
-    let channel = channel.unwrap_or(bua_skus::Channel::Stable);
+    let channel = channel.unwrap_or(bravebot_skus::Channel::Stable);
 
     if forget {
-        return match bua_skus::store::clear(channel) {
+        return match bravebot_skus::store::clear(channel) {
             Ok(()) => {
                 println!("forgot the {} subscription", channel.as_str());
                 ExitCode::SUCCESS
@@ -424,7 +424,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
             );
             eprintln!(
                 "         set {} and rebuild",
-                bua_config::env_var::PREMIUM_ENDPOINT
+                bravebot_config::env_var::PREMIUM_ENDPOINT
             );
         }
         _ => {}
@@ -435,7 +435,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         channel.as_str()
     );
 
-    let order = match bua_skus::find_leo_order(channel) {
+    let order = match bravebot_skus::find_leo_order(channel) {
         Ok(order) => order,
         Err(err) => {
             eprintln!("{err}");
@@ -452,10 +452,10 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
 
     // A fresh request id is what makes this a new device rather than a claim on an existing
     // device's batch.
-    let request_id = bua_skus::new_request_id();
+    let request_id = bravebot_skus::new_request_id();
 
     let registration =
-        match bua_skus::device::register(order.environment, &order.order_id, &request_id) {
+        match bravebot_skus::device::register(order.environment, &order.order_id, &request_id) {
             Ok(registration) => registration,
             Err(err) => {
                 eprintln!("{err}");
@@ -463,7 +463,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
             }
         };
 
-    let credentials: bua_skus::StoredCredentials = registration.into();
+    let credentials: bravebot_skus::StoredCredentials = registration.into();
     let count = credentials.credentials.len();
     let last = credentials
         .credentials
@@ -473,7 +473,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         .unwrap_or("unknown")
         .to_string();
 
-    if let Err(err) = bua_skus::store::save(channel, &credentials) {
+    if let Err(err) = bravebot_skus::store::save(channel, &credentials) {
         eprintln!("{err}");
         return ExitCode::FAILURE;
     }
@@ -498,7 +498,7 @@ fn doctor() -> ExitCode {
             println!("  key id    {}", config.key_id);
             // What a run would actually request, since a choice made with `/model` overrides the
             // configured default and reporting only the default would explain the wrong thing.
-            match bua_tui::store::load_model() {
+            match bravebot_tui::store::load_model() {
                 Some(chosen) => println!("  model     {chosen} (chosen with /model)"),
                 None => println!("  model     {} (default)", config.default_model),
             }
@@ -525,8 +525,8 @@ fn doctor() -> ExitCode {
 ///
 /// Counts only: a credential is a bearer secret, so none of it is printed.
 fn report_subscription() {
-    for channel in bua_skus::Channel::ALL {
-        if let Ok(stored) = bua_skus::store::load(channel) {
+    for channel in bravebot_skus::Channel::ALL {
+        if let Ok(stored) = bravebot_skus::store::load(channel) {
             println!(
                 "  leo       {} subscription imported, {} of {} credentials unspent",
                 channel.as_str(),
@@ -542,7 +542,7 @@ fn report_subscription() {
 /// Printed rather than assumed: the guarantee differs by platform and kernel, and a
 /// user is entitled to know which one they have before trusting the sandbox.
 fn report_confinement(ok: &mut bool) {
-    match bua_sandbox::for_current_platform() {
+    match bravebot_sandbox::for_current_platform() {
         Ok(sandbox) => {
             let caps = sandbox.capabilities();
             println!("confinement {}", caps.level);
@@ -570,7 +570,7 @@ fn report_confinement(ok: &mut bool) {
 mod tests {
     use super::*;
 
-    /// An interactive `bua -p "task"` must not block waiting for a pipe that is not coming.
+    /// An interactive `bravebot -p "task"` must not block waiting for a pipe that is not coming.
     #[test]
     fn a_terminal_stdin_is_not_read() {
         let source: &[u8] = b"this would be read from a pipe";

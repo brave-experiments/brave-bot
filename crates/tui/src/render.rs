@@ -9,8 +9,8 @@
 //! rather than as boxed output, and only the input keeps a border, since that is the one
 //! place the cursor needs locating.
 
-use bua_agent::diff::Change;
-use bua_agent::report::{Activity, Landing, Shown};
+use bravebot_agent::diff::Change;
+use bravebot_agent::report::{Activity, Landing, Shown};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -38,7 +38,7 @@ fn dim() -> Style {
 /// The first row carries a branch so the block attaches to the line above rather than floating.
 /// Finished tasks are struck through and dimmed, which is what makes progress legible at a
 /// glance: the eye finds the unstruck lines.
-fn todo_lines(todos: &[bua_core::todo::Row]) -> Vec<Line<'static>> {
+fn todo_lines(todos: &[bravebot_core::todo::Row]) -> Vec<Line<'static>> {
     todos
         .iter()
         .enumerate()
@@ -270,7 +270,7 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
     if session.transcript.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Cyan)),
-            Span::styled("bua", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("bravebot", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(format!("  ·  confinement {}", session.confinement), dim()),
         ]));
         lines.push(Line::raw(""));
@@ -632,9 +632,9 @@ fn tally(n: usize, one: &str, many: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bua_core::capability::Capability;
-    use bua_core::event::Event;
-    use bua_core::label::Label;
+    use bravebot_core::capability::Capability;
+    use bravebot_core::event::Event;
+    use bravebot_core::label::Label;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -655,7 +655,7 @@ mod tests {
 
     mod progress {
         use super::*;
-        use bua_agent::report::Activity;
+        use bravebot_agent::report::Activity;
 
         fn working() -> Session {
             let mut session = Session::new("kernel-enforced");
@@ -730,7 +730,7 @@ mod tests {
         fn quarantined_content_is_shown_and_marked_on_every_line() {
             let shown = Shown {
                 origin: "notes.md".to_string(),
-                reach: bua_agent::report::Reach::NotThePlanner,
+                reach: bravebot_agent::report::Reach::NotThePlanner,
                 label: "(U,priv)".to_string(),
                 preview: vec![
                     "first line".to_string(),
@@ -796,7 +796,7 @@ mod tests {
         let session = Session::new("kernel-enforced");
         let output = rendered(&session);
         assert!(output.contains("Ask a question"), "no hint shown");
-        assert!(output.contains("bua"));
+        assert!(output.contains("bravebot"));
     }
 
     /// Confinement belongs on screen at all times, not only in doctor.
@@ -1345,9 +1345,9 @@ mod tests {
 
     mod todos {
         use super::*;
-        use bua_core::todo::{Item, List, Status, rows};
+        use bravebot_core::todo::{Item, List, Status, rows};
 
-        fn list(entries: &[(&str, Status)]) -> Vec<bua_core::todo::Row> {
+        fn list(entries: &[(&str, Status)]) -> Vec<bravebot_core::todo::Row> {
             rows(&List::new(
                 entries
                     .iter()
@@ -1356,7 +1356,7 @@ mod tests {
             ))
         }
 
-        fn three() -> Vec<bua_core::todo::Row> {
+        fn three() -> Vec<bravebot_core::todo::Row> {
             list(&[
                 ("Escape cancels a turn", Status::Done),
                 ("Add prompt history", Status::Active),
@@ -1364,7 +1364,7 @@ mod tests {
             ])
         }
 
-        fn working_with(todos: Vec<bua_core::todo::Row>) -> Session {
+        fn working_with(todos: Vec<bravebot_core::todo::Row>) -> Session {
             let mut session = Session::new("test");
             session.type_char('a');
             session.submit();

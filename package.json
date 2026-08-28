@@ -1,18 +1,18 @@
 {
-  "name": "@brave/user-agent",
+  "name": "@brave/bravebot",
   "version": "0.1.0",
   "description": "A coding agent with structural resistance to indirect prompt injection",
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/brave-experiments/brave-user-agent.git"
+    "url": "git+https://github.com/brave-experiments/brave-bot.git"
   },
   "bugs": {
-    "url": "https://github.com/brave-experiments/brave-user-agent/issues"
+    "url": "https://github.com/brave-experiments/brave-bot/issues"
   },
-  "homepage": "https://github.com/brave-experiments/brave-user-agent#readme",
+  "homepage": "https://github.com/brave-experiments/brave-bot#readme",
   "bin": {
-    "bua": "npm/bin/bua.js"
+    "bravebot": "npm/bin/bravebot.js"
   },
   "files": [
     "npm/bin",

@@ -1,5 +1,5 @@
 [package]
-name = "bua-core"
+name = "bravebot-core"
 description = "Information-flow kernel: labels, slots, capabilities, and policy gates"
 version.workspace = true
 edition.workspace = true

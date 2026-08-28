@@ -1,6 +1,6 @@
 //! Where global state lives on disk.
 //!
-//! `~/.bua` holds anything that should outlive a session: prompt history, and the model the user
+//! `~/.bravebot` holds anything that should outlive a session: prompt history, and the model the user
 //! chose. The directory rather than a per-project file, for the same reason in both cases: a
 //! question worth asking again is usually worth asking in another checkout too, and which model to
 //! think with is not a property of a checkout.
@@ -17,7 +17,7 @@
 //!
 //! The model file is a name, not an instruction, and it lands in a request's routing field. What
 //! makes that safe is not the file: it is that the whole directory is the user's own configuration
-//! surface, on the footing [`bua_core::policy::Policy::label_user_configuration`] describes, and
+//! surface, on the footing [`bravebot_core::policy::Policy::label_user_configuration`] describes, and
 //! that a name the server does not recognise is reset to `automatic` rather than obeyed.
 
 use std::io::Write;
@@ -52,7 +52,7 @@ const MAX_ENTRY_BYTES: usize = 4_096;
 /// Delegated rather than computed again here: the agent reads standing instructions and skills
 /// from the same directory, and two definitions of where it is would eventually disagree.
 pub fn directory() -> Option<PathBuf> {
-    bua_agent::home::directory()
+    bravebot_agent::home::directory()
 }
 
 /// Read stored prompts, oldest first.

@@ -4,14 +4,14 @@
 //! headers the server verifies, that it reaches the right path, and that the reply
 //! arrives labelled untrusted.
 
-use bua_aichat::AichatClient;
-use bua_aichat::protocol::{ChatRequest, Message};
-use bua_config::Config;
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::RecordingSink;
-use bua_core::label::Label;
-use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_net::Egress;
+use bravebot_aichat::AichatClient;
+use bravebot_aichat::protocol::{ChatRequest, Message};
+use bravebot_config::Config;
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::RecordingSink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_net::Egress;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -317,7 +317,10 @@ fn the_request_carries_the_signing_headers() {
     let digest = captured.header("digest").expect("digest header");
     assert!(digest.starts_with("SHA-256="), "malformed digest: {digest}");
     // The digest must be over the body actually sent.
-    assert_eq!(digest, bua_signing::digest_header(captured.body.as_bytes()));
+    assert_eq!(
+        digest,
+        bravebot_signing::digest_header(captured.body.as_bytes())
+    );
 
     let authorization = captured
         .header("authorization")
@@ -616,13 +619,13 @@ struct StubSubscription {
     remaining: usize,
 }
 
-impl bua_aichat::Subscription for StubSubscription {
-    fn next_credential(&mut self) -> Result<bua_aichat::SubscriptionCredential, String> {
+impl bravebot_aichat::Subscription for StubSubscription {
+    fn next_credential(&mut self) -> Result<bravebot_aichat::SubscriptionCredential, String> {
         if self.remaining == 0 {
             return Err("the imported credentials are used up".to_string());
         }
         self.remaining -= 1;
-        Ok(bua_aichat::SubscriptionCredential {
+        Ok(bravebot_aichat::SubscriptionCredential {
             cookie_name: "__Secure-sku#brave-leo-premium".to_string(),
             cookie_value: "presented-credential".to_string(),
         })
@@ -849,7 +852,7 @@ fn a_retry_goes_through_the_gate_again() {
         .filter(|event| {
             matches!(
                 event,
-                bua_core::event::Event::GatePassed {
+                bravebot_core::event::Event::GatePassed {
                     gate: "network",
                     ..
                 }
@@ -878,7 +881,8 @@ fn the_model_listing_is_fetched_from_the_models_path() {
     )
     .expect("policy");
 
-    let models = bua_aichat::models::list(&mut policy, &config, &egress).expect("the list arrives");
+    let models =
+        bravebot_aichat::models::list(&mut policy, &config, &egress).expect("the list arrives");
 
     assert_eq!(models[0].key, "automatic");
     assert_eq!(models[1].key, "claude-3-sonnet");
@@ -915,7 +919,7 @@ fn the_model_listing_is_refused_without_the_network_capability() {
     )
     .expect("policy");
 
-    let refused = bua_aichat::models::list(&mut policy, &config, &egress);
+    let refused = bravebot_aichat::models::list(&mut policy, &config, &egress);
     assert!(refused.is_err(), "the listing bypassed the gate");
 }
 
@@ -935,6 +939,6 @@ fn a_listing_that_is_not_an_array_is_an_error() {
     )
     .expect("policy");
 
-    let refused = bua_aichat::models::list(&mut policy, &config, &egress);
+    let refused = bravebot_aichat::models::list(&mut policy, &config, &egress);
     assert!(refused.is_err(), "an envelope was accepted as a list");
 }

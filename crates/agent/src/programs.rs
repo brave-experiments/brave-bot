@@ -1,7 +1,7 @@
 //! Working out which binary a program name means.
 //!
-//! `bua_core::programs::TrustedPrograms` is keyed by resolved path rather than by the name a
-//! planner typed, and the reason is the one `bua_core::pure` states: a name is not a program.
+//! `bravebot_core::programs::TrustedPrograms` is keyed by resolved path rather than by the name a
+//! planner typed, and the reason is the one `bravebot_core::pure` states: a name is not a program.
 //! `$PATH` decides what `grep` means, and on the machine this was developed against it means
 //! `ugrep`, a different implementation with a far larger option surface. An approval recorded
 //! against the string would follow the name onto whatever it later pointed at.
@@ -11,7 +11,7 @@
 //! Those being the same value is the point: resolving again after the approval would leave a
 //! window in which `$PATH` changed and something else ran.
 //!
-//! This crate does the looking up because `bua-core` performs no I/O.
+//! This crate does the looking up because `bravebot-core` performs no I/O.
 
 use std::path::{Path, PathBuf};
 
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_program_that_is_not_installed_resolves_to_nothing() {
-        assert!(resolve("bua-no-such-program-anywhere", Path::new("/")).is_none());
+        assert!(resolve("bravebot-no-such-program-anywhere", Path::new("/")).is_none());
     }
 
     #[test]
@@ -133,7 +133,7 @@ mod tests {
     /// will run in rather than from wherever this process happens to be.
     #[test]
     fn a_relative_path_resolves_against_the_working_directory() {
-        let scratch = std::env::temp_dir().join("bua-programs-relative");
+        let scratch = std::env::temp_dir().join("bravebot-programs-relative");
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
         let script = scratch.join("tool.sh");
@@ -158,7 +158,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_file_without_the_executable_bit_is_not_a_program() {
-        let scratch = std::env::temp_dir().join("bua-programs-notexec");
+        let scratch = std::env::temp_dir().join("bravebot-programs-notexec");
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
         let plain = scratch.join("notes.txt");

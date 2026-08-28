@@ -1,4 +1,4 @@
-# bua
+# bravebot
 
 A coding agent resistant to prompt injection. The guarantee is structural: untrusted content
 can be carried and written, but it can never decide what happens.
@@ -17,8 +17,8 @@ The driver is the Rust code here. The planner is the model. Neither receives unt
   without ever seeing it.
 - The driver may **not branch** on untrusted content: no `if`, `match`, comparison, or early
   return whose condition is derived from untrusted bytes.
-- Moving such a branch from `bua-agent` into `bua-core` does not fix it. `bua-core` is the
-  driver too. Relocating a decision is not the same as removing it.
+- Moving such a branch from `bravebot-agent` into `bravebot-core` does not fix it.
+  `bravebot-core` is the driver too. Relocating a decision is not the same as removing it.
 
 Never weaken this statement. If an implementation cannot satisfy it, the implementation is
 wrong. Do not restate the rule to match the code.
@@ -50,7 +50,7 @@ if text.matches(old).count() > 1 {
 ```
 
 ```rust
-// ALSO WRONG: relocating the same branch into bua-core does not fix it.
+// ALSO WRONG: relocating the same branch into bravebot-core does not fix it.
 // And "it is only for a message to the model" does not either. That is R1.
 messages.push(Message::user(format!("Contents:\n{}", text)));
 ```
@@ -132,7 +132,7 @@ The properties this rests on, none of which may be relaxed:
   explanation over the script. A processor has one output and has always wanted two, so forgetting
   which is which has to fail towards changing nothing.
 
-The confinement is the capability set, not an operating system boundary. `bua-sandbox` confines
+The confinement is the capability set, not an operating system boundary. `bravebot-sandbox` confines
 processes running code we did not write; a processor's caller is our own code, and putting it in
 a subprocess would confine the wrong thing.
 
@@ -162,7 +162,7 @@ label, stop: see the section below.
 
 ## The user's own directory
 
-`~/.bua` holds history, sessions, standing instructions (`AGENTS.md`), and skills
+`~/.bravebot` holds history, sessions, standing instructions (`AGENTS.md`), and skills
 (`skills/<name>/SKILL.md`). Its contents are read as **trusted**, labelled by
 `Policy::label_user_configuration` from provenance rather than from the trust map, which is
 keyed by workspace-relative paths and has nothing to say about a path outside the workspace.
@@ -173,14 +173,14 @@ yields nothing, and placing a file there is the grant. The honest cost, which do
 states plainly, is that a downloaded skill is trusted as far as a pasted config file is.
 
 Never point `label_user_configuration` at a workspace path. A project's `AGENTS.md` and
-`.bua/skills` are labelled by `Workspace::read`, so the trust map decides, and asking the other
+`.bravebot/skills` are labelled by `Workspace::read`, so the trust map decides, and asking the other
 function instead would be laundering.
 
 Both then pass `Policy::read_trusted_content` on the way into the system prompt. A source that
 refuses is **dropped entirely**, never quarantined: a reference to an instruction is no use to
 anyone, and a skill's name and description are content that would otherwise go into the prompt
-verbatim. `.bua/skills` is checked for trust before it is enumerated at all, because a directory
-name is content too.
+verbatim. `.bravebot/skills` is checked for trust before it is enumerated at all, because a
+directory name is content too.
 
 ## Labels only ever degrade
 
@@ -234,12 +234,14 @@ another when nothing about any of them is shown. What they cannot gain is a dest
 
 ## Layering
 
-- `bua-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
+- `bravebot-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
   decision derived from content.
-- `bua-agent` holds the tools and the turn loop. Carries labelled values; must not inspect them.
-- `bua-tui` and `bua-cli` are presentation. May display released content.
-- `bua-net` is the single egress chokepoint. All network traffic passes the policy gate here.
-- `bua-mcp`, `bua-sandbox`, `bua-signing`, `bua-config` cover extension, confinement, and auth.
+- `bravebot-agent` holds the tools and the turn loop. Carries labelled values; must not inspect
+  them.
+- `bravebot-tui` and `bravebot-cli` are presentation. May display released content.
+- `bravebot-net` is the single egress chokepoint. All network traffic passes the policy gate here.
+- `bravebot-mcp`, `bravebot-sandbox`, `bravebot-signing`, `bravebot-config` cover extension,
+  confinement, and auth.
 
 Primitives stay native rather than moving behind MCP when the kernel needs to label parts of
 a call separately, such as a path as routing and its contents as content. An opaque MCP call erases

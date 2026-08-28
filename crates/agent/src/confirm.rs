@@ -18,8 +18,8 @@
 //! decorative, and a whole-file body asks them to spot the difference themselves.
 
 use crate::diff::Diff;
-use bua_core::Pipeline;
-use bua_core::ask::{Answer, Asking};
+use bravebot_core::Pipeline;
+use bravebot_core::ask::{Answer, Asking};
 use std::fmt;
 
 /// How a proposed write came about.
@@ -105,7 +105,7 @@ impl WriteRequest {
 /// right.
 ///
 /// There is no `needs_approval` field, and there is no variant of this that skips the prompt.
-/// Every run asks. See [`bua_core::policy::Policy::run_needs_approval`] for why that has no
+/// Every run asks. See [`bravebot_core::policy::Policy::run_needs_approval`] for why that has no
 /// exceptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
@@ -150,10 +150,10 @@ impl RunRequest {
     ///
     /// Each entry is a program **and its exact arguments**. Vouching for `git log` says nothing
     /// about `git push`.
-    pub fn would_vouch_for(&self) -> Vec<bua_core::programs::Command> {
-        let mut named: Vec<bua_core::programs::Command> = Vec::new();
+    pub fn would_vouch_for(&self) -> Vec<bravebot_core::programs::Command> {
+        let mut named: Vec<bravebot_core::programs::Command> = Vec::new();
         for (stage, path) in self.pipeline.stages.iter().zip(&self.resolved) {
-            let command = bua_core::programs::Command::new(path.clone(), stage.args.clone());
+            let command = bravebot_core::programs::Command::new(path.clone(), stage.args.clone());
             if !named.contains(&command) {
                 named.push(command);
             }
@@ -513,17 +513,17 @@ mod tests {
     use super::*;
 
     fn a_series() -> Asking {
-        bua_core::ask::asking(&bua_core::ask::Series::new(vec![
-            bua_core::ask::Question::new(
+        bravebot_core::ask::asking(&bravebot_core::ask::Series::new(vec![
+            bravebot_core::ask::Question::new(
                 "Cache",
                 "Which cache layer?",
                 vec![
-                    bua_core::ask::Choice::new("HTTP", None),
-                    bua_core::ask::Choice::new("Query", None),
+                    bravebot_core::ask::Choice::new("HTTP", None),
+                    bravebot_core::ask::Choice::new("Query", None),
                 ],
                 false,
             ),
-            bua_core::ask::Question::new("Branch", "Which branch?", Vec::new(), false),
+            bravebot_core::ask::Question::new("Branch", "Which branch?", Vec::new(), false),
         ]))
     }
 
@@ -554,7 +554,7 @@ mod tests {
 
     fn a_run() -> RunRequest {
         RunRequest {
-            pipeline: Pipeline::new(vec![bua_core::Stage::new("git", vec!["log".into()])]),
+            pipeline: Pipeline::new(vec![bravebot_core::Stage::new("git", vec!["log".into()])]),
             resolved: vec!["/usr/bin/git".into()],
             directory: "/tmp/project".into(),
         }
@@ -594,8 +594,8 @@ mod tests {
     fn vouching_covers_every_program_in_the_pipeline() {
         let request = RunRequest {
             pipeline: Pipeline::new(vec![
-                bua_core::Stage::new("git", vec!["log".into()]),
-                bua_core::Stage::new("sed", vec!["-n".into()]),
+                bravebot_core::Stage::new("git", vec!["log".into()]),
+                bravebot_core::Stage::new("sed", vec!["-n".into()]),
             ]),
             resolved: vec!["/usr/bin/git".into(), "/usr/bin/sed".into()],
             directory: "/tmp".into(),
@@ -604,7 +604,7 @@ mod tests {
             request
                 .would_vouch_for()
                 .iter()
-                .map(bua_core::programs::Command::display)
+                .map(bravebot_core::programs::Command::display)
                 .collect::<Vec<_>>(),
             vec![
                 "/usr/bin/git log".to_string(),
@@ -620,8 +620,8 @@ mod tests {
     fn the_same_program_with_different_arguments_is_two_entries() {
         let request = RunRequest {
             pipeline: Pipeline::new(vec![
-                bua_core::Stage::new("sed", vec!["-n".into()]),
-                bua_core::Stage::new("sed", vec!["-e".into()]),
+                bravebot_core::Stage::new("sed", vec!["-n".into()]),
+                bravebot_core::Stage::new("sed", vec!["-e".into()]),
             ]),
             resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
             directory: "/tmp".into(),
@@ -635,8 +635,8 @@ mod tests {
     fn the_identical_command_twice_is_named_once() {
         let request = RunRequest {
             pipeline: Pipeline::new(vec![
-                bua_core::Stage::new("sed", vec!["-n".into()]),
-                bua_core::Stage::new("sed", vec!["-n".into()]),
+                bravebot_core::Stage::new("sed", vec!["-n".into()]),
+                bravebot_core::Stage::new("sed", vec!["-n".into()]),
             ]),
             resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
             directory: "/tmp".into(),

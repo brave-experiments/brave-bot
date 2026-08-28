@@ -5,7 +5,7 @@
 //! heard of what came before. This is the record that fixes that.
 //!
 //! It changes nothing about the rule the repository rests on. Every string in here has already
-//! been past [`bua_core::policy::Policy::present`]: either the kernel judged it trusted and
+//! been past [`bravebot_core::policy::Policy::present`]: either the kernel judged it trusted and
 //! showed it to the planner, or what went in is a reference and the content stayed in
 //! quarantine. Carrying the record forward therefore carries no untrusted bytes forward, because
 //! there were never any in it.
@@ -18,13 +18,13 @@
 //! - the **reference counter**, so two turns cannot both hand out `ref:0` and leave the planner
 //!   with one name for two things.
 //! - the **integrity** the conversation has met, so a later turn cannot label output better than
-//!   an earlier turn would have. See [`bua_core::policy::Policy::resuming`].
+//!   an earlier turn would have. See [`bravebot_core::policy::Policy::resuming`].
 
-use bua_aichat::protocol::{Message, Role};
+use bravebot_aichat::protocol::{Message, Role};
 #[cfg(test)]
-use bua_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
-use bua_core::label::Integrity;
-use bua_core::slot::{SlotId, SlotStore};
+use bravebot_aichat::protocol::{ToolCallRequest, ToolCallRequestFunction};
+use bravebot_core::label::Integrity;
+use bravebot_core::slot::{SlotId, SlotStore};
 use serde::{Deserialize, Serialize};
 
 /// The record a session carries from one turn to the next.

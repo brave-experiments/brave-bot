@@ -1,5 +1,5 @@
 [package]
-name = "bua-mcp"
+name = "bravebot-mcp"
 description = "Model Context Protocol client: the extension boundary for tools"
 version.workspace = true
 edition.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bua-core = { path = "../core" }
-bua-net = { path = "../net" }
-bua-sandbox = { path = "../sandbox" }
+bravebot-core = { path = "../core" }
+bravebot-net = { path = "../net" }
+bravebot-sandbox = { path = "../sandbox" }
 serde = { workspace = true }
 serde_json = { workspace = true }

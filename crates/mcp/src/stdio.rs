@@ -13,12 +13,12 @@ use crate::protocol::{
     initialize_params,
 };
 use crate::{McpError, McpResult};
-use bua_core::event::Sink;
-use bua_core::label::Label;
-use bua_core::policy::Policy;
-use bua_core::value::Labelled;
-use bua_sandbox::Sandbox;
-use bua_sandbox::policy::SandboxPolicy;
+use bravebot_core::event::Sink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::Policy;
+use bravebot_core::value::Labelled;
+use bravebot_sandbox::Sandbox;
+use bravebot_sandbox::policy::SandboxPolicy;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -189,7 +189,7 @@ impl StdioServer {
         arguments: Value,
     ) -> McpResult<Labelled<String>> {
         policy
-            .before_capability(bua_core::capability::Capability::McpCall)
+            .before_capability(bravebot_core::capability::Capability::McpCall)
             .map_err(McpError::Denied)?;
 
         let result = self.send_request("tools/call", Some(call_params(tool, arguments)))?;
@@ -205,7 +205,7 @@ impl StdioServer {
         }
 
         let label = policy
-            .observe(bua_core::capability::Capability::McpCall)
+            .observe(bravebot_core::capability::Capability::McpCall)
             .map_err(McpError::Denied)?;
 
         Ok(Labelled::new(parsed.text(), label))

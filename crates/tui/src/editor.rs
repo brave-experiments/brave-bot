@@ -109,14 +109,14 @@ fn round_trip(
 
 /// Where the line is put for the editor to open.
 ///
-/// The system's temporary directory rather than `~/.bua`, which is the user's configuration
+/// The system's temporary directory rather than `~/.bravebot`, which is the user's configuration
 /// surface and is read as trusted: scratch files do not belong in it.
 fn scratch() -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("bua-prompt-{}-{stamp}.md", std::process::id()))
+    std::env::temp_dir().join(format!("bravebot-prompt-{}-{stamp}.md", std::process::id()))
 }
 
 /// Write the line where the editor will find it.
@@ -201,11 +201,11 @@ fn command_line(command: &str) -> Option<(PathBuf, Vec<String>)> {
     // directory is what such a name means to whoever exported it.
     let working = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    let (program, mut arguments) = match bua_agent::programs::resolve(command, &working) {
+    let (program, mut arguments) = match bravebot_agent::programs::resolve(command, &working) {
         Some(program) => (program, Vec::new()),
         None => {
             let mut words = command.split_whitespace();
-            let program = bua_agent::programs::resolve(words.next()?, &working)?;
+            let program = bravebot_agent::programs::resolve(words.next()?, &working)?;
             (program, words.map(str::to_string).collect())
         }
     };

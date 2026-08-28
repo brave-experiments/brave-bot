@@ -2,18 +2,18 @@
 //!
 //! # Why this crate has no labels
 //!
-//! Everything else that reaches the network in this repository carries a [`bua_core`] label and
+//! Everything else that reaches the network in this repository carries a [`bravebot_core`] label and
 //! passes a policy gate. This crate deliberately does neither, and the reason is that there is
 //! nothing here for a gate to protect.
 //!
 //! A label answers "may this value influence what happens next", and the whole apparatus exists
 //! because a turn mixes the user's instructions with bytes an attacker may have written. This
-//! runs before any of that: a person types `bua import-leo-creds` at a shell, no planner exists,
+//! runs before any of that: a person types `bravebot import-leo-creds` at a shell, no planner exists,
 //! no model has a context, and no untrusted document is in play. The subscription lives in the
 //! user's own browser profile, the endpoint is a compiled-in constant, and the result goes into
 //! the OS keychain. Nothing an attacker controls is anywhere in that path.
 //!
-//! So this is provisioning, not a turn. Do not wire it into [`bua_net::Egress`] or hand it a
+//! So this is provisioning, not a turn. Do not wire it into [`bravebot_net::Egress`] or hand it a
 //! `Policy`: that would add ceremony that protects nothing and would suggest, wrongly, that a
 //! credential import is the kind of thing the information-flow rules were written about.
 //!

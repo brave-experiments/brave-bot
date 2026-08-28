@@ -19,7 +19,7 @@ env:
   CARGO_TERM_COLOR: always
   # No credentials here, and none needed: these jobs compile and test rather than
   # producing a binary anyone runs against the backend.
-  BUA_ALLOW_UNCONFIGURED_BUILD: "1"
+  BRAVEBOT_ALLOW_UNCONFIGURED_BUILD: "1"
 
 jobs:
   check:
@@ -109,7 +109,7 @@ jobs:
       #
       # Configuration reaches the build as a BuildKit secret. Secrets absent from a
       # fork's repository come through blank, which the workflow-level
-      # BUA_ALLOW_UNCONFIGURED_BUILD then covers.
+      # BRAVEBOT_ALLOW_UNCONFIGURED_BUILD then covers.
       - name: Build ${{ matrix.target }}
         env:
           SERVICES_KEY_AICHAT: ${{ secrets.SERVICES_KEY_AICHAT }}
@@ -119,29 +119,29 @@ jobs:
           env_file="$(mktemp)"
           trap 'rm -f "$env_file"' EXIT
           for name in SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
-                      BUA_ALLOW_UNCONFIGURED_BUILD; do
+                      BRAVEBOT_ALLOW_UNCONFIGURED_BUILD; do
             eval "value=\$$name"
             if [ -n "$value" ]; then printf 'export %s=%s\n' "$name" "$value" >> "$env_file"; fi
           done
           DOCKER_BUILDKIT=1 docker build -f Dockerfile.cross \
-            -t bua-${{ matrix.name }} \
+            -t bravebot-${{ matrix.name }} \
             --build-arg TARGET=${{ matrix.target }} \
-            --secret id=bua_env,src="$env_file" .
+            --secret id=bravebot_env,src="$env_file" .
 
       - name: Extract binary
         run: |
           mkdir -p dist
-          docker create --name extract bua-${{ matrix.name }} /dev/null
-          docker cp extract:/bua "dist/bua-${{ matrix.name }}${{ matrix.ext }}"
+          docker create --name extract bravebot-${{ matrix.name }} /dev/null
+          docker cp extract:/bravebot "dist/bravebot-${{ matrix.name }}${{ matrix.ext }}"
           docker rm extract
 
       - name: Verify the artifact is the expected format
-        run: file "dist/bua-${{ matrix.name }}${{ matrix.ext }}"
+        run: file "dist/bravebot-${{ matrix.name }}${{ matrix.ext }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bua-${{ matrix.name }}
-          path: dist/bua-${{ matrix.name }}${{ matrix.ext }}
+          name: bravebot-${{ matrix.name }}
+          path: dist/bravebot-${{ matrix.name }}${{ matrix.ext }}
           if-no-files-found: error
 
   # Publishing is intentionally NOT triggered by tags. It runs only when a human
