@@ -22,39 +22,23 @@ use std::process::Command;
 /// What to open when nothing is configured, in the order they are tried.
 ///
 /// A guess, and kept to editors that open in the terminal the key was pressed in, so finishing
-/// puts the user back where they were.
+/// puts the user back where they were. `nano` first because someone who never set `$EDITOR` is
+/// the person this list is for, and it is the one they can leave without being told how.
 ///
 /// Only reached when the user has said nothing. A configured editor that will not start is an
 /// answer, not a reason to run something they did not choose.
-///
-/// On macOS the system's own `vim` is named outright, ahead of whatever `$PATH` reaches first.
-/// That is the one place here where a name is not left to `$PATH` to resolve, and the reason is
-/// that Homebrew's `vim` is MacVim's build: it opens a window, detaches, and hands the line back
-/// before anyone has typed into it, so the edit is silently lost. Naming the system binary is
-/// only defensible because this is the list of guesses, which is reached exactly when the user
-/// has expressed no preference. `$VISUAL` and `$EDITOR` still decide when they are set, and a
-/// name in either is still resolved through `$PATH` like any other.
-#[cfg(target_os = "macos")]
-const FALLBACKS: &[&str] = &["/usr/bin/vim", "vim", "vi", "nano"];
-
-#[cfg(not(any(windows, target_os = "macos")))]
-const FALLBACKS: &[&str] = &["vim", "vi", "nano"];
+#[cfg(not(windows))]
+const FALLBACKS: &[&str] = &["nano", "vim", "vi"];
 
 #[cfg(windows)]
 const FALLBACKS: &[&str] = &["notepad"];
 
-/// Editors that return before the file has been edited, and the flag that makes them stay.
+/// Editors that return before the file has been edited, and the flag that makes them wait.
 ///
 /// A window opens, the process exits at once, the line comes back exactly as it went, and
 /// nothing anywhere says why. That is the most confusing outcome available: neither a failure
 /// nor an edit. The flag is only added where the command is a bare program, since a user who
 /// wrote arguments of their own has already said how they want it run.
-///
-/// The vim family is here because a vim built with a GUI forks into it, and which build a name
-/// reaches is not something the name says: `vim` is the system's on one machine and MacVim's on
-/// the next. `-f` costs a terminal vim nothing, since not forking is all it was ever going to
-/// do, so it can be asked of every one of them rather than of the builds that turn out to need
-/// it. `nvim` is absent deliberately: it never forks and does not take the flag.
 const WAITING: &[(&str, &str)] = &[
     ("code", "--wait"),
     ("codium", "--wait"),
@@ -62,10 +46,6 @@ const WAITING: &[(&str, &str)] = &[
     ("windsurf", "--wait"),
     ("zed", "--wait"),
     ("subl", "--wait"),
-    ("vim", "-f"),
-    ("gvim", "-f"),
-    ("mvim", "-f"),
-    ("view", "-f"),
 ];
 
 /// Why a line did not come back from an editor.
@@ -172,10 +152,12 @@ fn tidy(text: &mut String) {
 /// Run an editor on `path` and wait for it.
 fn open_in_an_editor(path: &Path) -> Result<(), Failure> {
     let Some(command) = configured() else {
-        let Some((program, arguments)) = first_installed(FALLBACKS) else {
-            return Err(Failure::NoEditor);
-        };
-        return start(&program, &arguments, path);
+        for fallback in FALLBACKS {
+            if let Some((program, arguments)) = command_line(fallback) {
+                return start(&program, &arguments, path);
+            }
+        }
+        return Err(Failure::NoEditor);
     };
 
     match command_line(&command) {
@@ -184,17 +166,6 @@ fn open_in_an_editor(path: &Path) -> Result<(), Failure> {
             "'{command}' was not found, and $VISUAL or $EDITOR names it, so nothing else was tried"
         ))),
     }
-}
-
-/// The first of `candidates` that is installed, and the arguments to run it with.
-///
-/// Order is the whole of what this list says, since every name on it is an editor: the first one
-/// present is the guess, and one that is not installed is the next name's turn rather than a
-/// failure.
-fn first_installed(candidates: &[&str]) -> Option<(PathBuf, Vec<String>)> {
-    candidates
-        .iter()
-        .find_map(|candidate| command_line(candidate))
 }
 
 /// The editor the user configured, if they configured one.
@@ -395,24 +366,6 @@ mod tests {
         assert_eq!(text, "one\ntwo\nthree");
     }
 
-    /// The guesses are in preference order, and a name that is not installed is the next one's
-    /// turn rather than the end of the list.
-    #[test]
-    #[cfg(unix)]
-    fn the_first_installed_guess_is_the_one_taken() {
-        let (program, _) = first_installed(&["no-such-editor-a", "sh", "no-such-editor-b"])
-            .expect("sh is installed");
-        assert_eq!(program.file_name().unwrap(), "sh");
-    }
-
-    /// Nothing installed is the one case with no editor to run, and it has to be told apart from
-    /// an editor that ran and failed: the answer is to set one, not to try again.
-    #[test]
-    fn nothing_installed_is_no_editor_at_all() {
-        assert!(first_installed(&["no-such-editor-a", "no-such-editor-b"]).is_none());
-        assert!(first_installed(&[]).is_none());
-    }
-
     /// A bare GUI editor exits the moment its window opens, and the line would come back
     /// unchanged with nothing to say why.
     #[test]
@@ -433,36 +386,11 @@ mod tests {
         );
     }
 
-    /// A terminal editor that cannot fork already waits, and an argument it did not ask for is
-    /// one it may refuse to start over.
+    /// A terminal editor already waits, and an argument it did not ask for is one it may refuse
+    /// to start over.
     #[test]
     fn a_terminal_editor_is_given_no_extra_flag() {
-        assert_eq!(waiting_flag(Path::new("/usr/bin/nano")), None);
-        assert_eq!(waiting_flag(Path::new("nvim")), None);
-    }
-
-    /// A vim built with a GUI forks into it and hands the line back before anyone has typed, and
-    /// the name does not say which build it reached: `vim` is the system's on one machine and
-    /// MacVim's on the next. Asking every vim to stay costs a terminal one nothing.
-    #[test]
-    fn every_vim_is_asked_to_stay_in_the_foreground() {
-        for name in ["/usr/bin/vim", "/opt/homebrew/bin/vim", "gvim", "mvim"] {
-            assert_eq!(
-                waiting_flag(Path::new(name)),
-                Some("-f".to_string()),
-                "{name} was left free to fork"
-            );
-        }
-    }
-
-    /// The guess must not depend on what a package manager put ahead of the system's own editor.
-    /// Homebrew's `vim` here is MacVim's build, and picking it up loses the edit.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn the_guess_on_macos_is_the_system_vim_in_the_foreground() {
-        let (program, arguments) = first_installed(FALLBACKS).expect("macOS ships /usr/bin/vim");
-
-        assert_eq!(program, Path::new("/usr/bin/vim"));
-        assert_eq!(arguments, ["-f"]);
+        assert_eq!(waiting_flag(Path::new("/usr/bin/vim")), None);
+        assert_eq!(waiting_flag(Path::new("nano")), None);
     }
 }

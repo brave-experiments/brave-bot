@@ -6179,3 +6179,64 @@ fn a_quarantined_file_cannot_be_read_through_the_output_route() {
         "a quarantined file reached the planner through read_output"
     );
 }
+
+/// A refusal that reaches the planner must not spell out a filename the listing quarantined.
+///
+/// One session listed a directory it could not read, tried a write that was refused, and read the
+/// filename straight out of the refusal: "I now know the files are index.html and server.py". A
+/// filename is content, and an attacker who controls one gets text into the planner's context by
+/// inducing a refusal.
+#[test]
+fn a_refusal_does_not_spell_out_a_quarantined_filename() {
+    let scratch = Scratch::new("refusal-names");
+    std::fs::write(
+        scratch.path.join("SENTINEL-XYZZY.js"),
+        "const SPEED = 100;\n",
+    )
+    .unwrap();
+    std::fs::write(scratch.path.join("other.py"), "print('serving')\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1","ref:2"],"about":"ref:1","instruction":"fix it"}"#,
+        ),
+        processor_reply("const SPEED = 50;"),
+        // ref:2 is not what the answer was about, so this is refused.
+        tool_request(
+            "write_file",
+            r#"{"path_ref":"ref:2","contents_ref":"ref:4"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("fix it"),
+        &mut bua_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let mut saw_refusal = false;
+    while let Ok(body) = received.try_recv() {
+        if body.contains("cannot be written") {
+            saw_refusal = true;
+        }
+        assert!(
+            !body.contains("SENTINEL-XYZZY"),
+            "a quarantined filename reached the planner's context: {body}"
+        );
+    }
+    assert!(
+        saw_refusal,
+        "the test never reached the refusal it is about, so it proves nothing"
+    );
+}
