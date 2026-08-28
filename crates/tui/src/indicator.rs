@@ -106,11 +106,19 @@ impl Indicator {
     }
 }
 
+/// The spinner glyph for a moment, for a wait that is not a turn.
+///
+/// Shared so a running command turns the same shape at the same rate as a running turn: two
+/// spinners that differed would look like two kinds of busy.
+pub fn glyph_at(elapsed: Duration) -> &'static str {
+    FRAMES[(elapsed.as_millis() / FRAME_MILLIS) as usize % FRAMES.len()]
+}
+
 /// Format a duration the way someone waiting reads it.
 ///
 /// Seconds alone up to a minute, then minutes and seconds. No hours: a turn that ran that long
 /// has gone wrong, and `73m 04s` says so more plainly than `1h 13m`.
-fn format_elapsed(elapsed: Duration) -> String {
+pub fn format_elapsed(elapsed: Duration) -> String {
     let total = elapsed.as_secs();
     if total < 60 {
         format!("{total}s")

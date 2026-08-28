@@ -2657,6 +2657,45 @@ mod tests {
         }
     }
 
+    /// The same ban across every tool rather than only `run`, because the tool a shell arrives in
+    /// will not be the one anybody is watching. Shell mode gave the *user* a real shell, and the
+    /// whole justification for that is that the planner has none: a field like this appearing
+    /// anywhere in the tool list would end the distinction quietly.
+    #[test]
+    fn no_tool_anywhere_takes_a_command_line() {
+        // Names a shell string is plausibly called. Not "args", which is the argv list, and not
+        // "command" on its own for a stage, which the pipeline test already pins.
+        const FORBIDDEN: [&str; 6] = [
+            "shell",
+            "script",
+            "cmd",
+            "command_line",
+            "argv_string",
+            "sh",
+        ];
+
+        for tool in available() {
+            let name = tool.function.name;
+            let Some(properties) = tool.function.parameters["properties"].as_object() else {
+                continue;
+            };
+            for field in properties.keys() {
+                assert!(
+                    !FORBIDDEN.contains(&field.as_str()),
+                    "{name} gained a '{field}' field, which is a command line by another name"
+                );
+                // A string called "command" is the shape that matters: as a list it is argv, and as
+                // an object it is something structured a person could read a field of.
+                if field == "command" {
+                    assert_ne!(
+                        properties[field]["type"], "string",
+                        "{name}.command is a string, so it is a shell line the planner composed"
+                    );
+                }
+            }
+        }
+    }
+
     /// A planner that asks the user for a path, a filename, or whether something is installed is
     /// asking a person to do a lookup, and they answer less precisely than the filesystem does.
     /// One session opened by asking where Brave was installed rather than looking.

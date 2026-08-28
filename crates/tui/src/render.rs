@@ -348,6 +348,28 @@ fn transcript_lines(session: &Session) -> Vec<Line<'static>> {
                     )));
                 }
             }
+            // Echoed with the marker the user typed it behind, so the scrollback reads back the way
+            // the session happened.
+            Speaker::Shell => {
+                for (index, text) in entry.text.lines().enumerate() {
+                    let prefix = if index == 0 { "! " } else { "  " };
+                    lines.push(Line::from(Span::styled(
+                        format!("{prefix}{}", printable(text)),
+                        Style::default().fg(Color::Magenta),
+                    )));
+                }
+            }
+            // Plainly, and indented to sit under the command. No marker down the margin and no
+            // markdown: this is a terminal's output, and the user is reading it as one.
+            //
+            // Not a quarantine block either, which is the point of the whole feature: the user
+            // typed the command, so the kernel labelled what it printed trusted, and dressing it as
+            // untrusted would say the opposite of what is true.
+            Speaker::Output => {
+                for text in entry.text.lines() {
+                    lines.push(Line::from(Span::raw(format!("  {}", printable(text)))));
+                }
+            }
             // What the turn did, kept in the scrollback next to what it said about it.
             Speaker::Tool => match &entry.activity {
                 Some(activity) => lines.extend(activity_lines(activity, entry.landing)),
@@ -440,6 +462,11 @@ fn input_height(session: &Session, width: u16, height: u16) -> u16 {
         return (3 + session.todos.len()).min(ceiling) as u16;
     }
 
+    // A running command holds one line and keeps no task list.
+    if session.status == Status::Running {
+        return 3.min(ceiling) as u16;
+    }
+
     let rows = wrap::wrap(&session.input, input_text_width(width))
         .rows
         .len()
@@ -450,8 +477,20 @@ fn input_height(session: &Session, width: u16, height: u16) -> u16 {
 
 fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     let working = session.status == Status::Working;
+    let running = session.status == Status::Running;
 
-    let body = if working {
+    let body = if running {
+        // Elapsed time and nothing else, because a command spends no tokens and reports no phase.
+        // The clock is what a waiting user wants, and Escape is the other half of the answer.
+        Line::from(vec![
+            Span::styled(
+                format!("  {} ", session.spinner()),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::styled("running… ", Style::default().fg(Color::Magenta)),
+            Span::styled(format!("({})  esc to stop", session.elapsed_words()), dim()),
+        ])
+    } else if working {
         match session.indicator() {
             Some(indicator) => Line::from(vec![
                 Span::styled(
@@ -473,7 +512,10 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
 
     // Wrapping is computed here rather than left to `Paragraph`, because the cursor has to be
     // placed after the last character and only an explicit wrap knows where that is.
-    let lines: Vec<Line> = if working {
+    let lines: Vec<Line> = if running {
+        // No task list: a command keeps none, and the box was measured for one line.
+        vec![body]
+    } else if working {
         // The list sits under the indicator, so what is being worked on and what remains are read
         // together. Trimmed to what the box was given rather than overflowing it.
         let room = (area.height as usize).saturating_sub(3);
@@ -485,19 +527,34 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
         let visible = (area.height as usize).saturating_sub(2).max(1);
         let (first, rows) = wrapped.window(visible);
 
+        // Shell mode is coloured throughout rather than only in the marker, because the whole line
+        // means something different: it goes to a shell instead of the model, and that is worth more
+        // than one character of distinction at the moment somebody presses Enter.
+        let colour = if session.shell {
+            Color::Magenta
+        } else {
+            Color::Cyan
+        };
+
         rows.iter()
             .enumerate()
             .map(|(offset, row)| {
                 let index = first + offset;
                 // Only the first row carries the prompt; continuations are indented to line up
                 // beneath it.
-                let lead = if index == 0 { "> " } else { "  " };
+                let lead = if index != 0 {
+                    "  "
+                } else if session.shell {
+                    "! "
+                } else {
+                    "> "
+                };
                 let mut spans = vec![
-                    Span::styled(lead, Style::default().fg(Color::Cyan)),
+                    Span::styled(lead, Style::default().fg(colour)),
                     Span::raw(row.clone()),
                 ];
                 if index == wrapped.cursor_row {
-                    spans.push(Span::styled("▌", Style::default().fg(Color::Cyan)));
+                    spans.push(Span::styled("▌", Style::default().fg(colour)));
                 }
                 Line::from(spans)
             })
@@ -511,6 +568,8 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
         .border_type(BorderType::Rounded)
         .border_style(if working {
             dim()
+        } else if session.shell {
+            Style::default().fg(Color::Magenta)
         } else {
             Style::default().fg(Color::Cyan)
         });
@@ -625,12 +684,28 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         "ctrl-t show trail"
     };
 
+    // In shell mode the usual bindings are beside the point: the line goes to a shell, so what a
+    // user needs to know is which shell and how to get back out again.
+    if session.shell {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("  ! {}", bravebot_agent::shell::shell()),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::styled("  ·  esc to cancel  ·  output goes to the model", dim()),
+            ])),
+            area,
+        );
+        return;
+    }
+
     // The commands are no longer listed here. Typing a slash lists every one of them with what it
     // does, which is both more than this line could hold and the moment a user wants to know.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  ctrl-g editor  ·  / for commands  ·  @ for files  ·  pgup/pgdn  ·  confinement {}",
+                "  {trail}  ·  ctrl-g editor  ·  / for commands  ·  ! for shell  ·  @ for files  ·  confinement {}",
                 session.confinement
             ),
             dim(),

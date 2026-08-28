@@ -20,6 +20,13 @@ pub enum Speaker {
     System,
     /// A tool call the turn made. Shown as it happens, and kept afterwards.
     Tool,
+    /// A command the user typed in shell mode. Trusted input, like their prompts.
+    Shell,
+    /// What such a command printed.
+    ///
+    /// Drawn plainly rather than styled: it is a terminal's output and the user is reading it as
+    /// one, so markdown would be a misreading and a marker on every line would be noise.
+    Output,
 }
 
 /// One entry in the transcript.
@@ -93,6 +100,32 @@ impl Entry {
         }
     }
 
+    /// A command the user ran in shell mode, echoed as they typed it.
+    pub fn shell(line: impl Into<String>) -> Self {
+        Self {
+            speaker: Speaker::Shell,
+            text: line.into(),
+            trail: Vec::new(),
+            todos: Vec::new(),
+            landing: None,
+            shown: None,
+            activity: None,
+        }
+    }
+
+    /// What such a command printed.
+    pub fn output(text: impl Into<String>) -> Self {
+        Self {
+            speaker: Speaker::Output,
+            text: text.into(),
+            trail: Vec::new(),
+            todos: Vec::new(),
+            landing: None,
+            shown: None,
+            activity: None,
+        }
+    }
+
     /// One tool call, as it stands.
     ///
     /// Made while the call is still running and replaced when it finishes, which is what puts
@@ -142,6 +175,12 @@ pub enum Status {
     /// A turn is in flight. Input is refused so a second turn cannot start mid-flight and
     /// share the first one's state.
     Working,
+    /// A command the user typed in shell mode is running.
+    ///
+    /// Distinct from [`Status::Working`] because the two are not the same wait: a turn spends
+    /// tokens and reports phases, and a command does neither, so the indicator that suits one is
+    /// mostly empty fields for the other.
+    Running,
     /// The user asked to leave.
     Quitting,
 }
@@ -163,6 +202,12 @@ pub enum Offered {
 pub struct Session {
     pub transcript: Vec<Entry>,
     pub input: String,
+    /// Whether the line being typed is a command for the shell rather than a prompt for the model.
+    ///
+    /// Entered by typing `!` on an empty line and left by deleting back past it, so the `!` is a
+    /// mode rather than a character: it is never part of `input`, and the command that runs is
+    /// exactly what the user sees after the marker.
+    pub shell: bool,
     pub status: Status,
     /// Whether the audit trail is shown alongside replies.
     pub show_trail: bool,
@@ -255,6 +300,7 @@ impl Session {
         Self {
             transcript: Vec::new(),
             input: String::new(),
+            shell: false,
             status: Status::Idle,
             show_trail: false,
             scroll: 0,
@@ -517,6 +563,18 @@ impl Session {
     /// refuses. Dropping the keys instead, which is what this used to do, meant a user typing
     /// during a slow turn watched their words go nowhere with nothing to say why.
     pub fn type_char(&mut self, c: char) {
+        // `!` on an empty line is the mode rather than a character, which is what makes the rest of
+        // the line the command verbatim. Only on an empty line: a `!` inside a sentence is
+        // punctuation, and inside a command it is history expansion for the shell to deal with.
+        //
+        // Idle only. The mode is an armed state that changes what Enter does, and mid-turn the user
+        // cannot act on it: it would still be armed when the turn ended, over whatever the box held
+        // by then. A cancelled turn puts the prompt back, so `!` during one used to leave a sentence
+        // sitting behind a marker, and "rm the old builds" is a reasonable thing to have typed.
+        if c == '!' && self.input.is_empty() && !self.shell && self.status == Status::Idle {
+            self.shell = true;
+            return;
+        }
         // Editing a recalled prompt makes it the working line rather than a view of history,
         // so the position indicator goes away as soon as a key is pressed.
         self.history.leave();
@@ -533,6 +591,12 @@ impl Session {
     /// nothing can be both.
     pub fn offered(&self) -> Offered {
         if self.status == Status::Working {
+            return Offered::Nothing;
+        }
+        // A command line is neither a slash command nor a sentence with a file reference in it.
+        // `/usr/bin/env` and an address with an `@` in it are ordinary arguments here, and
+        // completing either would rewrite the line under someone typing a path.
+        if self.shell {
             return Offered::Nothing;
         }
         let commands = crate::app::completions(&self.input);
@@ -760,8 +824,17 @@ impl Session {
             .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
+    /// Delete the last character, or leave shell mode where there is nothing left to delete.
+    ///
+    /// Deleting back past the `!` leaves the mode, which is where the marker appears to be: a user
+    /// who typed it by mistake gets rid of it the way they got rid of any other character. Without
+    /// this the mode could only be left by clearing the whole line.
     pub fn backspace(&mut self) {
         self.history.leave();
+        if self.input.is_empty() && self.shell {
+            self.shell = false;
+            return;
+        }
         self.input.pop();
         self.completion = 0;
     }
@@ -776,6 +849,11 @@ impl Session {
         self.phase = None;
         self.running = None;
         self.scroll = 0;
+        // A prompt is English and a command line is not, so the line coming back must not land
+        // behind a marker that would run it. Belt and braces with the guard in
+        // [`Session::type_char`]: this is the state the returning text lands in, and it has to be
+        // safe whatever left the mode armed.
+        self.shell = false;
 
         // Nothing was recorded after the prompt, so there is nothing to have second thoughts
         // about: the turn can be un-sent whole.
@@ -815,6 +893,9 @@ impl Session {
         if self.status == Status::Idle {
             self.history.leave();
             self.input.clear();
+            // The mode goes with the line. Escape means "never mind this", and leaving the marker
+            // behind would arm the next thing typed as a command.
+            self.shell = false;
         }
     }
 
@@ -854,6 +935,64 @@ impl Session {
         if let Some(prompt) = self.history.newer() {
             self.input = prompt;
         }
+    }
+
+    /// Take the current line as a command to run, if shell mode is on and there is one.
+    ///
+    /// Leaves shell mode, so the next line is a prompt again: the mode lasts for one command, the
+    /// way it does in the interface this follows. The line is recorded in the prompt history, since
+    /// a command someone ran is a line they may well want back.
+    pub fn submit_command(&mut self) -> Option<String> {
+        if self.status != Status::Idle || !self.shell {
+            return None;
+        }
+        let line = self.input.trim().to_string();
+        if line.is_empty() {
+            return None;
+        }
+        self.input.clear();
+        self.shell = false;
+        self.completion = 0;
+        self.history.push(line.clone());
+        if self.persist {
+            crate::store::append_history(&line);
+        }
+        self.transcript.push(Entry::shell(line.clone()));
+        self.scroll = 0;
+        Some(line)
+    }
+
+    /// The spinner glyph for this moment, for a command in flight.
+    pub fn spinner(&self) -> &'static str {
+        crate::indicator::glyph_at(self.elapsed())
+    }
+
+    /// How long the command in flight has been running, in the words the indicator uses.
+    pub fn elapsed_words(&self) -> String {
+        crate::indicator::format_elapsed(self.elapsed())
+    }
+
+    /// Note that a command is running, so the box shows it rather than an empty prompt.
+    pub fn begin_command(&mut self) {
+        self.status = Status::Running;
+        self.started = Some(Instant::now());
+        self.scroll = 0;
+    }
+
+    /// Note that it finished, whatever came of it.
+    pub fn finish_command(&mut self) {
+        self.status = Status::Idle;
+        self.started = None;
+    }
+
+    /// Show what a command printed, or that it printed nothing.
+    pub fn printed(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            self.transcript.push(Entry::system("no output"));
+        } else {
+            self.transcript.push(Entry::output(text.trim_end()));
+        }
+        self.scroll = 0;
     }
 
     /// Take the current input as a prompt, if there is one.

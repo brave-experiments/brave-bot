@@ -154,9 +154,23 @@ ok      approval: src/config.py: a path nobody has vouched for either way, askin
 
 ## Why some things are absent
 
-A shell is absent, and not by oversight. Unlike a write, a shell command has no separable routing
-field to endorse: the string is destination and payload at once, so there is nothing meaningful to
-approve. `apply_patch` is excluded for the same reason.
+A shell is absent **from the agent**, and not by oversight. Unlike a write, a shell command has no
+separable routing field to endorse: the string is destination and payload at once, so there is
+nothing meaningful to approve. `apply_patch` is excluded for the same reason.
+
+The qualification matters, and it is not a softening. The exclusion exists because a person cannot
+approve a routing field that a shell string does not have, and the reason they would need to is that
+the string came from the planner, which an attacker may have steered into producing it. A line the
+**user** typed raises neither question: there is no routing to endorse separately because the person
+who would have been asked to endorse it wrote the whole thing. So shell mode, where a user types
+`!` and then a command line, runs it through their own `$SHELL`, globs and redirection and all. See
+[tools.md](tools.md#shell-mode).
+
+What must stay true is the thing the exclusion was always aimed at: the planner has no shell and
+cannot obtain one. `run` remains argv-only, `bravebot-agent::exec` never builds a command line, and
+nothing a model wrote, nothing read out of a file, and nothing a processor produced may reach
+`bravebot-agent::shell`. Its justification is the provenance of the string, which no gate can check
+from the bytes and which only the call site can vouch for.
 
 Before adding a tool, ask what its routing field is and whether a human could approve that
 field alone.

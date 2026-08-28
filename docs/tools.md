@@ -272,9 +272,12 @@ tried to work out what it means would be racing a shell it does not control. An 
 no such problem: `; rm -rf /` in an argument is one argument and stays one, because nothing ever
 splits it. What you approve is what runs, verbatim.
 
-The consequence is that pipes, redirection, `&&`, globbing and `$(...)` are all unavailable. Each
-of those is a destination you never saw. Compose stages instead, which is why `run` takes a
-pipeline rather than a single program: narrowing output is a stage, not a pipe character.
+The consequence is that pipes, redirection, `&&`, globbing and `$(...)` are all unavailable **to the
+agent**. Each of those is a destination you never saw. Compose stages instead, which is why `run`
+takes a pipeline rather than a single program: narrowing output is a stage, not a pipe character.
+
+They are all available to **you**, in shell mode, below. The restriction is on argv the agent chose,
+not on your own keyboard.
 
 ### Programs are not restricted, output is
 
@@ -402,3 +405,38 @@ offered for them at all.
 
 `/status` lists what you have vouched for. It is the one permission whose whole effect is that
 prompts *stop*, so that is where to look if you want to know what you granted.
+
+## Shell mode
+
+Type `!` on an empty prompt and the line becomes a command for your own shell:
+
+```
+! ls -la
+! git log --oneline | head -20
+! cargo build 2>&1 | tail -40
+```
+
+The marker is a mode rather than a character: the prompt turns magenta, and what runs is exactly what
+you see after it. Backspace over it, or press escape, to get back to a normal prompt. The mode lasts
+one command.
+
+This is a **real shell**, `$SHELL` or `/bin/sh`, so globs, `$VAR`, redirection, `&&` and `$(...)` all
+work the way they do in your terminal. Everything the previous section says is unavailable applies to
+argv the agent chose, not to a line you typed.
+
+**Nothing asks.** The approval prompt exists so that a person endorses argv the *planner* proposed,
+because an attacker may have steered it into proposing that. You are the person it would have asked.
+Confirming your own keystroke would be theatre, so `! rm -rf build` simply runs.
+
+**What it prints goes to the model**, in full, not as a reference. This is the difference from `run`,
+and it is the reason the mode is worth having: after `! cargo test` you can say "fix the first
+failure" and the agent has already read the errors.
+
+That output is labelled trusted, and the honest cost should be clear. `! cat notes-from-a-stranger.md`
+puts somebody else's words into the planner's context as though they were yours. Nothing inspects the
+bytes to catch that, exactly as nothing inspects a directory you vouched for. It is the same
+assertion pressing `a` at a run prompt makes, made once for one command: *this is mine, and I take
+responsibility for what it prints.* If you would not press `a` for it, do not run it in shell mode:
+ask the agent to `run` it instead, and its output will be quarantined.
+
+The agent has no shell and cannot get one. Shell mode is a thing **you** have.

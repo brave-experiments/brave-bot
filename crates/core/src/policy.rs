@@ -624,6 +624,44 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         label
     }
 
+    /// Label what a command the user typed themselves printed.
+    ///
+    /// Shell mode is the user working in their own workspace, so the command is theirs in the way
+    /// nothing the planner proposes ever is: they wrote it, at their own keyboard, and pressing
+    /// Enter is the whole of the authorisation. Argv the planner chose needs a person to endorse it
+    /// because an attacker may have steered the planner into asking. Nobody steers a keystroke.
+    ///
+    /// The result is `(T,priv)`. Trusted, because the user vouched for this command by typing it,
+    /// which is the same assertion [`crate::programs::TrustedPrograms`] records when they answer a
+    /// prompt with "remember this", made once for one command instead of standing. Private, because
+    /// the bytes may have come out of the workspace and running a command does not publish them.
+    ///
+    /// **This is not an upgrade.** It is the first label these bytes ever receive, assigned from
+    /// provenance the driver knows, exactly as [`Policy::label_command_output`] and
+    /// [`Policy::label_user_configuration`] are. Nothing here relabels a value that already had a
+    /// label.
+    ///
+    /// The honest caveat is the one the trusted-programs list carries, and it is not small: `cat`
+    /// on a file an attacker wrote prints what the attacker wrote, and this labels it trusted. What
+    /// justifies that is not an inspection, because nothing here inspects anything. It is that the
+    /// user chose the command, can see on their screen what it printed, and is the party this whole
+    /// arrangement serves. An agent that refused to let its user run a command in their own
+    /// workspace would be protecting nothing.
+    ///
+    /// So this must only ever be reached from a line a human typed. Never point it at argv the
+    /// planner proposed, never at a line reconstructed from a transcript, and never at anything a
+    /// processor produced: each of those is content, and this would launder it.
+    pub fn label_user_command_output(&mut self, command: &str, text: String) -> Labelled<String> {
+        let label = Label::trusted_private();
+        self.allow(
+            "provenance",
+            format!(
+                "`{command}`: output labelled {label}, from a command the user typed themselves"
+            ),
+        );
+        Labelled::new(text, label)
+    }
+
     /// Label a file the user keeps their own configuration in, from where it sits.
     ///
     /// Standing instructions and skills come from `~/.bravebot`, a directory whose only contents are
@@ -4191,6 +4229,39 @@ mod tests {
                 e,
                 Event::GatePassed { gate: "provenance", detail }
                     if detail.contains("~/.bravebot/skills/commit-style/SKILL.md")
+            )),
+            "the provenance decision left no trace: {:?}",
+            sink.events()
+        );
+    }
+
+    /// A command the user typed is theirs, and what it printed is theirs to read. Trusted so the
+    /// planner may see it, private because printing bytes does not publish them.
+    #[test]
+    fn what_a_command_the_user_typed_printed_is_trusted_and_private() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &[]);
+
+        let value = policy.label_user_command_output("ls -la", "Cargo.toml\nsrc\n".to_string());
+
+        assert_eq!(value.label(), Label::trusted_private());
+    }
+
+    /// Trusting a command's output on the strength of who typed it is the most consequential
+    /// assertion here, so the trail must name the command that was run and why it was trusted.
+    #[test]
+    fn trusting_a_typed_commands_output_is_recorded_in_the_audit_trail() {
+        let mut sink = RecordingSink::new();
+        {
+            let mut policy = policy_trusting(&mut sink, &[]);
+            let _ = policy.label_user_command_output("git status", "clean".into());
+        }
+
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed { gate: "provenance", detail }
+                    if detail.contains("git status") && detail.contains("the user typed")
             )),
             "the provenance decision left no trace: {:?}",
             sink.events()

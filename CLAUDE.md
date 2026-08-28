@@ -284,10 +284,39 @@ deliberate trade, made because the alternative was a directory that trusted itse
 
 ## Absent by design
 
-A **shell** is excluded: a shell string is destination and payload at once, so there is no
-separable routing field a person could endorse, and a parser that tried to recover one would be
-racing a shell it does not control. `apply_patch` is excluded for the same reason. Before adding a
-tool, ask what its routing field is and whether a human could approve that field alone.
+A **shell** is excluded **from the planner**: a shell string is destination and payload at once, so
+there is no separable routing field a person could endorse, and a parser that tried to recover one
+would be racing a shell it does not control. `apply_patch` is excluded for the same reason. Before
+adding a tool, ask what its routing field is and whether a human could approve that field alone.
+
+Read that qualification precisely, because it is the sort of sentence that gets softened by accident.
+The exclusion is not "shell strings are dangerous bytes". It is that a person cannot endorse a
+routing field a shell string does not have, and the reason one must be endorsed is that the string
+came from the **planner**, which an attacker may have steered. Provenance is what the rule is about.
+
+So a line the **user** typed is outside it, and `bravebot-agent::shell` runs one through `$SHELL -c`
+with globs, redirection and `&&` intact. Nothing is asked, because the prompt exists to get a human
+to endorse argv the planner chose and here the human wrote it: asking would be asking them to
+confirm their own keystroke. What it prints is `(T,priv)` via
+`Policy::label_user_command_output` and goes into the planner's context in full.
+
+That gate is the whole feature and the whole risk. It is a first label from provenance, exactly like
+`label_command_output` and `label_user_configuration`, and it is admissible for the reason a
+`TrustedPrograms` entry is: a person took responsibility, and nothing inspected anything. The honest
+cost is the same one, which docs/tools.md states plainly: `! cat something-hostile.md` puts a
+stranger's words in the context as though they were the user's.
+
+The rules it lives under, none of which may be relaxed:
+
+- **Only a line a human typed.** Never argv the planner proposed, never text read from a file, never
+  anything a processor produced, never a line reconstructed from a transcript. The justification
+  cannot be checked from the bytes, so it lives at the call site: today that is the TUI's shell mode
+  and nothing else.
+- **`bravebot-agent::exec` stays argv-only.** It is the planner's path and must never build a command
+  line. The two modules are separate so that a change to one cannot quietly become a shell for the
+  other.
+- **The planner gets no shell tool, ever.** Not behind a capability, not behind an approval prompt,
+  not via MCP. If it could ask for one, everything above is void.
 
 Running a **program** is not excluded, because it passes that test. `run` takes a list of argv
 stages, never a command string, so an argument containing a metacharacter is one argument and stays

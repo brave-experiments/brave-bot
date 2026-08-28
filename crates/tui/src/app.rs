@@ -177,6 +177,8 @@ pub enum Action {
     Rename(String),
     /// Report what this session is. Needs the workspace and the trust map, which the loop owns.
     Status,
+    /// Run a command the user typed in shell mode. Needs the workspace and the conversation.
+    Run(String),
     Quit,
 }
 
@@ -215,6 +217,12 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.quit();
             Action::Quit
         }
+        // Before every command arm, because in shell mode the line is a command and nothing else.
+        // `/status` is a path to a program somebody might have, and `!` is how they said so.
+        KeyCode::Enter if session.shell => match session.submit_command() {
+            Some(line) => Action::Run(line),
+            None => Action::None,
+        },
         // Typed before submitting, so the word never reaches the planner as a prompt.
         KeyCode::Enter if session.input.trim() == EXIT_COMMAND => {
             session.clear_input();
@@ -771,6 +779,26 @@ fn event_loop(
                 );
                 stored.append_audit(session.turns, &events);
             }
+            Action::Run(line) => {
+                let events =
+                    run_command(terminal, &mut session, &workspace, &line, &mut conversation)?;
+                // Saved like a turn, and for the same reason: the command is in the conversation
+                // now, so a session resumed without it would have the planner referring to output
+                // it can no longer see.
+                stored.save(
+                    &line,
+                    crate::sessions::Standing {
+                        conversation: &conversation.snapshot(),
+                        turns: session.turns,
+                        tokens: session.tokens,
+                        todos: &session.todos_by_turn(),
+                        trust: &trust,
+                        programs: &programs,
+                    },
+                );
+                stored.append_audit(session.turns, &events);
+                needs_draw = true;
+            }
             // Cancel is only reachable while a turn runs, which `run_turn_animated` handles.
             Action::Cancel | Action::None | Action::Redraw => {}
         }
@@ -914,6 +942,94 @@ fn opening_trust(
         session.note("this directory is not trusted; every write will be shown to you");
     }
     Some(trust)
+}
+
+/// Run a command the user typed in shell mode, redrawing while it runs.
+///
+/// On a worker thread for the reason a turn is: a command can take as long as it likes, and running
+/// it on the thread that owns the terminal would freeze the interface for the duration and make a
+/// slow build indistinguishable from a hang. Escape cancels, which kills it.
+///
+/// No approval is asked for. The prompt a run normally goes through exists so a person endorses argv
+/// the *planner* chose, and here the person typed it themselves: asking would be asking them to
+/// confirm their own keystroke. What it printed goes into the conversation, labelled from that same
+/// provenance by the kernel. See [`bravebot_agent::shell::record`].
+fn run_command(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    workspace: &Workspace,
+    line: &str,
+    conversation: &mut Conversation,
+) -> io::Result<Vec<Stamped>> {
+    let cancel = Cancel::new();
+    let worker_cancel = cancel.clone();
+    let worker_line = line.to_string();
+    // Commands run in the primary root, which is the directory the prompt says it is in. An added
+    // directory is reachable by path from here, so nothing is out of reach.
+    let directory = workspace.root().to_path_buf();
+
+    // Only the process goes to the worker. The conversation stays here, because handing it over
+    // means taking it back, and a panicked thread hands back nothing: substituting a fresh one would
+    // reset context integrity to trusted, which is an upgrade and never allowed.
+    let worker =
+        thread::spawn(move || bravebot_agent::shell::run(&worker_line, &directory, &worker_cancel));
+
+    // Drawn while it runs so the command appears in the transcript immediately and Escape has
+    // somewhere to be pressed. The spinner is the turn indicator's, without the token counters,
+    // which measure something no command spends.
+    session.begin_command();
+    while !worker.is_finished() {
+        terminal
+            .draw(|frame| render::draw(frame, session))
+            .map_err(io::Error::other)?;
+
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                TermEvent::Key(key) if wants_cancel(key) => {
+                    cancel.cancel();
+                    session.note("stopping…");
+                }
+                TermEvent::Mouse(mouse) => {
+                    let action = handle_mouse(session, mouse);
+                    if action == Action::Copy {
+                        copy_selection(terminal, session)?;
+                    }
+                }
+                // Everything else waits. A command is brief and the keys that matter during one are
+                // the two above; taking a prompt here would leave it half-typed when the output
+                // lands on top of it.
+                _ => {}
+            }
+        }
+
+        std::thread::sleep(FRAME.min(Duration::from_millis(50)));
+    }
+
+    let ran = worker.join().unwrap_or_else(|_| {
+        Err(bravebot_agent::shell::ShellError::Io(
+            "the command's thread stopped unexpectedly".to_string(),
+        ))
+    });
+    session.finish_command();
+
+    // The labelling happens here, on the thread that owns the conversation, and its trail is
+    // returned so the decision reaches the audit file and Ctrl-T. Trusting a command's output is the
+    // most consequential thing this feature does, so it must not be the one thing left unrecorded.
+    let mut sink = Trail::new();
+    match ran {
+        Ok(ran) => match bravebot_agent::shell::record(line, &ran, conversation, &mut sink) {
+            Ok(recorded) => {
+                session.printed(&recorded.text);
+                if !recorded.succeeded {
+                    session.note("the command reported a failure");
+                }
+            }
+            Err(error) => session.note(format!("{error}")),
+        },
+        Err(error) => session.note(format!("{error}")),
+    }
+
+    Ok(sink.events().to_vec())
 }
 
 /// Run a turn on a worker thread, redrawing while it works.
@@ -1487,6 +1603,203 @@ mod tests {
         handle_key(&mut session, key(KeyCode::Backspace));
         assert!(session.input.is_empty(), "backspace did not clear the line");
         assert_eq!(handle_key(&mut session, ctrl('d')), Action::Quit);
+    }
+
+    /// Type a line, one key at a time, the way a user does.
+    fn type_line(session: &mut Session, line: &str) {
+        for c in line.chars() {
+            handle_key(session, key(KeyCode::Char(c)));
+        }
+    }
+
+    /// `!` on an empty line is the mode rather than a character, which is what makes the rest of
+    /// the line the command exactly as typed.
+    #[test]
+    fn a_bang_on_an_empty_line_enters_shell_mode_without_being_typed() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!");
+
+        assert!(session.shell, "the mode did not turn on");
+        assert!(
+            session.input.is_empty(),
+            "the marker was typed into the line"
+        );
+    }
+
+    #[test]
+    fn enter_in_shell_mode_runs_the_line_rather_than_prompting() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!ls -la");
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Run("ls -la".to_string())
+        );
+    }
+
+    /// The mode lasts one command. Leaving it on would send the next thing typed to a shell, which
+    /// is the sort of surprise that ends up running a sentence.
+    #[test]
+    fn running_a_command_leaves_shell_mode() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!pwd");
+        handle_key(&mut session, key(KeyCode::Enter));
+
+        assert!(!session.shell, "the mode stayed on after the command ran");
+        type_line(&mut session, "what did that print");
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what did that print".to_string())
+        );
+    }
+
+    /// A slash command is a word this program knows, but in shell mode the line is a command line:
+    /// `/status` could be a program somebody has, and `!` is how they said which they meant.
+    #[test]
+    fn a_slash_command_in_shell_mode_is_a_command_line() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!/status");
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Run("/status".to_string())
+        );
+    }
+
+    /// Nothing is offered in shell mode: `/usr/bin/env` is a path and an argument with an `@` in it
+    /// is an argument, so completing either would rewrite the line under someone typing it.
+    #[test]
+    fn shell_mode_offers_no_completions() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!/st");
+
+        assert!(!session.is_completing(), "a completion was offered");
+        // Enter must therefore run it rather than accepting a highlighted row.
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Run("/st".to_string())
+        );
+    }
+
+    /// The marker looks like a character, so deleting back past it has to leave the mode. Otherwise
+    /// the only way out is clearing the whole line, which nobody would guess.
+    #[test]
+    fn backspacing_past_the_marker_leaves_shell_mode() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!ls");
+
+        handle_key(&mut session, key(KeyCode::Backspace));
+        handle_key(&mut session, key(KeyCode::Backspace));
+        assert!(session.shell, "the mode was left while text remained");
+
+        handle_key(&mut session, key(KeyCode::Backspace));
+        assert!(!session.shell, "the mode outlived the marker");
+    }
+
+    /// Escape abandons the line, and the mode is part of the line: leaving it armed would send the
+    /// next thing typed to a shell.
+    #[test]
+    fn escape_leaves_shell_mode() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!rm -rf /");
+
+        handle_key(&mut session, key(KeyCode::Esc));
+
+        assert!(!session.shell, "the mode survived being cancelled");
+        assert!(session.input.is_empty());
+    }
+
+    /// A `!` mid-sentence is punctuation. Treating it as the mode would make "no way!" a command.
+    #[test]
+    fn a_bang_inside_a_line_is_an_ordinary_character() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "no way!");
+
+        assert!(!session.shell);
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("no way!".to_string())
+        );
+    }
+
+    /// Shell history expansion is the shell's business, and a `!` inside a command belongs to it.
+    #[test]
+    fn a_bang_inside_a_command_stays_in_the_command() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!echo hi!");
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Run("echo hi!".to_string())
+        );
+    }
+
+    /// A prompt that comes back after a cancelled turn is English, not a command line. The mode was
+    /// enterable mid-turn, so `!` then escape then enter ran the user's own sentence: "rm the old
+    /// builds" is a reasonable prompt, and a shell reads it as an instruction.
+    #[test]
+    fn a_prompt_restored_after_a_cancelled_turn_is_never_run_as_a_command() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "rm the old builds");
+        session.submit().expect("the prompt is sent");
+
+        // Mid-turn, which used to be the moment the mode could be armed unseen.
+        handle_key_while_working(&mut session, key(KeyCode::Char('!')));
+        session.restore("rm the old builds");
+        session.clear_input();
+
+        assert!(
+            !session.shell,
+            "the mode survived a cancelled turn, so the prompt was armed as a command"
+        );
+        type_line(&mut session, "rm the old builds");
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("rm the old builds".to_string()),
+            "the user's sentence was about to be run by a shell"
+        );
+    }
+
+    /// Whatever else a cancelled turn does with the line, it must not come back armed: the text is a
+    /// prompt, and the mode changes what Enter does to it.
+    #[test]
+    fn restoring_a_prompt_leaves_shell_mode() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "some prompt");
+        session.submit().expect("the prompt is sent");
+        session.shell = true;
+
+        session.restore("some prompt");
+
+        assert!(!session.shell);
+    }
+
+    /// The mode belongs to the idle prompt. Entering it mid-turn arms a line the user cannot act on
+    /// until the turn ends, which is the wrong moment to find out what Enter now does.
+    ///
+    /// The character is still typed, because words typed during a turn are kept: what is refused is
+    /// the mode, not the keystroke.
+    #[test]
+    fn shell_mode_cannot_be_entered_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "anything");
+        session.submit().expect("the prompt is sent");
+
+        handle_key_while_working(&mut session, key(KeyCode::Char('!')));
+
+        assert!(!session.shell, "the mode turned on mid-turn");
+        assert_eq!(session.input, "!", "the keystroke was dropped");
+    }
+
+    /// Enter on a bare marker would run an empty line, which a shell accepts and which would put a
+    /// pointless entry in the transcript.
+    #[test]
+    fn enter_on_an_empty_shell_line_does_nothing() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!");
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::None);
+        assert!(session.transcript.is_empty());
     }
 
     /// The word is a command, not a prompt: it must end the session rather than reach the planner.

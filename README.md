@@ -62,13 +62,20 @@ file do reach the backend when you ask for work in one. What changes is not wher
 since a trusted directory has always sent them there, but that the thing reading them can do
 nothing at all.
 
-**It runs programs, but there is no shell.** You can ask for `git commit`, `gh api`, `sed`, `awk`,
-or anything else installed, and stages compose the way a pipeline does. What you cannot get is a
-shell: `run` takes a program and a list of arguments, never a command string, so there are no pipes,
-no `&&`, and no `$(...)`. That is what makes it approvable. A command string is its own destination
-and payload at once, with nothing separable for you to see, while an argument list is something you
-can read and have executed verbatim. Nothing is escaped or re-parsed, so `; rm -rf /` inside an
-argument is just an argument.
+**It runs programs, but the agent gets no shell.** You can ask for `git commit`, `gh api`, `sed`,
+`awk`, or anything else installed, and stages compose the way a pipeline does. What the *agent* cannot
+get is a shell: `run` takes a program and a list of arguments, never a command string, so there are no
+pipes, no `&&`, and no `$(...)`. That is what makes it approvable. A command string is its own
+destination and payload at once, with nothing separable for you to see, while an argument list is
+something you can read and have executed verbatim. Nothing is escaped or re-parsed, so `; rm -rf /`
+inside an argument is just an argument.
+
+**You get a shell, with `!`.** Type `! cargo test` and it runs in your own `$SHELL`, globs and
+redirection and all, with nothing to approve: the prompt exists so a person endorses a command the
+*agent* proposed, and this one you typed yourself. What it prints goes to the model in full, so you
+can follow it with "fix the first failure". The trade is the one you make by pressing "always" at a
+command prompt: `! cat something-a-stranger-wrote.md` hands those words to the model as though they
+were yours. [Shell mode](docs/tools.md#shell-mode).
 
 **You approve every command.** There is no list of allowed programs and no sandbox around them: they
 run with the access your own shell would give them, because `git push` needs your SSH keys and the
@@ -76,11 +83,14 @@ set of tools you might ask for cannot be listed in advance. What protects you is
 exact argument list first and your approval covers only that one, so it cannot be reused for a
 different command.
 
-**Command output is never trusted.** Whatever a program prints is treated as untrusted and private,
-always, since it could contain anything a file or a website put there. Untrusted data can still be
-piped *into* a tool, which is what lets `sed` and `awk` work on files nobody vouched for. But the
-model receives a description of the output rather than the text, so it cannot read what it just ran.
-That is a real limitation and a deliberate one.
+**Output from a command the agent ran is never trusted.** Whatever such a program prints is treated as
+untrusted and private, since it could contain anything a file or a website put there. Untrusted data
+can still be piped *into* a tool, which is what lets `sed` and `awk` work on files nobody vouched for.
+But the model receives a description of the output rather than the text, so it cannot read what it
+just ran. That is a real limitation and a deliberate one.
+
+Two things lift it, and both are you saying so rather than anything being inspected: approving a
+command with "always", or running it yourself with `!`.
 [Why this matters](docs/design.md#why-some-things-are-absent), and
 [the full model](docs/tools.md#running-programs).
 
