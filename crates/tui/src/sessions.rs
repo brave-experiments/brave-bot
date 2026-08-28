@@ -31,6 +31,7 @@
 
 use bua_agent::conversation::Snapshot;
 use bua_core::label::Integrity;
+use bua_core::programs::TrustedPrograms;
 use bua_core::todo::{self, Item, List, Row, Status};
 use bua_core::trust::TrustStore;
 use serde::{Deserialize, Serialize};
@@ -84,6 +85,17 @@ pub struct Record {
     /// as an empty map: nothing recorded is not the same as nothing trusted.
     #[serde(default)]
     pub trust: Option<Vec<StoredRule>>,
+    /// Which programs this session's user vouched for, by resolved path.
+    ///
+    /// Belongs to the session for the same reason the trust map does: vouching for a program is a
+    /// standing permission, and a list kept per directory would grant it on behalf of a user who
+    /// was never asked. Resuming inherits it because the person resuming is the person who gave
+    /// it.
+    ///
+    /// Absent, unlike the map, needs no question: an empty list means every run asks, which is
+    /// what a session that recorded nothing should do.
+    #[serde(default)]
+    pub programs: Vec<String>,
     /// Which build wrote this record: the version, the commit, and whether the tree was
     /// modified. See [`crate::BUILD`].
     ///
@@ -148,6 +160,14 @@ impl Record {
         Some(trust)
     }
 
+    /// The programs this session's user vouched for.
+    ///
+    /// An empty list where a record predates this being kept, which is the safe direction: every
+    /// run asks, rather than a resumed session inheriting a permission nobody recorded.
+    pub fn trusted_programs(&self) -> TrustedPrograms {
+        TrustedPrograms::from_iter(self.programs.clone())
+    }
+
     /// The task lists this session kept, shaped for a screen.
     ///
     /// A status this build does not recognise parses as outstanding work, which is
@@ -189,6 +209,7 @@ pub struct Standing<'a> {
     pub tokens: u64,
     pub todos: &'a BTreeMap<usize, Vec<Row>>,
     pub trust: &'a TrustStore,
+    pub programs: &'a TrustedPrograms,
 }
 
 /// A live session, holding where to write and what has been written.
@@ -322,6 +343,7 @@ impl Handle {
                     })
                     .collect(),
             ),
+            programs: standing.programs.iter().map(str::to_string).collect(),
             build: Some(crate::BUILD.to_string()),
             conversation: standing.conversation.clone(),
         };
@@ -859,6 +881,7 @@ mod tests {
             tokens: 0,
             todos: BTreeMap::new(),
             trust: None,
+            programs: Vec::new(),
             build: None,
             conversation: Snapshot {
                 messages: Vec::new(),

@@ -14,6 +14,7 @@ use bua_agent::conversation::Conversation;
 use bua_agent::turn::{self, Task};
 use bua_config::Config;
 use bua_core::cancel::Cancel;
+use bua_core::programs::TrustedPrograms;
 use bua_core::trust::TrustStore;
 use bua_net::Egress;
 use ratatui::Terminal;
@@ -536,12 +537,14 @@ fn event_loop(
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
     // session begins with an exchange that outlived the process it happened in.
-    let (mut conversation, mut stored, inherited_trust) = match start {
+    let (mut conversation, mut stored, inherited_trust, mut programs) = match start {
         // Already answered before the loop was entered: the picker runs once, in `run`.
         Start::Fresh | Start::Choose => (
             Conversation::new(),
             crate::sessions::Handle::begin(workspace.root()),
             None,
+            // A session that was never asked vouches for nothing, exactly as with the map.
+            TrustedPrograms::new(),
         ),
         Start::Resuming(record) => {
             let handle = crate::sessions::Handle::resuming(workspace.root(), &record);
@@ -569,7 +572,11 @@ fn event_loop(
             // The trust map goes with the session, so picking one up carries the answer its own
             // user gave. `None` for a record from before this was kept, which is asked about.
             let inherited = record.trust_map();
-            (conversation, handle, inherited)
+            // The programs go the same way and for the same reason: the person resuming is the
+            // person who vouched for them. Unlike the map there is nothing to ask about an
+            // absent list, since an empty one simply means every run asks.
+            let vouched = record.trusted_programs();
+            (conversation, handle, inherited, vouched)
         }
     };
 
@@ -669,6 +676,9 @@ fn event_loop(
                     return Ok(());
                 };
                 trust = fresh;
+                // A new session vouches for no program, on the same reasoning as the map: the
+                // list is a standing permission, and this begins a session that was never asked.
+                programs = TrustedPrograms::new();
                 needs_draw = true;
             }
             Action::Submit(prompt) => {
@@ -676,7 +686,7 @@ fn event_loop(
                 // path records that, and the next turn must honour it, and a turn that has been
                 // had is a turn the next one can be asked about.
                 let events;
-                (conversation, trust, events) = run_turn_animated(
+                (conversation, trust, programs, events) = run_turn_animated(
                     terminal,
                     &mut session,
                     config,
@@ -684,6 +694,7 @@ fn event_loop(
                     &prompt,
                     conversation,
                     trust,
+                    programs,
                 )?;
 
                 // Written after each turn rather than at the end, because the end may never
@@ -697,6 +708,7 @@ fn event_loop(
                         tokens: session.tokens,
                         todos: &session.todos_by_turn(),
                         trust: &trust,
+                        programs: &programs,
                     },
                 );
                 stored.append_audit(session.turns, &events);
@@ -862,7 +874,8 @@ fn run_turn_animated(
     prompt: &str,
     conversation: Conversation,
     trust: TrustStore,
-) -> io::Result<(Conversation, TrustStore, Vec<Stamped>)> {
+    programs: TrustedPrograms,
+) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
@@ -887,8 +900,10 @@ fn run_turn_animated(
         task = task.with_file(file);
     }
     let task = task;
-    // Kept so a failed turn does not lose the user's decisions.
+    // Kept so a failed turn does not lose the user's decisions. Both of them: a run approved
+    // "always" in a turn that then failed is still an answer the user gave.
     let fallback = trust.clone();
+    let fallback_programs = programs.clone();
 
     let worker = thread::spawn(move || {
         let mut sink = Trail::new();
@@ -911,6 +926,7 @@ fn run_turn_animated(
             &mut reporter,
             &mut sink,
             trust,
+            programs,
             &worker_cancel,
         );
         (outcome, conversation, sink)
@@ -966,10 +982,14 @@ fn run_turn_animated(
                 let answer = crate::confirm::ask_run(terminal, &request);
                 // Ctrl-C at the prompt is the same request it is anywhere else in a turn: stop.
                 // Set before the answer goes back, so the worker sees it as soon as it wakes.
-                if answer == crate::confirm::Answer::Interrupt {
+                if answer == crate::confirm::RunAnswer::Interrupt {
                     cancel.cancel();
                     session.note("cancelling…");
                 }
+                // What was vouched for travels back with the turn's outcome, exactly as the
+                // trust map does: the tool records it on the policy, and the policy carries it
+                // out. Recording it here as well would give the session a second copy to
+                // disagree with.
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Run(answer.decision()));
             }
             Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
@@ -1044,14 +1064,11 @@ fn run_turn_animated(
 
     if matches!(outcome, Err(turn::TurnError::Cancelled)) {
         session.restore(prompt);
-        return Ok((conversation, fallback, events));
+        return Ok((conversation, fallback, fallback_programs, events));
     }
 
-    Ok((
-        conversation,
-        fold_outcome(session, outcome, sink, fallback),
-        events,
-    ))
+    let (trust, programs) = fold_outcome(session, outcome, sink, fallback, fallback_programs);
+    Ok((conversation, trust, programs, events))
 }
 
 /// Whether a key press asks for the turn in flight to stop.
@@ -1069,7 +1086,8 @@ fn fold_outcome(
     outcome: Result<turn::Outcome, turn::TurnError>,
     sink: Trail,
     fallback: TrustStore,
-) -> TrustStore {
+    fallback_programs: TrustedPrograms,
+) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
             // Said before the reply, since they explain what the turn did and did not have to
@@ -1088,8 +1106,9 @@ fn fold_outcome(
                 session.note("a policy gate refused something during that turn");
             }
             // Carries forward any rule the turn recorded, so a path that received untrusted
-            // data cannot be read back as trusted by the next turn.
-            outcome.trust
+            // data cannot be read back as trusted by the next turn, and any program the user
+            // vouched for during it, so they are not asked about it again.
+            (outcome.trust, outcome.programs)
         }
         Err(error) => {
             // The trail is kept on failure too: a refusal is exactly when a user wants
@@ -1103,7 +1122,7 @@ fn fold_outcome(
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;
             }
-            fallback
+            (fallback, fallback_programs)
         }
     }
 }

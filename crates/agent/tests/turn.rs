@@ -985,8 +985,8 @@ impl bua_agent::Confirmer for RecordingConfirmer {
     }
 
     /// These tests are about writes. A run they did not set up is refused.
-    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+        bua_agent::RunDecision::reject()
     }
 
     /// These tests are about writes. A question they did not set up gets no answer.
@@ -2426,8 +2426,8 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
             bua_agent::Decision::Approve
         }
 
-        fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::Decision {
-            bua_agent::Decision::Reject
+        fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+            bua_agent::RunDecision::reject()
         }
 
         fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
@@ -2690,6 +2690,7 @@ fn take_a_turn(
         &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
         trust,
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
 }
@@ -3317,6 +3318,7 @@ fn a_file_nobody_may_name_is_fixed_through_its_reference() {
         &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3379,6 +3381,7 @@ fn every_write_through_a_reference_is_shown() {
         &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3613,6 +3616,7 @@ fn quarantined_content_reaches_the_person_and_not_the_planner() {
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3692,6 +3696,7 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3766,6 +3771,7 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
         &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3831,6 +3837,7 @@ fn each_result_says_whether_the_model_can_read_it() {
         &mut reporter,
         &mut sink,
         trust,
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3862,6 +3869,7 @@ fn each_result_says_whether_the_model_can_read_it() {
         &mut again,
         &mut RecordingSink::new(),
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3925,6 +3933,7 @@ fn what_a_processor_says_reaches_the_person_and_no_model() {
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -3998,6 +4007,7 @@ fn an_answer_about_nothing_in_particular_can_be_written_nowhere() {
         &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -4093,6 +4103,7 @@ fn an_answer_that_names_no_document_is_written_nowhere() {
         &mut reporter,
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -4146,6 +4157,7 @@ fn a_processors_output_cannot_be_a_destination() {
         &mut bua_agent::report::RecordingReporter::default(),
         &mut sink,
         bua_core::trust::TrustStore::new(),
+        bua_core::programs::TrustedPrograms::new(),
         &bua_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -4953,6 +4965,7 @@ fn the_preamble_is_not_stored_in_the_conversation() {
             &mut bua_agent::IgnoreReports,
             &mut sink,
             trusting_the_workspace(),
+            bua_core::programs::TrustedPrograms::new(),
             &bua_core::cancel::Cancel::new(),
         )
         .expect("turn runs");
@@ -5203,8 +5216,8 @@ impl bua_agent::Confirmer for AnswersWith {
         bua_agent::Decision::Reject
     }
 
-    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::Decision {
-        bua_agent::Decision::Reject
+    fn confirm_run(&mut self, _request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+        bua_agent::RunDecision::reject()
     }
 
     fn ask_user(&mut self, asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
@@ -5489,5 +5502,302 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
     assert!(
         !outcome.trust.is_trusted("other.md"),
         "naming one file vouched for another"
+    );
+}
+
+// Running programs, end to end: the gates, the approval, and where the output lands.
+
+/// A confirmer that records what it was asked about a run and answers as it was told.
+struct AskedAboutRuns {
+    answer: bua_agent::RunDecision,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<bua_agent::RunRequest>>>,
+}
+
+impl AskedAboutRuns {
+    fn answering(answer: bua_agent::RunDecision) -> Self {
+        Self {
+            answer,
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl bua_agent::Confirmer for AskedAboutRuns {
+    fn confirm_write(&mut self, _request: &bua_agent::WriteRequest) -> bua_agent::Decision {
+        bua_agent::Decision::Reject
+    }
+
+    fn confirm_run(&mut self, request: &bua_agent::RunRequest) -> bua_agent::RunDecision {
+        self.seen.lock().unwrap().push(request.clone());
+        self.answer
+    }
+
+    fn ask_user(&mut self, _asking: &bua_core::ask::Asking) -> Vec<bua_core::ask::Answer> {
+        Vec::new()
+    }
+}
+
+/// Ask the model to run one pipeline, and drive the turn to completion.
+fn a_run_turn(
+    scratch: &Scratch,
+    arguments: &str,
+    confirmer: &mut AskedAboutRuns,
+    programs: bua_core::programs::TrustedPrograms,
+) -> Result<turn::Outcome, turn::TurnError> {
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) =
+        serve_sequence(vec![tool_request("run", arguments), reply_with("done")]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bua_agent::Conversation::new(),
+        confirmer,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        programs,
+        &bua_core::cancel::Cancel::new(),
+    )
+}
+
+/// The whole point of the gate: the user is asked before anything executes, and a refusal means
+/// nothing ran.
+#[test]
+fn a_refused_run_executes_nothing() {
+    let scratch = Scratch::new("run-refused");
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::reject());
+    let seen = confirmer.seen.clone();
+
+    a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"touch","args":["evidence.txt"]}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes even though the run was refused");
+
+    assert_eq!(seen.lock().unwrap().len(), 1, "the user was not asked");
+    assert!(
+        !scratch.path.join("evidence.txt").exists(),
+        "a refused run executed anyway"
+    );
+}
+
+/// An approved run executes, and the person is shown the exact argv and the exact binary first.
+#[test]
+fn an_approved_run_executes_and_the_user_saw_what_it_was() {
+    let scratch = Scratch::new("run-approved");
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"touch","args":["made.txt"]}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn runs");
+
+    assert!(
+        scratch.path.join("made.txt").exists(),
+        "an approved run did not execute"
+    );
+
+    let asked = seen.lock().unwrap();
+    let request = asked.first().expect("the user was asked");
+    assert_eq!(request.pipeline.display(), "touch made.txt");
+    assert_eq!(request.resolved.len(), 1);
+    assert!(
+        request.resolved[0].ends_with("touch"),
+        "the binary was not shown: {:?}",
+        request.resolved
+    );
+}
+
+/// Where nobody can be asked, nothing runs. A one-shot invocation must not execute programs on a
+/// user's behalf because there was no interface to put the question to.
+#[test]
+fn an_unattended_turn_runs_no_program() {
+    let scratch = Scratch::new("run-unattended");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"pipeline":[{"program":"touch","args":["unattended.txt"]}]}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bua_agent::Conversation::new(),
+        &mut bua_agent::confirm::Unattended,
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    assert!(
+        !scratch.path.join("unattended.txt").exists(),
+        "a program ran with nobody to approve it"
+    );
+}
+
+/// Answering "always" is what puts the program on the session's list, and the list comes back with
+/// the outcome so the next turn and the session record both have it.
+#[test]
+fn vouching_for_a_program_carries_out_of_the_turn() {
+    let scratch = Scratch::new("run-always");
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve_always());
+
+    let outcome = a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"touch","args":["vouched.txt"]}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn runs");
+
+    assert_eq!(
+        outcome.programs.len(),
+        1,
+        "the program was not recorded on the session"
+    );
+    assert!(
+        outcome.programs.iter().next().unwrap().ends_with("touch"),
+        "recorded something other than the resolved binary"
+    );
+}
+
+/// Approving once is not approving always: a run approved for this call alone leaves the session
+/// vouching for nothing.
+#[test]
+fn approving_once_leaves_the_session_vouching_for_nothing() {
+    let scratch = Scratch::new("run-once");
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+
+    let outcome = a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"touch","args":["once.txt"]}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn runs");
+
+    assert!(
+        outcome.programs.is_empty(),
+        "approving one run granted a standing permission"
+    );
+}
+
+/// The point of the list: a session that already vouched for the program is not asked again, and
+/// the run still happens.
+#[test]
+fn a_vouched_program_runs_without_asking() {
+    let scratch = Scratch::new("run-vouched");
+    let touch = bua_agent::programs::resolve("touch", &scratch.path).expect("touch is installed");
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::reject());
+    let seen = confirmer.seen.clone();
+
+    a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"touch","args":["quiet.txt"]}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::from_iter([touch.display().to_string()]),
+    )
+    .expect("the turn runs");
+
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a vouched program was still put to the user"
+    );
+    assert!(
+        scratch.path.join("quiet.txt").exists(),
+        "a vouched program did not run"
+    );
+}
+
+/// What a program printed never reaches the planner. It is `(U,priv)` whatever it is, so it goes
+/// into a slot and the planner is handed a reference, exactly as a quarantined file is.
+#[test]
+fn what_a_program_printed_does_not_reach_the_planner() {
+    let scratch = Scratch::new("run-quarantined");
+    // The sentinel is in the file, not in the argv. A program's arguments are the planner's own
+    // words and it is entitled to see them back; what must not reach it is what the program
+    // printed.
+    std::fs::write(scratch.path.join("secret.txt"), "SENTINEL-XYZZY\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"pipeline":[{"program":"cat","args":["secret.txt"]}]}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bua_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bua_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bua_agent::RunDecision::approve()),
+        &mut bua_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bua_core::programs::TrustedPrograms::new(),
+        &bua_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    // The first request is the one that asked for the call; the second carries its result.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("SENTINEL-XYZZY"),
+        "a program's output went into the planner's context"
+    );
+    assert!(
+        second.contains("could not be shown to you"),
+        "the planner was not told the result was quarantined"
+    );
+}
+
+/// A command line in the program field is the mistake worth catching by name: it would otherwise
+/// become one program with a very odd name and fail with nothing useful said.
+#[test]
+fn a_command_line_in_the_program_field_is_refused_with_an_explanation() {
+    let scratch = Scratch::new("run-cmdline");
+    let mut confirmer = AskedAboutRuns::answering(bua_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    a_run_turn(
+        &scratch,
+        r#"{"pipeline":[{"program":"git log --oneline"}]}"#,
+        &mut confirmer,
+        bua_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes");
+
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a command line got as far as asking the user"
     );
 }

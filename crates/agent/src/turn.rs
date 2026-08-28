@@ -19,6 +19,7 @@ use bua_core::cancel::Cancel;
 use bua_core::capability::{Capability, CapabilitySet};
 use bua_core::event::Sink;
 use bua_core::policy::{Policy, ReleasePlan, Routing};
+use bua_core::programs::TrustedPrograms;
 use bua_core::reference::Presentation;
 use bua_core::trust::TrustStore;
 use bua_core::value::Labelled;
@@ -347,6 +348,11 @@ pub struct Outcome {
     pub clean: bool,
     /// The trust map after the turn, including any rule the turn recorded itself.
     pub trust: TrustStore,
+    /// The programs vouched for after the turn, including any the user vouched for during it.
+    ///
+    /// Travels back rather than being recorded by whoever drew the prompt, so there is one copy
+    /// of the answer and nothing to disagree with it.
+    pub programs: TrustedPrograms,
     /// Tokens the turn cost in total, summed over every round.
     ///
     /// A turn is several requests when the model calls tools, and each re-sends the whole
@@ -415,6 +421,7 @@ pub fn resume<S: Sink, C: Confirmer, R: Reporter>(
     reporter: &mut R,
     sink: &mut S,
     trust: TrustStore,
+    programs: TrustedPrograms,
     cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
     run_inner(
@@ -427,6 +434,7 @@ pub fn resume<S: Sink, C: Confirmer, R: Reporter>(
         reporter,
         sink,
         trust,
+        programs,
         cancel,
     )
 }
@@ -459,6 +467,9 @@ pub fn run_cancellable<S: Sink, C: Confirmer, R: Reporter>(
         reporter,
         sink,
         trust,
+        // A fresh conversation vouches for no program: the list belongs to a session, and this
+        // begins one.
+        TrustedPrograms::new(),
         cancel,
     )
 }
@@ -487,6 +498,7 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
         &mut IgnoreReports,
         sink,
         trust,
+        TrustedPrograms::new(),
         &Cancel::new(),
     )
 }
@@ -502,6 +514,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     reporter: &mut R,
     sink: &mut S,
     trust: TrustStore,
+    programs: TrustedPrograms,
     cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
     let mut routing = Routing::new();
@@ -510,13 +523,14 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         routing.insert_trusted(format!("file_{index}"), file.clone());
     }
 
-    // FileWrite is granted, but granting the capability is not what permits a write: the
-    // gate additionally requires a single-use endorsement that only a user's approval
-    // creates. Without one, a write is refused even though the capability is present.
+    // FileWrite and ShellExec are granted, but granting the capability is not what permits the
+    // effect: both gates additionally require a single-use endorsement that only a user's approval
+    // creates. Without one, a write or a run is refused even though the capability is present.
     let capabilities = CapabilitySet::from_iter([
         Capability::WebFetch,
         Capability::FileRead,
         Capability::FileWrite,
+        Capability::ShellExec,
     ]);
 
     // The conversation's integrity is inherited, never reset. A fresh policy is not a fresh
@@ -524,6 +538,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)
         .map_err(|d| TurnError::Precommit(d.to_string()))?
         .with_trust(trust)
+        .with_programs(programs)
         .resuming(conversation.context());
 
     // Found once per turn and reused for every round. Per turn rather than per session so a
@@ -811,6 +826,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                             .map(|s| s as &mut dyn bua_aichat::Subscription),
                         model: task.model.as_deref(),
                     },
+                    cancel,
                 },
                 confirmer,
                 reporter,
@@ -1036,14 +1052,17 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     }));
     conversation.observed(policy.context_integrity());
 
-    // Taken before `finish` consumes the policy, since a write may have changed the map.
+    // Taken before `finish` consumes the policy, since a write may have changed the map and an
+    // approved run may have added to the programs.
     let trust = policy.trust().clone();
+    let programs = policy.programs().clone();
 
     Ok(Outcome {
         reply: completion.content,
         model: completion.model,
         steps,
         trust,
+        programs,
         tokens,
         output_tokens,
         clean: policy.finish(),

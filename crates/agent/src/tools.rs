@@ -382,6 +382,51 @@ pub fn available() -> Vec<Tool> {
                 "required": ["questions"]
             }),
         ),
+        Tool::function(
+            "run",
+            "Run a program. Give a pipeline of stages, each a program name and a list of \
+             arguments; each stage's output feeds the next. There is no shell, so there are no \
+             pipes, no redirection, no && and no $(...): a character like ; or | inside an \
+             argument is part of that argument and nothing splits it. Compose stages instead of \
+             reaching for a pipe. The user approves the exact arguments before anything runs, so \
+             say what you are running and why first. You will NOT be shown the output: it comes \
+             back as a reference, like a file you may not read, and you can pass that reference \
+             to spawn_processor or write it to a file with write_file. Do not run a program to \
+             read something you could read with read_file or search.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "array",
+                        "description": "The stages, in order. One entry runs one program; two \
+                                        entries run the first and feed its output to the second.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "program": {
+                                    "type": "string",
+                                    "description": "The program to run, e.g. \"git\". A name is \
+                                                    looked up on PATH; a path is taken relative \
+                                                    to the workspace. Never a command line, and \
+                                                    never a shell."
+                                },
+                                "args": {
+                                    "type": "array",
+                                    "description": "The arguments, one per entry. Split them the \
+                                                    way a shell would have: [\"log\", \
+                                                    \"--oneline\", \"-50\"], never [\"log \
+                                                    --oneline -50\"], because nothing here \
+                                                    splits a string for you.",
+                                    "items": {"type": "string"}
+                                }
+                            },
+                            "required": ["program"]
+                        }
+                    }
+                },
+                "required": ["pipeline"]
+            }),
+        ),
     ]
 }
 
@@ -463,6 +508,8 @@ pub struct Tools<'a> {
     pub slots: &'a mut SlotStore,
     /// The model an isolated processor runs on.
     pub chat: Chat<'a>,
+    /// The turn's stop token, so a slow program does not have to be waited out.
+    pub cancel: &'a bua_core::cancel::Cancel,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -611,6 +658,7 @@ fn verb_for(tool: &str) -> &'static str {
         "spawn_processor" => "Isolated processor",
         "load_skill" => "Skill",
         "ask_user" => "Ask",
+        "run" => "Run",
         _ => "Tool",
     }
 }
@@ -858,6 +906,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         "load_skill" => load_skill(policy, tools.skills, &arguments),
         "ask_user" => ask_user(policy, confirmer, &arguments),
+        "run" => run(policy, tools, confirmer, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
 
@@ -1744,6 +1793,181 @@ fn todo_write<S: Sink, R: Reporter>(
 ///
 /// Nothing here decides anything from content. The references are names the driver handed out,
 /// the instruction is the planner's, and the label on the result is computed by the kernel from
+/// Run a program, after a person approves the exact arguments.
+///
+/// The order is the whole of the safety argument, and it is the same order a write goes through:
+///
+/// 1. The pipeline is assembled from the planner's arguments, which are untrusted.
+/// 2. Every program name is resolved **once**, to an absolute path.
+/// 3. The person is shown that exact argv and that exact binary, and answers.
+/// 4. The approval mints an endorsement bound to that exact pipeline.
+/// 5. `before_run` consumes it, and only then does anything execute, by the resolved path.
+///
+/// Nothing here branches on untrusted content. The argv is released for display, which is what a
+/// person reading it is; what comes back from the program is never read by the driver or the
+/// planner, and goes into a slot at the label the kernel fixed before it ran.
+fn run<S: Sink, C: Confirmer>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> Produced {
+    let Some(entries) = arguments.get("pipeline").and_then(Value::as_array) else {
+        return problem(
+            "error: 'pipeline' is required and must be an array of stages, e.g. \
+             [{\"program\": \"git\", \"args\": [\"log\", \"--oneline\"]}]",
+        );
+    };
+    if entries.is_empty() {
+        return problem("error: 'pipeline' needs at least one stage");
+    }
+
+    // Assembled from the planner's own words, which are untrusted, and released only for display.
+    // A person reading argv is the legitimate destination for it: it is what an approval is.
+    let proof = policy.authorise_display_release("a proposed command line");
+    let mut stages = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(program) = entry.get("program").and_then(Value::as_str) else {
+            return problem(
+                "error: every stage needs a 'program', which must be a string naming one program",
+            );
+        };
+        // A command line in the program field is the mistake to catch, because it would otherwise
+        // become one program with a very odd name and fail to resolve with no explanation. This is
+        // a comparison on the planner's own output, not on workspace content: it decides what to
+        // say back, and nothing about where anything lands.
+        if program.contains(char::is_whitespace) {
+            return problem(format!(
+                "error: '{program}' is not a program name. There is no shell here, so a command \
+                 line cannot be one field: put the program in 'program' and each argument in its \
+                 own entry of 'args'."
+            ));
+        }
+        let mut args = Vec::new();
+        match entry.get("args") {
+            None => {}
+            Some(Value::Array(given)) => {
+                for arg in given {
+                    let Some(text) = arg.as_str() else {
+                        return problem("error: every entry in a stage's 'args' must be a string");
+                    };
+                    args.push(text.to_string());
+                }
+            }
+            Some(_) => {
+                return problem("error: a stage's 'args' must be an array of strings");
+            }
+        }
+        stages.push(bua_core::Stage::new(program.to_string(), args));
+    }
+    // Held so the release is recorded once for the whole call rather than pretending each field
+    // was released separately.
+    let _ = &proof;
+    let pipeline = bua_core::Pipeline::new(stages);
+
+    // Resolved once, before anyone is asked. What the person is shown, what the trusted list
+    // records, and what executes are then the same value, so `$PATH` changing afterwards cannot
+    // put a different binary behind an approval.
+    let directory = tools.workspace.root().to_path_buf();
+    let mut resolved = Vec::with_capacity(pipeline.len());
+    for stage in &pipeline.stages {
+        match crate::programs::resolve(&stage.program, &directory) {
+            Some(path) => resolved.push(path),
+            None => {
+                return problem(format!(
+                    "error: '{}' was not found. It may not be installed, or may not be on PATH.",
+                    stage.program
+                ));
+            }
+        }
+    }
+    let shown: Vec<String> = resolved
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+
+    if policy.run_needs_approval(&pipeline, &shown) {
+        let request = crate::confirm::RunRequest {
+            pipeline: pipeline.clone(),
+            resolved: shown.clone(),
+            directory: directory.display().to_string(),
+        };
+        let answer = confirmer.confirm_run(&request);
+        if !answer.approved() {
+            return problem(
+                "refused: the user did not approve running this. Do not retry the same \
+                 pipeline; ask what they would prefer."
+                    .to_string(),
+            );
+        }
+        // Recorded before the run, so a second stage of the same program later in this turn is
+        // not asked about again. The policy carries it out of the turn and the session records it.
+        if answer.remember {
+            for program in request.would_vouch_for() {
+                policy.remember_program(&program);
+            }
+        }
+    }
+
+    // The approval is what makes this argv trustworthy, and it is bound to this exact pipeline.
+    policy.endorse_run(&pipeline);
+
+    let label = match policy.before_run(&pipeline) {
+        Ok(label) => label,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
+    let displayed = pipeline.display();
+    match crate::exec::run(&pipeline, &resolved, &directory, tools.cancel) {
+        Ok(ran) => {
+            // stdout and stderr together, because a program that failed usually explains itself
+            // on stderr and a result that dropped the explanation would be the least useful thing
+            // to hand back. Both carry the same label: the kernel fixed it before anything ran and
+            // nothing about what was printed changes it.
+            let mut text = ran.stdout.clone();
+            if !ran.stderr.is_empty() {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&ran.stderr);
+            }
+
+            // Said in the driver's own words, from the exit codes, which are structure rather than
+            // content: nothing here reads a byte of what the program printed.
+            let outcome = if ran.succeeded() {
+                "succeeded".to_string()
+            } else {
+                let failed: Vec<String> = ran
+                    .failures()
+                    .iter()
+                    .map(|(at, code)| match code {
+                        Some(code) => format!("stage {at} exited {code}"),
+                        None => format!("stage {at} was killed"),
+                    })
+                    .collect();
+                failed.join(", ")
+            };
+            let lines = text.lines().count();
+            let note = format!("{outcome}, {}", tally(lines, "line", "lines"));
+
+            let mut produced = Produced::new(
+                Labelled::new(text, label),
+                format!("what `{displayed}` printed"),
+                note,
+            )
+            .of_content();
+            // Marks the block the person is shown as content nobody vouched for, which is what a
+            // program's output is: it may include bytes an earlier stage read out of a file an
+            // attacker wrote.
+            produced.untrusted = !label.is_trusted();
+            produced
+        }
+        // A run that produced nothing still says what happened. The argv is safe to repeat back:
+        // a person endorsed it, so it is not something an attacker chose.
+        Err(error) => problem(format!("error: `{displayed}` did not run: {error}")),
+    }
+}
+
 /// the inputs before the processor runs.
 fn spawn_processor<S: Sink>(
     policy: &mut Policy<'_, S>,
@@ -2192,22 +2416,77 @@ mod tests {
                 "search",
                 "spawn_processor",
                 "load_skill",
-                "ask_user"
+                "ask_user",
+                "run"
             ]
         );
     }
 
-    /// Command execution stays absent. Unlike a write, a command has no separable routing
-    /// field to endorse, because the string is destination and payload at once, so there is
-    /// nothing a user could meaningfully approve.
+    /// A **shell** stays absent, and this is the distinction the whole tool turns on. A shell
+    /// string is destination and payload at once, so there is no separable routing field a person
+    /// could approve, and a parser that tried to recover one would be racing a shell it does not
+    /// control. An argv vector has no such problem, which is why `run` exists and this does not.
+    ///
+    /// The test that used to stand here banned every tool whose name contained "run". It predated
+    /// the argv design by a day and would have blocked it, which is the failure mode worth
+    /// remembering: a test pinning the old reason for a rule outlives the reason.
     #[test]
-    fn no_command_execution_is_offered() {
+    fn no_shell_is_offered() {
         for tool in available() {
             let name = tool.function.name;
-            assert!(!name.contains("exec"), "{name} executes commands");
-            assert!(!name.contains("shell"), "{name} executes commands");
-            assert!(!name.contains("run"), "{name} executes commands");
+            assert!(!name.contains("shell"), "{name} takes a shell string");
+            assert!(!name.contains("exec"), "{name} takes a shell string");
         }
+    }
+
+    /// `run` takes a pipeline of argv stages and nothing else. A single string field would be a
+    /// command line by another name, and everything the design rests on would go with it.
+    #[test]
+    fn run_takes_argv_and_never_a_command_line() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "run")
+            .expect("run is offered");
+        let properties = tool.function.parameters["properties"]
+            .as_object()
+            .expect("run has parameters");
+        assert_eq!(
+            properties.keys().collect::<Vec<_>>(),
+            vec!["pipeline"],
+            "run gained a field that is not the pipeline"
+        );
+
+        let stage = &properties["pipeline"]["items"]["properties"];
+        assert!(stage.get("program").is_some(), "a stage names its program");
+        assert_eq!(
+            stage["args"]["type"], "array",
+            "arguments must be a list, never a string for something to split"
+        );
+        for absent in ["command", "cmd", "shell", "script", "argv_string"] {
+            assert!(
+                stage.get(absent).is_none(),
+                "a stage gained a '{absent}' field, which would be a command line"
+            );
+        }
+    }
+
+    /// The tool must tell the planner it will not see the output, or it spends rounds running
+    /// things to read results that never come back to it.
+    #[test]
+    fn run_says_its_output_does_not_come_back_to_the_planner() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "run")
+            .expect("run is offered");
+        let described = tool.function.description.to_lowercase();
+        assert!(
+            described.contains("not be shown") || described.contains("reference"),
+            "run does not say the output is quarantined: {described}"
+        );
+        assert!(
+            described.contains("approve"),
+            "run does not say the user approves it first"
+        );
     }
 
     /// Every mutating tool must advertise that approval is required, so the model explains
@@ -2437,8 +2716,11 @@ mod tests {
                 Decision::Reject
             }
 
-            fn confirm_run(&mut self, _request: &crate::confirm::RunRequest) -> Decision {
-                Decision::Reject
+            fn confirm_run(
+                &mut self,
+                _request: &crate::confirm::RunRequest,
+            ) -> crate::confirm::RunDecision {
+                crate::confirm::RunDecision::reject()
             }
 
             fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {

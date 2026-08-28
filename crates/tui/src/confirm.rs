@@ -7,7 +7,7 @@
 //! Nothing is approved by default. An unreadable terminal, an unexpected key, or a lost
 //! event all resolve to refusal.
 
-use bua_agent::confirm::{Confirmer, Decision, Intent, RunRequest, WriteRequest};
+use bua_agent::confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, WriteRequest};
 use bua_agent::diff::Change;
 use bua_core::ask::{Answer as UserAnswer, Asking};
 use ratatui::Terminal;
@@ -37,7 +37,7 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
         ask(self.terminal, request).decision()
     }
 
-    fn confirm_run(&mut self, request: &RunRequest) -> Decision {
+    fn confirm_run(&mut self, request: &RunRequest) -> RunDecision {
         ask_run(self.terminal, request).decision()
     }
 
@@ -288,12 +288,75 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     furthest
 }
 
+/// What the user did with a run question.
+///
+/// Three answers rather than the write prompt's two. "Yes, and stop asking" is a different thing
+/// from "yes", and it is the one that changes what happens next time, so it is a key of its own
+/// rather than a follow-up question nobody would read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunAnswer {
+    Approve,
+    /// Run it, and vouch for its programs for the rest of the session.
+    ApproveAlways,
+    Reject,
+    /// Refuse the run and stop the turn that asked for it.
+    Interrupt,
+}
+
+impl RunAnswer {
+    /// What to tell the waiting turn. Interrupting refuses and vouches for nothing, since a turn
+    /// being stopped is not consent to what it was stopped at.
+    pub fn decision(self) -> RunDecision {
+        match self {
+            RunAnswer::Approve => RunDecision::approve(),
+            RunAnswer::ApproveAlways => RunDecision::approve_always(),
+            RunAnswer::Reject | RunAnswer::Interrupt => RunDecision::reject(),
+        }
+    }
+}
+
+/// Interpret one key press at a run prompt, or `None` for a key that answers nothing.
+///
+/// Separated from the loop so it can be tested without a terminal.
+fn run_answer_for(key: KeyEvent) -> Option<RunResponse> {
+    // The prompt blocks the whole interface, so without this Ctrl-C would do nothing at the one
+    // moment a user is most likely to press it.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Some(RunResponse::Answer(RunAnswer::Interrupt)),
+            _ => None,
+        };
+    }
+
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(RunResponse::Answer(RunAnswer::Approve)),
+        KeyCode::Char('a' | 'A') => Some(RunResponse::Answer(RunAnswer::ApproveAlways)),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(RunResponse::Answer(RunAnswer::Reject)),
+        KeyCode::Up => Some(RunResponse::Scroll(-1)),
+        KeyCode::Down => Some(RunResponse::Scroll(1)),
+        KeyCode::PageUp => Some(RunResponse::Scroll(-10)),
+        KeyCode::PageDown => Some(RunResponse::Scroll(10)),
+        KeyCode::Home => Some(RunResponse::Scroll(i16::MIN)),
+        KeyCode::End => Some(RunResponse::Scroll(i16::MAX)),
+        // Enter is deliberately not an approval: it is the key most likely to be pressed out of
+        // habit, and this prompt starts a program.
+        _ => None,
+    }
+}
+
+/// What a key press did at a run prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunResponse {
+    Answer(RunAnswer),
+    Scroll(i16),
+}
+
 /// Draw the prompt for a run and wait for an answer.
 ///
 /// Standalone as well as available through [`TerminalConfirmer`], for the same reason the write
 /// prompt is: a turn on a worker thread cannot hold the terminal, so the main thread calls this on
 /// its behalf.
-pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> Answer {
+pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> RunAnswer {
     let mut scroll = 0u16;
     loop {
         let mut most = 0u16;
@@ -303,20 +366,20 @@ pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> 
             .draw(|frame| most = draw_run(frame, request, scroll))
             .is_err()
         {
-            return Answer::Reject;
+            return RunAnswer::Reject;
         }
 
         match event::read() {
-            Ok(TermEvent::Key(key)) => match answer_for(key) {
-                Some(Response::Answer(answer)) => return answer,
-                Some(Response::Scroll(by)) => {
+            Ok(TermEvent::Key(key)) => match run_answer_for(key) {
+                Some(RunResponse::Answer(answer)) => return answer,
+                Some(RunResponse::Scroll(by)) => {
                     scroll = scroll.saturating_add_signed(by).min(most);
                 }
                 None => continue,
             },
             Ok(_) => continue,
             // Losing the event stream must not run anything.
-            Err(_) => return Answer::Reject,
+            Err(_) => return RunAnswer::Reject,
         }
     }
 }
@@ -363,6 +426,14 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
+        // The binary, under the name. A name is not a program: $PATH decides what `grep` means,
+        // and a person about to vouch for one should be looking at what they are vouching for.
+        if let Some(path) = request.resolved.get(index) {
+            lines.push(Line::from(Span::styled(
+                format!("       {path}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
     }
 
     lines.push(Line::raw(""));
@@ -384,7 +455,31 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         )));
     }
 
-    let keys = Line::from(vec![
+    // What `a` would actually grant, in as many words. Remembering is by program and not by
+    // argument vector, so vouching after reading `git log` also stops `git push` being asked
+    // about. A person agreeing to that should be agreeing to the thing it does, and the only
+    // place to say so is here.
+    let vouching = request.would_vouch_for();
+    if !request.releases_private() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  a: stop asking about {} for the rest of this session, whatever the arguments",
+                vouching.join(", ")
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        // Private input asks every time whatever is remembered, so offering to stop asking would
+        // be offering something that will not happen.
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "  private input is asked about every time, so this one cannot be remembered",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let mut key_spans = vec![
         Span::styled(
             "  y",
             Style::default()
@@ -392,6 +487,19 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" run it    "),
+    ];
+    // Offered only where it would do something. Private input asks every time whatever is
+    // remembered, so the key would promise something that will not happen.
+    if !request.releases_private() {
+        key_spans.push(Span::styled(
+            "a",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        key_spans.push(Span::raw(" always    "));
+    }
+    key_spans.extend([
         Span::styled(
             "n",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -405,6 +513,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         ),
         Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
     ]);
+    let keys = Line::from(key_spans);
 
     let block = Block::default()
         .borders(Borders::ALL)

@@ -9,6 +9,7 @@ use bua_aichat::protocol::Message;
 use bua_core::capability::Capability;
 use bua_core::event::Event;
 use bua_core::label::Label;
+use bua_core::programs::TrustedPrograms;
 use bua_core::todo::{Item, List, Row, Status, rows};
 use bua_core::trust::TrustStore;
 use bua_tui::sessions::{self, Handle, Standing};
@@ -119,6 +120,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 1_200,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            programs: &TrustedPrograms::new(),
         },
     );
     handle.append_audit(
@@ -185,6 +187,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 3_400,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            programs: &TrustedPrograms::new(),
         },
     );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
@@ -210,6 +213,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 0,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
+            programs: &TrustedPrograms::new(),
         },
     );
     assert_eq!(sessions::list(&elsewhere).len(), 1);
@@ -226,6 +230,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             tokens: 5_600,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            programs: &TrustedPrograms::new(),
         },
     );
     let listed = sessions::list(&scratch.project);
@@ -319,6 +324,7 @@ fn the_audit_keeps_the_time_each_event_happened() {
             tokens: 0,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            programs: &TrustedPrograms::new(),
         },
     );
 
@@ -375,6 +381,7 @@ fn renaming_a_session_rewrites_the_record_immediately() {
             tokens: 1_200,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            programs: &TrustedPrograms::new(),
         },
     );
     let derived = sessions::list(&scratch.project)[0].title.clone();
@@ -413,6 +420,7 @@ fn a_chosen_name_survives_the_next_turn() {
             tokens: 10,
             todos: &a_plan(),
             trust: &a_trust_map(),
+            programs: &TrustedPrograms::new(),
         },
     );
 

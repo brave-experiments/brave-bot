@@ -19,7 +19,7 @@
 //! with each other; that resolves to the negative answer rather than to a retry, because a
 //! decision taken against a question nobody matched is worse than no decision at all.
 
-use bua_agent::confirm::{Confirmer, Decision, RunRequest, WriteRequest};
+use bua_agent::confirm::{Confirmer, Decision, RunDecision, RunRequest, WriteRequest};
 use bua_agent::report::{Activity, Landing, Phase, Reporter, Shown};
 use bua_core::ask::{Answer, Asking};
 use bua_core::todo::Row;
@@ -56,7 +56,7 @@ pub enum ToMain {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Write(Decision),
-    Run(Decision),
+    Run(RunDecision),
     Ask(Vec<Answer>),
 }
 
@@ -88,12 +88,12 @@ impl Confirmer for RemoteConfirmer {
         }
     }
 
-    fn confirm_run(&mut self, request: &RunRequest) -> Decision {
+    fn confirm_run(&mut self, request: &RunRequest) -> RunDecision {
         match self.exchange(ToMain::Run(request.clone())) {
             Some(Reply::Run(decision)) => decision,
             // A reply tagged as answering the write question is not an answer to this one, and
             // running a program on it would be acting on consent nobody gave.
-            _ => Decision::Reject,
+            _ => RunDecision::reject(),
         }
     }
 
@@ -201,6 +201,7 @@ mod tests {
                 "git",
                 vec!["log".into()],
             )]),
+            resolved: vec!["/usr/bin/git".into()],
             directory: "/tmp/project".into(),
         }
     }
@@ -217,12 +218,17 @@ mod tests {
                 other => panic!("expected a run question, got {other:?}"),
             }
             answer_tx
-                .send(Reply::Run(Decision::Approve))
+                .send(Reply::Run(RunDecision::approve_always()))
                 .expect("answered");
         });
 
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
-        assert_eq!(confirmer.confirm_run(&a_run()), Decision::Approve);
+        let answer = confirmer.confirm_run(&a_run());
+        assert!(answer.approved());
+        assert!(
+            answer.remember,
+            "the standing permission was lost in transit"
+        );
         responder.join().expect("responder finished");
     }
 
@@ -241,11 +247,12 @@ mod tests {
         });
 
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
-        assert_eq!(
-            confirmer.confirm_run(&a_run()),
-            Decision::Reject,
+        let answer = confirmer.confirm_run(&a_run());
+        assert!(
+            !answer.approved(),
             "consent to a write was taken as consent to run a program"
         );
+        assert!(!answer.remember);
         responder.join().expect("responder finished");
     }
 
@@ -257,7 +264,12 @@ mod tests {
         drop(inbound);
 
         let mut confirmer = RemoteConfirmer::new(outbound, answer_rx);
-        assert_eq!(confirmer.confirm_run(&a_run()), Decision::Reject);
+        let answer = confirmer.confirm_run(&a_run());
+        assert!(!answer.approved());
+        assert!(
+            !answer.remember,
+            "a standing permission was inferred from a channel nobody answered"
+        );
     }
 
     fn a_series() -> Asking {

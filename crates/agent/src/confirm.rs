@@ -111,6 +111,12 @@ impl WriteRequest {
 pub struct RunRequest {
     /// The stages, in order, exactly as they will be executed.
     pub pipeline: Pipeline,
+    /// What each stage's program name resolved to, in stage order.
+    ///
+    /// Shown alongside the name, and it is this that the trusted list records. A name is not a
+    /// program: `$PATH` decides what `grep` means, so a person vouching for one should be looking
+    /// at the binary they are vouching for.
+    pub resolved: Vec<String>,
     /// The directory the stages will run in, for the person to read.
     ///
     /// Shown because a program's effect depends on where it runs at least as much as on its
@@ -134,6 +140,63 @@ impl RunRequest {
             tally(self.pipeline.len(), "stage", "stages"),
             self.directory
         )
+    }
+
+    /// The programs this would add to the trusted list, without repeats and in stage order.
+    ///
+    /// Named for the prompt, which has to say what vouching would cover. A pipeline of two stages
+    /// vouches for both, since a run that still had to ask about one of them would not have
+    /// stopped asking.
+    pub fn would_vouch_for(&self) -> Vec<String> {
+        let mut named: Vec<String> = Vec::new();
+        for path in &self.resolved {
+            if !named.iter().any(|seen| seen == path) {
+                named.push(path.clone());
+            }
+        }
+        named
+    }
+}
+
+/// What the user decided about a run.
+///
+/// Two answers rather than one, because "yes" and "yes, and stop asking" are different things and
+/// the second is the one that changes what happens next time. A refusal never remembers: nothing
+/// about saying no is a reason to vouch for the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunDecision {
+    pub decision: Decision,
+    /// Whether the person asked for these programs to stop being asked about this session.
+    pub remember: bool,
+}
+
+impl RunDecision {
+    /// Run it this once.
+    pub fn approve() -> Self {
+        Self {
+            decision: Decision::Approve,
+            remember: false,
+        }
+    }
+
+    /// Run it, and stop asking about these programs for the rest of the session.
+    pub fn approve_always() -> Self {
+        Self {
+            decision: Decision::Approve,
+            remember: true,
+        }
+    }
+
+    /// Do not run it. Never remembers: a refusal is not a reason to vouch for anything.
+    pub fn reject() -> Self {
+        Self {
+            decision: Decision::Reject,
+            remember: false,
+        }
+    }
+
+    pub fn approved(self) -> bool {
+        self.decision == Decision::Approve
     }
 }
 
@@ -171,7 +234,11 @@ pub trait Confirmer {
     /// Separate from [`Confirmer::confirm_write`] because the two are not the same question and a
     /// reviewer needs them not to look alike: a write shows a diff of a file, and a run shows argv
     /// that is about to execute with the access the user's own shell has.
-    fn confirm_run(&mut self, request: &RunRequest) -> Decision;
+    ///
+    /// The answer carries whether to remember the programs as well as whether to run them. An
+    /// implementation that cannot ask must refuse **and** not remember: inferring a standing
+    /// permission from a question nobody answered is worse than inferring a single one.
+    fn confirm_run(&mut self, request: &RunRequest) -> RunDecision;
 
     /// Put a series of questions to the person, one answer per question in the order they were
     /// asked.
@@ -199,8 +266,8 @@ impl Confirmer for Unattended {
         Decision::Reject
     }
 
-    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
-        Decision::Reject
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::reject()
     }
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
@@ -223,8 +290,8 @@ impl Confirmer for ApproveWrites {
     /// Refuses. The name says writes, and a test that wanted a program to run should have to say
     /// so: approving execution as a side effect of approving writes is how a test ends up running
     /// something nobody meant it to.
-    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
-        Decision::Reject
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::reject()
     }
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
@@ -241,8 +308,8 @@ impl Confirmer for ChoosesFirst {
         Decision::Reject
     }
 
-    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
-        Decision::Reject
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::reject()
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
@@ -270,8 +337,29 @@ impl Confirmer for ApproveRuns {
         Decision::Approve
     }
 
-    fn confirm_run(&mut self, _request: &RunRequest) -> Decision {
-        Decision::Approve
+    /// Approves this run without vouching for anything. A test that wants the trusted list
+    /// exercised says so with [`RemembersRuns`], so no test picks up a standing permission it
+    /// never asked for.
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::approve()
+    }
+
+    fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+        Vec::new()
+    }
+}
+
+/// Approves every run and vouches for its programs. Test-only.
+#[derive(Debug, Default)]
+pub struct RemembersRuns;
+
+impl Confirmer for RemembersRuns {
+    fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::approve_always()
     }
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
@@ -330,6 +418,81 @@ mod tests {
             vec![Answer::Chosen(vec![0]), Answer::Declined],
             "a question with no options was answered with an option"
         );
+    }
+
+    fn a_run() -> RunRequest {
+        RunRequest {
+            pipeline: Pipeline::new(vec![bua_core::Stage::new("git", vec!["log".into()])]),
+            resolved: vec!["/usr/bin/git".into()],
+            directory: "/tmp/project".into(),
+        }
+    }
+
+    /// Nobody is there, so nothing runs and nothing is vouched for. Picking up a standing
+    /// permission from a question nobody answered is worse than picking up a single one.
+    #[test]
+    fn an_unattended_run_refuses_and_vouches_for_nothing() {
+        let answer = Unattended.confirm_run(&a_run());
+        assert!(!answer.approved());
+        assert!(!answer.remember, "a standing permission was inferred");
+    }
+
+    /// A refusal never remembers. Saying no to a run is not a reason to vouch for the program.
+    #[test]
+    fn a_refusal_never_vouches_for_anything() {
+        assert!(!RunDecision::reject().remember);
+    }
+
+    /// Approving once is not approving always: the two answers are different and the difference is
+    /// the whole point of offering both.
+    #[test]
+    fn approving_once_does_not_vouch_for_the_program() {
+        let once = RunDecision::approve();
+        assert!(once.approved());
+        assert!(!once.remember);
+
+        let always = RunDecision::approve_always();
+        assert!(always.approved());
+        assert!(always.remember);
+    }
+
+    /// The prompt has to say what vouching would cover, and a pipeline vouches for every program
+    /// in it: one that still had to ask about a stage would not have stopped asking.
+    #[test]
+    fn vouching_covers_every_program_in_the_pipeline() {
+        let request = RunRequest {
+            pipeline: Pipeline::new(vec![
+                bua_core::Stage::new("git", vec!["log".into()]),
+                bua_core::Stage::new("sed", vec!["-n".into()]),
+            ]),
+            resolved: vec!["/usr/bin/git".into(), "/usr/bin/sed".into()],
+            directory: "/tmp".into(),
+        };
+        assert_eq!(
+            request.would_vouch_for(),
+            vec!["/usr/bin/git".to_string(), "/usr/bin/sed".to_string()]
+        );
+    }
+
+    /// The same program twice is one entry, so the prompt does not offer to vouch for it twice.
+    #[test]
+    fn a_program_used_twice_is_named_once() {
+        let request = RunRequest {
+            pipeline: Pipeline::new(vec![
+                bua_core::Stage::new("sed", vec!["-n".into()]),
+                bua_core::Stage::new("sed", vec!["-e".into()]),
+            ]),
+            resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
+            directory: "/tmp".into(),
+        };
+        assert_eq!(request.would_vouch_for(), vec!["/usr/bin/sed".to_string()]);
+    }
+
+    /// Approving writes must not approve running programs. A test that wanted a program to run
+    /// says so, or a test ends up executing something nobody meant it to.
+    #[test]
+    fn approving_writes_does_not_approve_a_run() {
+        assert!(!ApproveWrites.confirm_run(&a_run()).approved());
     }
 
     fn request() -> WriteRequest {
