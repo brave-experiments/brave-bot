@@ -38,9 +38,11 @@ Ctrl-W, Ctrl-U and Ctrl-K take a word, the start of the line or the rest of it. 
 bindings Ctrl-A, Ctrl-E, Ctrl-B and Ctrl-F work too, for terminals that send nothing for the
 named keys. Shift-Enter starts a new line instead of sending, and the box grows to hold it.
 
-Shift-Enter needs a terminal that reports which modifier was held with Enter, since most send
-the same byte either way. Ghostty, Kitty and WezTerm do; inside `tmux` nothing does, and there
-Shift-Enter sends like a plain Enter. Ctrl-G opens an editor wherever that is the case.
+Most terminals send the same byte for Enter whichever modifier was held, so Shift-Enter needs
+either a terminal that reports the modifier (Ghostty, Kitty, WezTerm) or one configured to send
+a newline for the chord. In iTerm2 that is Settings, Keys, Key Bindings: add Shift-Enter and
+choose "Send Text" with `\n`. Terminal.app is Settings, Profiles, Keyboard. Ctrl-J does the same
+thing everywhere and needs no configuration at all.
 
 In a session: the mouse wheel scrolls, as do Up/Down once the prompt has no line left to
 move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the

@@ -225,6 +225,29 @@ fn edit_line(session: &mut Session, key: KeyEvent) -> bool {
     true
 }
 
+/// Whether `key` asks for a new line in the prompt rather than for the prompt to be sent.
+///
+/// Two spellings, because a terminal has two ways of saying it and which one arrives is not
+/// something the user chose:
+///
+/// - Shift-Enter, which needs the terminal to report the modifier. Most do not: the byte for Enter
+///   is the same however it was pressed, which is why [`take_over_terminal`] asks for disambiguated
+///   keys where that is understood.
+/// - Ctrl-J, which is the byte `\n`. That is what a terminal configured to send a newline for
+///   Shift-Enter delivers, and it is the arrangement iTerm and Terminal.app need, since neither
+///   reports the modifier. It is also typeable directly on a terminal that does neither.
+///
+/// Ctrl-J rather than Ctrl-M: `\r` is Enter itself and binding it would break sending. Nothing else
+/// may claim Ctrl-J, whatever readline does with it, since on those terminals it is the only way to
+/// write a paragraph.
+fn starts_a_line(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter => key.modifiers.contains(KeyModifiers::SHIFT),
+        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
+        _ => false,
+    }
+}
+
 /// Interpret a key press against the session.
 ///
 /// Separated from the loop so it can be tested without a terminal.
@@ -267,10 +290,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.quit();
             Action::Quit
         }
-        // Before every arm that sends, because Shift-Enter is the one Enter that does not: a
-        // paragraph is written in the box rather than only pasted into it, and the box grows to
-        // hold it. Shell mode too, where a multi-line command is a `for` loop somebody typed.
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+        // Before every arm that sends, because this is the one Enter that does not: a paragraph is
+        // written in the box rather than only pasted into it, and the box grows to hold it. Shell
+        // mode too, where a multi-line command is a `for` loop somebody typed.
+        _ if starts_a_line(key) => {
             session.type_newline();
             Action::Redraw
         }
@@ -419,6 +442,13 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         return Action::Redraw;
     }
 
+    // Before the modifier guard, since one of its two spellings is a Ctrl chord. A paragraph can be
+    // written while a turn runs, like everything else typed here; plain Enter is still refused.
+    if starts_a_line(key) {
+        session.type_newline();
+        return Action::Redraw;
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::None;
     }
@@ -430,12 +460,6 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         }
         KeyCode::Backspace => {
             session.backspace();
-            Action::Redraw
-        }
-        // A paragraph can be written while a turn runs, like everything else typed here. Plain
-        // Enter is still refused: only this one does not send.
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            session.type_newline();
             Action::Redraw
         }
         KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
@@ -1600,6 +1624,46 @@ mod tests {
         assert_eq!(session.input(), "first\nsecond");
         assert_eq!(session.status, Status::Idle, "the newline started a turn");
         assert!(session.transcript.is_empty(), "the newline sent something");
+    }
+
+    /// The bug this exists for: a terminal that cannot report the modifier on Enter is configured
+    /// to send `\n` for Shift-Enter instead, which arrives in raw mode as Ctrl-J. Unbound, the
+    /// keystroke did nothing at all, which is what iTerm and Terminal.app both showed.
+    #[test]
+    fn ctrl_j_starts_a_line_too() {
+        let mut session = typed_into("first");
+        assert_eq!(handle_key(&mut session, ctrl('j')), Action::Redraw);
+        for c in "second".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(session.input(), "first\nsecond");
+        assert_eq!(session.status, Status::Idle, "the newline started a turn");
+    }
+
+    /// Whichever spelling arrives, sending is still Enter's alone.
+    #[test]
+    fn ctrl_j_is_not_swallowed_while_a_turn_runs() {
+        let mut session = typed_into("go");
+        handle_key(&mut session, key(KeyCode::Enter));
+        handle_key_while_working(&mut session, key(KeyCode::Char('a')));
+
+        assert_eq!(
+            handle_key_while_working(&mut session, ctrl('j')),
+            Action::Redraw,
+            "the control guard swallowed the newline"
+        );
+        assert_eq!(session.input(), "a\n");
+    }
+
+    /// Ctrl-M is Enter itself, so binding it would take sending away.
+    #[test]
+    fn only_ctrl_j_starts_a_line() {
+        assert!(starts_a_line(ctrl('j')));
+        assert!(starts_a_line(shift(KeyCode::Enter)));
+        assert!(!starts_a_line(ctrl('m')));
+        assert!(!starts_a_line(key(KeyCode::Enter)));
+        assert!(!starts_a_line(key(KeyCode::Char('j'))));
     }
 
     /// The newline lands at the caret like any other keystroke, not at the end of the line.
