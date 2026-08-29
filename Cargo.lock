@@ -280,6 +280,7 @@ dependencies = [
 name = "bravebot-agent"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bravebot-aichat",
  "bravebot-config",
  "bravebot-core",

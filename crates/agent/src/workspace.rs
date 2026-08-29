@@ -12,6 +12,7 @@
 //! the routing label stops content from *supplying* a path, while confinement stops a
 //! trusted-but-wrong path from escaping the project.
 
+use base64::Engine;
 use bravebot_core::capability::Capability;
 use bravebot_core::event::{Role, Sink};
 use bravebot_core::label::Label;
@@ -19,6 +20,13 @@ use bravebot_core::policy::{Denial, Policy};
 use bravebot_core::value::Labelled;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+
+/// The most an attachment may weigh.
+///
+/// The whole thing goes into the request and is re-sent on every later round, so this bounds a
+/// growing cost rather than a single one. Generous enough for a screenshot or a scanned page,
+/// which is what people attach.
+pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum WorkspaceError {
@@ -34,6 +42,8 @@ pub enum WorkspaceError {
     Stale { path: String },
     /// The file is not text, so there is nothing useful to return.
     Binary { path: String },
+    /// The attachment is larger than a request should carry.
+    TooLarge { path: String, limit: usize },
 }
 
 impl fmt::Display for WorkspaceError {
@@ -53,6 +63,11 @@ impl fmt::Display for WorkspaceError {
             Self::Binary { path } => {
                 write!(f, "'{path}' is a binary file, so it cannot be read as text")
             }
+            Self::TooLarge { path, limit } => write!(
+                f,
+                "'{path}' is larger than the {} MiB an attachment may be",
+                limit / (1024 * 1024)
+            ),
         }
     }
 }
@@ -285,6 +300,66 @@ impl Workspace {
         })?;
 
         Ok(Labelled::new(contents, label))
+    }
+
+    /// Read a file the user attached, as a `data:` URI.
+    ///
+    /// The one read here that does not refuse a binary file, because a binary file is the point:
+    /// an attachment is a screenshot or a PDF, and [`Workspace::read`] answers `Binary` for both.
+    /// What comes back is still a `String`, so it needs no new content type in the kernel and
+    /// carries a label like anything else.
+    ///
+    /// `media` is the type to name in the URI. It comes from the interface's own table of
+    /// extensions, never from the file's bytes: sniffing content to decide how to describe it
+    /// would be a decision derived from the very bytes nobody has vouched for.
+    ///
+    /// Every gate [`Workspace::read`] passes, in the same order and for the same reasons. The path
+    /// is routing, so it must be `(T,pub)`; the contents are the user's data, so their integrity
+    /// comes from the trust map.
+    ///
+    /// Capped, unlike `read`. The whole file goes into the request and is re-sent on every later
+    /// round, so an attachment nobody bounded is a cost multiplier that grows with the
+    /// conversation. The cap is named in the error, since "it failed" leaves a user resizing an
+    /// image by guesswork.
+    pub fn read_attachment<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        media: &str,
+    ) -> Result<Labelled<String>, WorkspaceError> {
+        policy.before_capability(Capability::FileRead)?;
+        policy.before_action("file_read", "path", Role::Routing, path)?;
+
+        // Safe to read: before_action just proved this is (T,pub).
+        let relative = path
+            .clone()
+            .into_trusted()
+            .map_err(|_| WorkspaceError::Invalid {
+                path: "<untrusted>".into(),
+                reason: "the path was not trusted",
+            })?;
+
+        let resolved = self.resolve(&relative)?;
+        let label = policy.observe_path(Capability::FileRead, &relative)?;
+
+        let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
+            path: relative.clone(),
+            detail: e.to_string(),
+        })?;
+
+        if raw.len() > MAX_ATTACHMENT_BYTES {
+            return Err(WorkspaceError::TooLarge {
+                path: relative,
+                limit: MAX_ATTACHMENT_BYTES,
+            });
+        }
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+
+        Ok(Labelled::new(
+            format!("data:{media};base64,{encoded}"),
+            label,
+        ))
     }
 
     /// Read a bounded window of a file's lines, for the model.

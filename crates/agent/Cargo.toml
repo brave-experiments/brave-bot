@@ -13,6 +13,8 @@ bravebot-config = { path = "../config" }
 bravebot-core = { path = "../core" }
 bravebot-net = { path = "../net" }
 bravebot-skus = { path = "../skus" }
+# An attachment reaches the endpoint as a data URI, which is base64 by specification.
+base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

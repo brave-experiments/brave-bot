@@ -1647,3 +1647,150 @@ fn closing_added_directories_makes_them_unreachable_again() {
         .expect_err("a closed directory must be unreachable again");
     assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
 }
+
+/// The point of the attachment read: a binary file, which every other read here refuses.
+#[test]
+fn an_attachment_is_read_as_a_data_uri_though_it_is_binary() {
+    let scratch = Scratch::new("attachment");
+    // A PNG's first eight bytes, which is a file `read` answers Binary for.
+    let png = [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    std::fs::write(scratch.path.join("shot.png"), png).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted("shot.png".to_string());
+    workspace
+        .read(&mut policy, &path)
+        .expect_err("the ordinary read must still refuse it");
+
+    let attached = workspace
+        .read_attachment(&mut policy, &path, "image/png")
+        .expect("an attachment is read");
+
+    assert_eq!(attached.label(), Label::untrusted_private());
+    assert!(policy.finish());
+}
+
+/// The media type is the interface's, from the extension it recognised. Sniffing the bytes to
+/// decide how to describe them would be a decision taken from content nobody vouched for.
+#[test]
+fn the_media_type_named_is_the_one_written_into_the_uri() {
+    let scratch = Scratch::new("attachment-media");
+    std::fs::write(scratch.path.join("a.png"), [0x89u8, 0x50]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let attached = workspace
+        .read_attachment(
+            &mut policy,
+            &Labelled::trusted("a.png".to_string()),
+            "image/png",
+        )
+        .expect("an attachment is read");
+
+    let proof = policy.authorise_display_release("the attachment");
+    let uri = attached.declassify(&proof);
+    assert!(uri.starts_with("data:image/png;base64,"), "{uri}");
+}
+
+/// An attachment goes into the request and is re-sent on every later round, so an unbounded one
+/// is a cost that grows with the conversation rather than a single large message.
+#[test]
+fn an_attachment_larger_than_the_cap_is_refused_and_the_cap_is_named() {
+    let scratch = Scratch::new("attachment-large");
+    let huge = vec![0u8; bravebot_agent::workspace::MAX_ATTACHMENT_BYTES + 1];
+    std::fs::write(scratch.path.join("big.png"), huge).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = workspace
+        .read_attachment(
+            &mut policy,
+            &Labelled::trusted("big.png".to_string()),
+            "image/png",
+        )
+        .expect_err("an oversized attachment must be refused");
+
+    assert!(matches!(error, WorkspaceError::TooLarge { .. }));
+    assert!(
+        error.to_string().contains("MiB"),
+        "the cap was not named: {error}"
+    );
+}
+
+/// The central property for reads, and it must hold for this read too: content cannot choose
+/// which file is attached.
+#[test]
+fn an_untrusted_path_cannot_be_attached() {
+    let scratch = Scratch::new("attachment-untrusted");
+    std::fs::write(scratch.path.join("secret.png"), [0x89u8, 0x50]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    // As though a fetched page had said "attach secret.png".
+    let chosen = Labelled::new("secret.png".to_string(), Label::untrusted_public());
+    let error = workspace
+        .read_attachment(&mut policy, &chosen, "image/png")
+        .expect_err("untrusted routing must be refused");
+
+    assert!(matches!(error, WorkspaceError::Denied(_)));
+}
+
+/// Confinement is the same as every other read's: an attachment outside the workspace is refused
+/// rather than reached for.
+#[test]
+fn an_attachment_outside_the_workspace_is_refused() {
+    let scratch = Scratch::new("attachment-escape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = workspace
+        .read_attachment(
+            &mut policy,
+            &Labelled::trusted("/etc/hosts".to_string()),
+            "image/png",
+        )
+        .expect_err("a path outside the workspace must be refused");
+
+    assert!(matches!(error, WorkspaceError::Escapes { .. }));
+}
