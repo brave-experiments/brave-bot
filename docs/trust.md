@@ -83,6 +83,26 @@ A rule on a file is more specific than any rule on the tree around it, so `@vend
 inside a `vendor` you marked untrusted. Nothing beside it is: naming one file says nothing about its
 siblings, and the rest of the directory stays exactly as it was.
 
+## Dropping a file on the window
+
+Dropping a file works the same way and is trusted for the same reason: you picked that one file and
+letting the line go is the grant. A recognised type becomes a marker in the box, `[Image #1]`, and
+the file goes with the line. Images and PDFs are carried as bytes, so the model looks at them; text
+files become context exactly as `@` does. A type nothing here takes, a `.dmg` say, has its path
+written out instead, which is what dropping a file did before any of this existed.
+
+Be as careful about it as about `@`. A screenshot someone sent you is content you have not read and
+are vouching for, and it goes into the turn as trusted input.
+
+Deleting the marker takes the attachment off. That is the only way to change your mind, and it is
+why the marker is there rather than a list you cannot edit.
+
+One thing to expect: a drop hands over an absolute path, and absolute paths resolve only inside the
+workspace or a directory you opened with `/add-dir`. Most drops come from `~/Downloads` or
+`~/Desktop`, so most of them write out their path rather than attaching. Open the directory and drop
+it again. That is the confinement doing its job, not a fault: attaching from anywhere on the disk
+would be a hole in the one boundary every other read here respects.
+
 `/status` lists the rules, so what a line vouched for can be read back rather than remembered.
 
 A directory is somewhere to type through rather than a file to read, so naming one includes nothing.

@@ -280,7 +280,7 @@ pub fn draw(frame: &mut Frame, session: &Session) {
         .height
         .saturating_sub(input_height + 1)
         .saturating_sub(1);
-    let offered_height = (session.offered_count() as u16).min(room);
+    let offered_height = (session.rows_beneath_the_box() as u16).min(room);
 
     let areas = Layout::default()
         .direction(Direction::Vertical)
@@ -666,6 +666,46 @@ fn command_word(command: &crate::app::Command) -> String {
     }
 }
 
+/// What is attached to the line being typed, one per row.
+///
+/// The marker as it appears in the line, then the path it stands for. The path is shown because
+/// the marker is deliberately short and a user about to send a file should be able to see which
+/// file it is: `[Image #1]` alone is not enough to tell a screenshot from a private key.
+///
+/// A filename is content, and this is content reaching a screen rather than a model. It is the
+/// user's own drop being read back to them, so nothing here is a decision and nothing is labelled.
+fn attached_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
+    session
+        .attached()
+        .iter()
+        .map(|attached| {
+            let lead = format!("  {} ", attached.marker);
+            let room = (width as usize).saturating_sub(lead.chars().count());
+            Line::from(vec![
+                Span::styled(lead, Style::default().fg(Color::Cyan)),
+                Span::styled(printable(&tail_of(&attached.shown, room)), dim()),
+            ])
+        })
+        .collect()
+}
+
+/// A path shortened from the left, keeping as much of the end as will fit.
+///
+/// From the left because the end is the part that identifies the file. Cutting the other way is
+/// what a plain truncation does, and it leaves every attachment in a deep directory reading as the
+/// same long prefix with the filename gone, which is the one thing the row exists to show.
+fn tail_of(path: &str, room: usize) -> String {
+    let characters: Vec<char> = path.chars().collect();
+    if characters.len() <= room || room == 0 {
+        return path.to_string();
+    }
+
+    // One column for the ellipsis that says something was cut.
+    let kept = room.saturating_sub(1);
+    let tail: String = characters[characters.len() - kept..].iter().collect();
+    format!("…{tail}")
+}
+
 /// What the half-typed line could still become, one per row.
 ///
 /// Commands or files, never a mixture, because the line can only be being typed towards one of
@@ -673,11 +713,17 @@ fn command_word(command: &crate::app::Command) -> String {
 /// filenames are read out of the directory to show a person which files are in it, never to decide
 /// anything and never reaching a model from here.
 fn draw_offered(frame: &mut Frame, area: Rect, session: &Session, offered: &crate::state::Offered) {
-    let lines = match offered {
-        crate::state::Offered::Nothing => return,
+    // Attachments first: they are a fact about the line, while what is offered is a guess about
+    // where it is going, and the fact belongs nearer the box.
+    let mut lines = attached_lines(session, area.width);
+    lines.extend(match offered {
+        crate::state::Offered::Nothing => Vec::new(),
         crate::state::Offered::Commands(commands) => command_lines(session, commands),
         crate::state::Offered::Files(entries) => entry_lines(session, entries),
-    };
+    });
+    if lines.is_empty() {
+        return;
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -970,6 +1016,47 @@ mod tests {
                 .count();
             assert_eq!(blanks, 1, "the prompt's own blank line is the only one");
         }
+    }
+
+    /// The end of a path is the part that names the file, so a row too narrow for the whole thing
+    /// keeps the end. Cutting the other way leaves every attachment in a deep directory reading as
+    /// the same prefix with the filename gone, which is the one thing the row exists to show.
+    #[test]
+    fn a_path_too_long_for_its_row_keeps_the_end_of_it() {
+        let path = "/very/deeply/nested/directory/screenshot.png";
+        let shown = tail_of(path, 20);
+        assert!(shown.chars().count() <= 20, "{shown}");
+        assert!(shown.ends_with("screenshot.png"), "{shown}");
+        assert!(shown.starts_with('…'), "nothing said it was cut: {shown}");
+    }
+
+    #[test]
+    fn a_path_that_fits_is_left_alone() {
+        assert_eq!(tail_of("/tmp/a.png", 40), "/tmp/a.png");
+    }
+
+    /// A user about to send a file should be able to see which file: `[Image #1]` alone does not
+    /// tell a screenshot from a private key.
+    #[test]
+    fn an_attached_file_is_named_under_the_box() {
+        let directory = std::env::temp_dir().join("bravebot-render-attached");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch");
+        std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
+
+        let mut session = Session::new("none")
+            .in_workspace(&directory)
+            .reaching(crate::dropped::Reach::of(&directory, &[]));
+        session.drop_files(&directory.join("shot.png").to_string_lossy());
+
+        let output = rendered(&session);
+        assert!(output.contains("[Image #1]"), "no marker drawn: {output}");
+        assert!(
+            output.contains("shot.png"),
+            "the file was not named: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

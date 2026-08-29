@@ -197,6 +197,18 @@ pub enum Offered {
     Files(Vec<crate::entries::Entry>),
 }
 
+/// A file dropped on the box, and the marker standing for it in the line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attached {
+    /// What the user sees in the line, such as `[Image #1]`.
+    pub marker: String,
+    /// The name to give the task, already checked against what the workspace can open.
+    pub name: String,
+    /// The path as the user's filesystem names it, for showing them what they attached.
+    pub shown: String,
+    pub kind: crate::dropped::Kind,
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -303,6 +315,24 @@ pub struct Session {
     /// whatever happened to be in the process's working directory. The real session names it with
     /// [`Session::in_workspace`].
     workspace: std::path::PathBuf,
+    /// What a dropped file has to be inside for a turn to open it.
+    reach: crate::dropped::Reach,
+    /// Files dropped on the box, by the marker standing for each in the line.
+    ///
+    /// Kept until the line is sent, and read back out of the line at that point rather than sent
+    /// wholesale: deleting a marker is how a user takes an attachment off, and it has to be, since
+    /// the marker is the only thing they can see to delete.
+    attached: Vec<Attached>,
+    /// The attachments the line carried when it was sent.
+    ///
+    /// Settled by [`Session::submit`], because that is the moment the line stops changing, and
+    /// read by the caller building the task after the box has already been cleared.
+    sent: Vec<Attached>,
+    /// How many attachments this session has made, so a marker is never reused.
+    ///
+    /// Counts up rather than indexing the list. Renumbering the rest when one is deleted would
+    /// change the marker sitting in the line the user is looking at.
+    attachments_made: usize,
 }
 
 impl Session {
@@ -332,6 +362,10 @@ impl Session {
             model: None,
             completion: 0,
             workspace: std::path::PathBuf::new(),
+            reach: crate::dropped::Reach::nowhere(),
+            attached: Vec::new(),
+            sent: Vec::new(),
+            attachments_made: 0,
         }
     }
 
@@ -342,6 +376,20 @@ impl Session {
     pub fn in_workspace(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = root.into();
         self
+    }
+
+    /// What a dropped file has to be inside for a turn to be able to open it.
+    ///
+    /// Separate from [`Session::in_workspace`] because the set includes the directories opened
+    /// with `/add-dir`, which change during a session while the root does not.
+    pub fn reaching(mut self, reach: crate::dropped::Reach) -> Self {
+        self.reach = reach;
+        self
+    }
+
+    /// Update what is reachable, after `/add-dir` opened something.
+    pub fn now_reaching(&mut self, reach: crate::dropped::Reach) {
+        self.reach = reach;
     }
 
     /// Load history from disk and keep writing to it.
@@ -922,6 +970,15 @@ impl Session {
         }
     }
 
+    /// Rows drawn beneath the box: what is attached, then what is offered.
+    ///
+    /// Separate from [`Session::offered_count`], which bounds the completion cursor and must stay
+    /// a count of the offered list alone. Folding attachments into that would let the cursor walk
+    /// off the end of what it is choosing between.
+    pub fn rows_beneath_the_box(&self) -> usize {
+        self.attached.len() + self.offered_count()
+    }
+
     /// Move down what is offered, stopping at the end.
     pub fn next_completion(&mut self) {
         let last = self.offered_count().saturating_sub(1);
@@ -1063,6 +1120,75 @@ impl Session {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         self.input.insert_str(self.caret, &text);
         self.caret += text.len();
+    }
+
+    /// Take a paste that turned out to be a drop, or say it was not one.
+    ///
+    /// A recognised file becomes a marker in the line and an attachment behind it. Anything else,
+    /// an unsupported type or a file the workspace cannot open, has its path written out, which is
+    /// what dropping a file did before any of this existed.
+    ///
+    /// Returns whether the text was a drop at all. A paste that was not one is left to
+    /// [`Session::paste`], untouched.
+    pub fn drop_files(&mut self, text: &str) -> bool {
+        let exists = |path: &str| std::path::Path::new(path).is_file();
+        if !crate::dropped::is_drop(text, exists) {
+            return false;
+        }
+
+        let taken = crate::dropped::dropped_with(text, exists);
+        let mut written = Vec::new();
+
+        for path in crate::dropped::paths(text) {
+            match taken
+                .iter()
+                .find(|found| found.path == path)
+                .and_then(|found| self.reach.nameable(&found.path).map(|name| (found, name)))
+            {
+                Some((found, name)) => {
+                    self.attachments_made += 1;
+                    let marker = format!("[{} #{}]", found.noun(), self.attachments_made);
+                    self.attached.push(Attached {
+                        marker: marker.clone(),
+                        name,
+                        shown: found.path.clone(),
+                        kind: found.kind,
+                    });
+                    written.push(marker);
+                }
+                // Out of reach, or a type nothing here takes. The path is what a drop always
+                // produced, and it is still useful: the user can read it and say what they meant.
+                None => written.push(path),
+            }
+        }
+
+        // A trailing space, which is what a terminal does when a file is dropped into a shell:
+        // whatever is typed next, or dropped next, does not run into the marker.
+        self.paste(&format!("{} ", written.join(" ")));
+        true
+    }
+
+    /// The attachments the line still names, in the order they appear in it.
+    ///
+    /// Read back out of the line rather than taken wholesale, so deleting a marker takes its
+    /// attachment off. That is the only way a user has to change their mind, since the marker is
+    /// the only part of it they can see.
+    pub fn attachments_named(&self, line: &str) -> Vec<Attached> {
+        self.attached
+            .iter()
+            .filter(|attached| line.contains(&attached.marker))
+            .cloned()
+            .collect()
+    }
+
+    /// What is currently attached, for drawing under the box.
+    pub fn attached(&self) -> &[Attached] {
+        &self.attached
+    }
+
+    /// What the line carried when it was sent, for the task being built from it.
+    pub fn sent_attachments(&self) -> &[Attached] {
+        &self.sent
     }
 
     /// Delete the character before the caret, or leave shell mode where there is nothing left to
@@ -1253,6 +1379,10 @@ impl Session {
         if prompt.is_empty() {
             return None;
         }
+        // Settled here, from the line as it was sent. Everything still named goes; a marker the
+        // user deleted is an attachment they took off, and it goes nowhere.
+        self.sent = self.attachments_named(&prompt);
+        self.attached.clear();
         self.set_input(String::new());
         self.history.push(prompt.clone());
         if self.persist {

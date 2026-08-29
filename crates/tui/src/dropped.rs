@@ -12,7 +12,7 @@
 //! Nothing here decides anything from the contents of a file. It reads names, which the user is
 //! about to see on their own screen, and asks the filesystem whether they exist.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What a dropped file is, and therefore what happens to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +232,18 @@ pub fn dropped_with(text: &str, exists: impl Fn(&str) -> bool) -> Vec<Dropped> {
         .collect()
 }
 
-/// The paths a paste names, whether or not each is a type we take.
+/// The paths a drop names, in the order they were dropped, whatever their type.
+///
+/// The caller needs the whole list, not just the attachable ones: an unsupported file has its path
+/// written out where its marker would have gone, so the order has to survive.
+pub fn paths(text: &str) -> Vec<String> {
+    tokenise(text)
+        .iter()
+        .map(|token| unwrap_uri(token))
+        .collect()
+}
+
+/// Whether a paste is a drop at all, whether or not each file is a type we take.
 ///
 /// Separate from [`dropped_with`] because the caller needs to know a drop happened even when
 /// nothing in it was attachable: that is the case where the path is written out.
@@ -510,5 +521,61 @@ mod tests {
     fn an_empty_paste_is_not_a_drop() {
         assert!(dropped_with("", all).is_empty());
         assert!(dropped_with("   ", all).is_empty());
+    }
+}
+
+/// Where a dropped file has to be for a turn to be able to open it.
+///
+/// A drop hands over an absolute path, usually from `~/Downloads` or `~/Desktop`, and a turn
+/// resolves paths against the workspace: relative ones under the root, absolute ones only inside a
+/// directory the user opened with `/add-dir`. So a drop from anywhere else names a file the turn
+/// would refuse, and the honest thing is to say so at the moment of the drop rather than to accept
+/// it and fail a turn later.
+///
+/// This is the confinement working, not a gap in it. `/add-dir` is how a person widens it, and it
+/// is a thing they do deliberately.
+#[derive(Debug, Clone, Default)]
+pub struct Reach {
+    root: Option<PathBuf>,
+    added: Vec<PathBuf>,
+}
+
+impl Reach {
+    /// What the workspace can currently open.
+    pub fn of(root: &Path, added: &[PathBuf]) -> Self {
+        Self {
+            root: root
+                .canonicalize()
+                .ok()
+                .or_else(|| Some(root.to_path_buf())),
+            added: added.to_vec(),
+        }
+    }
+
+    /// Nothing is reachable, which is what a session with no workspace has.
+    pub fn nowhere() -> Self {
+        Self::default()
+    }
+
+    /// The name to give a task for this path, or `None` when a turn could not open it.
+    ///
+    /// Relative under the root, because that is the only form the workspace resolves against it.
+    /// Absolute inside an added directory, because that is the only form it resolves there.
+    pub fn nameable(&self, path: &str) -> Option<String> {
+        let canonical = Path::new(path).canonicalize().ok()?;
+
+        if let Some(relative) = self
+            .root
+            .as_ref()
+            .and_then(|root| canonical.strip_prefix(root).ok())
+        {
+            return Some(relative.to_string_lossy().to_string());
+        }
+
+        if self.added.iter().any(|dir| canonical.starts_with(dir)) {
+            return Some(canonical.to_string_lossy().to_string());
+        }
+
+        None
     }
 }

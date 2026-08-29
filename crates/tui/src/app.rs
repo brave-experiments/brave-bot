@@ -489,7 +489,11 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
 /// terminal for it separately: the text lands in the box and the user decides when to send it.
 /// It never submits, whatever it ends with.
 pub fn handle_paste(session: &mut Session, text: &str) -> Action {
-    session.paste(text);
+    // A drop reaches the terminal as a paste of the path, so this is where one is recognised.
+    // Anything that is not a drop is an ordinary paste and lands in the box unchanged.
+    if !session.drop_files(text) {
+        session.paste(text);
+    }
     Action::Redraw
 }
 
@@ -730,7 +734,11 @@ fn event_loop(
     // The one place persistence is turned on: history in ~/.bravebot outlives the session.
     let mut session = Session::new(confinement)
         .with_stored_history()
-        .in_workspace(workspace.root());
+        .in_workspace(workspace.root())
+        .reaching(crate::dropped::Reach::of(
+            workspace.root(),
+            workspace.added_directories(),
+        ));
 
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
@@ -977,6 +985,12 @@ fn add_directory(
         Ok(added) => {
             let shown = added.display().to_string();
             trust.trust(&shown);
+            // A drop from the new directory can be attached from here on, which is the whole
+            // reason someone opens one.
+            session.now_reaching(crate::dropped::Reach::of(
+                workspace.root(),
+                workspace.added_directories(),
+            ));
             session.note(format!("added {shown}, and trusting it for this session"));
         }
         Err(error) => session.note(format!("could not add {directory}: {error}")),
@@ -1214,6 +1228,15 @@ fn run_turn_animated(
         .with_model(session.model().map(str::to_string));
     for file in crate::entries::referenced(prompt) {
         task = task.with_file(file);
+    }
+    // Dropped files, read back out of the line the same way and for the same reason: a marker the
+    // user deleted is an attachment they took off.
+    for attached in session.sent_attachments().to_vec() {
+        task = match attached.kind {
+            crate::dropped::Kind::Attachment(media) => task.with_attachment(attached.name, media),
+            // A text file is context, which is what `@` and `--file` already do with one.
+            crate::dropped::Kind::Text => task.with_file(attached.name),
+        };
     }
     let task = task;
     // Kept so a failed turn does not lose the user's decisions. Both of them: a run approved
