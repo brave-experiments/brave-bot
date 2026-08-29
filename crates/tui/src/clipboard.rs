@@ -153,77 +153,48 @@ pub fn holds_an_image() -> bool {
 mod platform {
     use super::run_text;
 
-    /// The pasteboard offers a coercion to PNG for anything it holds as a picture, so one flavour
-    /// covers screenshots, browsers, and image editors alike. AppleScript hands it back as hex
-    /// inside a wrapper, which is the price of there being no `pbpaste` for pictures.
+    /// Read the pasteboard through AppKit rather than through AppleScript's own clipboard.
+    ///
+    /// Both go by way of `osascript`, whose startup costs a few tens of milliseconds and is not
+    /// the problem. `the clipboard as «class PNGf»` is: it materialises the picture into an
+    /// AppleScript value before anything can be done with it, and for a screenshot that alone runs
+    /// to the better part of half a second, which is long enough to feel as lag on the keypress.
+    /// The bridge asks the pasteboard for its own bytes, so what is left to pay for is the read.
+    ///
+    /// Base64 rather than the hex AppleScript hands back: it is what `NSData` already offers, it
+    /// is two thirds of the characters, and a stray byte in it fails the decode rather than
+    /// silently producing a different picture.
+    const SCRIPT: &str = "ObjC.import('AppKit'); \
+                          const d = $.NSPasteboard.generalPasteboard.dataForType('public.png'); \
+                          d.isNil() ? '' : $.NSString.alloc.initWithDataEncoding(\
+                          d.base64EncodedDataWithOptions(0), $.NSUTF8StringEncoding).js";
+
     pub fn image() -> Option<(&'static str, Vec<u8>)> {
-        let script = "the clipboard as «class PNGf»";
-        let wrapped = run_text("osascript", &["-e", script])?;
-        let hex = wrapped
-            .trim()
-            .strip_prefix("«data PNGf")?
-            .strip_suffix('»')?;
-        Some(("image/png", from_hex(hex)?))
+        use base64::Engine;
+        let encoded = run_text("osascript", &["-l", "JavaScript", "-e", SCRIPT])?;
+        // Half a picture is worse than none: it would be sent, rejected by the endpoint, and
+        // reported as a fault of the request rather than of the read that truncated it.
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()?;
+        (!bytes.is_empty()).then_some(("image/png", bytes))
     }
 
-    /// Asked about the one flavour that matters rather than for the whole list, because sizing a
-    /// flavour materialises it: a clipboard holding a screenshot offers the same picture eight ways,
-    /// and asking what is on it costs the better part of a second. Asking about PNG alone is under a
-    /// tenth of that, which is what makes this affordable on a focus change.
+    /// Asked about the one flavour that matters, and only about whether it is on offer.
+    ///
+    /// Reading the list of types the pasteboard advertises never materialises what is behind one,
+    /// which is what makes this affordable on a focus change. The older way of asking, through
+    /// AppleScript's `clipboard info`, priced a yes-or-no question at the size of the picture.
+    const PROBE: &str = "ObjC.import('AppKit'); \
+                         $.NSPasteboard.generalPasteboard.types.containsObject('public.png') \
+                         ? 'yes' : 'no'";
+
     pub fn has_image() -> bool {
-        run_text("osascript", &["-e", "clipboard info for «class PNGf»"])
-            .is_some_and(|info| info.contains("«class PNGf»"))
+        run_text("osascript", &["-l", "JavaScript", "-e", PROBE])
+            .is_some_and(|offered| offered.trim() == "yes")
     }
 
     pub const TEXT_TOOLS: &[(&str, &[&str])] = &[("pbpaste", &[])];
-
-    /// Bytes back out of the hex AppleScript writes them as.
-    ///
-    /// An odd length or a stray character means the wrapper was not what this expected, and half a
-    /// picture is worse than none, so the whole thing is dropped rather than truncated.
-    fn from_hex(hex: &str) -> Option<Vec<u8>> {
-        if !hex.len().is_multiple_of(2) {
-            return None;
-        }
-        hex.as_bytes()
-            .chunks(2)
-            .map(|pair| {
-                let digits = std::str::from_utf8(pair).ok()?;
-                u8::from_str_radix(digits, 16).ok()
-            })
-            .collect()
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        /// The wrapper is the only thing standing between AppleScript's hex and a PNG, so the
-        /// first bytes of one have to come back exactly.
-        #[test]
-        fn the_hex_applescript_writes_comes_back_as_bytes() {
-            assert_eq!(
-                from_hex("89504E470D0A1A0A"),
-                Some(vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-            );
-        }
-
-        /// Half a picture is worse than none: it would be sent, rejected by the endpoint, and
-        /// reported as a fault of the request rather than of the read that truncated it.
-        #[test]
-        fn a_wrapper_that_is_not_what_was_expected_yields_no_picture() {
-            assert_eq!(
-                from_hex("89504E470D0A1A0"),
-                None,
-                "an odd length was accepted"
-            );
-            assert_eq!(
-                from_hex("89504E47zzzz1A0A"),
-                None,
-                "a stray character was accepted"
-            );
-        }
-    }
 }
 
 #[cfg(target_os = "windows")]
