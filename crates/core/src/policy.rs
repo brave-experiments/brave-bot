@@ -689,6 +689,35 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Labelled::new(text, label)
     }
 
+    /// Record an image the user pasted at their own keyboard.
+    ///
+    /// A paste is a keystroke, and nobody steers a keystroke. That is the provenance
+    /// [`Policy::label_user_command_output`] rests on, and it puts a pasted image on exactly the
+    /// footing of the prompt it arrives with: the user's own input, the one thing this whole
+    /// arrangement takes as trusted, and the reason a planner is ever shown anything at all.
+    ///
+    /// So there is no label to hand back, and nothing to refuse. An image goes into the user's own
+    /// message, next to the words, and the words were never labelled either. What this is instead
+    /// is the record that it happened, because the audit trail is where a session's inputs are
+    /// accounted for and a picture arriving in the context without a line of its own would be the
+    /// one input nothing mentions.
+    ///
+    /// The honest caveat is the one shell mode carries, and it is no smaller for being visual: a
+    /// screenshot of a hostile page puts a stranger's words in the planner's context as though the
+    /// user had typed them, exactly as `! cat something-hostile.md` does. Nothing here inspects the
+    /// pixels and nothing could. What justifies it is that the user chose what to copy, can see on
+    /// their own screen what they pasted, and is the party this serves.
+    ///
+    /// This must only ever be reached from a paste a human asked for. Never point it at bytes a
+    /// tool read, at anything a processor produced, or at an image named in model output: each of
+    /// those is content, and this would launder it.
+    pub fn admit_pasted_image(&mut self, media_type: &str, bytes: usize) {
+        self.allow(
+            "provenance",
+            format!("a {media_type} of {bytes} bytes, pasted by the user at their own keyboard"),
+        );
+    }
+
     /// Transform content without exposing it, keeping its label.
     ///
     /// A tool often needs to reshape what it read, joining lines or adding a truncation notice, before
@@ -4266,6 +4295,41 @@ mod tests {
             "the provenance decision left no trace: {:?}",
             sink.events()
         );
+    }
+
+    /// A picture is an input like any other, and an input the trail does not mention is one
+    /// nobody reading a session back can account for. It is also the input least likely to be
+    /// remembered, since the words that came with it are all the transcript shows.
+    #[test]
+    fn a_pasted_image_is_recorded_in_the_audit_trail() {
+        let mut sink = RecordingSink::new();
+        {
+            let mut policy = policy_trusting(&mut sink, &[]);
+            policy.admit_pasted_image("image/png", 4096);
+        }
+
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed { gate: "provenance", detail }
+                    if detail.contains("image/png") && detail.contains("pasted by the user")
+            )),
+            "the provenance decision left no trace: {:?}",
+            sink.events()
+        );
+    }
+
+    /// A paste is the user's own input, so it says nothing about content the planner has met and
+    /// must not be mistaken for something the context observed. Lowering integrity here would
+    /// have a screenshot mark everything the planner then said as untrusted.
+    #[test]
+    fn a_pasted_image_does_not_lower_what_the_context_has_met() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &[]);
+
+        policy.admit_pasted_image("image/png", 4096);
+
+        assert_eq!(policy.context_integrity(), Integrity::Trusted);
     }
 
     /// Context integrity must not recover, or a trusted read after an untrusted one would
