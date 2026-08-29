@@ -440,3 +440,39 @@ responsibility for what it prints.* If you would not press `a` for it, do not ru
 ask the agent to `run` it instead, and its output will be quarantined.
 
 The agent has no shell and cannot get one. Shell mode is a thing **you** have.
+
+## Pasting a picture
+
+Ctrl-V pastes whatever is on your clipboard, including a screenshot:
+
+```
+> why does [Image #1] render like that?
+```
+
+The marker is written where the caret is, and the picture goes wherever that text goes. Delete the
+marker and the picture is not sent; recall an older prompt and none of them follow it, because the
+markers went with the line. Nothing is hidden: what you are about to send is what the prompt says.
+
+**Ctrl-V, not Command-V.** Command-V is your terminal's chord and it never reaches bravebot at all.
+The byte stream over a pty has no encoding for that modifier, and what the terminal does instead is
+write the clipboard's *text* into the pty, which is why a picture silently arrives as nothing. Ctrl-V
+comes through as a byte bravebot can read, so it goes around the terminal and reads the clipboard
+itself. Command-V is still the right key for text.
+
+When the clipboard has a picture on it, the prompt says so, and where a terminal sends an empty paste
+for Command-V that is read as the picture you meant.
+
+A picture wins over text when the clipboard holds both, which is common: copying an image in a
+browser leaves the page's URL behind as the text. Text has another key; a picture has only this one.
+
+On macOS this reads the pasteboard through `osascript`. On Linux it needs `wl-paste` or `xclip`,
+which are the same tools copying already uses. Anything over 10 MB is refused rather than sent.
+
+**A pasted picture is trusted, exactly as your prompt is**, and the honest cost is shell mode's. A
+screenshot of a hostile page puts a stranger's words into the planner's context as though you had
+typed them, and nothing inspects the pixels to catch that. What justifies it is that you chose what
+to copy and can see what you pasted. If you would not paste the text of a page into your prompt, do
+not paste a picture of it either.
+
+Every paste is named in the audit trail, with its type and size, so `--trace` and Ctrl-T account for
+the pictures as well as the words.

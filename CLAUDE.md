@@ -391,6 +391,39 @@ stage can read nothing the label does not account for. It is a proof about a pro
 a person taking responsibility for one, and the two must not be merged. It remains unwired: issue
 #3 is still open.
 
+## What the user pastes
+
+A **picture** reaches the planner as a picture, because there is nothing else it could reach it as:
+a processor takes text slots and returns text, and a reference to an image is of no use to anyone.
+So a pasted image goes into the user's own message, next to the words, on exactly the footing of the
+prompt it arrives with. `Policy::admit_pasted_image` records that and asserts nothing else.
+
+It is the same provenance `label_user_command_output` rests on, and it carries the same honest cost,
+which docs/tools.md states plainly: a screenshot of a hostile page puts a stranger's words in the
+context as though the user had typed them. Nothing inspects the pixels and nothing could. What
+justifies it is that the user chose what to copy, can see on their own screen what they pasted, and
+is the party this serves.
+
+The rules it lives under, none of which may be relaxed:
+
+- **Only a picture a human pasted.** Never bytes a tool read, never anything a processor produced,
+  never an image a path in model output named. Each of those is content, and routing it here would
+  launder it. The justification cannot be checked from the bytes, so it lives at the call site:
+  today that is the TUI's Ctrl-V and nothing else.
+- **The media type is the driver's, never the content's.** It ends up in the data URL, where it is
+  routing, so it comes from a fixed set `bravebot-tui::clipboard` owns and never from a filename or
+  from what a tool printed.
+- **The picture is inlined, never linked.** A URL would have the endpoint fetch it over a connection
+  this process never makes, which is an egress `bravebot-net` could not gate.
+- **A paste does not lower context integrity.** It says nothing about content the planner has met.
+  Lowering it here would have a screenshot mark everything the planner then wrote as untrusted, on
+  the strength of the user's own input.
+
+Reading the clipboard at all is the TUI going around the terminal, and the reason is mechanical
+rather than a preference: Command-V never reaches this process, and the terminal's own paste can
+carry only text. That is presentation-layer plumbing and holds no labels. See the module
+documentation in `bravebot-tui::clipboard`.
+
 ## Committing
 
 **`make check` must pass before every commit.** Not after it, not in the next one, and not

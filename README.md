@@ -46,6 +46,11 @@ a newline for the chord. In iTerm2 that is Settings, Keys, Key Bindings: add Shi
 choose "Send Text" with `\n`. Terminal.app is Settings, Profiles, Keyboard. Ctrl-J does the same
 thing everywhere and needs no configuration at all.
 
+Ctrl-V pastes, and is the key to use for a screenshot: Command-V is your terminal's own chord,
+never reaches bravebot, and can only carry text, so a picture pasted with it silently arrives as
+nothing. A pasted picture appears in the prompt as `[Image #1]`, and deleting the marker takes it
+back. See [docs/tools.md](docs/tools.md) for what that means for trust.
+
 In a session: the mouse wheel scrolls, as do Up/Down and the page keys once the prompt has
 nowhere left to move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
 audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back what you
