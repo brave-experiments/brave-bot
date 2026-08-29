@@ -268,6 +268,13 @@ pub struct Session {
     pub selection: Option<crate::select::Selection>,
     /// How much the last copy took, until the next thing happens.
     pub copied: Option<usize>,
+    /// Whether there was a picture on the clipboard when it was last looked at.
+    ///
+    /// Only ever a hint on screen, so a stale answer costs a line that is briefly wrong and nothing
+    /// else. Looked at when the terminal regains focus, which is when somebody has just been
+    /// somewhere else copying something, and cleared by a paste, since carrying on saying it after
+    /// the picture is in the prompt is nagging.
+    pub image_on_clipboard: bool,
     /// Tokens the model has written during the turn in flight.
     ///
     /// Reset when a turn starts, since it measures the reply being written now. The session total
@@ -379,6 +386,7 @@ impl Session {
             history: crate::history::History::new(),
             selection: None,
             copied: None,
+            image_on_clipboard: false,
             written: 0,
             todos: Vec::new(),
             phase: None,

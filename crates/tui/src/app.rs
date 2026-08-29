@@ -20,10 +20,10 @@ use bravebot_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -502,7 +502,27 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
 /// A paste is one act rather than a run of keys, which is the whole point of asking the
 /// terminal for it separately: the text lands in the box and the user decides when to send it.
 /// It never submits, whatever it ends with.
+/// Answer a paste the terminal delivered, which is what Command-V and the middle mouse button
+/// become by the time they reach this process.
+///
+/// A paste that arrives carrying nothing is the interesting one. It means the terminal wrote the
+/// bracketed-paste markers with nothing between them, which is what happens when the clipboard
+/// holds something with no text in it at all: a picture. The terminal has no way to send that down
+/// a pty and no way to say so either, so the empty paste is the whole of the signal, and the answer
+/// is to go and read the clipboard directly.
+///
+/// Said once per session and then not again, because a user who has been told which key carries a
+/// picture does not need telling every time they use the other one.
 pub fn handle_paste(session: &mut Session, text: &str) -> Action {
+    // A picture copied to the clipboard reaches a terminal as a paste of nothing at all, since
+    // the terminal hands over text and there is none. Said before anything else looks at the
+    // text, because an empty paste is no more a drop than it is a prompt.
+    if text.is_empty() {
+        session.note_once(
+            "that paste arrived empty: the terminal hands over text only, so a picture needs ctrl-v",
+        );
+        return Action::Paste;
+    }
     // A drop reaches the terminal as a paste of the path, so this is where one is recognised.
     // Anything that is not a drop is an ordinary paste and lands in the box unchanged.
     if !session.drop_files(text) {
@@ -517,6 +537,10 @@ pub fn handle_paste(session: &mut Session, text: &str) -> Action {
 /// argument so a test can say what the clipboard held.
 fn take_from_clipboard(session: &mut Session, pasted: crate::clipboard::Pasted) {
     use crate::clipboard::{MAX_IMAGE_BYTES, Pasted};
+
+    // Whatever the answer was, it is the current one, so the hint has served its purpose. It comes
+    // back at the next focus change if the picture is still there and still wanted.
+    session.image_on_clipboard = false;
 
     match pasted {
         Pasted::Image(image) => session.attach(image),
@@ -680,7 +704,11 @@ fn take_over_terminal<W: Write>(out: &mut W) -> io::Result<()> {
         out,
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableBracketedPaste
+        EnableBracketedPaste,
+        // Asked for so the clipboard can be looked at when the user comes back from copying
+        // something, which is the moment a picture appears on it and the only cheap moment to
+        // notice. Polling instead would spawn a clipboard tool every few frames forever.
+        EnableFocusChange
     )?;
 
     if enhanced_keys() {
@@ -708,6 +736,7 @@ fn hand_back_terminal<W: Write>(out: &mut W) -> io::Result<()> {
     execute!(
         out,
         DisableBracketedPaste,
+        DisableFocusChange,
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
@@ -861,6 +890,13 @@ fn event_loop(
             TermEvent::Key(key) => handle_key(&mut session, key),
             TermEvent::Mouse(mouse) => handle_mouse(&mut session, mouse),
             TermEvent::Paste(text) => handle_paste(&mut session, &text),
+            // Coming back from copying something is the moment a picture appears on the clipboard,
+            // and the cheapest moment to notice: once per switch away and back, rather than a
+            // clipboard tool spawned on a timer for the whole life of the session.
+            TermEvent::FocusGained => {
+                session.image_on_clipboard = crate::clipboard::holds_an_image();
+                Action::Redraw
+            }
             _ => Action::None,
         };
 
@@ -1576,6 +1612,44 @@ mod tests {
             );
         }
 
+        /// A paste that arrives carrying nothing is a Command-V the terminal could not answer: it
+        /// wrote the markers and found no text between them, which is what a clipboard holding
+        /// only a picture looks like from in here.
+        #[test]
+        fn an_empty_paste_goes_and_reads_the_clipboard_instead() {
+            let mut session = Session::new("kernel-enforced");
+            assert_eq!(handle_paste(&mut session, ""), Action::Paste);
+            assert!(
+                session.transcript[0].text.contains("ctrl-v"),
+                "the note did not name the key that works"
+            );
+        }
+
+        /// Said once and then not again: a user who has been told which key carries a picture does
+        /// not need telling every time they use the other one.
+        #[test]
+        fn which_key_carries_a_picture_is_said_once_per_session() {
+            let mut session = Session::new("kernel-enforced");
+            handle_paste(&mut session, "");
+            handle_paste(&mut session, "");
+            handle_paste(&mut session, "");
+
+            assert_eq!(session.transcript.len(), 1, "the note was repeated");
+        }
+
+        /// A paste that did carry text is an ordinary paste and must stay one, or every Command-V
+        /// of a paragraph would go and read the clipboard a second time.
+        #[test]
+        fn a_paste_that_carried_text_is_left_alone() {
+            let mut session = Session::new("kernel-enforced");
+            assert_eq!(handle_paste(&mut session, "some words"), Action::Redraw);
+            assert_eq!(session.input(), "some words");
+            assert!(
+                session.transcript.is_empty(),
+                "an ordinary paste said something"
+            );
+        }
+
         #[test]
         fn a_picture_off_the_clipboard_becomes_a_marker_in_the_line() {
             let mut session = Session::new("kernel-enforced");
@@ -1599,6 +1673,17 @@ mod tests {
                 "the size was not reported: {}",
                 session.transcript[0].text
             );
+        }
+
+        /// Carrying on saying it once the picture is in the prompt is nagging, and the answer is
+        /// stale in any case: the hint is about what a key would do, and the key has been pressed.
+        #[test]
+        fn a_paste_clears_the_hint_that_prompted_it() {
+            let mut session = Session::new("kernel-enforced");
+            session.image_on_clipboard = true;
+            take_from_clipboard(&mut session, picture(b"pixels".to_vec()));
+
+            assert!(!session.image_on_clipboard, "the hint outlived the paste");
         }
     }
 

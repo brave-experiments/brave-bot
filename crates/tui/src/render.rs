@@ -844,6 +844,22 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
             .alignment(Alignment::Right),
             area,
         );
+        return;
+    }
+
+    // Command-V cannot carry a picture and cannot say so: the chord never reaches this process, and
+    // what the terminal does with it is write the clipboard's text into the pty, of which a picture
+    // has none. So the only way anyone finds out which key does work is being told before they try
+    // the one that does not.
+    if session.image_on_clipboard {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "image on clipboard  ·  ctrl-v to paste  ",
+                Style::default().fg(Color::Cyan),
+            )))
+            .alignment(Alignment::Right),
+            area,
+        );
     }
 }
 
@@ -1107,6 +1123,33 @@ mod tests {
         assert!(
             rendered(&session).contains("106 chars to clipboard"),
             "the copy was not reported"
+        );
+    }
+
+    /// Nobody presses a chord nothing mentions, and Command-V is the one the fingers already know:
+    /// it reaches the terminal, not this process, and quietly drops the picture. Saying so before
+    /// they try it is the only moment that helps.
+    #[test]
+    fn a_picture_on_the_clipboard_says_which_key_carries_it() {
+        let mut session = Session::new("kernel-enforced");
+        session.image_on_clipboard = true;
+        let output = rendered(&session);
+        assert!(output.contains("image on clipboard"), "no hint shown");
+        assert!(output.contains("ctrl-v"), "the hint did not name the key");
+    }
+
+    /// One line, two things that want it. What a copy took is the answer to something the user did
+    /// a moment ago, and the hint is standing advice, so the answer wins.
+    #[test]
+    fn a_copy_is_reported_over_the_clipboard_hint() {
+        let mut session = Session::new("kernel-enforced");
+        session.image_on_clipboard = true;
+        session.copied = Some(12);
+        let output = rendered(&session);
+        assert!(output.contains("12 chars to clipboard"));
+        assert!(
+            !output.contains("image on clipboard"),
+            "both were drawn at once"
         );
     }
 
