@@ -267,9 +267,17 @@ fn diff_lines(changes: &[Change], untrusted: bool) -> Vec<Line<'static>> {
 
 /// Draw the whole interface.
 pub fn draw(frame: &mut Frame, session: &Session) {
+    // What is running sits above the box rather than in place of it, so the two are measured
+    // together: whatever the indicator takes is height the input no longer has.
+    let status_height = status_height(session, frame.area().height);
+
     // The input's height depends on how far the text wraps, so it is measured before the layout
     // rather than fixed: a fixed height is what made typing past the edge disappear.
-    let input_height = input_height(session, frame.area().width, frame.area().height);
+    let input_height = input_height(
+        session,
+        frame.area().width,
+        frame.area().height.saturating_sub(status_height),
+    );
 
     // Beneath the box while something is being typed towards, and gone otherwise. Measured rather
     // than reserved, so a session offering nothing gives the whole height to the transcript, and
@@ -278,6 +286,7 @@ pub fn draw(frame: &mut Frame, session: &Session) {
     let room = frame
         .area()
         .height
+        .saturating_sub(status_height)
         .saturating_sub(input_height + 1)
         .saturating_sub(1);
     let offered_height = (session.rows_beneath_the_box() as u16).min(room);
@@ -286,6 +295,7 @@ pub fn draw(frame: &mut Frame, session: &Session) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),                 // transcript
+            Constraint::Length(status_height),  // what is running
             Constraint::Length(input_height),   // input
             Constraint::Length(offered_height), // what is being offered
             Constraint::Length(1),              // hint line
@@ -293,9 +303,10 @@ pub fn draw(frame: &mut Frame, session: &Session) {
         .split(frame.area());
 
     draw_transcript(frame, areas[0], session);
-    draw_input(frame, areas[1], session);
-    draw_offered(frame, areas[2], session, &offered);
-    draw_hint(frame, areas[3], session);
+    draw_status(frame, areas[1], session);
+    draw_input(frame, areas[2], session);
+    draw_offered(frame, areas[3], session, &offered);
+    draw_hint(frame, areas[4], session);
 
     // Last, over everything: the selection is of the screen rather than of any one widget, and
     // the user swept it over whatever happened to be there.
@@ -493,24 +504,33 @@ fn input_text_width(total: u16) -> usize {
     (total as usize).saturating_sub(5).max(1)
 }
 
+/// Rows the indicator above the box needs, and the task list under it.
+///
+/// Zero when nothing is running. Bounded so a long list cannot take the transcript and the box
+/// with it: the point of showing what is happening is lost if the box it is happening above has
+/// been squeezed off the screen.
+fn status_height(session: &Session, height: u16) -> u16 {
+    // A row of transcript, three of box, and the hint line are what has to survive this.
+    let ceiling = (height as usize).saturating_sub(5).max(1);
+
+    match session.status {
+        // The indicator, and the task list beneath it if the turn kept one.
+        Status::Working => (1 + session.todos.len()).min(ceiling) as u16,
+        // A command spends no tokens and keeps no task list, so one line says everything.
+        Status::Running => 1,
+        Status::Idle | Status::Quitting => 0,
+    }
+}
+
 /// Rows the input box needs, borders included.
 ///
 /// Grows with the text up to [`wrap::MAX_ROWS`], and never takes so much of a short terminal that
-/// the transcript disappears.
+/// the transcript disappears. The box is measured the same way whatever the session is doing: a
+/// turn in flight does not take it away, because a person typing their next prompt has to be able
+/// to see what they are typing.
 fn input_height(session: &Session, width: u16, height: u16) -> u16 {
     // Leave at least one line of transcript and the hint line, whatever is in the box.
     let ceiling = (height as usize).saturating_sub(2).max(3);
-
-    // While a turn runs the box holds the indicator, and the task list beneath it if there is
-    // one, instead of the input.
-    if session.status == Status::Working {
-        return (3 + session.todos.len()).min(ceiling) as u16;
-    }
-
-    // A running command holds one line and keeps no task list.
-    if session.status == Status::Running {
-        return 3.min(ceiling) as u16;
-    }
 
     let rows = wrap::wrap(session.input(), input_text_width(width), session.caret())
         .rows
@@ -545,11 +565,17 @@ fn caret_spans(row: &str, at: usize, colour: Color) -> Vec<Span<'static>> {
     spans
 }
 
-fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
+/// Draw what is running, above the box.
+///
+/// Above rather than inside, because the box is still the user's: a turn takes as long as it takes
+/// and the next prompt is usually thought of during it, so the line being typed has to stay on
+/// screen. It was drawn over, and someone typing through a slow turn watched their words go
+/// nowhere, which is indistinguishable from an interface that has stopped responding.
+fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
     let working = session.status == Status::Working;
     let running = session.status == Status::Running;
 
-    let body = if running {
+    let indicator = if running {
         // Elapsed time and nothing else, because a command spends no tokens and reports no phase.
         // The clock is what a waiting user wants, and Escape is the other half of the answer.
         Line::from(vec![
@@ -577,69 +603,73 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
             None => Line::from(Span::styled("  waiting for the model…", dim())),
         }
     } else {
-        Line::from(Span::raw(""))
+        return;
     };
 
-    // Wrapping is computed here rather than left to `Paragraph`, because the cursor has to be
-    // placed after the last character and only an explicit wrap knows where that is.
-    let lines: Vec<Line> = if running {
-        // No task list: a command keeps none, and the box was measured for one line.
-        vec![body]
-    } else if working {
-        // The list sits under the indicator, so what is being worked on and what remains are read
-        // together. Trimmed to what the box was given rather than overflowing it.
-        let room = (area.height as usize).saturating_sub(3);
-        let mut lines = vec![body];
+    // The list sits under the indicator, so what is being worked on and what remains are read
+    // together. Trimmed to what this area was given rather than overflowing into the box below.
+    let room = (area.height as usize).saturating_sub(1);
+    let mut lines = vec![indicator];
+    if working {
         lines.extend(todo_lines(&session.todos).into_iter().take(room));
-        lines
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
+    let wrapped = wrap::wrap(
+        session.input(),
+        input_text_width(area.width),
+        session.caret(),
+    );
+    let visible = (area.height as usize).saturating_sub(2).max(1);
+    let (first, rows) = wrapped.window(visible);
+
+    // Shell mode is coloured throughout rather than only in the marker, because the whole line
+    // means something different: it goes to a shell instead of the model, and that is worth more
+    // than one character of distinction at the moment somebody presses Enter.
+    let colour = if session.shell {
+        Color::Magenta
     } else {
-        let wrapped = wrap::wrap(
-            session.input(),
-            input_text_width(area.width),
-            session.caret(),
-        );
-        let visible = (area.height as usize).saturating_sub(2).max(1);
-        let (first, rows) = wrapped.window(visible);
-
-        // Shell mode is coloured throughout rather than only in the marker, because the whole line
-        // means something different: it goes to a shell instead of the model, and that is worth more
-        // than one character of distinction at the moment somebody presses Enter.
-        let colour = if session.shell {
-            Color::Magenta
-        } else {
-            Color::Cyan
-        };
-
-        rows.iter()
-            .enumerate()
-            .map(|(offset, row)| {
-                let index = first + offset;
-                // Only the first row carries the prompt; continuations are indented to line up
-                // beneath it.
-                let lead = if index != 0 {
-                    "  "
-                } else if session.shell {
-                    "! "
-                } else {
-                    "> "
-                };
-                let mut spans = vec![Span::styled(lead, Style::default().fg(colour))];
-                if index == wrapped.cursor_row {
-                    spans.extend(caret_spans(row, wrapped.cursor_index, colour));
-                } else {
-                    spans.push(Span::raw(row.clone()));
-                }
-                Line::from(spans)
-            })
-            .collect()
+        Color::Cyan
     };
+
+    // Wrapping is computed above rather than left to `Paragraph`, because the cursor has to be
+    // placed after the last character and only an explicit wrap knows where that is.
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| {
+            let index = first + offset;
+            // Only the first row carries the prompt; continuations are indented to line up
+            // beneath it.
+            let lead = if index != 0 {
+                "  "
+            } else if session.shell {
+                "! "
+            } else {
+                "> "
+            };
+            let mut spans = vec![Span::styled(lead, Style::default().fg(colour))];
+            if index == wrapped.cursor_row {
+                spans.extend(caret_spans(row, wrapped.cursor_index, colour));
+            } else {
+                spans.push(Span::raw(row.clone()));
+            }
+            Line::from(spans)
+        })
+        .collect();
 
     // The position sits in the border while browsing, labelling the box without taking a row
     // away from the text.
+    //
+    // Dimmed while something is in flight. The line can be typed and edited then, but it cannot
+    // be sent, and the border is what says which of the two the box is currently good for.
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(if working {
+        .border_style(if session.status != Status::Idle {
             dim()
         } else if session.shell {
             Style::default().fg(Color::Magenta)
@@ -1845,13 +1875,52 @@ mod tests {
         );
     }
 
-    /// While a turn runs the box holds the indicator, so it stays one line regardless of what
-    /// was typed before.
+    /// The bug: the indicator was drawn in place of the box, so a prompt typed during a turn went
+    /// somewhere the person typing it could not see. The turn is slow and the next prompt is
+    /// thought of while it runs, so the box has to stay.
     #[test]
-    fn a_working_box_does_not_grow() {
-        let mut session = typed(&"word ".repeat(50));
-        session.submit();
-        assert_eq!(input_height(&session, 50, 24), 3);
+    fn a_prompt_typed_during_a_turn_is_visible() {
+        let mut session = typed("first");
+        session.submit().expect("submitted");
+        for c in "SECOND".chars() {
+            session.type_char(c);
+        }
+
+        let output = rendered_at(&session, 60, 16);
+        assert!(
+            output.contains("SECOND"),
+            "the line typed mid-turn was not drawn: {output}"
+        );
+        assert!(
+            output.contains("…"),
+            "the indicator went missing with the box: {output}"
+        );
+        assert!(
+            caret_cell(&session, 60, 16).is_some(),
+            "there is no caret to type at"
+        );
+    }
+
+    /// And it grows with the text like any other, since a paragraph can be written mid-turn.
+    #[test]
+    fn the_box_grows_mid_turn_too() {
+        let mut session = typed("first");
+        session.submit().expect("submitted");
+        let bare = input_height(&session, 50, 24);
+        for c in "word ".repeat(30).chars() {
+            session.type_char(c);
+        }
+
+        assert!(
+            input_height(&session, 50, 24) > bare,
+            "the box did not grow while a turn ran"
+        );
+    }
+
+    /// Nothing is running, so nothing is said about it and the whole height goes to the rest.
+    #[test]
+    fn an_idle_session_shows_no_indicator_row() {
+        assert_eq!(status_height(&typed("hi"), 24), 0);
     }
     /// The position belongs in the border, where it labels the box without costing a row.
     #[test]
@@ -1922,30 +1991,49 @@ mod tests {
             }
         }
 
-        /// The box has to grow, or the list would be drawn outside it or clipped away.
+        /// The indicator's area has to grow, or the list would be drawn over the box or clipped
+        /// away.
         #[test]
-        fn the_box_grows_to_hold_the_list() {
-            let bare = input_height(&working_with(Vec::new()), 60, 24);
-            let with_list = input_height(&working_with(three()), 60, 24);
+        fn the_indicator_area_grows_to_hold_the_list() {
+            let bare = status_height(&working_with(Vec::new()), 24);
+            let with_list = status_height(&working_with(three()), 24);
             assert_eq!(
                 with_list as usize,
                 bare as usize + 3,
-                "the box did not grow by one row per task"
+                "the area did not grow by one row per task"
             );
         }
 
-        /// A long list on a short terminal must not squeeze the transcript out entirely.
+        /// A long list on a short terminal must not squeeze the transcript and the box out
+        /// entirely: a list nobody can type underneath is worse than a shorter list.
         #[test]
-        fn a_long_list_leaves_room_for_the_transcript() {
+        fn a_long_list_leaves_room_for_the_box_and_the_transcript() {
             let many: Vec<_> = (0..40)
                 .map(|n| (format!("task {n}"), Status::Pending))
                 .collect();
             let borrowed: Vec<_> = many.iter().map(|(t, s)| (t.as_str(), *s)).collect();
+            let session = working_with(list(&borrowed));
             let height = 10;
-            let used = input_height(&working_with(list(&borrowed)), 60, height);
+            let status = status_height(&session, height);
+            let input = input_height(&session, 60, height - status);
             assert!(
-                used < height - 1,
-                "the list took {used} of {height} rows, leaving nothing for the transcript"
+                status + input < height - 1,
+                "the list and the box took {status} and {input} of {height} rows, leaving nothing for the transcript"
+            );
+        }
+
+        /// The box is still there under the list, and still takes what is typed into it.
+        #[test]
+        fn the_box_stays_beneath_the_list() {
+            let mut session = working_with(three());
+            for c in "MID".chars() {
+                session.type_char(c);
+            }
+
+            let output = rendered_at(&session, 60, 16);
+            assert!(
+                output.contains("MID"),
+                "the box was drawn over by the list: {output}"
             );
         }
 
