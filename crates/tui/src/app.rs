@@ -524,9 +524,10 @@ pub fn handle_paste(session: &mut Session, text: &str) -> Action {
         return Action::Paste;
     }
     // A drop reaches the terminal as a paste of the path, so this is where one is recognised.
-    // Anything that is not a drop is an ordinary paste and lands in the box unchanged.
+    // Anything that is not a drop is text the user pasted, which lands in the box whole or behind
+    // a marker depending on how much of the screen it was about to take.
     if !session.drop_files(text) {
-        session.paste(text);
+        session.paste_text(text);
     }
     Action::Redraw
 }
@@ -549,7 +550,7 @@ fn take_from_clipboard(session: &mut Session, pasted: crate::clipboard::Pasted) 
             session.note("a picture is not a command: leave shell mode to paste one")
         }
         Pasted::Image(image) => session.attach(image),
-        Pasted::Text(text) => session.paste(&text),
+        Pasted::Text(text) => session.paste_text(&text),
         Pasted::TooLarge(bytes) => session.note(format!(
             "that picture is {}, and a paste carries at most {}",
             in_megabytes(bytes),
@@ -1293,10 +1294,15 @@ fn run_turn_animated(
     // path and their keystroke is what vouches for it, exactly as `--file` does on the command
     // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
     // sent and the files that came with it cannot disagree.
-    let mut task = Task::new(prompt)
+    // A long paste sits in the line behind a marker, and this is where the marker is put back to
+    // the words it stands for. Folding one is a way of drawing a line, not a way of sending one:
+    // the planner is given what pasting into the box has always given it, and everything the user
+    // looks at keeps the short form.
+    let sent = session.unfolded(prompt);
+    let mut task = Task::new(&sent)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string));
-    for file in crate::entries::referenced(prompt) {
+    for file in crate::entries::referenced(&sent) {
         task = task.with_file(file);
     }
     // Dropped files, read back out of the line the same way and for the same reason: a marker the
@@ -1373,7 +1379,7 @@ fn run_turn_animated(
                 TermEvent::Key(key) => {
                     handle_key_while_working(session, key);
                 }
-                TermEvent::Paste(text) => session.paste(&text),
+                TermEvent::Paste(text) => session.paste_text(&text),
                 TermEvent::Mouse(mouse) => {
                     // Bound rather than tested inline, because handling the event scrolls and
                     // moves the selection whatever it returns. A match guard would hide that.

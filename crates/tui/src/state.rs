@@ -9,6 +9,31 @@ use bravebot_agent::report::{Activity, Landing, Phase, Shown};
 use bravebot_core::event::Event;
 use std::time::{Duration, Instant};
 
+/// How many newlines a paste carries before it is folded behind a marker.
+///
+/// Counted in newlines rather than in lines so that three lines with nothing after the last of
+/// them is the first paste to fold: the third newline is the point where the box was going to grow
+/// past what a prompt is meant to look like.
+const FOLD_AT_NEWLINES: usize = 3;
+
+/// Text with the line endings every clipboard uses turned into the one the box draws.
+fn normalised(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// How many lines a paste is, as a person reading it would count them.
+///
+/// A trailing newline ends the last line rather than starting another, so text copied with the end
+/// of its last line does not claim an empty line that nobody can see.
+fn lines_in(text: &str) -> usize {
+    let newlines = text.matches('\n').count();
+    if text.ends_with('\n') {
+        newlines
+    } else {
+        newlines + 1
+    }
+}
+
 /// Who produced a transcript entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Speaker {
@@ -227,6 +252,24 @@ pub struct AttachedImage {
     pub bytes: Vec<u8>,
 }
 
+/// A paragraph pasted into the line, standing behind the marker written in its place.
+///
+/// Several lines of text in the box push everything else off the screen, and what they push off is
+/// the reply the paste was about. So a paste of any length reads as one row, and the row says how
+/// many lines are behind it.
+///
+/// The marker is the handle, as it is for a picture, and it is the only part of this a user can
+/// see: deleting it is how the paste is taken back. Unlike a picture it is put back before the
+/// prompt is sent, because here the marker stands for the words themselves rather than for
+/// something travelling beside them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastedText {
+    /// The text standing for it in the line, as `[Pasted text #1 +12 lines]`.
+    pub marker: String,
+    /// What was pasted, with its line endings already normalised.
+    pub text: String,
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -316,6 +359,14 @@ pub struct Session {
     /// Settled by [`Session::submit`] alongside `sent`, and for the same reason: that is the
     /// moment the line stops changing.
     sent_pasted: Vec<AttachedImage>,
+    /// Paragraphs pasted into the line, each with the marker standing in for it.
+    ///
+    /// Kept for the life of the session rather than settled and cleared the way pictures are. A
+    /// marker with nothing behind it costs a picture and leaves the words; here the marker *is* the
+    /// words, so a prompt recalled out of the history with one in it would send the placeholder in
+    /// place of everything the user pasted, and they would have no way to tell. Numbers are never
+    /// reused, so a marker means one thing for as long as the session lasts.
+    pasted_text: Vec<PastedText>,
     /// Whether history is written to disk.
     ///
     /// Off by default so constructing a session does no I/O: a test would otherwise read and
@@ -394,6 +445,7 @@ impl Session {
             answers: Vec::new(),
             pasted: Vec::new(),
             sent_pasted: Vec::new(),
+            pasted_text: Vec::new(),
             persist: false,
             said: Vec::new(),
             started: None,
@@ -1140,9 +1192,59 @@ impl Session {
     /// and the box draws them.
     pub fn paste(&mut self, text: &str) {
         self.history.leave();
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = normalised(text);
         self.input.insert_str(self.caret, &text);
         self.caret += text.len();
+    }
+
+    /// Take text the user pasted, folding a long one behind a marker.
+    ///
+    /// [`Session::paste`] writes whatever it is given, which is what the markers themselves are
+    /// written with, so the folding lives here: a paste is the one thing that arrives long enough
+    /// to be worth hiding, and everything else that reaches the line is already a row or less.
+    ///
+    /// Long is counted in newlines rather than in rows the box would draw, because a wrapped line
+    /// is one line the user pasted and folding on the width would fold differently in a narrow
+    /// window. Two of them read fine in the box; the third is where a paste starts taking the
+    /// screen, so that is where it is put away.
+    ///
+    /// Shell mode is left alone, and has to be: the line there is the command, and a command that
+    /// is not what the user is looking at is the one thing that mode may never do.
+    pub fn paste_text(&mut self, text: &str) {
+        let text = normalised(text);
+        if self.shell || text.matches('\n').count() < FOLD_AT_NEWLINES {
+            self.paste(&text);
+            return;
+        }
+
+        // Numbered off the counter a dropped file and a pasted picture use, so no two markers in
+        // one line can carry the same number and a number is never reused.
+        self.attachments_made += 1;
+        let marker = format!(
+            "[Pasted text #{} +{} lines]",
+            self.attachments_made,
+            lines_in(&text)
+        );
+        self.paste(&marker);
+        self.pasted_text.push(PastedText { marker, text });
+    }
+
+    /// A line with every paste marker in it put back to the text it stands for.
+    ///
+    /// Every marker, not the ones a count says should be there: a user who deleted one meant to
+    /// drop that paste, and one who copied a marker to somewhere else in the line meant the words
+    /// twice.
+    ///
+    /// Called where the turn is built and nowhere else. The session keeps the folded line
+    /// throughout, so the box, the transcript, the history and a cancelled turn coming back all
+    /// say what the user was looking at, and only the thing that talks to the model is given the
+    /// words.
+    pub fn unfolded(&self, line: &str) -> String {
+        let mut line = line.to_string();
+        for pasted in &self.pasted_text {
+            line = line.replace(&pasted.marker, &pasted.text);
+        }
+        line
     }
 
     /// Take a paste that turned out to be a drop, or say it was not one.
@@ -1440,6 +1542,7 @@ impl Session {
     ///
     /// Clears the field and records the prompt in the transcript, so the display reflects
     /// the submission even before a reply arrives.
+    ///
     pub fn submit(&mut self) -> Option<String> {
         if self.status != Status::Idle {
             return None;
@@ -1822,6 +1925,139 @@ mod tests {
         let mut s = session();
         s.paste("first\r\nsecond\rthird\nfourth");
         assert_eq!(s.input, "first\nsecond\nthird\nfourth");
+    }
+
+    /// Three lines with nothing after the last of them read fine in the box, and the box is where
+    /// a user reads back what they are about to send. Folding there would put words somebody can
+    /// still see out of their reach for nothing.
+    #[test]
+    fn a_short_paste_lands_in_the_box_whole() {
+        let mut s = session();
+        s.paste_text("first\nsecond\nthird");
+        assert_eq!(s.input, "first\nsecond\nthird");
+    }
+
+    /// The third newline is where a paste starts taking the screen from the conversation it is
+    /// about, so that is where it is put away.
+    #[test]
+    fn the_third_newline_folds_a_paste_behind_a_marker() {
+        let mut s = session();
+        s.paste_text("first\nsecond\nthird\n");
+        assert_eq!(s.input, "[Pasted text #1 +3 lines]");
+    }
+
+    /// A trailing newline ends the last line rather than starting an empty one. A count claiming a
+    /// line nobody can see is a count nobody can check.
+    #[test]
+    fn a_folded_paste_counts_the_lines_a_person_would_count() {
+        let mut s = session();
+        s.paste_text("first\nsecond\nthird\nfourth");
+        assert_eq!(s.input, "[Pasted text #1 +4 lines]");
+    }
+
+    /// Line endings are settled before the lines are counted, so text copied out of a document
+    /// written on Windows folds at the same place as the same text copied from anywhere else.
+    #[test]
+    fn a_paste_folds_the_same_however_its_lines_were_written() {
+        let mut s = session();
+        s.paste_text("first\r\nsecond\r\nthird\r\n");
+        assert_eq!(s.input, "[Pasted text #1 +3 lines]");
+    }
+
+    /// The marker goes where the caret is and the rest of the line is left alone, because the
+    /// paste belongs to the sentence it was pasted into.
+    #[test]
+    fn a_folded_paste_leaves_the_words_around_it_alone() {
+        let mut s = session();
+        for c in "what is ".chars() {
+            s.type_char(c);
+        }
+        s.paste_text("one\ntwo\nthree\n");
+        for c in " about".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.input, "what is [Pasted text #1 +3 lines] about");
+    }
+
+    /// Folding is a way of drawing a long line, not a way of sending one: the planner is given
+    /// what pasting into the box has always given it.
+    #[test]
+    fn a_folded_paste_is_put_back_before_the_turn_is_built() {
+        let mut s = session();
+        for c in "what is ".chars() {
+            s.type_char(c);
+        }
+        s.paste_text("one\ntwo\nthree\n");
+
+        let prompt = s.submit().expect("submitted");
+        assert_eq!(prompt, "what is [Pasted text #1 +3 lines]");
+        assert_eq!(s.unfolded(&prompt), "what is one\ntwo\nthree\n");
+    }
+
+    /// Deleting the marker is the only way a user has to take a paste back, so it has to be the
+    /// whole of the way: the words must not follow a marker no longer in the line.
+    #[test]
+    fn deleting_the_marker_takes_the_paste_back() {
+        let mut s = session();
+        s.paste_text("one\ntwo\nthree\n");
+        for _ in 0.."[Pasted text #1 +3 lines]".len() {
+            s.backspace();
+        }
+        for c in "never mind".chars() {
+            s.type_char(c);
+        }
+
+        let prompt = s.submit().expect("submitted");
+        assert_eq!(s.unfolded(&prompt), "never mind");
+    }
+
+    /// A command runs exactly as it is written, so a paste into shell mode is never folded: a
+    /// line that is not what the user is looking at is the one thing that mode may never have.
+    #[test]
+    fn a_paste_into_a_command_line_is_never_folded() {
+        let mut s = session();
+        s.type_char('!');
+        s.paste_text("one\ntwo\nthree\n");
+
+        assert!(s.shell, "the paste left shell mode");
+        assert_eq!(s.input, "one\ntwo\nthree\n");
+    }
+
+    /// One counter for everything a line can carry, so no two markers in front of a user can be
+    /// numbered the same and a number always means one thing.
+    #[test]
+    fn a_paste_and_a_picture_never_share_a_number() {
+        let mut s = session();
+        s.attach(picture(b"pixels"));
+        s.paste_text("one\ntwo\nthree\n");
+
+        assert_eq!(s.input, "[Image #1][Pasted text #2 +3 lines]");
+    }
+
+    /// A prompt recalled out of the history comes back with its marker in it. A marker naming
+    /// nothing would send the placeholder in place of everything the user pasted, and there is
+    /// nothing on the screen that would tell them it had.
+    #[test]
+    fn a_recalled_prompt_still_names_what_was_pasted_into_it() {
+        let mut s = session();
+        s.paste_text("one\ntwo\nthree\n");
+        let first = s.submit().expect("submitted");
+        s.complete("three lines", Vec::new(), 0);
+
+        s.set_input(first);
+        let again = s.submit().expect("submitted");
+        assert_eq!(s.unfolded(&again), "one\ntwo\nthree\n");
+    }
+
+    /// A line with no marker in it is nobody's paste, and putting one back must not rewrite words
+    /// that were typed.
+    #[test]
+    fn a_line_that_names_no_paste_is_sent_as_it_was_typed() {
+        let s = session();
+        assert_eq!(
+            s.unfolded("[Pasted text #1 +3 lines]"),
+            "[Pasted text #1 +3 lines]"
+        );
     }
 
     /// A paste lands where typing does, so half a typed line plus a paste is one prompt.

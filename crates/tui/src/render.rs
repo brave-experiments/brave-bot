@@ -1103,6 +1103,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// The whole point of folding a paste is the screen: a stack trace in the box pushes off the
+    /// reply it was pasted to ask about, so the box shows the marker and none of the lines.
+    #[test]
+    fn a_folded_paste_keeps_its_lines_off_the_screen() {
+        let mut session = Session::new("none");
+        session.paste_text("first\nsecond\nthird\nfourth\n");
+
+        let output = rendered(&session);
+        assert!(
+            output.contains("[Pasted text #1 +4 lines]"),
+            "no marker drawn: {output}"
+        );
+        assert!(
+            !output.contains("second"),
+            "the paste took the screen: {output}"
+        );
+    }
+
     #[test]
     fn an_empty_session_shows_a_greeting_and_hint() {
         let session = Session::new("kernel-enforced");

@@ -51,6 +51,10 @@ never reaches bravebot, and can only carry text, so a picture pasted with it sil
 nothing. A pasted picture appears in the prompt as `[Image #1]`, and deleting the marker takes it
 back. See [docs/tools.md](docs/tools.md) for what that means for trust.
 
+Paste more than a couple of lines of text and it folds the same way, as
+`[Pasted text #2 +40 lines]`, so a stack trace does not push the reply you were reading off the
+screen. The words are still what gets sent; deleting the marker drops them.
+
 In a session: the mouse wheel scrolls, as do Up/Down and the page keys once the prompt has
 nowhere left to move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
 audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back what you

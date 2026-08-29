@@ -476,3 +476,31 @@ not paste a picture of it either.
 
 Every paste is named in the audit trail, with its type and size, so `--trace` and Ctrl-T account for
 the pictures as well as the words.
+
+## Pasting a paragraph
+
+Text pastes as it always has, and a long one folds:
+
+```
+> what is going on here? [Pasted text #2 +40 lines]
+```
+
+The fold starts at the third newline, so three lines with nothing after the last of them still land
+in the box whole and a stack trace does not push the reply you were reading off the screen. The
+count is the lines a person would count: a trailing newline ends the last line rather than starting
+an empty one.
+
+The marker behaves the way a picture's does. It goes where the caret is, it travels with the words
+it was pasted into, and deleting it drops the paste. Unlike a picture it is put back before the
+turn is built, because here the marker stands for the words themselves: the planner is given
+exactly what pasting into the box has always given it, and the box, the transcript and the history
+keep the short form. A turn you cancel comes back the way you were looking at it, marker and all.
+
+Nothing about trust changes, because nothing about what is sent changes. A pasted paragraph is your
+input and is trusted as your input, with the cost shell mode has: text copied from a hostile page is
+a stranger's words arriving as though you had typed them. Folding is about the screen, not about
+what the planner reads, so what you can no longer see is still what you are about to send. If you
+would not paste it into your prompt, do not paste it.
+
+A command line is never folded. In shell mode what runs has to be exactly what you are looking at,
+so a paste there lands whole however long it is.
