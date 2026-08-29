@@ -219,12 +219,12 @@ fn the_files_a_submitted_line_would_include() {
     let mut session = session(&scratch);
     typing(&mut session, "compare @src/main.rs with @README.md");
 
-    let prompt = match handle_key(&mut session, key(KeyCode::Enter)) {
-        Action::Submit(prompt) => prompt,
+    let sent = match handle_key(&mut session, key(KeyCode::Enter)) {
+        Action::Submit(sent) => sent,
         other => panic!("the line was not sent: {other:?}"),
     };
     assert_eq!(
-        bravebot_tui::entries::referenced(&prompt),
+        bravebot_tui::entries::referenced(&sent),
         vec!["src/main.rs".to_string(), "README.md".to_string()]
     );
 }

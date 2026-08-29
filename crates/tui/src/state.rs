@@ -209,6 +209,24 @@ pub struct Attached {
     pub kind: crate::dropped::Kind,
 }
 
+/// A picture pasted into the line being typed.
+///
+/// Separate from [`Attached`] because the two arrive by different routes and only one of them has
+/// a path: a dropped file is read out of the workspace, where the trust map has something to say
+/// about it, and a paste is bytes that never touched the filesystem. They share the marker
+/// numbering, and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachedImage {
+    /// The text standing for it in the prompt, as `[Image #1]`.
+    ///
+    /// Held rather than derived from a position, because the line is edited around it: the picture
+    /// belongs to the words the marker sits in, and finding it again by counting would go wrong the
+    /// first time somebody rewrote the sentence.
+    pub marker: String,
+    pub media_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -279,6 +297,18 @@ pub struct Session {
     /// interface rather than the kernel: it is a convenience for the person, not a rule about
     /// labels, and the key is trusted text by the time it reaches here.
     pub answers: Vec<(String, bravebot_core::ask::Answer)>,
+    /// Pictures pasted into the line being typed, each with the text standing in for it.
+    ///
+    /// The marker is the handle. A paste writes `[Image #1]` where the caret was and the picture
+    /// travels wherever that text travels, so deleting the marker is how a picture is taken back
+    /// and recalling an older prompt leaves none of them behind. Nothing here is pruned as the line
+    /// is edited: the line is the record, and this is read against it whenever the answer matters.
+    pasted: Vec<AttachedImage>,
+    /// The pictures the line carried when it was sent.
+    ///
+    /// Settled by [`Session::submit`] alongside `sent`, and for the same reason: that is the
+    /// moment the line stops changing.
+    sent_pasted: Vec<AttachedImage>,
     /// Whether history is written to disk.
     ///
     /// Off by default so constructing a session does no I/O: a test would otherwise read and
@@ -354,6 +384,8 @@ impl Session {
             phase: None,
             running: None,
             answers: Vec::new(),
+            pasted: Vec::new(),
+            sent_pasted: Vec::new(),
             persist: false,
             said: Vec::new(),
             started: None,
@@ -1175,6 +1207,48 @@ impl Session {
         &self.sent
     }
 
+    /// Attach a pasted picture, writing the text that stands for it where the caret is.
+    ///
+    /// The marker is what makes a picture something a person can see and edit. Without one the
+    /// prompt would say nothing about what came with it, and a user would be left counting pastes
+    /// to work out what the planner was about to be shown.
+    ///
+    /// Numbered off the same counter a dropped file uses, so a paste and a drop can never both
+    /// call themselves `[Image #1]`, and so a number is never reused: renumbering on a deletion
+    /// would change the marker sitting in the line the user is looking at.
+    pub fn attach(&mut self, image: crate::clipboard::Image) {
+        self.attachments_made += 1;
+        let marker = format!("[Image #{}]", self.attachments_made);
+        self.paste(&marker);
+        self.pasted.push(AttachedImage {
+            marker,
+            media_type: image.media_type,
+            bytes: image.bytes,
+        });
+    }
+
+    /// The pictures the line still names, in the order they appear in it.
+    ///
+    /// Read back out of the line for the reason [`Session::attachments_named`] is: deleting the
+    /// marker is the only way a user has to take a picture back off.
+    pub fn pasted_named(&self, line: &str) -> Vec<AttachedImage> {
+        self.pasted
+            .iter()
+            .filter(|pasted| line.contains(&pasted.marker))
+            .cloned()
+            .collect()
+    }
+
+    /// How many pictures the line being typed still refers to, for the line beneath the box.
+    pub fn pasted_count(&self) -> usize {
+        self.pasted_named(&self.input).len()
+    }
+
+    /// What the line carried when it was sent, for the task being built from it.
+    pub fn sent_pasted(&self) -> &[AttachedImage] {
+        &self.sent_pasted
+    }
+
     /// Delete the character before the caret, or leave shell mode where there is nothing left to
     /// delete.
     ///
@@ -1235,6 +1309,9 @@ impl Session {
         // and putting the old prompt over the top of them would lose the newer of the two.
         if self.input.trim().is_empty() {
             self.set_input(prompt);
+            // The pictures come back with the words. A line that returned without them would
+            // return carrying markers that name nothing, and the user has no way to tell.
+            self.pasted = std::mem::take(&mut self.sent_pasted);
         }
         // Discarded rather than kept: the prompt is going back into the box as though it had never
         // been sent, so a plan for a turn that is being un-sent has nothing to describe.
@@ -1364,9 +1441,13 @@ impl Session {
             return None;
         }
         // Settled here, from the line as it was sent. Everything still named goes; a marker the
-        // user deleted is an attachment they took off, and it goes nowhere.
+        // user deleted is an attachment they took off, and it goes nowhere. Pictures settle the
+        // same way and at the same moment, since a marker rubbed out means the same thing whether
+        // the thing behind it was dropped or pasted.
         self.sent = self.attachments_named(&prompt);
         self.attached.clear();
+        self.sent_pasted = self.pasted_named(&prompt);
+        self.pasted.clear();
         self.set_input(String::new());
         self.history.push(prompt.clone());
         if self.persist {
@@ -1607,6 +1688,124 @@ mod tests {
         assert_eq!(s.input, "h");
     }
 
+    fn picture(bytes: &[u8]) -> crate::clipboard::Image {
+        crate::clipboard::Image {
+            media_type: "image/png",
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    /// A picture has to leave a mark on the line, or the prompt says nothing about what is going
+    /// with it and a user is left counting their own pastes to work out what the planner will see.
+    #[test]
+    fn a_pasted_picture_writes_a_marker_where_the_caret_is() {
+        let mut s = session();
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        for c in " please".chars() {
+            s.type_char(c);
+        }
+
+        assert_eq!(s.input, "look at [Image #1] please");
+    }
+
+    /// The marker is the handle, so deleting it is how a picture is taken back. Without that a
+    /// paste would be final, and the only way out of one would be clearing the whole line.
+    #[test]
+    fn deleting_a_marker_takes_the_picture_back() {
+        let mut s = session();
+        s.attach(picture(b"pixels"));
+        for _ in 0.."[Image #1]".len() {
+            s.backspace();
+        }
+        for c in "never mind".chars() {
+            s.type_char(c);
+        }
+
+        let sent = s.submit().expect("submitted");
+        assert_eq!(sent, "never mind");
+        assert!(
+            s.sent_pasted().is_empty(),
+            "a picture nothing referred to was sent"
+        );
+    }
+
+    /// The pictures travel with the words they were pasted into, in the order the markers number
+    /// them, since a model reading "[Image #2]" has to be able to count to the one that answers it.
+    #[test]
+    fn a_submitted_prompt_carries_the_pictures_it_still_refers_to() {
+        let mut s = session();
+        s.attach(picture(b"first"));
+        s.attach(picture(b"second"));
+
+        let sent = s.submit().expect("submitted");
+        assert_eq!(sent, "[Image #1][Image #2]");
+        assert_eq!(
+            s.sent_pasted()
+                .iter()
+                .map(|i| i.bytes.clone())
+                .collect::<Vec<_>>(),
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+    }
+
+    /// A number is never used twice, even after the marker holding it is deleted. Reusing one
+    /// would renumber the marker sitting in the line the user is looking at, and the picture
+    /// behind it would quietly become a different picture.
+    #[test]
+    fn a_deleted_marker_does_not_free_its_number() {
+        let mut s = session();
+        s.attach(picture(b"first"));
+        for _ in 0.."[Image #1]".len() {
+            s.backspace();
+        }
+        s.attach(picture(b"second"));
+
+        assert_eq!(s.input, "[Image #2]");
+        s.submit().expect("submitted");
+        assert_eq!(
+            s.sent_pasted().len(),
+            1,
+            "the deleted picture was still attached"
+        );
+        assert_eq!(s.sent_pasted()[0].bytes, b"second".to_vec());
+    }
+
+    /// Recalling an older prompt replaces the line and every marker in it, so the pictures that
+    /// belonged to the line that went away must not follow the line that came back.
+    #[test]
+    fn a_recalled_prompt_does_not_bring_another_prompts_pictures() {
+        let mut s = session();
+        s.attach(picture(b"pixels"));
+        s.set_input("something else entirely");
+
+        s.submit().expect("submitted");
+        assert!(
+            s.sent_pasted().is_empty(),
+            "a picture followed a line it was never pasted into"
+        );
+    }
+
+    /// Cancelling puts the prompt back for editing, and a prompt that came back without its
+    /// pictures would come back with markers naming nothing, which the user could not see.
+    #[test]
+    fn a_cancelled_turn_gives_the_pictures_back_with_the_words() {
+        let mut s = session();
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        let sent = s.submit().expect("submitted");
+
+        s.restore(sent);
+
+        assert_eq!(s.input, "look at [Image #1]");
+        s.submit().expect("submitted");
+        assert_eq!(s.sent_pasted().len(), 1, "the picture did not come back");
+    }
+
     /// A pasted paragraph keeps its lines: it was written with them, and the box draws them.
     /// Line endings from anywhere land as the same thing, so text copied out of a document
     /// written on Windows does not arrive with the returns still in it.
@@ -1721,7 +1920,7 @@ mod tests {
         for c in "wait".chars() {
             s.type_char(c);
         }
-        s.restore(&prompt);
+        s.restore(prompt);
 
         assert_eq!(s.input, "wait", "the restored prompt overwrote the typing");
         assert_eq!(s.status, Status::Idle);

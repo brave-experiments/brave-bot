@@ -11,7 +11,7 @@
 
 use bravebot_agent::Workspace;
 use bravebot_agent::conversation::Conversation;
-use bravebot_agent::turn::{self, Task};
+use bravebot_agent::turn::{self, PastedImage, Task};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::programs::TrustedPrograms;
@@ -163,6 +163,9 @@ pub enum Action {
     None,
     Redraw,
     Submit(String),
+    /// Bring what is on the clipboard into the prompt. Runs the platform's clipboard tools, so
+    /// the loop does it rather than the key handler.
+    Paste,
     /// Stop the turn in flight.
     Cancel,
     /// Take what the selection covers, which needs the screen as it was last drawn.
@@ -273,6 +276,11 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.toggle_trail();
             Action::Redraw
         }
+        // The paste that can carry a picture. Command-V is the terminal's own, goes through the
+        // pty as text, and therefore drops everything that is not text; this one reads the
+        // clipboard directly. Readline's quoted-insert is what the chord costs, and nobody has
+        // ever wanted it here.
+        KeyCode::Char('v') if ctrl => Action::Paste,
         // The box can be moved around in now, but it is still capped at ten rows and has none of
         // what someone reaches for on a long prompt. A paragraph worth thinking about goes
         // somewhere with room instead.
@@ -454,6 +462,12 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         return Action::Redraw;
     }
 
+    // Before the modifier guard, since a line that can be typed mid-turn can be pasted into
+    // mid-turn: what is refused while a turn runs is sending, never writing.
+    if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::Paste;
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::None;
     }
@@ -495,6 +509,30 @@ pub fn handle_paste(session: &mut Session, text: &str) -> Action {
         session.paste(text);
     }
     Action::Redraw
+}
+
+/// Bring what is on the clipboard into the prompt.
+///
+/// Separated from the loop so it can be tested without a terminal, and taking the read as an
+/// argument so a test can say what the clipboard held.
+fn take_from_clipboard(session: &mut Session, pasted: crate::clipboard::Pasted) {
+    use crate::clipboard::{MAX_IMAGE_BYTES, Pasted};
+
+    match pasted {
+        Pasted::Image(image) => session.attach(image),
+        Pasted::Text(text) => session.paste(&text),
+        Pasted::TooLarge(bytes) => session.note(format!(
+            "that picture is {}, and a paste carries at most {}",
+            in_megabytes(bytes),
+            in_megabytes(MAX_IMAGE_BYTES)
+        )),
+        Pasted::Nothing => session.note("there is nothing on the clipboard to paste"),
+    }
+}
+
+/// A byte count as a person would say it, since nobody reads seven digits off a screen.
+fn in_megabytes(bytes: usize) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// Interpret a mouse event.
@@ -831,6 +869,7 @@ fn event_loop(
         match action {
             Action::Quit => return Ok(()),
             Action::Copy => copy_selection(terminal, &mut session)?,
+            Action::Paste => take_from_clipboard(&mut session, crate::clipboard::paste()),
             Action::Edit => {
                 edit_prompt(terminal, &mut session)?;
                 needs_draw = true;
@@ -1228,6 +1267,14 @@ fn run_turn_animated(
             crate::dropped::Kind::Text => task.with_file(attached.name),
         };
     }
+    // Pasted pictures, in the order the markers in the prompt number them. A model reading
+    // "[Image #2]" has to be able to count to the picture that answers it.
+    for image in session.sent_pasted() {
+        task = task.with_image(PastedImage {
+            media_type: image.media_type.to_string(),
+            bytes: image.bytes.clone(),
+        });
+    }
     let task = task;
     // Kept so a failed turn does not lose the user's decisions. Both of them: a run approved
     // "always" in a turn that then failed is still an answer the user gave.
@@ -1496,6 +1543,63 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    mod pasting {
+        use super::*;
+        use crate::clipboard::{Image, MAX_IMAGE_BYTES, Pasted};
+
+        fn picture(bytes: Vec<u8>) -> Pasted {
+            Pasted::Image(Image {
+                media_type: "image/png",
+                bytes,
+            })
+        }
+
+        /// The chord exists because Command-V cannot reach this process, so it has to be answered
+        /// where the keys are read rather than left to the terminal.
+        #[test]
+        fn ctrl_v_asks_for_the_clipboard_to_be_read() {
+            let mut session = Session::new("kernel-enforced");
+            assert_eq!(handle_key(&mut session, ctrl('v')), Action::Paste);
+        }
+
+        /// A line can be typed while a turn runs, so it can be pasted into while a turn runs. What
+        /// is refused mid-turn is sending, never writing.
+        #[test]
+        fn ctrl_v_reads_the_clipboard_during_a_turn_too() {
+            let mut session = Session::new("kernel-enforced");
+            session.status = Status::Working;
+            assert_eq!(
+                handle_key_while_working(&mut session, ctrl('v')),
+                Action::Paste
+            );
+        }
+
+        #[test]
+        fn a_picture_off_the_clipboard_becomes_a_marker_in_the_line() {
+            let mut session = Session::new("kernel-enforced");
+            take_from_clipboard(&mut session, picture(b"pixels".to_vec()));
+            assert_eq!(session.input(), "[Image #1]");
+        }
+
+        /// Refused rather than truncated, and with the size, because half a picture would be sent,
+        /// rejected by the endpoint, and reported as a fault of the request.
+        #[test]
+        fn a_picture_too_large_to_send_says_so_with_its_size() {
+            let mut session = Session::new("kernel-enforced");
+            take_from_clipboard(&mut session, Pasted::TooLarge(MAX_IMAGE_BYTES * 2));
+
+            assert!(
+                session.input().is_empty(),
+                "an oversized picture reached the line"
+            );
+            assert!(
+                session.transcript[0].text.contains("20.0 MB"),
+                "the size was not reported: {}",
+                session.transcript[0].text
+            );
+        }
     }
 
     fn shift(code: KeyCode) -> KeyEvent {
@@ -2062,7 +2166,7 @@ mod tests {
 
         // Mid-turn, which used to be the moment the mode could be armed unseen.
         handle_key_while_working(&mut session, key(KeyCode::Char('!')));
-        session.restore("rm the old builds");
+        session.restore("rm the old builds".to_string());
         session.clear_input();
 
         assert!(
@@ -2086,7 +2190,7 @@ mod tests {
         session.submit().expect("the prompt is sent");
         session.shell = true;
 
-        session.restore("some prompt");
+        session.restore("some prompt".to_string());
 
         assert!(!session.shell);
     }
