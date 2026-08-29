@@ -42,7 +42,8 @@ use bravebot_core::cancel::Cancel;
 use std::fmt;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a pipeline may run before it is given up on.
@@ -50,10 +51,22 @@ use std::time::{Duration, Instant};
 /// A program that never terminates would otherwise hold the turn open with nothing to show for
 /// it. Generous, because a build or a test run is a reasonable thing to ask for and a limit that
 /// cuts those off is worse than no limit for the user who was waiting.
+///
+/// Reaching it is not an error. What the stages printed before they were killed comes back the
+/// same way it does from a pipeline that ended by itself, marked with [`Ran::stopped`].
 pub const LIMIT: Duration = Duration::from_secs(300);
 
 /// How often the wait loop looks up to see whether it should stop.
 const TICK: Duration = Duration::from_millis(50);
+
+/// How long the drain threads are given to reach the end of their pipe, once the stages are done.
+///
+/// They are waited on rather than joined, because a stage can leave a child holding the write end
+/// of the pipe. `sh -c 'echo hi; sleep 30'` is enough: killing the shell leaves `sleep` holding
+/// the same descriptor, so the pipe never reaches end-of-file and a joining thread waits on a
+/// process nobody is waiting for. Whatever was read by the time the grace runs out is kept, which
+/// is what makes the wait safe to abandon.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// What running a pipeline produced.
 ///
@@ -72,6 +85,16 @@ pub struct Ran {
     pub stderr: String,
     /// The exit code of each stage, in order. `None` where a stage was killed by a signal.
     pub codes: Vec<Option<i32>>,
+    /// How long the pipeline had run when the limit ran out and it was killed, or `None` if every
+    /// stage exited on its own.
+    ///
+    /// A pipeline that outstays the limit is stopped, but it is not a pipeline that did not run:
+    /// a server asked to serve a page serves it for five minutes and prints as it goes. Reporting
+    /// only the failure threw that away and left the caller unable to tell a program that hung
+    /// from one that was working exactly as asked. So the output is collected either way and the
+    /// distinction is carried here, where a caller can say which happened without reading a byte
+    /// of what was printed.
+    pub stopped: Option<Duration>,
 }
 
 impl Ran {
@@ -81,7 +104,10 @@ impl Ran {
     /// hides the case that matters most here: an early stage failing and a later one cheerfully
     /// processing the nothing it was handed.
     pub fn succeeded(&self) -> bool {
-        self.codes.iter().all(|code| *code == Some(0))
+        // A pipeline that had to be killed did not succeed, whatever its stages had managed to
+        // report by then. Stages still running have no code at all, so this would be false in
+        // most cases anyway; it is stated rather than relied on.
+        self.stopped.is_none() && self.codes.iter().all(|code| *code == Some(0))
     }
 
     /// The stages that did not succeed, as `1-indexed position, code`, for a short report.
@@ -102,8 +128,6 @@ pub enum ExecError {
     /// Carries the program name, which is safe to report: argv was endorsed by a person, so it is
     /// not content an attacker chose.
     NotStarted { program: String, detail: String },
-    /// The pipeline was still running when the limit ran out, and has been killed.
-    TookTooLong { after: Duration },
     /// The user asked the turn to stop while this was running, and it has been killed.
     Cancelled,
     /// The plumbing itself failed: a pipe that could not be created or read.
@@ -116,11 +140,6 @@ impl fmt::Display for ExecError {
             Self::NotStarted { program, detail } => {
                 write!(f, "'{program}' could not be started: {detail}")
             }
-            Self::TookTooLong { after } => write!(
-                f,
-                "still running after {} seconds, so it was stopped",
-                after.as_secs()
-            ),
             Self::Cancelled => f.write_str("stopped because the turn was cancelled"),
             Self::Io(detail) => write!(f, "the pipeline could not be run: {detail}"),
         }
@@ -139,6 +158,21 @@ pub fn run(
     resolved: &[std::path::PathBuf],
     directory: &std::path::Path,
     cancel: &Cancel,
+) -> Result<Ran, ExecError> {
+    run_within(pipeline, resolved, directory, cancel, LIMIT)
+}
+
+/// [`run`], with the limit named rather than taken from [`LIMIT`].
+///
+/// Exists so the stopping behaviour can be tested: a test that had to wait out the real limit to
+/// see what a killed pipeline returns would take five minutes, and one nobody runs proves nothing.
+/// Callers in the product use [`run`], so there is one limit in force and it is the documented one.
+pub fn run_within(
+    pipeline: &Pipeline,
+    resolved: &[std::path::PathBuf],
+    directory: &std::path::Path,
+    cancel: &Cancel,
+    limit: Duration,
 ) -> Result<Ran, ExecError> {
     if pipeline.is_empty() {
         return Err(ExecError::Io("no stages to run".to_string()));
@@ -206,44 +240,22 @@ pub fn run(
     // Drained on threads of their own, for the same reason the stages are chained by descriptor: a
     // stage that writes more to stderr than a pipe holds would block forever if nobody were
     // reading while we waited for it to exit.
-    let mut draining = Vec::with_capacity(children.len());
+    let mut draining: Vec<Drain> = Vec::with_capacity(children.len());
     for child in &mut children {
-        let (tx, rx) = mpsc::channel();
-        if let Some(mut err) = child.stderr.take() {
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                // A stage printing bytes that are not UTF-8 is not a failure of the run, so the
-                // text is taken lossily rather than discarded.
-                let mut raw = Vec::new();
-                let read = err.read_to_end(&mut raw);
-                if read.is_ok() {
-                    text = String::from_utf8_lossy(&raw).into_owned();
-                }
-                let _ = tx.send(text);
-            });
+        if let Some(err) = child.stderr.take() {
+            draining.push(Drain::reading(err));
         }
-        draining.push(rx);
     }
 
     // Read on a thread of its own, started before the wait, so the last stage's output is being
     // collected while it is still being written. Waiting first and reading afterwards would
     // deadlock as soon as a program produced more than a pipe buffer holds.
-    let tail = tail_out.map(|mut out| {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut raw = Vec::new();
-            let text = match out.read_to_end(&mut raw) {
-                Ok(_) => String::from_utf8_lossy(&raw).into_owned(),
-                Err(_) => String::new(),
-            };
-            let _ = tx.send(text);
-        });
-        rx
-    });
+    let tail = tail_out.map(Drain::reading);
 
     let started = Instant::now();
     let mut codes = vec![None; children.len()];
     let mut finished = vec![false; children.len()];
+    let mut stopped = None;
 
     loop {
         for (index, child) in children.iter_mut().enumerate() {
@@ -272,21 +284,32 @@ pub fn run(
             return Err(ExecError::Cancelled);
         }
         let waited = started.elapsed();
-        if waited >= LIMIT {
+        if waited >= limit {
+            // Killed, then collected like any other end: the stages are over either way, and the
+            // bytes they wrote before they were stopped are the only account of what happened.
             stop(&mut children);
-            return Err(ExecError::TookTooLong { after: waited });
+            stopped = Some(waited);
+            break;
         }
 
         std::thread::sleep(TICK);
     }
 
-    // Collected after the stages are done, so every byte they wrote has been sent. A drain thread
-    // that vanished contributes nothing rather than failing the run: the output is worth less than
-    // the fact that the program ran, and the exit codes already say how it went.
-    let stdout = tail.and_then(|rx| rx.recv().ok()).unwrap_or_default();
+    // Collected once the stages are over, whether they ended on their own or were killed. The
+    // usual case is that every pipe reached its end the moment the stage writing to it did, and
+    // the wait returns at once; the grace is there for the pipe something else is still holding,
+    // and what had been read by then is taken rather than lost.
+    let waiting = Instant::now();
+    while waiting.elapsed() < DRAIN_GRACE
+        && !(tail.as_ref().is_none_or(Drain::finished) && draining.iter().all(Drain::finished))
+    {
+        std::thread::sleep(TICK);
+    }
+
+    let stdout = tail.as_ref().map(Drain::text).unwrap_or_default();
     let stderr = draining
-        .into_iter()
-        .filter_map(|rx| rx.recv().ok())
+        .iter()
+        .map(Drain::text)
         .collect::<Vec<_>>()
         .concat();
 
@@ -294,7 +317,59 @@ pub fn run(
         stdout,
         stderr,
         codes,
+        stopped,
     })
+}
+
+/// A pipe being read on a thread of its own, and what has been read so far.
+///
+/// The bytes are shared rather than sent at the end, because the end may not come: the reader can
+/// be left on a pipe a killed stage's own child is still holding open. Anything that handed over
+/// its result only on completion would have nothing to hand over in exactly the case where what
+/// was printed matters most, which is the pipeline that had to be stopped.
+struct Drain {
+    read: Arc<Mutex<Vec<u8>>>,
+    done: Arc<AtomicBool>,
+}
+
+impl Drain {
+    /// Start reading `source` into a buffer the caller can look at at any time.
+    fn reading<R: Read + Send + 'static>(mut source: R) -> Self {
+        let read = Arc::new(Mutex::new(Vec::new()));
+        let done = Arc::new(AtomicBool::new(false));
+        let into = Arc::clone(&read);
+        let ended = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match source.read(&mut chunk) {
+                    // End of the pipe, or a pipe that can no longer be read. Either way there is
+                    // no more to come, and a read error is not a failure of the run.
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => into
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&chunk[..n]),
+                }
+            }
+            ended.store(true, Ordering::Release);
+        });
+        Self { read, done }
+    }
+
+    /// Whether the pipe has reached its end, so there is nothing further to wait for.
+    fn finished(&self) -> bool {
+        self.done.load(Ordering::Acquire)
+    }
+
+    /// What has been read so far.
+    ///
+    /// A stage printing bytes that are not UTF-8 is not a failure of the run, so the text is taken
+    /// lossily rather than discarded.
+    fn text(&self) -> String {
+        let read = self.read.lock().unwrap_or_else(|e| e.into_inner());
+        String::from_utf8_lossy(&read).into_owned()
+    }
 }
 
 /// Kill every stage and reap it, so nothing is left behind.
