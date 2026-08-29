@@ -190,7 +190,7 @@ fn what_a_command_printed_reaches_the_planners_context() {
     let said = conversation
         .messages()
         .iter()
-        .map(|m| m.content.clone())
+        .map(|m| m.content.text())
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
@@ -259,7 +259,7 @@ fn a_failing_commands_output_still_reaches_the_planner() {
     .expect("it is recorded");
 
     assert!(!recorded.succeeded);
-    let said = conversation.messages()[0].content.clone();
+    let said = conversation.messages()[0].content.text();
     assert!(said.contains("the-error"), "stderr was dropped: {said}");
     assert!(
         said.contains("exited 1"),
@@ -304,5 +304,10 @@ fn what_is_shown_is_what_the_gate_released() {
         shell::record("echo shown-and-said", &ran, &mut conversation, &mut sink).expect("recorded");
 
     assert!(recorded.text.contains("shown-and-said"));
-    assert!(conversation.messages()[0].content.contains(&recorded.text));
+    assert!(
+        conversation.messages()[0]
+            .content
+            .text()
+            .contains(&recorded.text)
+    );
 }

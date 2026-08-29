@@ -156,7 +156,10 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     let record = sessions::load(&scratch.project, &listed[0].id).expect("the session loads");
     let restored = Conversation::restored(record.conversation);
     assert_eq!(restored.len(), 2);
-    assert_eq!(restored.messages()[0].content, "make a space invaders game");
+    assert_eq!(
+        restored.messages()[0].content.text(),
+        "make a space invaders game"
+    );
 
     // The audit is beside it, one event per line, with both axes in words.
     let audit = sessions::project_directory(&scratch.project)

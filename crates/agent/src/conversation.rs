@@ -222,7 +222,11 @@ impl Conversation {
                 .messages
                 .iter()
                 .filter(|message| {
-                    !(message.role == Role::User && message.content.starts_with(RESUMED_PREFIX))
+                    !(message.role == Role::User
+                        && message
+                            .content
+                            .as_text()
+                            .is_some_and(|text| text.starts_with(RESUMED_PREFIX)))
                 })
                 .cloned()
                 .collect(),
@@ -287,16 +291,27 @@ impl Conversation {
         let mut said = Vec::new();
         for message in &self.messages {
             match message.role {
-                Role::User if message.content.starts_with(TOOL_RESULT_PREFIX) => {}
+                Role::User
+                    if message
+                        .content
+                        .as_text()
+                        .is_some_and(|text| text.starts_with(TOOL_RESULT_PREFIX)) => {}
                 // Addressed to the planner, not said by anyone. Drawn as a prompt it would look
                 // like something the user typed and never did.
-                Role::User if message.content.starts_with(RESUMED_PREFIX) => {}
-                Role::User => said.push(Said::User(message.content.clone())),
+                Role::User
+                    if message
+                        .content
+                        .as_text()
+                        .is_some_and(|text| text.starts_with(RESUMED_PREFIX)) => {}
+                // `text` rather than the whole content: an attachment is drawn from what the
+                // interface recorded about it, and a data URI in the scrollback is not a transcript.
+                Role::User => said.push(Said::User(message.content.text())),
                 Role::Assistant => {
                     // What the model said on its way to a call, which the live transcript shows
                     // above the call it introduces.
-                    if !message.content.trim().is_empty() {
-                        said.push(Said::Assistant(message.content.clone()));
+                    let spoken = message.content.text();
+                    if !spoken.trim().is_empty() {
+                        said.push(Said::Assistant(spoken));
                     }
                     for call in message.tool_calls.iter().flatten() {
                         said.push(Said::Tool(crate::tools::describe_stored_call(
@@ -362,8 +377,8 @@ mod tests {
 
         let sent = conversation.with_system("be careful");
         assert_eq!(sent.len(), 3);
-        assert_eq!(sent[0].content, "be careful");
-        assert_eq!(sent[1].content, "first");
+        assert_eq!(sent[0].content.text(), "be careful");
+        assert_eq!(sent[1].content.text(), "first");
         assert_eq!(conversation.len(), 2);
 
         // And again, with the same result rather than two system prompts.
@@ -412,7 +427,7 @@ mod tests {
         let sent = conversation.with_system("be careful");
         let answer = sent.last().expect("a message");
         assert_eq!(answer.tool_call_id.as_deref(), Some("call-1"));
-        assert!(answer.content.contains("did not run"));
+        assert!(answer.content.text().contains("did not run"));
     }
 
     /// And a call that was answered is not answered twice, which would read as the tool having
@@ -439,7 +454,7 @@ mod tests {
             .filter(|m| m.tool_call_id.as_deref() == Some("call-1"))
             .collect();
         assert_eq!(answers.len(), 1);
-        assert_eq!(answers[0].content, "wrote index.html");
+        assert_eq!(answers[0].content.text(), "wrote index.html");
     }
 
     /// A session that outlives the process has to come back as what it was, integrity included.
@@ -451,8 +466,8 @@ mod tests {
         let _ = conversation.next_reference();
 
         let restored = Conversation::restored(conversation.snapshot());
-        assert_eq!(restored.messages()[0].content, "what is 2 + 2?");
-        assert_eq!(restored.messages()[1].content, "four");
+        assert_eq!(restored.messages()[0].content.text(), "what is 2 + 2?");
+        assert_eq!(restored.messages()[1].content.text(), "four");
         assert_eq!(restored.context(), Integrity::Trusted);
         // The counter continues rather than starting over, or a resumed session would hand out
         // a name an earlier message already used.
@@ -474,7 +489,7 @@ mod tests {
         let _ = conversation.next_reference();
 
         let restored = Conversation::restored(conversation.snapshot());
-        let note = &restored.messages().last().expect("a note").content;
+        let note = restored.messages().last().expect("a note").content.text();
         assert!(note.contains("ref:0"), "{note}");
         assert!(note.contains("ref:2"), "{note}");
         assert!(
@@ -491,7 +506,7 @@ mod tests {
         let _ = conversation.next_reference();
 
         let restored = Conversation::restored(conversation.snapshot());
-        let note = &restored.messages().last().expect("a note").content;
+        let note = restored.messages().last().expect("a note").content.text();
         assert!(note.contains("ref:0"), "{note}");
         assert_eq!(
             note.matches("ref:").count(),
@@ -620,7 +635,12 @@ mod tests {
         let notes = twice
             .messages()
             .iter()
-            .filter(|message| message.content.starts_with(RESUMED_PREFIX))
+            .filter(|message| {
+                message
+                    .content
+                    .as_text()
+                    .is_some_and(|text| text.starts_with(RESUMED_PREFIX))
+            })
             .count();
         assert_eq!(notes, 1, "the note was added again on top of itself");
     }

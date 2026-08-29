@@ -19,10 +19,80 @@ pub enum Role {
     Tool,
 }
 
+/// What a message carries.
+///
+/// A bare string for everything said in words, which is all but one of them, and a list of parts
+/// when a message carries something that is not words. Attachments are the only thing that is not,
+/// and an attachment always arrives beside the line the user typed, so the parts form is never a
+/// picture on its own.
+///
+/// `Text` comes first in the untagged enum on purpose: a stored session records `content` as a
+/// bare JSON string, so a record written before parts existed still reads back as one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Content {
+    Text(String),
+    Parts(Vec<Part>),
+}
+
+/// One piece of a message that carries more than words.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Part {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// Where an image part's bytes are.
+///
+/// A `data:` URI rather than a link, because the alternative is asking the endpoint to fetch a URL
+/// the conversation chose, which is an effect with a routing field nobody endorsed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+impl Content {
+    /// The words, when this message is words and nothing else.
+    ///
+    /// `None` rather than an empty string for a message carrying parts, so a caller asking "does
+    /// this start with the resume marker" cannot get a yes from a message that has no text at all.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Content::Text(text) => Some(text),
+            Content::Parts(_) => None,
+        }
+    }
+
+    /// The words in this message, with anything that is not words left out.
+    ///
+    /// For a transcript, where an attachment is drawn from what the interface recorded rather than
+    /// from the bytes on the wire.
+    pub fn text(&self) -> String {
+        match self {
+            Content::Text(text) => text.clone(),
+            Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text { text } => Some(text.as_str()),
+                    Part::ImageUrl { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
+impl From<String> for Content {
+    fn from(text: String) -> Self {
+        Content::Text(text)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
-    pub content: String,
+    pub content: Content,
     /// Calls this assistant turn asked for, in the API's own field.
     ///
     /// Tool calls belong here rather than written out in `content`. Described in prose they
@@ -52,7 +122,7 @@ impl Message {
     pub fn assistant_calling(content: impl Into<String>, calls: Vec<ToolCallRequest>) -> Self {
         Self {
             role: Role::Assistant,
-            content: content.into(),
+            content: Content::Text(content.into()),
             tool_calls: Some(calls),
             tool_call_id: None,
         }
@@ -62,7 +132,7 @@ impl Message {
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,
-            content: content.into(),
+            content: Content::Text(content.into()),
             tool_calls: None,
             tool_call_id: Some(call_id.into()),
         }
@@ -71,7 +141,19 @@ impl Message {
     fn plain(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
-            content: content.into(),
+            content: Content::Text(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// A user turn carrying attachments beside what the user typed.
+    ///
+    /// The only constructor that produces parts. Everything else the driver sends is words.
+    pub fn user_parts(parts: Vec<Part>) -> Self {
+        Self {
+            role: Role::User,
+            content: Content::Parts(parts),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -940,5 +1022,72 @@ mod tests {
             "choices":[{"message":{"content":"hi"}}]}"#;
         let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.usage().total(), 9);
+    }
+
+    /// Sessions on disk record `content` as a bare string. Reading one back has to keep working,
+    /// or parts would have quietly orphaned every conversation anyone had already had.
+    #[test]
+    fn a_message_recorded_before_parts_existed_still_reads_back() {
+        let raw = r#"{"role":"user","content":"make a game"}"#;
+        let parsed: Message = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.content, Content::Text("make a game".into()));
+    }
+
+    /// And a message of words still goes out as a bare string, so nothing about the request the
+    /// server sees changes for the conversations that carry no attachment.
+    #[test]
+    fn words_are_still_sent_as_a_bare_string() {
+        let json = serde_json::to_string(&Message::user("hello")).unwrap();
+        assert!(json.contains(r#""content":"hello""#), "{json}");
+    }
+
+    #[test]
+    fn a_message_with_an_attachment_round_trips() {
+        let message = Message::user_parts(vec![
+            Part::Text {
+                text: "what is this".into(),
+            },
+            Part::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ]);
+
+        let json = serde_json::to_string(&message).unwrap();
+        assert!(json.contains(r#""type":"image_url""#), "{json}");
+
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, message.content);
+    }
+
+    /// The transcript reads the words out of a message that carries an attachment. A data URI is
+    /// not something anyone wants scrolling past.
+    #[test]
+    fn the_words_of_a_message_leave_out_its_attachments() {
+        let message = Message::user_parts(vec![
+            Part::Text {
+                text: "what is this".into(),
+            },
+            Part::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ]);
+        assert_eq!(message.content.text(), "what is this");
+    }
+
+    /// `as_text` answers `None` for a message carrying parts rather than an empty string, so a
+    /// caller asking whether it starts with a marker cannot get a yes out of a message that has
+    /// no text at all.
+    #[test]
+    fn a_message_carrying_parts_has_no_text_to_match_a_marker_against() {
+        let message = Message::user_parts(vec![Part::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+            },
+        }]);
+        assert_eq!(message.content.as_text(), None);
     }
 }
