@@ -543,6 +543,11 @@ fn take_from_clipboard(session: &mut Session, pasted: crate::clipboard::Pasted) 
     session.image_on_clipboard = false;
 
     match pasted {
+        // A command line is not a sentence, so a marker in one names nothing and would be passed to
+        // the shell as literal text. Saying so beats writing it and letting the shell complain.
+        Pasted::Image(_) if session.shell => {
+            session.note("a picture is not a command: leave shell mode to paste one")
+        }
         Pasted::Image(image) => session.attach(image),
         Pasted::Text(text) => session.paste(&text),
         Pasted::TooLarge(bytes) => session.note(format!(
@@ -1648,6 +1653,21 @@ mod tests {
                 session.transcript.is_empty(),
                 "an ordinary paste said something"
             );
+        }
+
+        /// Shell mode's line is a command, and a marker in one is text the shell would be handed
+        /// verbatim. Nothing about a picture belongs there.
+        #[test]
+        fn a_picture_is_refused_in_shell_mode_rather_than_written_into_the_command() {
+            let mut session = Session::new("kernel-enforced");
+            session.shell = true;
+            take_from_clipboard(&mut session, picture(b"pixels".to_vec()));
+
+            assert!(
+                session.input().is_empty(),
+                "a marker reached the command line"
+            );
+            assert!(session.transcript[0].text.contains("not a command"));
         }
 
         #[test]
