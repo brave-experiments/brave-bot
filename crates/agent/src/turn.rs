@@ -12,6 +12,7 @@
 //! quarantine the references in it name, and the integrity that exchange has met. A new policy
 //! each turn, resuming a conversation that outlives it.
 
+use base64::Engine;
 use bravebot_aichat::AichatClient;
 use bravebot_aichat::protocol::{ChatRequest, ImageUrl, Message, Part, ToolCall};
 use bravebot_config::Config;
@@ -319,6 +320,13 @@ pub struct Task {
     /// says only that some bytes arrived, and `gh pr diff` carries whatever the author of the
     /// pull request wrote. So the planner is shown a reference, never the bytes.
     pub piped: Option<String>,
+    /// Images the user pasted, carried with the prompt they were pasted into.
+    ///
+    /// Trusted for the reason [`Task::prompt`] is, and by the same act: the user copied something
+    /// and pressed a key. The caveat is shell mode's, and stated in
+    /// [`Policy::admit_pasted_image`]: a screenshot of a hostile page carries a stranger's words
+    /// into the context as though the user had written them.
+    pub images: Vec<PastedImage>,
     /// The user's own directory, holding standing instructions and skills.
     ///
     /// Supplied by the caller rather than read from the environment, and `None` by default. A
@@ -334,12 +342,28 @@ pub struct Task {
     pub model: Option<String>,
 }
 
+/// An image on its way into a prompt, before it has been encoded for the wire.
+///
+/// Raw bytes rather than the finished data URL, so the size that is recorded and reported is the
+/// size of the picture rather than the size of its encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastedImage {
+    /// The IANA type of the bytes, chosen by whichever clipboard flavour answered.
+    ///
+    /// From a fixed set the driver owns, never from a filename or anything else read: it lands in
+    /// the data URL, where it is routing, and a media type taken from content would be one an
+    /// attacker chose.
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
 impl Task {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
             files: Vec::new(),
             attachments: Vec::new(),
+            images: Vec::new(),
             piped: None,
             home: None,
             model: None,
@@ -356,6 +380,12 @@ impl Task {
             path: path.into(),
             media: media.into(),
         });
+        self
+    }
+
+    /// Attach an image the user pasted into this prompt.
+    pub fn with_image(mut self, image: PastedImage) -> Self {
+        self.images.push(image);
         self
     }
 
@@ -673,9 +703,9 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     }
 
     // The prompt and what came with it are one message, because that is what the user did: they
-    // typed a line and dropped a file on it. Two messages would put the picture somewhere other
-    // than the sentence asking about it.
-    if task.attachments.is_empty() {
+    // typed a line and dropped a file on it, or pasted a picture into it. Two messages would put
+    // the picture somewhere other than the sentence asking about it.
+    if task.attachments.is_empty() && task.images.is_empty() {
         conversation.push(Message::user(task.prompt.clone()));
     } else {
         let mut parts = vec![Part::Text {
@@ -716,6 +746,26 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         "{path} could not be shown to you.\n\n{}",
                         reference.describe()
                     ),
+                },
+            });
+        }
+
+        // A pasted picture takes no such route. A dropped file is read out of the workspace, so it
+        // arrives with whatever label the trust map gives that path and the kernel decides whether
+        // the planner may see it. A paste never touched the filesystem: it is a keystroke, on the
+        // footing of the prompt it landed in, and there is no path to look up and nothing to
+        // quarantine. What is left is the record, which is what `admit_pasted_image` is.
+        //
+        // Recorded one by one, so the trail says what arrived rather than that something did. The
+        // encoding happens here and not in the interface because a data URI is the wire's
+        // business, and holding raw bytes until this point keeps the size that is reported honest.
+        for image in &task.images {
+            policy.admit_pasted_image(&image.media_type, image.bytes.len());
+
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&image.bytes);
+            parts.push(Part::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:{};base64,{}", image.media_type, encoded),
                 },
             });
         }

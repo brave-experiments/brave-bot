@@ -5,7 +5,7 @@
 //! contents try to redirect the turn cannot do so.
 
 use bravebot_agent::Workspace;
-use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, Task};
+use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, PastedImage, Task};
 use bravebot_config::Config;
 use bravebot_core::event::{Event, RecordingSink};
 use bravebot_core::label::Label;
@@ -222,6 +222,76 @@ fn a_turn_without_files_reaches_the_model() {
 
     let body = received.recv().expect("request body");
     assert!(body.contains("what is 2 + 2?"));
+}
+
+/// A pasted image is the user's own input, so it travels with the prompt it was pasted into and
+/// reaches the model in the same request. Sending the words without the picture would have the
+/// planner answering a question about something that never arrived.
+#[test]
+fn a_pasted_image_reaches_the_model_with_the_prompt() {
+    let scratch = Scratch::new("pasted-image");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve(&reply_with("a cat"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is [Image #1]?").with_image(PastedImage {
+        media_type: "image/png".to_string(),
+        bytes: b"pixels".to_vec(),
+    });
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(body.contains("what is [Image #1]?"), "the prompt was lost");
+    assert!(
+        body.contains("data:image/png;base64,cGl4ZWxz"),
+        "the image was not inlined into the request: {body}"
+    );
+}
+
+/// A picture is an input, and an input the trail does not mention is one nobody reading the
+/// session back can account for.
+#[test]
+fn a_pasted_image_is_named_in_the_audit_trail() {
+    let scratch = Scratch::new("pasted-image-trail");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) = serve(&reply_with("a cat"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is this?").with_image(PastedImage {
+        media_type: "image/png".to_string(),
+        bytes: b"pixels".to_vec(),
+    });
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        sink.events().iter().any(|event| matches!(
+            event,
+            Event::GatePassed { gate: "provenance", detail }
+                if detail.contains("image/png") && detail.contains("pasted by the user")
+        )),
+        "the paste left no trace: {:?}",
+        sink.events()
+    );
 }
 
 #[test]
