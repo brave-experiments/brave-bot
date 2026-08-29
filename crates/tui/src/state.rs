@@ -315,8 +315,6 @@ pub struct Session {
     /// whatever happened to be in the process's working directory. The real session names it with
     /// [`Session::in_workspace`].
     workspace: std::path::PathBuf,
-    /// What a dropped file has to be inside for a turn to open it.
-    reach: crate::dropped::Reach,
     /// Files dropped on the box, by the marker standing for each in the line.
     ///
     /// Kept until the line is sent, and read back out of the line at that point rather than sent
@@ -362,7 +360,6 @@ impl Session {
             model: None,
             completion: 0,
             workspace: std::path::PathBuf::new(),
-            reach: crate::dropped::Reach::nowhere(),
             attached: Vec::new(),
             sent: Vec::new(),
             attachments_made: 0,
@@ -376,20 +373,6 @@ impl Session {
     pub fn in_workspace(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = root.into();
         self
-    }
-
-    /// What a dropped file has to be inside for a turn to be able to open it.
-    ///
-    /// Separate from [`Session::in_workspace`] because the set includes the directories opened
-    /// with `/add-dir`, which change during a session while the root does not.
-    pub fn reaching(mut self, reach: crate::dropped::Reach) -> Self {
-        self.reach = reach;
-        self
-    }
-
-    /// Update what is reachable, after `/add-dir` opened something.
-    pub fn now_reaching(&mut self, reach: crate::dropped::Reach) {
-        self.reach = reach;
     }
 
     /// Load history from disk and keep writing to it.
@@ -1143,8 +1126,9 @@ impl Session {
             match taken
                 .iter()
                 .find(|found| found.path == path)
-                .and_then(|found| self.reach.nameable(&found.path).map(|name| (found, name)))
-            {
+                .and_then(|found| {
+                    crate::dropped::name_for(&self.workspace, &found.path).map(|name| (found, name))
+                }) {
                 Some((found, name)) => {
                     self.attachments_made += 1;
                     let marker = format!("[{} #{}]", found.noun(), self.attachments_made);

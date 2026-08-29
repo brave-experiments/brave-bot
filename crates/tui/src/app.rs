@@ -734,11 +734,7 @@ fn event_loop(
     // The one place persistence is turned on: history in ~/.bravebot outlives the session.
     let mut session = Session::new(confinement)
         .with_stored_history()
-        .in_workspace(workspace.root())
-        .reaching(crate::dropped::Reach::of(
-            workspace.root(),
-            workspace.added_directories(),
-        ));
+        .in_workspace(workspace.root());
 
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
@@ -985,12 +981,6 @@ fn add_directory(
         Ok(added) => {
             let shown = added.display().to_string();
             trust.trust(&shown);
-            // A drop from the new directory can be attached from here on, which is the whole
-            // reason someone opens one.
-            session.now_reaching(crate::dropped::Reach::of(
-                workspace.root(),
-                workspace.added_directories(),
-            ));
             session.note(format!("added {shown}, and trusting it for this session"));
         }
         Err(error) => session.note(format!("could not add {directory}: {error}")),

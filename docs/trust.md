@@ -97,11 +97,15 @@ are vouching for, and it goes into the turn as trusted input.
 Deleting the marker takes the attachment off. That is the only way to change your mind, and it is
 why the marker is there rather than a list you cannot edit.
 
-One thing to expect: a drop hands over an absolute path, and absolute paths resolve only inside the
-workspace or a directory you opened with `/add-dir`. Most drops come from `~/Downloads` or
-`~/Desktop`, so most of them write out their path rather than attaching. Open the directory and drop
-it again. That is the confinement doing its job, not a fault: attaching from anywhere on the disk
-would be a hole in the one boundary every other read here respects.
+A dropped file may live anywhere, including outside the workspace, because that is where drops come
+from: `~/Downloads` and `~/Desktop` are outside every workspace there is. What makes that sound is
+not where the file sits but where its path came from. An attachment is fixed before the turn starts,
+from a gesture you made, and nothing a model says or a file contains can put a path there.
+
+That reach belongs to attachments alone. Reading, writing, editing, listing and searching stay
+confined to the workspace and to whatever `/add-dir` has opened, exactly as before. Attaching a file
+lets that one file be carried and grants nothing else anywhere, so dropping a screenshot from
+`~/Downloads` does not put the rest of `~/Downloads` within reach.
 
 `/status` lists the rules, so what a line vouched for can be read back rather than remembered.
 

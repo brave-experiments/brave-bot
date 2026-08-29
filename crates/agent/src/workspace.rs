@@ -226,6 +226,35 @@ impl Workspace {
     /// added directory pointing elsewhere is refused exactly as one in the primary root is. Where
     /// the file does not exist yet, the lexical path is tested instead, which is what lets a write
     /// create a file; `..` is rejected first, so there is nothing lexical containment can miss.
+    /// Where an attachment's bytes are, which may be anywhere the user pointed at.
+    ///
+    /// Relative paths resolve against the root like everything else. An absolute one is taken as
+    /// given, because a person dropped it: see [`Workspace::read_attachment`] for why that is the
+    /// boundary rather than a directory check, and why nothing else here resolves this way.
+    ///
+    /// A directory is refused. Dropping one is a plausible slip and reading it would otherwise
+    /// fail further down with a message about bytes.
+    fn resolve_attachment(&self, named: &str) -> Result<PathBuf, WorkspaceError> {
+        let candidate = Path::new(named);
+        let resolved = if candidate.is_absolute() {
+            candidate.canonicalize().map_err(|e| WorkspaceError::Io {
+                path: named.to_string(),
+                detail: e.to_string(),
+            })?
+        } else {
+            self.resolve(named)?
+        };
+
+        if resolved.is_dir() {
+            return Err(WorkspaceError::Invalid {
+                path: named.to_string(),
+                reason: "a directory cannot be attached",
+            });
+        }
+
+        Ok(resolved)
+    }
+
     fn resolve_added(&self, candidate: &Path, named: &str) -> Result<PathBuf, WorkspaceError> {
         if candidate
             .components()
@@ -317,6 +346,18 @@ impl Workspace {
     /// is routing, so it must be `(T,pub)`; the contents are the user's data, so their integrity
     /// comes from the trust map.
     ///
+    /// The one thing it does not share is path confinement, and that is deliberate. A drop hands
+    /// over an absolute path, and it is nearly always `~/Downloads` or `~/Desktop`, so confining
+    /// this to the workspace would refuse the case the feature exists for. What makes it sound is
+    /// not a path check but where the path can have come from: an attachment is precommitted into
+    /// routing before the turn starts, from a gesture a person made, and the routing gate above
+    /// refuses anything that is not `(T,pub)`. There is no tool that adds one, so nothing a model
+    /// says can reach this, and no file's contents can either.
+    ///
+    /// Scoped to this one function on purpose. [`Workspace::resolve`] is untouched, so reading,
+    /// writing, editing, listing and searching stay confined exactly as they were: attaching a
+    /// file lets that file be carried, and grants nothing else anywhere.
+    ///
     /// Capped, unlike `read`. The whole file goes into the request and is re-sent on every later
     /// round, so an attachment nobody bounded is a cost multiplier that grows with the
     /// conversation. The cap is named in the error, since "it failed" leaves a user resizing an
@@ -339,7 +380,7 @@ impl Workspace {
                 reason: "the path was not trusted",
             })?;
 
-        let resolved = self.resolve(&relative)?;
+        let resolved = self.resolve_attachment(&relative)?;
         let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {

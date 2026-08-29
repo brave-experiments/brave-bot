@@ -12,7 +12,7 @@
 //! Nothing here decides anything from the contents of a file. It reads names, which the user is
 //! about to see on their own screen, and asks the filesystem whether they exist.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// What a dropped file is, and therefore what happens to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +347,28 @@ fn percent_decoded(text: &str) -> String {
 
     String::from_utf8(out).unwrap_or_else(|_| text.to_string())
 }
+/// The name to give a task for a dropped file, or `None` for something that is not a file.
+///
+/// A drop hands over an absolute path, and it is nearly always `~/Downloads` or `~/Desktop`. That
+/// is the case the feature exists for, so it is named as it is and carried: what makes an
+/// attachment safe is that a person made the gesture, not where the file happens to sit.
+///
+/// A file inside the workspace is named relative to it instead. Not a restriction, a tidiness: the
+/// trust map and everything a user reads are in workspace-relative terms, and an absolute path for
+/// a file two directories away would be the odd one out.
+pub fn name_for(root: &Path, path: &str) -> Option<String> {
+    let canonical = Path::new(path).canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(relative) = canonical.strip_prefix(&root) {
+        return Some(relative.to_string_lossy().to_string());
+    }
+
+    Some(canonical.to_string_lossy().to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -521,61 +543,5 @@ mod tests {
     fn an_empty_paste_is_not_a_drop() {
         assert!(dropped_with("", all).is_empty());
         assert!(dropped_with("   ", all).is_empty());
-    }
-}
-
-/// Where a dropped file has to be for a turn to be able to open it.
-///
-/// A drop hands over an absolute path, usually from `~/Downloads` or `~/Desktop`, and a turn
-/// resolves paths against the workspace: relative ones under the root, absolute ones only inside a
-/// directory the user opened with `/add-dir`. So a drop from anywhere else names a file the turn
-/// would refuse, and the honest thing is to say so at the moment of the drop rather than to accept
-/// it and fail a turn later.
-///
-/// This is the confinement working, not a gap in it. `/add-dir` is how a person widens it, and it
-/// is a thing they do deliberately.
-#[derive(Debug, Clone, Default)]
-pub struct Reach {
-    root: Option<PathBuf>,
-    added: Vec<PathBuf>,
-}
-
-impl Reach {
-    /// What the workspace can currently open.
-    pub fn of(root: &Path, added: &[PathBuf]) -> Self {
-        Self {
-            root: root
-                .canonicalize()
-                .ok()
-                .or_else(|| Some(root.to_path_buf())),
-            added: added.to_vec(),
-        }
-    }
-
-    /// Nothing is reachable, which is what a session with no workspace has.
-    pub fn nowhere() -> Self {
-        Self::default()
-    }
-
-    /// The name to give a task for this path, or `None` when a turn could not open it.
-    ///
-    /// Relative under the root, because that is the only form the workspace resolves against it.
-    /// Absolute inside an added directory, because that is the only form it resolves there.
-    pub fn nameable(&self, path: &str) -> Option<String> {
-        let canonical = Path::new(path).canonicalize().ok()?;
-
-        if let Some(relative) = self
-            .root
-            .as_ref()
-            .and_then(|root| canonical.strip_prefix(root).ok())
-        {
-            return Some(relative.to_string_lossy().to_string());
-        }
-
-        if self.added.iter().any(|dir| canonical.starts_with(dir)) {
-            return Some(canonical.to_string_lossy().to_string());
-        }
-
-        None
     }
 }

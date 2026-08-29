@@ -1044,9 +1044,7 @@ mod tests {
         std::fs::create_dir_all(&directory).expect("scratch");
         std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
 
-        let mut session = Session::new("none")
-            .in_workspace(&directory)
-            .reaching(crate::dropped::Reach::of(&directory, &[]));
+        let mut session = Session::new("none").in_workspace(&directory);
         session.drop_files(&directory.join("shot.png").to_string_lossy());
 
         let output = rendered(&session);

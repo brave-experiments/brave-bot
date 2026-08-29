@@ -3,7 +3,7 @@
 //! Real files in a real directory, because the whole question a drop asks is whether a path names
 //! something, and a fake filesystem would answer it for free.
 
-use bravebot_tui::dropped::{Kind, Reach};
+use bravebot_tui::dropped::Kind;
 use bravebot_tui::state::Session;
 use std::path::PathBuf;
 
@@ -33,9 +33,7 @@ impl Drop for Scratch {
 }
 
 fn session_in(scratch: &Scratch) -> Session {
-    Session::new("none")
-        .in_workspace(&scratch.path)
-        .reaching(Reach::of(&scratch.path, &[]))
+    Session::new("none").in_workspace(&scratch.path)
 }
 
 /// The behaviour asked for: a supported type inside the workspace becomes a marker.
@@ -77,10 +75,11 @@ fn the_name_handed_to_the_task_is_relative_to_the_workspace() {
     assert_eq!(session.attached()[0].name, "shots/a.png");
 }
 
-/// A drop from outside the workspace names a file the turn would refuse to open, so the path is
-/// written out instead of a marker that would fail later.
+/// The case the feature exists for. A drop is nearly always from ~/Downloads or ~/Desktop, and
+/// refusing those would refuse nearly every drop there is: what makes an attachment safe is the
+/// gesture a person made, not where the file happens to sit.
 #[test]
-fn a_drop_from_outside_the_workspace_writes_out_its_path() {
+fn a_drop_from_outside_the_workspace_is_attached_all_the_same() {
     let outside = Scratch::new("outside");
     let path = outside.file("shot.png");
 
@@ -88,37 +87,30 @@ fn a_drop_from_outside_the_workspace_writes_out_its_path() {
     let mut session = session_in(&workspace);
 
     assert!(session.drop_files(&path));
-    assert_eq!(session.input(), format!("{path} "));
-    assert!(
-        session.attached().is_empty(),
-        "a file the turn cannot open was attached"
-    );
-}
-
-/// And `/add-dir` is how that is fixed, which is the whole reason someone opens one.
-#[test]
-fn opening_a_directory_makes_a_drop_from_it_attachable() {
-    let outside = Scratch::new("added");
-    let path = outside.file("shot.png");
-    let workspace = Scratch::new("added-workspace");
-
-    let mut session = session_in(&workspace);
-    session.now_reaching(Reach::of(
-        &workspace.path,
-        &[outside.path.canonicalize().unwrap()],
-    ));
-
-    session.drop_files(&path);
-    assert_eq!(
-        session.attached().len(),
-        1,
-        "the added directory was ignored"
-    );
-    // Absolute, which is the only form the workspace resolves inside an added directory.
+    assert_eq!(session.input(), "[Image #1] ");
+    assert_eq!(session.attached().len(), 1);
+    // Absolute, since there is no root to be relative to.
     assert!(
         session.attached()[0].name.starts_with('/'),
         "{}",
         session.attached()[0].name
+    );
+}
+
+/// A directory is a plausible thing to drop by accident, and it is not a file.
+#[test]
+fn dropping_a_directory_attaches_nothing() {
+    let outside = Scratch::new("directory");
+    let inner = outside.path.join("stuff.png");
+    std::fs::create_dir_all(&inner).expect("a directory that looks like a file");
+
+    let workspace = Scratch::new("directory-workspace");
+    let mut session = session_in(&workspace);
+
+    session.drop_files(&inner.to_string_lossy());
+    assert!(
+        session.attached().is_empty(),
+        "a directory was attached as an image"
     );
 }
 

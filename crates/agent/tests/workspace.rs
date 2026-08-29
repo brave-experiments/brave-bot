@@ -1768,11 +1768,85 @@ fn an_untrusted_path_cannot_be_attached() {
     assert!(matches!(error, WorkspaceError::Denied(_)));
 }
 
-/// Confinement is the same as every other read's: an attachment outside the workspace is refused
-/// rather than reached for.
+/// An attachment may come from anywhere, because a drop nearly always does: ~/Downloads and
+/// ~/Desktop are outside every workspace there is. What makes it sound is that the path is routing
+/// and had to be (T,pub), so only a person's gesture can have put it there.
 #[test]
-fn an_attachment_outside_the_workspace_is_refused() {
-    let scratch = Scratch::new("attachment-escape");
+fn an_attachment_may_come_from_outside_the_workspace() {
+    let elsewhere = Scratch::new("attachment-elsewhere");
+    std::fs::write(elsewhere.path.join("shot.png"), [0x89u8, 0x50]).unwrap();
+
+    let scratch = Scratch::new("attachment-here");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let outside = elsewhere
+        .path
+        .join("shot.png")
+        .to_string_lossy()
+        .to_string();
+    workspace
+        .read_attachment(&mut policy, &Labelled::trusted(outside), "image/png")
+        .expect("a dropped file is carried wherever it came from");
+}
+
+/// And that reach is the attachment read's alone. Every other way into the workspace stays exactly
+/// as confined as it was, so attaching a file lets that file be carried and grants nothing else.
+#[test]
+fn attaching_from_outside_does_not_widen_any_other_read() {
+    let elsewhere = Scratch::new("attachment-only-elsewhere");
+    std::fs::write(elsewhere.path.join("notes.txt"), "secret").unwrap();
+
+    let scratch = Scratch::new("attachment-only");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let outside = elsewhere
+        .path
+        .join("notes.txt")
+        .to_string_lossy()
+        .to_string();
+
+    let error = workspace
+        .read(&mut policy, &Labelled::trusted(outside.clone()))
+        .expect_err("an ordinary read must still be confined");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }));
+
+    let error = workspace
+        .write(
+            &mut policy,
+            &Labelled::trusted(outside),
+            &Labelled::trusted("mine now".to_string()),
+        )
+        .expect_err("a write must still be confined");
+    assert!(matches!(
+        error,
+        WorkspaceError::Escapes { .. } | WorkspaceError::Denied(_)
+    ));
+}
+
+/// Dropping a directory is a plausible slip, and reading one would otherwise fail further down
+/// with a message about bytes.
+#[test]
+fn a_directory_cannot_be_attached() {
+    let scratch = Scratch::new("attachment-directory");
+    std::fs::create_dir_all(scratch.path.join("shots")).unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
     let mut sink = RecordingSink::new();
@@ -1787,10 +1861,9 @@ fn an_attachment_outside_the_workspace_is_refused() {
     let error = workspace
         .read_attachment(
             &mut policy,
-            &Labelled::trusted("/etc/hosts".to_string()),
+            &Labelled::trusted("shots".to_string()),
             "image/png",
         )
-        .expect_err("a path outside the workspace must be refused");
-
-    assert!(matches!(error, WorkspaceError::Escapes { .. }));
+        .expect_err("a directory must not attach");
+    assert!(matches!(error, WorkspaceError::Invalid { .. }));
 }
