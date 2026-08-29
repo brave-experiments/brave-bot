@@ -13,7 +13,7 @@
 //! each turn, resuming a conversation that outlives it.
 
 use bravebot_aichat::AichatClient;
-use bravebot_aichat::protocol::{ChatRequest, Message, ToolCall};
+use bravebot_aichat::protocol::{ChatRequest, ImageUrl, Message, Part, ToolCall};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::capability::{Capability, CapabilitySet};
@@ -286,6 +286,23 @@ fn preview_for<S: Sink>(
     Preview { preview, lines }
 }
 
+/// A file the user attached, to be carried rather than read as text.
+///
+/// Separate from [`Task::files`] because the two differ in what reaches the planner: a context
+/// file arrives as text in a message, an attachment as bytes in a part. Trusted for the same
+/// reason though, which is that the user named it.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    /// Workspace-relative, and routing: it decides which file is opened.
+    pub path: String,
+    /// The media type to name in the URI, chosen by the interface from a closed table of
+    /// extensions.
+    ///
+    /// Not routing. It cannot redirect anything, since the path alone decides what is opened, and
+    /// it is one of a handful of constants rather than anything a user or a model composed.
+    pub media: String,
+}
+
 /// What a turn is asked to do.
 #[derive(Debug, Clone)]
 pub struct Task {
@@ -294,6 +311,8 @@ pub struct Task {
     /// Workspace-relative files to include as context. Trusted because the user named
     /// them, not the model.
     pub files: Vec<String>,
+    /// Files the user attached, carried as bytes rather than read as text.
+    pub attachments: Vec<Attachment>,
     /// Input piped into the process on stdin.
     ///
     /// Untrusted, unlike [`Task::files`]. Naming a file says which bytes the user meant; a pipe
@@ -320,6 +339,7 @@ impl Task {
         Self {
             prompt: prompt.into(),
             files: Vec::new(),
+            attachments: Vec::new(),
             piped: None,
             home: None,
             model: None,
@@ -328,6 +348,14 @@ impl Task {
 
     pub fn with_file(mut self, path: impl Into<String>) -> Self {
         self.files.push(path.into());
+        self
+    }
+
+    pub fn with_attachment(mut self, path: impl Into<String>, media: impl Into<String>) -> Self {
+        self.attachments.push(Attachment {
+            path: path.into(),
+            media: media.into(),
+        });
         self
     }
 
@@ -539,6 +567,9 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     for (index, file) in task.files.iter().enumerate() {
         routing.insert_trusted(format!("file_{index}"), file.clone());
     }
+    for (index, attachment) in task.attachments.iter().enumerate() {
+        routing.insert_trusted(format!("attachment_{index}"), attachment.path.clone());
+    }
 
     // FileWrite and ShellExec are granted, but granting the capability is not what permits the
     // effect: both gates additionally require a single-use endorsement that only a user's approval
@@ -641,7 +672,56 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         }));
     }
 
-    conversation.push(Message::user(task.prompt.clone()));
+    // The prompt and what came with it are one message, because that is what the user did: they
+    // typed a line and dropped a file on it. Two messages would put the picture somewhere other
+    // than the sentence asking about it.
+    if task.attachments.is_empty() {
+        conversation.push(Message::user(task.prompt.clone()));
+    } else {
+        let mut parts = vec![Part::Text {
+            text: task.prompt.clone(),
+        }];
+
+        for index in 0..task.attachments.len() {
+            let key = format!("attachment_{index}");
+            let path = policy
+                .routing()
+                .get(&key)
+                .expect("routing was precommitted with this key")
+                .to_string();
+            let media = task.attachments[index].media.clone();
+
+            // Attaching the file is the grant, exactly as naming one with `@` is. Recorded before
+            // the read so the read sees it.
+            policy.vouch_for_named_path(&path);
+
+            let contents =
+                workspace.read_attachment(&mut policy, &Labelled::trusted(path.clone()), &media)?;
+            conversation.observed(policy.context_integrity());
+
+            let slot = conversation.next_reference();
+            let presented = policy
+                .present("chat", slot, &path, &contents, conversation.quarantine())
+                .map_err(|d| TurnError::Precommit(d.to_string()))?;
+
+            // The kernel decides, from the label alone, whether the bytes go. Quarantined means
+            // the planner gets the reference and nothing else, which is of little use to it for a
+            // picture, but the alternative is handing over bytes the label says it may not have.
+            parts.push(match &presented {
+                Presentation::Visible(uri) => Part::ImageUrl {
+                    image_url: ImageUrl { url: uri.clone() },
+                },
+                Presentation::Quarantined(reference) => Part::Text {
+                    text: format!(
+                        "{path} could not be shown to you.\n\n{}",
+                        reference.describe()
+                    ),
+                },
+            });
+        }
+
+        conversation.push(Message::user_parts(parts));
+    }
 
     // Premium is used when a subscription has been imported and this build knows the premium
     // host, and is silently skipped otherwise. Discovery happens per turn so an import mid-session

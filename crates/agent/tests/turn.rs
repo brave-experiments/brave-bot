@@ -6606,3 +6606,125 @@ fn the_same_file_is_offered_once_per_turn() {
         "the same file was put to the user twice in one turn"
     );
 }
+
+/// The point of attaching a file: the bytes reach the model, in the same message as the line the
+/// user typed rather than in one of their own.
+#[test]
+fn an_attachment_is_sent_beside_the_prompt_that_came_with_it() {
+    let scratch = Scratch::new("attachment-sent");
+    // A PNG's first bytes. Binary, which is what every other read here refuses.
+    std::fs::write(
+        scratch.path.join("shot.png"),
+        [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("a picture"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("what is this").with_attachment("shot.png", "image/png");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("a request was sent");
+    let sent: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let messages = sent["messages"].as_array().expect("messages");
+    let last = messages.last().expect("a last message");
+
+    let parts = last["content"]
+        .as_array()
+        .expect("the prompt carries parts");
+    assert_eq!(parts[0]["text"], "what is this");
+    assert_eq!(parts[1]["type"], "image_url");
+    let url = parts[1]["image_url"]["url"].as_str().expect("a url");
+    assert!(url.starts_with("data:image/png;base64,"), "{url}");
+    // iVBORw0KGgo is the base64 of a PNG's signature, so this is the file and not a placeholder.
+    assert!(url.contains("iVBORw0KGgo"), "{url}");
+}
+
+/// Attaching a file is vouching for it, which is the rule `@` and `--file` already work by: the
+/// user named this one file and the user is the one party whose word makes something trusted. So
+/// the bytes go even where nothing in the workspace is vouched for, and that is the whole reason
+/// dropping a screenshot into a directory you declined at startup does anything at all.
+///
+/// The gate is still the gate. The vouch is what makes `present` pass, not an absence of it: take
+/// the vouch away and this quarantines.
+#[test]
+fn attaching_a_file_vouches_for_it_the_way_naming_one_does() {
+    let scratch = Scratch::new("attachment-quarantined");
+    std::fs::write(
+        scratch.path.join("shot.png"),
+        [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("a picture"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("what is this").with_attachment("shot.png", "image/png");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        // Nothing vouched for, which is what declining at startup leaves.
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("a request was sent");
+    assert!(
+        body.contains("iVBORw0KGgo"),
+        "attaching did not vouch for the file: {body}"
+    );
+}
+
+/// A turn with nothing attached must send exactly what it always sent, or every conversation
+/// that attaches nothing pays for a feature it is not using.
+#[test]
+fn a_turn_without_attachments_still_sends_the_prompt_as_a_bare_string() {
+    let scratch = Scratch::new("attachment-none");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("hello"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("say hello");
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("a request was sent");
+    let sent: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let messages = sent["messages"].as_array().expect("messages");
+    let last = messages.last().expect("a last message");
+    assert_eq!(last["content"], "say hello");
+}
