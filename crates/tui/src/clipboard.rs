@@ -166,8 +166,12 @@ mod platform {
         Some(("image/png", from_hex(hex)?))
     }
 
+    /// Asked about the one flavour that matters rather than for the whole list, because sizing a
+    /// flavour materialises it: a clipboard holding a screenshot offers the same picture eight ways,
+    /// and asking what is on it costs the better part of a second. Asking about PNG alone is under a
+    /// tenth of that, which is what makes this affordable on a focus change.
     pub fn has_image() -> bool {
-        run_text("osascript", &["-e", "clipboard info"])
+        run_text("osascript", &["-e", "clipboard info for «class PNGf»"])
             .is_some_and(|info| info.contains("«class PNGf»"))
     }
 
