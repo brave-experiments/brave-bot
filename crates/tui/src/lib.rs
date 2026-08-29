@@ -9,6 +9,7 @@ pub mod ask;
 pub mod audit;
 pub mod clipboard;
 pub mod confirm;
+pub mod dropped;
 pub mod editor;
 pub mod entries;
 pub mod history;
