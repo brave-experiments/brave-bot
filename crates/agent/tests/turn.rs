@@ -1139,6 +1139,91 @@ fn what_the_model_says_between_tool_calls_reaches_the_interface() {
     );
 }
 
+/// Write a skill file that declares neither of the two keys a skill needs, so the turn has
+/// something to skip and something to say about it.
+fn write_half_declared_skill(root: &std::path::Path) {
+    let dir = root.join(".bravebot/skills/broken");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: broken\n---\nbody\n").unwrap();
+}
+
+/// A notice says what the turn is about to work with, and it is known before the first request
+/// goes out. Carried back on the outcome alone, an interface drew it after every tool line, so
+/// the reason a skill was missing arrived once the work that needed it was over.
+#[test]
+fn what_did_not_load_reaches_the_interface_when_it_is_learned() {
+    let scratch = Scratch::new("notice-when-learned");
+    std::fs::write(scratch.path.join("a.txt"), "body").unwrap();
+    write_half_declared_skill(&scratch.path);
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("what is in a.txt?"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        reporter.notices.iter().any(|n| n.contains("was skipped")),
+        "the interface was never told what did not load: {:?}",
+        reporter.notices
+    );
+}
+
+/// A turn that fails or is stopped had the same instructions as one that finished, and the
+/// question of what it was missing is a better one then, not a worse one. Reported only on the
+/// outcome, a turn with no outcome said nothing at all.
+#[test]
+fn what_did_not_load_is_reported_even_when_the_turn_never_finishes() {
+    let scratch = Scratch::new("notice-when-stopped");
+    write_half_declared_skill(&scratch.path);
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![reply_with("never reached")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    let cancel = bravebot_core::cancel::Cancel::new();
+    cancel.cancel();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("anything"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &cancel,
+    )
+    .expect_err("a cancelled turn does not produce an answer");
+
+    assert!(
+        reporter.notices.iter().any(|n| n.contains("was skipped")),
+        "a turn that produced no outcome told the user nothing: {:?}",
+        reporter.notices
+    );
+}
+
 /// The first wait is the long one, and the least self-explanatory: no tool has been called
 /// yet, so without this the user is watching a spinner with nothing beside it.
 #[test]

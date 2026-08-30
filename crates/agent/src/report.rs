@@ -280,6 +280,18 @@ pub trait Reporter {
     /// leave undrawn.
     fn narration(&mut self, _text: String) {}
 
+    /// Say what the turn found before it started: which standing instructions and skills loaded,
+    /// and which did not.
+    ///
+    /// Sent when it is learned, which is before the first request goes out. The outcome carries
+    /// the same lines for a caller with no live display, but a caller that has one and waits for
+    /// the outcome draws them after every tool line, describing what the turn began with as
+    /// though it were the last thing that happened.
+    ///
+    /// The driver's own words about a file it enumerated, never anything read out of one, so
+    /// there is nothing here for a display gate to release.
+    fn notice(&mut self, _text: String) {}
+
     /// Untrusted content, for the person watching to read.
     ///
     /// Sent whenever a result is quarantined, which is exactly when the planner is told a
@@ -335,6 +347,8 @@ pub struct RecordingReporter {
     pub phases: Vec<Phase>,
     /// Everything the model said between tool calls, in order.
     pub narration: Vec<String>,
+    /// What loaded and what did not, in order.
+    pub notices: Vec<String>,
     /// Quarantined content released for the screen.
     pub shown: Vec<Shown>,
     /// Where each result went.
@@ -356,6 +370,10 @@ impl Reporter for RecordingReporter {
 
     fn narration(&mut self, text: String) {
         self.narration.push(text);
+    }
+
+    fn notice(&mut self, text: String) {
+        self.notices.push(text);
     }
 
     fn tool_started(&mut self, activity: Activity) {

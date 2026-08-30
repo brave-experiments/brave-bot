@@ -1657,6 +1657,7 @@ fn run_turn_animated(
             Ok(crate::remote_confirm::ToMain::Written(written)) => session.set_written(written),
             Ok(crate::remote_confirm::ToMain::Phase(phase)) => session.set_phase(phase),
             Ok(crate::remote_confirm::ToMain::Narration(text)) => session.narrate(text),
+            Ok(crate::remote_confirm::ToMain::Notice(text)) => session.note_once(text),
             Ok(crate::remote_confirm::ToMain::Started(activity)) => {
                 session.start_activity(activity)
             }
@@ -1723,12 +1724,6 @@ fn fold_outcome(
 ) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
-            // Said before the reply, since they explain what the turn did and did not have to
-            // work with. Once per session: the reasons recur every turn and repeating them would
-            // bury the work.
-            for notice in &outcome.notices {
-                session.note_once(notice.clone());
-            }
             let trail = sink.bare();
             session.complete(
                 outcome.reply_for_display().to_string(),

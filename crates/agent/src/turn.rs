@@ -755,6 +755,14 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     let preamble =
         crate::preamble::compose(&mut policy, workspace, task.home.as_deref(), &catalogue);
     notices.extend(preamble.notices.iter().cloned());
+
+    // Said here rather than only on the outcome. These describe what the turn is about to work
+    // with, and an interface that waits for the turn to end draws them after every tool line, so
+    // the reason a skill was missing arrives once the work that needed it is over.
+    for notice in &notices {
+        reporter.notice(notice.message.clone());
+    }
+
     let system = format!("{SYSTEM_PROMPT}{}", preamble.text);
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
