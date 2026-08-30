@@ -171,6 +171,7 @@ pub struct Streamed<'r> {
     label: Label,
     reader: Box<dyn std::io::Read + 'r>,
     read: usize,
+    truncated: bool,
 }
 
 impl Streamed<'_> {
@@ -184,17 +185,29 @@ impl Streamed<'_> {
     /// Each piece comes back labelled, exactly as a whole body would: a caller that wants to look
     /// at one still has to go through the policy. The cap is enforced across the whole stream, so
     /// an endless response is cut off rather than read forever.
+    ///
+    /// A byte past the cap is read but never handed back, the same way the buffered path does it:
+    /// reaching the cap and being cut by it are different outcomes, and a body that ends exactly
+    /// at the cap was not cut.
     pub fn next_chunk(&mut self) -> Result<Option<Labelled<Vec<u8>>>, EgressError> {
-        if self.read >= MAX_RESPONSE_BYTES {
+        if self.truncated {
             return Ok(None);
         }
 
-        let mut buffer = vec![0u8; STREAM_CHUNK_BYTES.min(MAX_RESPONSE_BYTES - self.read)];
+        let remaining = MAX_RESPONSE_BYTES + 1 - self.read;
+        let mut buffer = vec![0u8; STREAM_CHUNK_BYTES.min(remaining)];
         match self.reader.read(&mut buffer) {
             Ok(0) => Ok(None),
             Ok(n) => {
                 self.read += n;
                 buffer.truncate(n);
+                if self.read > MAX_RESPONSE_BYTES {
+                    self.truncated = true;
+                    buffer.truncate(n - (self.read - MAX_RESPONSE_BYTES));
+                    if buffer.is_empty() {
+                        return Ok(None);
+                    }
+                }
                 Ok(Some(Labelled::new(buffer, self.label)))
             }
             Err(e) => Err(EgressError::Transport {
@@ -207,7 +220,7 @@ impl Streamed<'_> {
 
     /// Whether the cap stopped the read before the body ended.
     pub fn truncated(&self) -> bool {
-        self.read >= MAX_RESPONSE_BYTES
+        self.truncated
     }
 }
 
@@ -356,6 +369,7 @@ impl Egress {
             label,
             reader,
             read: 0,
+            truncated: false,
         })
     }
 
@@ -681,6 +695,45 @@ mod tests {
             .expect("the read succeeds");
         assert_eq!(body, b"hello");
         assert!(!truncated);
+    }
+
+    /// Reading a stream to the end, in the pieces the caller would see them in.
+    fn drain(mut stream: Streamed<'_>) -> (usize, bool) {
+        let mut total = 0;
+        while let Some(chunk) = stream.next_chunk().expect("the read succeeds") {
+            total += chunk.into_parts_for_decoding().0.len();
+        }
+        (total, stream.truncated())
+    }
+
+    fn streamed(body: Vec<u8>) -> Streamed<'static> {
+        Streamed {
+            status: 200,
+            content_type: None,
+            final_url: "https://example.com".into(),
+            label: Label::untrusted_public(),
+            reader: Box::new(std::io::Cursor::new(body)),
+            read: 0,
+            truncated: false,
+        }
+    }
+
+    /// The flag has to mean the body was cut, not that the cap was reached: a caller that cannot
+    /// tell a whole answer from a severed one has to treat every full-sized reply as suspect.
+    #[test]
+    fn a_streamed_body_that_ends_at_the_cap_is_not_truncated() {
+        let (total, truncated) = drain(streamed(vec![b'x'; MAX_RESPONSE_BYTES]));
+        assert_eq!(total, MAX_RESPONSE_BYTES);
+        assert!(!truncated);
+    }
+
+    /// And one byte more is a cut, reported as such, with the extra byte kept back so the two
+    /// paths hand a caller the same body for the same response.
+    #[test]
+    fn a_streamed_body_past_the_cap_is_cut_and_says_so() {
+        let (total, truncated) = drain(streamed(vec![b'x'; MAX_RESPONSE_BYTES + 1]));
+        assert_eq!(total, MAX_RESPONSE_BYTES);
+        assert!(truncated);
     }
 
     /// The distinction that matters to a caller: a body that stopped early is not a short body,

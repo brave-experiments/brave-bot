@@ -70,6 +70,8 @@ hygiene, not content inspection: the bytes are never parsed to decide anything.
 `verified-by: bravebot_net::lib::small_bodies_are_not_reported_as_truncated`
 `verified-by: bravebot_net::lib::a_failed_read_is_not_a_short_body`
 `verified-by: bravebot_net::egress::a_body_that_stops_partway_is_a_failure_rather_than_a_short_body`
+`verified-by: bravebot_net::lib::a_streamed_body_that_ends_at_the_cap_is_not_truncated`
+`verified-by: bravebot_net::lib::a_streamed_body_past_the_cap_is_cut_and_says_so`
 
 <a id="NET-5"></a>
 ### NET-5: each phase of a request is bounded separately
