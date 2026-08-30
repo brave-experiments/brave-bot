@@ -4560,6 +4560,64 @@ fn a_file_the_planner_may_not_see_is_reserved_rather_than_opened() {
     );
 }
 
+/// The paging arguments used to decide it. A read carrying an offset or a limit fell through to
+/// the eager path and opened the file at the moment the planner asked, so whether a quarantined
+/// file was read early turned on how the call was written rather than on the trust map.
+#[test]
+fn a_page_of_a_file_the_planner_may_not_see_is_reserved_too() {
+    let scratch = Scratch::new("deferred-page");
+    let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("notes.md"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"notes.md","offset":10,"limit":5}"#),
+        reply_with("there is a file called notes.md"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is here?");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let reserved = sink
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::SlotDeferred { origin, .. } if origin == "notes.md"));
+    assert!(
+        reserved,
+        "the paged read did not reserve a slot for the file"
+    );
+
+    let read = sink
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::SlotWritten { .. }));
+    assert!(
+        !read,
+        "the file was opened although nothing needed the bytes"
+    );
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    let reference = bodies
+        .iter()
+        .find(|body| body.contains("[ref:1]"))
+        .expect("the planner was given a reference");
+    assert!(
+        !reference.contains("line 10"),
+        "the page the planner asked for reached it: {reference}"
+    );
+}
+
 /// A processor's output is quarantined exactly as a file read is, so the planner is told its
 /// shape and given a name for it, and nothing else.
 #[test]

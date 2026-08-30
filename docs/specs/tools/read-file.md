@@ -25,6 +25,8 @@ file that lost its trust in between is read at the lower label.
 to want. Re-checking on the second pass is what stops a reference issued at one label delivering
 bytes at another.
 
+`verified-by: bravebot_agent::turn::a_file_the_planner_may_not_see_is_reserved_rather_than_opened`
+`verified-by: bravebot_agent::turn::a_page_of_a_file_the_planner_may_not_see_is_reserved_too`
 `verified-by: bravebot_core::policy::a_path_that_lost_its_trust_fills_the_slot_untrusted`
 `verified-by: bravebot_core::policy::a_read_from_an_unvouched_path_is_untrusted`
 `verified-by: bravebot_core::policy::a_read_from_a_trusted_path_is_trusted`

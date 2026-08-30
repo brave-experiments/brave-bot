@@ -1096,13 +1096,6 @@ fn read_file<S: Sink, C: Confirmer>(
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
 
-    // A file the planner may not see need not be opened yet. Whether it may see it is a
-    // question about the trust map, keyed by the path it named, so nothing about any file's
-    // contents reaches this branch. A page of a file is a different request: the offset and the
-    // limit describe a slice, and there is nothing to slice until something reads it, so those
-    // are still read now.
-    let whole_file = arguments.get("offset").is_none() && arguments.get("limit").is_none();
-
     // The trust question, put where it bites rather than only at startup. A file is quarantined
     // because nobody vouched for it, and that is the user's decision to make: they are shown the
     // path and the first lines of it and can vouch on the spot, after which this read and every
@@ -1137,10 +1130,7 @@ fn read_file<S: Sink, C: Confirmer>(
     // A reference to a file the planner may not read already is that file, so reading it has
     // nothing to hand back but another name for the same thing, which reads as the read having
     // failed. One planner went four references deep before giving up. Nothing to do but say so.
-    if whole_file
-        && destination == Destination::Reference
-        && policy.read_is_quarantined(&proposed_path)
-    {
+    if destination == Destination::Reference && policy.read_is_quarantined(&proposed_path) {
         return confirmed(
             format!(
                 "{shown_path} already names that file, and nothing will show you what is in \
@@ -1154,7 +1144,16 @@ fn read_file<S: Sink, C: Confirmer>(
         );
     }
 
-    if whole_file && policy.read_is_quarantined(&proposed_path) {
+    // A file the planner may not see need not be opened yet. Whether it may see it is a question
+    // about the trust map, keyed by the path it named, so nothing about any file's contents
+    // reaches this branch.
+    //
+    // The offset and the limit do not enter it either. They describe a slice of what the planner
+    // would have read, and a quarantined read hands back a reference rather than text, so there
+    // is nothing for them to be a slice of: honouring them would mean opening the file at the
+    // moment the planner asked, which is the one thing this branch exists to avoid. The reference
+    // is of the file, and what is read from it is read when something needs the bytes.
+    if policy.read_is_quarantined(&proposed_path) {
         return match workspace.survey(&proposed_path) {
             Ok(bytes) => Produced::deferring(path, shown_path, bytes).of_content(),
             // A path that names nothing is said so now, exactly as an eager read would have.
