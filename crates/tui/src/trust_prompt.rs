@@ -284,10 +284,12 @@ mod tests {
         );
     }
 
-    /// Declining leaves nothing trusted, so every write is shown.
+    /// Declining leaves nothing trusted, so every write is shown. Asked of the answer rather than
+    /// of a store built here, which is what the clause is about: a `trust_for` that trusted `.`
+    /// on a decline would have satisfied a test that only built its own empty store.
     #[test]
     fn declining_trusts_nothing() {
-        let trust = TrustStore::new();
+        let trust = trust_for(Answer::Decline).expect("declining still starts a session");
         assert!(trust.is_empty());
         assert!(!trust.is_trusted("src/main.rs"));
         assert!(!trust.is_trusted("."));
