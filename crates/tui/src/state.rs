@@ -1602,10 +1602,13 @@ impl Session {
     }
 
     /// Show the previous prompt, stepping further back on each call.
+    ///
+    /// Allowed while a turn runs, exactly as typing into the box is. Recall writes a line and
+    /// sends nothing, and sending is the whole of what a running turn refuses. It used to refuse
+    /// here too, from the days when the box took nothing mid-turn at all; typing was opened up
+    /// and this was left behind, so a person could compose their next prompt during a turn but
+    /// not reach the one they sent last.
     pub fn recall_older(&mut self) {
-        if self.status != Status::Idle {
-            return;
-        }
         if let Some(prompt) = self.history.older(&self.input) {
             self.set_input(prompt);
         }
@@ -1613,9 +1616,6 @@ impl Session {
 
     /// Step forward through recalled prompts, back to the line being typed.
     pub fn recall_newer(&mut self) {
-        if self.status != Status::Idle {
-            return;
-        }
         if let Some(prompt) = self.history.newer() {
             self.set_input(prompt);
         }
@@ -2940,18 +2940,38 @@ mod tests {
         );
     }
 
-    /// Recall is refused mid-turn, like the other input methods: the box is not the user's to
-    /// edit while a turn owns it.
+    /// The box takes words while a turn runs, so it takes recalled ones too. Refusing here was
+    /// left over from when it took nothing at all: a person could type their next prompt during a
+    /// turn but not reach the one they had just sent, which is the one they most often want when
+    /// a turn is going wrong in front of them.
     #[test]
-    fn recall_is_refused_while_a_turn_is_running() {
+    fn recall_works_while_a_turn_is_running() {
         let mut s = session();
         for c in "first".chars() {
             s.type_char(c);
         }
         s.submit().expect("submitted");
+        assert_eq!(s.status, Status::Working);
 
         s.recall_older();
-        assert!(s.input.is_empty(), "history was recalled mid-turn");
+        assert_eq!(s.input, "first", "history could not be reached mid-turn");
+
+        s.recall_newer();
+        assert!(s.input.is_empty(), "stepping forward did not come back");
+    }
+
+    /// Reaching a prompt is not sending one. Whatever is in the box, a second turn must not begin
+    /// while the first is in flight.
+    #[test]
+    fn a_recalled_prompt_still_cannot_be_sent_while_a_turn_is_running() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+        s.recall_older();
+
+        assert!(s.submit().is_none(), "a second turn started mid-flight");
     }
     mod todos {
         use super::*;

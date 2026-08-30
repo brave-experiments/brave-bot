@@ -376,6 +376,25 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             Some(prompt) => Action::Submit(prompt),
             None => Action::None,
         },
+        _ => navigate(session, key),
+    }
+}
+
+/// The keys that mean the same thing whether or not a turn is running.
+///
+/// Everything a person does to the line they are composing and to their view of what has already
+/// happened: editing it, completing it, walking back through what they have said before, and
+/// scrolling. None of it sends anything, and sending is the whole of what a running turn refuses,
+/// so none of it has any reason to ask whether one is running.
+///
+/// One ladder rather than one per caller, because there were two and they drifted. Mid-turn, Up
+/// and Down reached no arm at all and fell through to nothing, so a person who could see their
+/// last prompt in the transcript could not recall it into the box, and the keys that scroll did
+/// not scroll either. `handle_paste_while_working` was already named for this reason; this is the
+/// same lesson in the same file.
+fn navigate(session: &mut Session, key: KeyEvent) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
         KeyCode::Backspace => {
             session.backspace();
             Action::Redraw
@@ -497,33 +516,9 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         return Action::Paste;
     }
 
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::None;
-    }
-
-    match key.code {
-        KeyCode::Char(c) => {
-            session.type_char(c);
-            Action::Redraw
-        }
-        KeyCode::Backspace => {
-            session.backspace();
-            Action::Redraw
-        }
-        KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
-        KeyCode::Down if session.is_multiline() && session.move_down_a_line() => Action::Redraw,
-        KeyCode::PageUp if session.page_up() => Action::Redraw,
-        KeyCode::PageDown if session.page_down() => Action::Redraw,
-        KeyCode::PageUp => {
-            session.scroll_up(10);
-            Action::Redraw
-        }
-        KeyCode::PageDown => {
-            session.scroll_down(10);
-            Action::Redraw
-        }
-        _ => Action::None,
-    }
+    // The same ladder the idle path uses, rather than a shorter copy of it. Nothing in it sends,
+    // so there is nothing here for a running turn to refuse.
+    navigate(session, key)
 }
 
 /// Interpret a paste.
@@ -1369,8 +1364,8 @@ fn compact_animated(
             .map_err(io::Error::other)?;
 
         // Input is still read, so a long summary does not leave the interface deaf, and the
-        // frame waits here for the reason the turn loop waits here: a key press has to wake the
-        // loop rather than queue behind whatever it was blocking on.
+        // frame's waiting is done here for the reason the turn loop does it here: a key press
+        // has to wake the loop rather than queue behind it.
         if event::poll(FRAME)? {
             while event::poll(Duration::ZERO)? {
                 match event::read()? {
@@ -1397,8 +1392,8 @@ fn compact_animated(
             }
         }
 
-        // Drained for the same reason the turn's own loop drains: a summary is written the same
-        // way a reply is, a message at a time.
+        // Drained for the same reason the turn's own loop drains, and waiting on the terminal
+        // for the same reason it does: a person may be typing their next prompt while this runs.
         let carrying_on = drain_worker(&from_worker, Duration::ZERO, |message| match message {
             crate::remote_confirm::ToMain::Phase(phase) => session.set_phase(phase),
             crate::remote_confirm::ToMain::Narration(text) => session.narrate(text),
@@ -1552,11 +1547,11 @@ fn run_turn_animated(
         // of the turn. Without this the interface would take none at all while working, and a
         // long turn is exactly when someone wants to copy what has appeared so far.
         //
-        // This is also where the frame does its waiting, and that is the point of it. Waiting on
+        // This is also where the frame's waiting is done, and that is the point of it. Blocking on
         // the worker instead left a key press sitting for up to a frame before anything looked at
-        // it, so typing during a turn lagged and typing between turns did not, for no reason a
+        // it, so typing during a turn lagged while typing between turns did not, for no reason a
         // person could see. A keystroke wakes this the instant it arrives; the worker's messages
-        // are collected on the way past and drawn at the frame rate, which is all they need.
+        // are picked up on the way round and drawn at the frame rate, which is all they need.
         //
         // Everything waiting, not one event per pass: a drag read one event at a time would take
         // seconds to catch up with the pointer.
@@ -1725,9 +1720,9 @@ fn run_turn_animated(
 /// Hand the worker's messages to `handle`: the one this frame waited for, and then everything
 /// already queued behind it.
 ///
-/// `wait` is how long to block for the first, and a caller already blocking on something else
-/// passes nothing. Which of the two a loop waits on decides how quickly it answers a key press,
-/// so the choice belongs to the caller rather than here.
+/// `wait` is how long to block for the first, and a caller that is already blocking on something
+/// else passes nothing. Which one a loop waits on decides how quickly it answers a key press, so
+/// it belongs to the caller rather than here.
 ///
 /// `false` when the worker has dropped its senders and the turn is over.
 ///
@@ -3180,6 +3175,72 @@ mod tests {
         assert_eq!(handle_key(&mut session, key(KeyCode::Up)), Action::Redraw);
         assert_eq!(session.input(), "first question");
         assert_eq!(session.scroll, 0, "recall scrolled the transcript as well");
+    }
+
+    /// The keys that walk the history do it whether or not a turn is running. They reached no
+    /// arm at all mid-turn and fell through to nothing, so a person watching a turn go wrong
+    /// could see their last prompt in the transcript and had no way to get it back into the box.
+    #[test]
+    fn up_recalls_a_previous_prompt_while_a_turn_is_running() {
+        let mut session = Session::new("none");
+        for c in "first question".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        // No `complete`: the turn is still in flight.
+        assert_eq!(session.status, Status::Working);
+
+        assert_eq!(
+            handle_key_while_working(&mut session, key(KeyCode::Up)),
+            Action::Redraw
+        );
+        assert_eq!(session.input(), "first question");
+
+        assert_eq!(
+            handle_key_while_working(&mut session, key(KeyCode::Down)),
+            Action::Redraw
+        );
+        assert!(session.input().is_empty(), "Down did not walk back out");
+    }
+
+    /// The two paths differ over what may be sent and over nothing else. They drifted once, in
+    /// silence, and what a person lost was every key in this list, so the agreement is asserted
+    /// rather than left to whoever next edits one of them.
+    #[test]
+    fn the_navigation_keys_do_the_same_thing_whether_or_not_a_turn_is_running() {
+        let sent = |finished: bool| {
+            let mut session = Session::new("none");
+            for c in "first question".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key(&mut session, key(KeyCode::Enter));
+            // The same transcript either way, so only the running turn differs.
+            if finished {
+                session.complete("an answer", Vec::new(), 0);
+            } else {
+                session.narrate("an answer");
+            }
+            session
+        };
+
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Backspace,
+            KeyCode::Char('x'),
+        ] {
+            let mut idle = sent(true);
+            let mut working = sent(false);
+            assert_eq!(working.status, Status::Working);
+
+            handle_key(&mut idle, key(code));
+            handle_key_while_working(&mut working, key(code));
+
+            assert_eq!(idle.input(), working.input(), "{code:?} typed differently");
+            assert_eq!(idle.scroll, working.scroll, "{code:?} scrolled differently");
+        }
     }
 
     /// Down walks back out of history, restoring the line that was being typed.

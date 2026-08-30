@@ -141,3 +141,26 @@ the next press takes a bracket, which is the thing that no longer happens.
 
 `verified-by: bravebot_tui::render::the_caret_covers_a_whole_marker`
 `verified-by: bravebot_tui::render::a_marker_the_wrap_split_is_covered_on_both_rows`
+
+<a id="INPUT-9"></a>
+### INPUT-9: the box behaves the same whether or not a turn is running
+
+Typing, editing, pasting, completing, walking back through earlier prompts and scrolling the
+transcript all do while a turn is in flight exactly what they do at rest. What a running turn
+refuses is **sending**, and nothing else.
+
+**Why.** The box took nothing at all mid-turn once, and it was opened up a piece at a time:
+characters, then editing, then pasting. Walking the history was left behind, so a person could
+compose a new prompt during a turn but could not reach the one they had just sent, which is the
+one they want most when a turn is going wrong in front of them. The keys reached no arm and did
+nothing at all, not even the scrolling they fall through to at rest.
+
+A difference between the two has to be a difference about sending. Anything else is drift, and
+this one was silent, so the two paths walk one list of keys rather than a list each.
+
+`verified-by: bravebot_tui::app::the_navigation_keys_do_the_same_thing_whether_or_not_a_turn_is_running`
+`verified-by: bravebot_tui::app::up_recalls_a_previous_prompt_while_a_turn_is_running`
+`verified-by: bravebot_tui::state::recall_works_while_a_turn_is_running`
+`verified-by: bravebot_tui::state::a_recalled_prompt_still_cannot_be_sent_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::a_long_paste_folds_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::ctrl_j_is_not_swallowed_while_a_turn_runs`
