@@ -19,6 +19,7 @@ go through one. The trail is the record of those decisions.
 
 ## Clauses
 
+<a id="TRACE-1"></a>
 ### TRACE-1: every gate decision is recorded, allowed or refused
 
 A refusal is as much a record as a permission. A read and a write leave different trails, a
@@ -33,6 +34,7 @@ asked", which is most of what anyone asks it.
 `verified-by: bravebot_core::policy::the_audit_trail_records_the_precommit_first`
 `verified-by: bravebot_core::policy::a_turn_cannot_begin_without_routing`
 
+<a id="TRACE-2"></a>
 ### TRACE-2: the trail holds no content
 
 Every field is a gate name, a capability, a label, a path or a slot id. That is why it can be shown
@@ -41,6 +43,7 @@ for a workspace nobody vouched for.
 
 `verified-by: none`
 
+<a id="TRACE-3"></a>
 ### TRACE-3: an assertion a person made is recorded as one
 
 Vouching for the output of a command the user typed, labelling their configuration, and admitting a
@@ -54,6 +57,7 @@ system deduced would omit exactly the decisions somebody might later want to acc
 `verified-by: bravebot_core::policy::labelling_configuration_is_recorded_in_the_audit_trail`
 `verified-by: bravebot_core::policy::a_pasted_image_is_recorded_in_the_audit_trail`
 
+<a id="TRACE-4"></a>
 ### TRACE-4: on disk it is one JSON object per line, with the axes written out in words
 
 A session's trail is appended a turn at a time, so a line-oriented file can be read with whatever
@@ -114,6 +118,7 @@ ok      declassify: ref:3 released into src/config.py, which is inside the works
 ok      approval: src/config.py: a path nobody has vouched for either way, asking
 ```
 
+<a id="TRACE-5"></a>
 ### TRACE-5: the trail is readable live and after the fact
 
 `--trace` on a one-shot run prints the same thing, and Ctrl-T toggles it in a session. Each line is

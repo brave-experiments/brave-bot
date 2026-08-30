@@ -23,6 +23,7 @@ question.
 
 ## Clauses
 
+<a id="SANDBOX-1"></a>
 ### SANDBOX-1: confinement fails closed
 
 If confinement cannot be established the process does not run. An unavailable backend refuses to
@@ -37,6 +38,7 @@ not have, and the audit trail records a sandbox that was never applied.
 `verified-by: bravebot_sandbox::lib::the_platform_lookup_never_returns_an_unconfined_backend`
 `verified-by: bravebot_sandbox::lib::errors_explain_the_refusal`
 
+<a id="SANDBOX-2"></a>
 ### SANDBOX-2: a policy that would confine nothing is refused
 
 A profile starts denying everything, grants accumulate onto it, and a fully permissive policy is
@@ -50,6 +52,7 @@ rejected rather than applied. Granting everything is not a confinement decision.
 `verified-by: bravebot_sandbox::macos::a_fully_permissive_policy_is_refused`
 `verified-by: bravebot_sandbox::linux::a_fully_permissive_policy_is_refused`
 
+<a id="SANDBOX-3"></a>
 ### SANDBOX-3: the network is denied unless it was asked for
 
 A confined process reaches neither the network nor the filesystem outside its grants.
@@ -59,6 +62,7 @@ A confined process reaches neither the network nor the filesystem outside its gr
 `verified-by: bravebot_sandbox::macos::a_confined_process_cannot_write_outside_its_grants`
 `verified-by: bravebot_sandbox::macos::a_confined_process_runs`
 
+<a id="SANDBOX-4"></a>
 ### SANDBOX-4: a path cannot inject profile syntax
 
 Grants are paths, and a path is content: one containing profile syntax is quoted rather than
@@ -71,6 +75,7 @@ the sandbox permits.
 `verified-by: bravebot_sandbox::macos::a_profile_containing_a_hostile_path_still_applies`
 `verified-by: bravebot_sandbox::macos::granted_paths_appear_as_subpath_rules`
 
+<a id="SANDBOX-5"></a>
 ### SANDBOX-5: capabilities report what the kernel actually enforces, and never more
 
 A backend says what it can enforce rather than what it was asked for, and a policy demanding

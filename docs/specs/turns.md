@@ -12,6 +12,7 @@ How long a turn may go on, and what happens when it does not stop.
 
 ## Clauses
 
+<a id="TURN-1"></a>
 ### TURN-1: a turn may make 40 rounds, and then loses its tools rather than ending
 
 On the fortieth round the next request offers no tools, the planner is told it has none left, and

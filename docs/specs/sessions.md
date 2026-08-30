@@ -16,6 +16,7 @@ person typed so they can be recalled. What a resume does to standing permissions
 
 ## Clauses
 
+<a id="SESSION-1"></a>
 ### SESSION-1: a session belongs to the directory it ran in
 
 Records live under one directory per working directory, so the list worth seeing when resuming in
@@ -26,6 +27,7 @@ picker shows and what a resume needs, and the trail, appended a turn at a time.
 `verified-by: bravebot_tui::sessions::a_working_directory_becomes_one_readable_segment`
 `verified-by: bravebot_tui::sessions::a_path_with_nothing_in_it_still_names_a_directory`
 
+<a id="SESSION-2"></a>
 ### SESSION-2: nothing untrusted is ever written down
 
 Every message in the record has already been past the gate that decides what the planner may see,
@@ -39,6 +41,7 @@ design exists to close.
 
 `verified-by: none`
 
+<a id="SESSION-3"></a>
 ### SESSION-3: the record carries what a resume needs and nothing more
 
 The conversation, the plan each turn worked to, what the session has spent, the branch it ran on,
@@ -50,6 +53,7 @@ immediately, a chosen name survives the next turn, and an empty name is refused.
 `verified-by: bravebot_tui::sessions::a_session_can_be_named_before_it_has_a_record`
 `verified-by: bravebot_tui::sessions::an_empty_name_is_refused`
 
+<a id="SESSION-4"></a>
 ### SESSION-4: a title comes from the prompt, and is cut rather than mangled
 
 The first line of what was asked. A long one is cut and says it was, and a prompt with nothing in
@@ -59,6 +63,7 @@ it still has a title.
 `verified-by: bravebot_tui::sessions::a_long_title_is_cut_and_says_it_was`
 `verified-by: bravebot_tui::sessions::a_prompt_with_nothing_in_it_still_has_a_title`
 
+<a id="SESSION-5"></a>
 ### SESSION-5: everything here degrades to doing nothing
 
 A missing home directory, a full disk, a corrupt record, a stored time in the future: a session
@@ -74,6 +79,7 @@ not be saved would trade something that matters for something that does not.
 `verified-by: bravebot_tui::persist::no_home_directory_is_not_an_error`
 `verified-by: bravebot_tui::persist::the_directory_is_created_on_first_write`
 
+<a id="SESSION-6"></a>
 ### SESSION-6: a submitted prompt is remembered, and a cancelled one is not
 
 Prompts persist across runs and are capped, consecutive duplicates collapse into one, and a prompt
@@ -88,6 +94,7 @@ that was cancelled is removed again.
 `verified-by: bravebot_tui::persist::saving_replaces_what_was_stored`
 `verified-by: bravebot_tui::history::consecutive_duplicates_are_collapsed`
 
+<a id="SESSION-7"></a>
 ### SESSION-7: recalling a prompt is a mode, and leaving it restores what was being typed
 
 Up walks backwards from the most recent and stops at the oldest, Down walks forwards again, and

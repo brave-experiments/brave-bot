@@ -24,6 +24,7 @@ what the rule is about, so a line the user typed is outside it.
 
 ## Clauses
 
+<a id="SHELL-1"></a>
 ### SHELL-1: `!` on an empty prompt runs the line through `$SHELL -c`
 
 Globs, `$VAR`, redirection, `&&` and `$(...)` all work as they do in the user's terminal. The
@@ -41,6 +42,7 @@ not run.
 `verified-by: bravebot_tui::shell_mode::the_prompt_marker_changes_in_shell_mode`
 `verified-by: bravebot_tui::shell_mode::the_hint_names_the_shell_while_in_shell_mode`
 
+<a id="SHELL-2"></a>
 ### SHELL-2: nothing asks
 
 The approval prompt exists so a person endorses argv the **planner** proposed. Here the person is
@@ -49,6 +51,7 @@ simply runs.
 
 `verified-by: bravebot_agent::shell::the_command_is_recorded_as_something_the_user_did`
 
+<a id="SHELL-3"></a>
 ### SHELL-3: the output is `(T,priv)` and reaches the planner in full
 
 Not as a reference. This is the difference from a program the planner ran itself: after
@@ -68,6 +71,7 @@ responsibility, and nothing inspected anything.
 `verified-by: bravebot_tui::shell_mode::output_is_not_drawn_as_quarantined`
 `verified-by: bravebot_tui::shell_mode::output_cannot_draw_its_own_escapes`
 
+<a id="SHELL-4"></a>
 ### SHELL-4: only a line a human typed
 
 Never argv the planner proposed, never text read from a file, never anything a processor produced,
@@ -78,6 +82,7 @@ that is the TUI's shell mode and nothing else.
 
 `verified-by: none`
 
+<a id="SHELL-5"></a>
 ### SHELL-5: the planner gets no shell tool, ever
 
 Not behind a capability, not behind an approval prompt, not via MCP. If it could ask for one,

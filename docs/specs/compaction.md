@@ -27,6 +27,7 @@ context exactly as the planner's own words are. Nothing is upgraded.
 
 ## Clauses
 
+<a id="COMPACT-1"></a>
 ### COMPACT-1: a summary is adopted only while the context is trusted
 
 Once the context has gone untrusted the summary is refused and the conversation is left exactly as
@@ -46,6 +47,7 @@ what catches it.
 `verified-by: bravebot_core::policy::a_summary_of_an_untrusted_conversation_is_refused_rather_than_adopted`
 `verified-by: bravebot_agent::turn::a_summary_of_an_untrusted_conversation_leaves_the_conversation_whole`
 
+<a id="COMPACT-2"></a>
 ### COMPACT-2: the summariser is offered no tools
 
 It is asked for text and given nothing to act with.
@@ -53,6 +55,7 @@ It is asked for text and given nothing to act with.
 `verified-by: bravebot_agent::turn::the_summariser_is_offered_no_tools`
 `verified-by: bravebot_agent::turn::compacting_on_request_grants_itself_nothing_but_reaching_the_model`
 
+<a id="COMPACT-3"></a>
 ### COMPACT-3: three things compaction never touches
 
 The **quarantine**, which holds the only copy of what a surviving reference names; the **reference
@@ -63,6 +66,7 @@ None of these may be relaxed to save room.
 
 `verified-by: bravebot_agent::conversation::compacting_forgets_a_measurement_of_the_conversation_it_replaced`
 
+<a id="COMPACT-4"></a>
 ### COMPACT-4: the cut never lands inside a round
 
 A call is never separated from its results, and a round in progress is not a place to cut. Whole
@@ -78,6 +82,7 @@ tail holding an answer to a call that is not there.
 `verified-by: bravebot_agent::conversation::compaction_keeps_the_most_recent_exchanges_word_for_word`
 `verified-by: bravebot_agent::turn::a_long_turn_summarises_its_earlier_rounds_partway_through`
 
+<a id="COMPACT-5"></a>
 ### COMPACT-5: a cut must give up at least as much as it keeps
 
 Summarising costs a model call, and a request has a floor it cannot go below: the system prompt and
@@ -91,6 +96,7 @@ relax this to compact sooner.
 `verified-by: bravebot_agent::conversation::a_conversation_with_nothing_but_recent_exchanges_is_not_compacted`
 `verified-by: bravebot_agent::turn::a_conversation_nobody_has_measured_is_not_compacted`
 
+<a id="COMPACT-6"></a>
 ### COMPACT-6: the request is shortened, never the record
 
 The replaced messages go to an archive the transcript still reads and the session record still
@@ -101,6 +107,7 @@ stores. The user owns their transcript; compaction is about what gets sent.
 `verified-by: bravebot_agent::conversation::what_a_call_returned_is_not_recounted`
 `verified-by: bravebot_agent::conversation::a_call_with_unreadable_arguments_is_still_recounted`
 
+<a id="COMPACT-7"></a>
 ### COMPACT-7: the budget is configurable, and a nonsensical one falls back
 
 A budget that makes no sense falls back to the default rather than disabling compaction, so a

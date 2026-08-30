@@ -34,6 +34,7 @@ a second reason to trust it.
 
 ## Clauses
 
+<a id="PASTE-1"></a>
 ### PASTE-1: a long paste folds to a marker, and the words are what get sent
 
 More than a couple of lines folds to `[Pasted text #2 +40 lines]`, counting the lines a person
@@ -54,6 +55,7 @@ what is about to be sent is what the prompt says, and deleting the marker drops 
 `verified-by: bravebot_tui::app::a_pasted_prompt_is_sent_when_the_user_says_so`
 
 
+<a id="PASTE-2"></a>
 ### PASTE-2: only a picture a human pasted
 
 Never bytes a tool read, never anything a processor produced, never an image a path in model
@@ -65,6 +67,7 @@ that is the TUI's Ctrl-V and nothing else.
 `verified-by: bravebot_tui::app::a_picture_off_the_clipboard_becomes_a_marker_in_the_line`
 
 
+<a id="PASTE-3"></a>
 ### PASTE-3: the media type is the driver's, never the content's
 
 It ends up in the data URL, where it is routing, so it comes from a fixed set
@@ -73,6 +76,7 @@ the clipboard reader owns, and never from a filename or from what a tool printed
 `verified-by: none`
 
 
+<a id="PASTE-4"></a>
 ### PASTE-4: the picture is inlined, never linked
 
 A URL would have the endpoint fetch it over a connection this process never makes, which is an
@@ -81,6 +85,7 @@ egress `bravebot-net` could not gate.
 `verified-by: none`
 
 
+<a id="PASTE-5"></a>
 ### PASTE-5: a paste does not lower context integrity
 
 It says nothing about content the planner has met. Lowering it here would have a screenshot mark
@@ -89,6 +94,7 @@ everything the planner then wrote as untrusted, on the strength of the user's ow
 `verified-by: none`
 
 
+<a id="PASTE-6"></a>
 ### PASTE-6: what is sent is what the prompt says
 
 The marker is written where the caret is and the picture goes wherever that text goes. Deleting
@@ -100,6 +106,7 @@ over 10 MB is refused rather than sent, and says so with its size.
 `verified-by: bravebot_tui::app::a_picture_too_large_to_send_says_so_with_its_size`
 
 
+<a id="PASTE-7"></a>
 ### PASTE-7: reading the clipboard is presentation plumbing and holds no labels
 
 Command-V is the terminal's chord and never reaches this process: the byte stream over a pty has
@@ -118,12 +125,14 @@ On macOS this reads the pasteboard through `osascript`. On Linux it needs `wl-pa
 `verified-by: bravebot_tui::clipboard::a_missing_tool_is_not_taken_for_a_successful_copy`
 
 
+<a id="PASTE-8"></a>
 ### PASTE-8: every paste is named in the audit trail
 
 With its type and size, so `--trace` and Ctrl-T account for the pictures as well as the words.
 
 `verified-by: bravebot_core::policy::a_pasted_image_is_recorded_in_the_audit_trail`
 
+<a id="PASTE-9"></a>
 ### PASTE-9: a pasted picture is kept with the session and comes back on resume
 
 The picture is part of the user's own message, so it is written into the session record alongside

@@ -16,6 +16,7 @@ are no content arguments. What a program's output is labelled in the first place
 
 ## Clauses
 
+<a id="OUTPUT-1"></a>
 ### OUTPUT-1: this is an assertion about bytes, and is not a relabel
 
 A person is shown the bytes themselves with the command that printed them, and decides.
@@ -52,6 +53,7 @@ stderr, and a planner that cannot see it will report that the command worked.
 `verified-by: bravebot_agent::turn::output_a_person_reads_and_approves_reaches_the_planner`
 `verified-by: bravebot_agent::turn::output_a_person_refuses_stays_out_of_the_planner`
 
+<a id="OUTPUT-2"></a>
 ### OUTPUT-2: only output from a program can be read this way
 
 A file's worth is the trust map's answer, and naming a file, opening a directory and the startup

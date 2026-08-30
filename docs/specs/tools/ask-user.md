@@ -18,6 +18,7 @@ only one with no effect at all.
 
 ## Clauses
 
+<a id="ASK-1"></a>
 ### ASK-1: the questions are routing, approved by being read
 
 `ask_user` still has a destination, the user's screen, and the questions and their options decide
@@ -28,6 +29,7 @@ display.
 `verified-by: bravebot_core::ask::a_shaped_question_carries_the_tag_it_is_shown_under`
 `verified-by: bravebot_core::ask::a_question_with_no_options_is_still_a_question`
 
+<a id="ASK-2"></a>
 ### ASK-2: one to four questions, refused whole rather than trimmed
 
 One call carries one to four questions. More is refused, never trimmed. The gate runs **once**,
@@ -43,6 +45,7 @@ saw.
 `verified-by: bravebot_core::ask::shaping_a_series_never_drops_a_question`
 `verified-by: bravebot_core::policy::a_refused_series_yields_no_answer_at_all`
 
+<a id="ASK-3"></a>
 ### ASK-3: asking stops once the planner's context has met something untrusted
 
 The questions carry the integrity of the planner's context. Once that context is untrusted, the
@@ -62,6 +65,7 @@ what catches it.
 `verified-by: bravebot_core::policy::a_series_from_an_untrusted_context_cannot_be_put_to_the_user`
 `verified-by: bravebot_core::policy::answers_to_an_untrusted_series_are_refused`
 
+<a id="ASK-4"></a>
 ### ASK-4: a quarantined read does not stop the planner asking
 
 Context integrity falls when the planner is **shown** something untrusted, never when a turn reads
@@ -76,6 +80,7 @@ Never move this back to the observation.
 `verified-by: bravebot_agent::turn::what_the_planner_writes_after_a_quarantined_read_stays_trusted`
 `verified-by: bravebot_core::policy::a_quarantined_read_leaves_the_planner_able_to_see_its_own_words`
 
+<a id="ASK-5"></a>
 ### ASK-5: an answer is trusted as a first label, and only for a trustworthy question
 
 The bytes came from the user's keyboard, the same source as the task itself. That is a first label
@@ -84,6 +89,7 @@ itself trustworthy (ASK-3).
 
 `verified-by: bravebot_agent::turn::every_answer_in_a_series_reaches_the_planner`
 
+<a id="ASK-6"></a>
 ### ASK-6: skipping answers a question, and questions are put one at a time
 
 Questions are put one at a time with the position shown. For each, the user may pick an option,
@@ -99,6 +105,7 @@ answered and what was passed over.
 `verified-by: bravebot_core::ask::an_answer_with_no_question_is_dropped_rather_than_attributed_to_one`
 `verified-by: bravebot_agent::turn::a_skipped_question_comes_back_as_a_decline_beside_the_rest`
 
+<a id="ASK-7"></a>
 ### ASK-7: where nobody can be asked, every question is declined
 
 In a one-shot `bravebot "..."` run, every question in the series is declined rather than answered
@@ -109,6 +116,7 @@ not asking.
 
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
 
+<a id="ASK-8"></a>
 ### ASK-8: an answer is remembered for the session, question by question
 
 A planner that loops back over the same decision does not make the user restate it, and a set

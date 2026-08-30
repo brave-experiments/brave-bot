@@ -19,6 +19,7 @@ person approves a diff of a few lines.
 
 ## Clauses
 
+<a id="EDIT-1"></a>
 ### EDIT-1: an edit refuses rather than guesses
 
 It refuses when the passage is missing, when it occurs more than once without `replace_all`, and
@@ -30,6 +31,7 @@ actually happens.
 `verified-by: bravebot_agent::turn::an_ambiguous_edit_is_refused_without_asking`
 `verified-by: bravebot_agent::turn::an_approved_edit_changes_only_the_matched_passage`
 
+<a id="EDIT-2"></a>
 ### EDIT-2: an edit requires a trusted file
 
 Locating a passage means comparing text, and a comparison is a decision. On a file nobody vouched
@@ -39,6 +41,7 @@ located and the body is shown to a person in full.
 
 `verified-by: bravebot_agent::turn::editing_an_untrusted_file_is_refused`
 
+<a id="EDIT-3"></a>
 ### EDIT-3: an edit is approved as a diff, and cannot leave the workspace
 
 `verified-by: bravebot_agent::turn::an_edit_is_reviewed_as_a_diff`

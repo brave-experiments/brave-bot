@@ -14,6 +14,7 @@ is the call surface.
 
 ## Clauses
 
+<a id="SPAWN-1"></a>
 ### SPAWN-1: the call names the slots it may read, and gets nothing else
 
 A processor is given exactly the references named in `reads`. A reference naming nothing is
@@ -24,6 +25,7 @@ refused, a call with nothing to read is refused, and naming the same reference t
 `verified-by: bravebot_core::policy::a_processor_with_nothing_to_read_is_refused`
 `verified-by: bravebot_core::policy::naming_the_same_reference_twice_is_refused`
 
+<a id="SPAWN-2"></a>
 ### SPAWN-2: the instruction comes from the planner and may not be private
 
 It is the only thing steering the call, and it comes from a context holding nothing an attacker
@@ -31,6 +33,7 @@ wrote.
 
 `verified-by: bravebot_core::policy::a_private_instruction_cannot_direct_a_processor`
 
+<a id="SPAWN-3"></a>
 ### SPAWN-3: the result is a reference, never text
 
 The planner is told the shape of what was produced and no more, so an instruction can ask the

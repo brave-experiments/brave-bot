@@ -13,12 +13,14 @@ a confirmation.
 
 ## Clauses
 
+<a id="TODO-1"></a>
 ### TODO-1: there is no routing, because nothing is touched
 
 The plan is shown to the user and reaches nothing else. It is the one tool with no destination.
 
 `verified-by: none`
 
+<a id="TODO-2"></a>
 ### TODO-2: an unrecognised status reads as outstanding work
 
 A task is struck through only when it is finished, and anything the driver does not recognise

@@ -26,6 +26,7 @@ no work in one.
 
 ## Clauses
 
+<a id="PROC-1"></a>
 ### PROC-1: a processor holds no capabilities at all
 
 | | |
@@ -49,12 +50,14 @@ which is the thing this design refuses. A loop would give a reply something to s
 `verified-by: bravebot_core::policy::a_processor_with_nothing_to_read_is_refused`
 `verified-by: bravebot_core::policy::naming_the_same_reference_twice_is_refused`
 
+<a id="PROC-2"></a>
 ### PROC-2: the spec is built by the driver and frozen before the run
 
 The driver builds the spec, in one place, and nothing widens one afterwards.
 
 `verified-by: bravebot_core::processor::a_description_names_the_slots_and_the_label_but_no_content`
 
+<a id="PROC-3"></a>
 ### PROC-3: the output label is computed before the processor runs
 
 By taint over the inputs. Nothing the processor writes has any say in how what it writes is
@@ -62,6 +65,7 @@ labelled.
 
 `verified-by: bravebot_core::policy::an_output_is_labelled_by_taint_over_the_inputs`
 
+<a id="PROC-4"></a>
 ### PROC-4: the input is assembled by the policy layer
 
 The policy layer, the part of `bravebot-core` that owns the gates, concatenates the slots. The driver carries the result wrapped and hands it to the call
@@ -70,6 +74,7 @@ be private.
 
 `verified-by: bravebot_core::policy::a_private_instruction_cannot_direct_a_processor`
 
+<a id="PROC-5"></a>
 ### PROC-5: the output is never shown to the planner
 
 It is presented like any other untrusted content: a reference, and nothing else.
@@ -77,6 +82,7 @@ It is presented like any other untrusted content: a reference, and nothing else.
 `verified-by: bravebot_agent::turn::the_planner_is_told_the_shape_of_what_a_processor_produced`
 `verified-by: bravebot_agent::turn::what_a_processor_says_reaches_the_person_and_no_model`
 
+<a id="PROC-6"></a>
 ### PROC-6: an answer is for one document, and belongs only where the planner said
 
 A write of a processor's answer is refused anywhere but the file the planner said the call was
@@ -89,6 +95,7 @@ approved it.
 
 `verified-by: none`
 
+<a id="PROC-7"></a>
 ### PROC-7: nothing a processor writes is a file unless it says where the file begins
 
 Everything before the document marker is a remark for the person watching: it reaches a
@@ -108,6 +115,7 @@ prose the answer was for the second returned the first, and the first went into 
 `verified-by: bravebot_core::policy::what_a_processor_says_is_split_from_what_it_produced`
 `verified-by: bravebot_core::policy::a_processor_can_say_why_it_left_a_document_alone`
 
+<a id="PROC-8"></a>
 ### PROC-8: quarantined content becomes a file body, and never anything else
 
 A private slot may become a file body. That is sound only
@@ -120,6 +128,7 @@ then records that path as untrusted, so reading it back does not launder it.
 
 ## Boundaries
 
+<a id="PROC-9"></a>
 ### PROC-9: the confinement is the capability set, not an operating system boundary
 
 There is no untrusted code involved: the call is made by the same trusted driver that makes every

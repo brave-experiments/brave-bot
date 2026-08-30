@@ -20,6 +20,7 @@ run, and reading what a run printed.
 
 ## What every prompt owes the reader
 
+<a id="PROMPT-1"></a>
 ### PROMPT-1: a prompt shows what is actually at stake, not a summary of it
 
 A write prompt shows the path and the body; an overwrite shows what it replaces; a run prompt
@@ -31,6 +32,7 @@ command that printed them. A person cannot endorse a routing field they were not
 `verified-by: bravebot_tui::confirm::a_run_prompt_shows_the_argv_the_binary_and_the_directory`
 `verified-by: bravebot_tui::confirm::the_output_prompt_shows_the_bytes_and_the_command`
 
+<a id="PROMPT-2"></a>
 ### PROMPT-2: a prompt says what approving does, and what it does not
 
 The run prompt says it is not sandboxed, asks for the side effects and the output together, and
@@ -47,6 +49,7 @@ nothing else would tell the user.
 `verified-by: bravebot_tui::trust_prompt::the_prompt_explains_the_consequence`
 `verified-by: bravebot_tui::trust_prompt::the_prompt_names_the_directory_and_both_answers`
 
+<a id="PROMPT-3"></a>
 ### PROMPT-3: what a prompt shows is drawn inside a margin it cannot forge
 
 Content in a prompt is untrusted like any other. An untrusted body is marked as such,
@@ -55,6 +58,7 @@ and command output is drawn inside the margin.
 `verified-by: bravebot_tui::confirm::an_untrusted_body_is_marked_in_the_prompt`
 `verified-by: bravebot_tui::confirm::output_is_drawn_inside_the_margin_it_cannot_forge`
 
+<a id="PROMPT-4"></a>
 ### PROMPT-4: a review stays legible, or says it could not
 
 A long body keeps the question on screen and offers the rest, which can be scrolled to. A small
@@ -72,6 +76,7 @@ on a passage rather than a whole body. A prompt that scrolled the question away 
 
 ## What an answer means
 
+<a id="PROMPT-5"></a>
 ### PROMPT-5: one answer is never taken for another
 
 An approved write does not approve a run. A write approval is not an answer to a question, and an
@@ -84,6 +89,7 @@ exact value it was given for.
 `verified-by: bravebot_tui::remote_confirm::a_write_approval_is_not_taken_as_an_answer_to_a_question`
 `verified-by: bravebot_tui::remote_confirm::an_answer_to_a_question_is_not_taken_as_consent_to_a_write`
 
+<a id="PROMPT-6"></a>
 ### PROMPT-6: standing permission needs its own key, and is never the default
 
 The run prompt separates running once from running always, Enter does not approve a run, and a run
@@ -97,6 +103,7 @@ for nothing.
 `verified-by: bravebot_tui::confirm::ctrl_c_refuses_the_run_and_vouches_for_nothing`
 `verified-by: bravebot_tui::trust_prompt::declining_trusts_nothing`
 
+<a id="PROMPT-7"></a>
 ### PROMPT-7: declining is not cancelling
 
 Saying no to a write does not stop the turn; Ctrl-C refuses it and does. Leaving at the startup
@@ -110,6 +117,7 @@ question ends the session, and only Ctrl-C leaves.
 `verified-by: bravebot_tui::trust_prompt::only_ctrl_c_leaves`
 `verified-by: bravebot_tui::trust_prompt::leaving_starts_no_session`
 
+<a id="PROMPT-8"></a>
 ### PROMPT-8: a resume restores standing permissions, and nothing else
 
 Two of these grants are standing: the trust map, and the list of commands a person said to stop
@@ -130,6 +138,7 @@ approving something nobody looked at.
 `verified-by: bravebot_core::policy::an_endorsement_cannot_be_replayed`
 `verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
 
+<a id="PROMPT-9"></a>
 ### PROMPT-9: where nobody can be asked, the answer is no
 
 A one-shot run refuses effects rather than applying them unseen, and declines every question

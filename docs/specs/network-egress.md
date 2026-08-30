@@ -14,6 +14,7 @@ comes back. What the returned bytes are labelled, and what may then be done with
 
 ## Clauses
 
+<a id="NET-1"></a>
 ### NET-1: there is one way out, and it is not optional
 
 Every outbound request goes through a single call. The HTTP client is private to that module and
@@ -27,6 +28,7 @@ bypassed the redirect check.
 `verified-by: bravebot_net::egress::a_successful_fetch_returns_a_labelled_body`
 `verified-by: bravebot_net::egress::a_fetch_without_the_capability_is_refused`
 
+<a id="NET-2"></a>
 ### NET-2: a redirect is revalidated on every hop
 
 Redirects are followed by hand and each new URL is put to the gate before it is fetched. The chain
@@ -43,6 +45,7 @@ permitted host could hand off to a denied one.
 `verified-by: bravebot_net::lib::relative_redirects_resolve_against_the_parent_path`
 `verified-by: bravebot_net::lib::scheme_relative_redirects_keep_the_scheme`
 
+<a id="NET-3"></a>
 ### NET-3: only http and https ever reach the network
 
 Any other scheme is refused before a connection is attempted, rather than handed to a library to
@@ -54,6 +57,7 @@ decided on.
 `verified-by: bravebot_net::lib::only_http_schemes_are_permitted`
 `verified-by: bravebot_net::egress::non_http_schemes_never_reach_the_network`
 
+<a id="NET-4"></a>
 ### NET-4: a body is capped, and a truncated one says so
 
 Past the cap the body is cut, and the result reports that it was. A body that stops partway is a
@@ -67,6 +71,7 @@ hygiene, not content inspection: the bytes are never parsed to decide anything.
 `verified-by: bravebot_net::lib::a_failed_read_is_not_a_short_body`
 `verified-by: bravebot_net::egress::a_body_that_stops_partway_is_a_failure_rather_than_a_short_body`
 
+<a id="NET-5"></a>
 ### NET-5: each phase of a request is bounded separately
 
 Connecting, starting to reply, and continuing to reply are timed apart. A reply that is still
@@ -80,6 +85,7 @@ choosing a single number makes one of those two cases wrong.
 `verified-by: bravebot_net::egress::a_reply_that_never_comes_gives_up`
 `verified-by: bravebot_net::egress::a_reply_that_stops_arriving_is_given_up_on`
 
+<a id="NET-6"></a>
 ### NET-6: a failure that means "not now" may be retried, and nothing else may
 
 A connection that gave out is worth another attempt. A refusal is not, and only the statuses that

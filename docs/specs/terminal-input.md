@@ -16,6 +16,7 @@ pasting is [pasting.md](pasting.md).
 
 ## Clauses
 
+<a id="INPUT-1"></a>
 ### INPUT-1: the box grows with the text, up to a cap
 
 The cap is ten rows, enough for a substantial paragraph while the transcript keeps the majority of
@@ -33,6 +34,7 @@ transcript, and the box stays beneath the list.
 `verified-by: bravebot_tui::render::the_box_stays_beneath_the_list`
 
 
+<a id="INPUT-2"></a>
 ### INPUT-2: Shift-Enter starts a line, Enter sends
 
 Ctrl-J does the same thing everywhere and needs no terminal configuration, because most terminals
@@ -52,6 +54,7 @@ written this way. Enter on an empty line does nothing.
 `verified-by: bravebot_tui::app::enter_on_empty_input_does_nothing`
 
 
+<a id="INPUT-3"></a>
 ### INPUT-3: a marker is deletable, and deleting it takes the thing off
 
 This holds for a folded paste, a pasted picture and a dropped file alike. It
@@ -63,6 +66,7 @@ is why a marker exists rather than a list the user cannot edit.
 `verified-by: bravebot_tui::render::an_attached_file_is_named_under_the_box`
 
 
+<a id="INPUT-4"></a>
 ### INPUT-4: escape clears a line before it quits
 
 Escape on a typed line clears it without quitting; on an empty line it quits. Escape and Ctrl-C
@@ -77,6 +81,7 @@ does nothing while a turn runs.
 `verified-by: bravebot_tui::app::the_editor_key_does_nothing_while_a_turn_runs`
 
 
+<a id="INPUT-5"></a>
 ### INPUT-5: where a chord cannot reach the process, the fallback is documented rather than silent
 
 Shift-Enter needs a terminal that reports the modifier (Ghostty, Kitty, WezTerm) or one configured

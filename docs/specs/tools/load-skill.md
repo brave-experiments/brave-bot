@@ -14,6 +14,7 @@ arguments. The result is the skill's text. Where skills come from and what they 
 
 ## Clauses
 
+<a id="LOAD-1"></a>
 ### LOAD-1: the name selects from a set fixed before the turn, and never becomes a path
 
 It is promoted the way a read path is, but is more confined than one: the name never becomes a
@@ -22,12 +23,14 @@ holding a traversal matches nothing, because there is no lookup for it to reach.
 
 `verified-by: bravebot_agent::turn::loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed`
 
+<a id="LOAD-2"></a>
 ### LOAD-2: a name close to a real one is refused, not guessed at
 
 **Why.** Guessing would load instructions nobody asked for.
 
 `verified-by: none`
 
+<a id="LOAD-3"></a>
 ### LOAD-3: a body reaches the context only when it is asked for
 
 The system prompt advertises names and descriptions and holds no bodies, which is what keeps a

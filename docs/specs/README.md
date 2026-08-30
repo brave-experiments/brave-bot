@@ -64,6 +64,10 @@ Front matter, then numbered clauses. Everything outside a clause is commentary a
 - **`id`** is a short prefix. Clause ids are `PREFIX-N`, allocated in order and never reused and
   never renumbered, because a commit message, an issue, and a test name all point at one. A
   withdrawn clause stays, marked withdrawn, and says what replaced it.
+- **Every clause carries an anchor**, `<a id="PREFIX-N"></a>` on the line directly above its
+  heading, so `labels.md#LABEL-3` is a link that keeps working. The anchor GitHub generates from
+  a heading contains the title, so it breaks the moment somebody improves the wording, which is
+  the moment an issue or a commit pointing at that clause most needs the link to survive.
 - **`governs`** lists the paths this spec decides. A diff touching one of them is reviewed against
   this file. Anything under no spec's `governs` is ordinary code and reviewed as such.
 - **`guards`** lists symbols whose every use is review-required.

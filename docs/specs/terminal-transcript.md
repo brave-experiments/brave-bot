@@ -16,6 +16,7 @@ able to see what the agent did. What the user types into is
 
 ## Clauses
 
+<a id="VIEW-1"></a>
 ### VIEW-1: the end of a reply is visible when it arrives, and scrolling back is deliberate
 
 A wrapped reply shows its end as it lands. Scrolling back changes the view and holds it there.
@@ -24,6 +25,7 @@ A wrapped reply shows its end as it lands. Scrolling back changes the view and h
 `verified-by: bravebot_tui::render::scrolling_back_changes_the_view`
 
 
+<a id="VIEW-2"></a>
 ### VIEW-2: a resumed session shows what the earlier turns did
 
 The trail, the plan worked to, the calls made, and what has been spent all come back, so reading a
@@ -35,6 +37,7 @@ transcript back does not depend on remembering the session.
 `verified-by: bravebot_tui::state::a_resumed_session_carries_on_counting_what_it_has_spent`
 
 
+<a id="VIEW-3"></a>
 ### VIEW-3: untrusted content is shown on purpose, inside a margin it cannot forge
 
 Showing it is deliberate and not a leak. Filenames out of a quarantined listing, the first lines of
@@ -57,6 +60,7 @@ than dropped, since a character silently removed is one the user cannot tell was
 `verified-by: bravebot_tui::render::quarantined_content_is_shown_and_marked_on_every_line`
 `verified-by: bravebot_agent::turn::quarantined_content_reaches_the_person_and_not_the_planner`
 
+<a id="VIEW-4"></a>
 ### VIEW-4: untrusted content is never drawn as structure
 
 A quarantined preview is never drawn as a table. Everything untrusted goes through the margin and
@@ -68,6 +72,7 @@ because it is trusted, and it still cannot draw its own escapes.
 `verified-by: bravebot_tui::shell_mode::output_cannot_draw_its_own_escapes`
 
 
+<a id="VIEW-5"></a>
 ### VIEW-5: a tiny terminal still renders
 
 Every prompt and the session view render at small sizes rather than panicking or truncating the

@@ -13,6 +13,7 @@ confirmation.
 
 ## Clauses
 
+<a id="WRITE-1"></a>
 ### WRITE-1: contents or a reference, never both
 
 `contents_ref` names quarantined content that becomes the whole file. It is **routing**, since it
@@ -24,6 +25,7 @@ still had to be endorsed on its own.
 
 `verified-by: bravebot_agent::turn::a_quarantined_file_is_rewritten_by_a_processor`
 
+<a id="WRITE-2"></a>
 ### WRITE-2: a reference that names no file is not a destination
 
 Everything a processor produced is such a reference. That refusal is what stops untrusted text
@@ -32,6 +34,7 @@ choosing where an effect lands.
 `verified-by: bravebot_agent::turn::a_processors_output_cannot_be_a_destination`
 `verified-by: bravebot_core::policy::a_reference_that_names_no_file_is_not_a_destination`
 
+<a id="WRITE-3"></a>
 ### WRITE-3: the planner never chooses a destination on its own
 
 A write needs a person's approval, which mints a single-use endorsement bound to that exact path,
@@ -45,6 +48,7 @@ applied unseen.
 `verified-by: bravebot_agent::turn::a_refused_overwrite_leaves_the_original`
 `verified-by: bravebot_agent::turn::an_approved_write_cannot_escape_the_workspace`
 
+<a id="WRITE-4"></a>
 ### WRITE-4: a write through a reference is always shown
 
 Even where the trust map would not ask. The person approving is shown the path.

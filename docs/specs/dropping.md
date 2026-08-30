@@ -28,6 +28,7 @@ can put a path there.
 
 ## Clauses
 
+<a id="DROP-1"></a>
 ### DROP-1: only a file a person dropped
 
 Never a path a model proposed, never one read out of a file, never one a processor produced. The
@@ -36,6 +37,7 @@ terminal's drop handling and nothing else.
 
 `verified-by: bravebot_tui::drop::dropping_an_image_puts_a_marker_in_the_line`
 
+<a id="DROP-2"></a>
 ### DROP-2: a drop makes that file trusted
 
 The rule recorded is for the file itself, so its contents can be read and it can be edited for the
@@ -44,6 +46,7 @@ dropped file is trusted even inside a directory marked untrusted.
 
 `verified-by: bravebot_agent::turn::attaching_a_file_vouches_for_it_the_way_naming_one_does`
 
+<a id="DROP-3"></a>
 ### DROP-3: a drop makes that file reachable, wherever on the disk it is
 
 An attachment, and only an attachment, may name a file outside the working directory.
@@ -60,6 +63,7 @@ but that a person's gesture put its path there.
 `verified-by: bravebot_tui::drop::a_drop_from_outside_the_workspace_is_attached_all_the_same`
 `verified-by: bravebot_tui::drop::the_name_handed_to_the_task_is_relative_to_the_workspace`
 
+<a id="DROP-4"></a>
 ### DROP-4: a recognised type is carried, and an unrecognised one is only a path
 
 Images and PDFs are carried as bytes, so the model looks at them. A text file becomes context, its
@@ -73,12 +77,14 @@ what dropping a file did before any of this existed. Extensions are recognised w
 `verified-by: bravebot_tui::dropped::an_extension_is_recognised_whatever_its_case`
 `verified-by: bravebot_tui::dropped::the_recognised_types_are_the_ones_claude_code_takes`
 
+<a id="DROP-5"></a>
 ### DROP-5: dropping a directory attaches nothing
 
 A directory is somewhere to type through rather than a file to read, so naming one includes nothing.
 
 `verified-by: bravebot_tui::drop::dropping_a_directory_attaches_nothing`
 
+<a id="DROP-6"></a>
 ### DROP-6: each dropped file gets its own marker, and deleting one takes it off
 
 `[Image #1]`, numbered so a second drop is distinguishable from the first, each keeping its place in
@@ -92,6 +98,7 @@ what was attached to it.
 `verified-by: bravebot_tui::drop::sending_a_line_clears_what_was_attached_to_it`
 `verified-by: bravebot_tui::drop::a_drop_leaves_room_after_itself`
 
+<a id="DROP-7"></a>
 ### DROP-7: a line is a drop only when every word of it is a path that exists
 
 Terminals deliver a drop as text, so it has to be told from typing. A plain, quoted, backslash

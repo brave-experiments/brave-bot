@@ -24,6 +24,7 @@ This spec is where an effect is allowed to land and what may decide it. What a l
 
 ## The split
 
+<a id="ROUTE-1"></a>
 ### ROUTE-1: every effect splits into routing and content
 
 **Routing** decides where an action goes: a file path, a URL, a recipient, an argument vector.
@@ -36,6 +37,7 @@ never reaches a component that decides, neither the planner nor the driver.
 
 `verified-by: bravebot_core::policy::fetched_content_can_be_written_but_cannot_choose_the_path`
 
+<a id="ROUTE-2"></a>
 ### ROUTE-2: routing must be `(T,pub)`
 
 Derived only from trusted input, and never from fetched content. Untrusted routing is an injection
@@ -46,6 +48,7 @@ somewhere this policy stops governing.
 `verified-by: bravebot_core::policy::routing_refuses_private_values`
 `verified-by: bravebot_core::value::trusted_private_values_are_not_routing_safe`
 
+<a id="ROUTE-3"></a>
 ### ROUTE-3: content may be untrusted, but must not be private at release
 
 Carrying bytes decides nothing, so untrusted content is ordinary. Private content is different:
@@ -58,6 +61,7 @@ destination is inside the boundary the bytes came from.
 
 ## The one relaxation
 
+<a id="ROUTE-4"></a>
 ### ROUTE-4: a read path may be promoted, and nothing else may
 
 Promotion lets the model choose which file to read next, because a read
@@ -74,6 +78,7 @@ back from somewhere.
 
 ## Effects
 
+<a id="ROUTE-5"></a>
 ### ROUTE-5: an effect needs a capability and a human endorsement
 
 An action whose capability was not granted is refused outright. A person's
@@ -90,6 +95,7 @@ be asked, effects are refused rather than applied unseen.
 `verified-by: bravebot_core::policy::ungranted_capabilities_are_refused`
 `verified-by: bravebot_core::policy::a_run_needs_the_capability_as_well_as_the_endorsement`
 
+<a id="ROUTE-6"></a>
 ### ROUTE-6: a reference is not a destination unless it names a file
 
 Resolving a reference to the name it stands for is the only way that name leaves the policy layer,
@@ -105,6 +111,7 @@ which is everything a processor produced, is refused as a destination.
 `verified-by: bravebot_core::policy::a_reference_that_names_no_file_is_not_a_destination`
 `verified-by: bravebot_agent::turn::a_processors_output_cannot_be_a_destination`
 
+<a id="ROUTE-7"></a>
 ### ROUTE-7: before adding a tool, ask what its routing field is
 
 If a person could not approve that field alone, the tool does not get built. A shell string is

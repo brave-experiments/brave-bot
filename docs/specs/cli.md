@@ -16,6 +16,7 @@ A one-shot run has nobody to ask, and most of what makes it different follows fr
 
 ## Clauses
 
+<a id="CLI-1"></a>
 ### CLI-1: where nobody can be asked, nothing is approved
 
 Effects are refused rather than applied unseen, and the planner's own questions are declined
@@ -27,6 +28,7 @@ planner is told a reply came from a person, so inventing one would be worse than
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
 `verified-by: bravebot_agent::turn::a_refused_write_does_not_happen`
 
+<a id="CLI-2"></a>
 ### CLI-2: stdin is read only when it is not a terminal
 
 A terminal's stdin is left alone, so an interactive invocation does not sit waiting for input
@@ -35,6 +37,7 @@ nobody is sending. Piped bytes are read when there are any.
 `verified-by: bravebot_cli::main::a_terminal_stdin_is_not_read`
 `verified-by: bravebot_cli::main::piped_bytes_are_read_when_stdin_is_not_a_terminal`
 
+<a id="CLI-3"></a>
 ### CLI-3: piped input is untrusted and private, always
 
 Nothing vouched for what a pipe carries: `gh pr diff` and `cat build-error.txt` both arrive the
@@ -48,6 +51,7 @@ pessimistic label is the only one that holds without knowing what fed it.
 `verified-by: bravebot_core::policy::piped_input_is_quarantined_when_presented`
 `verified-by: bravebot_agent::turn::piped_input_is_never_shown_to_the_planner`
 
+<a id="CLI-4"></a>
 ### CLI-4: input over the cap is refused, and says what to do instead
 
 Rather than truncated, since a silently shortened input is one the planner would answer about
@@ -55,6 +59,7 @@ having seen part of.
 
 `verified-by: bravebot_cli::main::input_over_the_cap_is_refused`
 
+<a id="CLI-5"></a>
 ### CLI-5: stdout carries the reply and nothing else
 
 Progress, errors and the audit trail go to stderr, so a one-shot run is pipeable. `--trace` puts
@@ -65,6 +70,7 @@ was released.
 
 `verified-by: none`
 
+<a id="CLI-6"></a>
 ### CLI-6: a failure exits non-zero
 
 A configuration error, a refused argument, and a turn that could not run all fail rather than
@@ -72,6 +78,7 @@ exiting successfully with an explanation on stdout.
 
 `verified-by: none`
 
+<a id="CLI-7"></a>
 ### CLI-7: `doctor` reports configuration and confinement without changing anything
 
 It prints the endpoint, whether a premium host is configured, the key id, the model in force and

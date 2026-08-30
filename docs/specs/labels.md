@@ -24,6 +24,7 @@ process, is in [routing.md](routing.md). Which paths a person vouched for is in
 
 ## The lattice
 
+<a id="LABEL-1"></a>
 ### LABEL-1: two axes, and a genuine lattice
 
 ```
@@ -43,6 +44,7 @@ imposed on it. Integrity meets pessimistically and confidentiality joins pessimi
 `verified-by: bravebot_core::label::ordering_is_transitive`
 `verified-by: bravebot_core::label::display_matches_the_canonical_notation`
 
+<a id="LABEL-2"></a>
 ### LABEL-2: a derived value is labelled by taint over its inputs
 
 One untrusted input taints the result. One private input makes it private. The axes degrade
@@ -59,6 +61,7 @@ No inputs means no taint.
 
 ## Who may read what
 
+<a id="LABEL-3"></a>
 ### LABEL-3: nothing untrusted in the planner's context
 
 Untrusted content is never placed in a message to the model. It is quarantined in a write-once
@@ -74,6 +77,7 @@ to a processor, described in [processors.md](processors.md).
 `verified-by: bravebot_core::reference::a_description_names_the_shape_and_not_the_content`
 `verified-by: bravebot_core::reference::a_description_says_how_to_refer_to_the_content`
 
+<a id="LABEL-4"></a>
 ### LABEL-4: nothing untrusted in the driver's context
 
 The driver may **carry** a labelled value and hand it to an effect, but may not **read** one. The
@@ -92,6 +96,7 @@ into the other does not remove it.
 `verified-by: bravebot_core::value::debug_redacts_the_value`
 `verified-by: by-construction (Deref, PartialEq and Display are not implemented for Labelled)`
 
+<a id="LABEL-5"></a>
 ### LABEL-5: a decision may be taken only from trusted content
 
 Comparing text is a decision. On trusted content that is fine, because a vouched-for path holds
@@ -105,6 +110,7 @@ and examining it in-process releases nothing.
 
 `verified-by: bravebot_core::policy::requesting_untrusted_content_is_refused`
 
+<a id="LABEL-6"></a>
 ### LABEL-6: minting a witness is not permission to inspect
 
 A witness records that bytes moved somewhere they were already allowed to go: a filesystem write,
@@ -116,6 +122,7 @@ trusted content. A declassification anywhere else is almost certainly a violatio
 
 ## Which direction a label may move
 
+<a id="LABEL-7"></a>
 ### LABEL-7: labels only ever degrade
 
 Integrity may go trusted to untrusted and never the reverse. Relabelling yields nothing rather than
@@ -131,6 +138,7 @@ design is wrong, not the label.
 `verified-by: bravebot_core::label::trusted_input_cannot_launder_untrusted`
 `verified-by: bravebot_core::label::top_of_taint_degrades_from_everything`
 
+<a id="LABEL-8"></a>
 ### LABEL-8: a first label comes from provenance, and is not an upgrade
 
 Model output is a function of the model's context and nothing else, so when the context holds only
@@ -144,6 +152,7 @@ If you find yourself relabelling a value that already has a label, stop: that is
 `verified-by: bravebot_core::policy::model_output_from_a_clean_context_is_trusted`
 `verified-by: bravebot_core::policy::observation_labels_come_from_the_capability`
 
+<a id="LABEL-9"></a>
 ### LABEL-9: context integrity falls when the planner is shown something, never when a turn reads it
 
 Context integrity only ever falls, and it falls when content is put in front of the planner. A

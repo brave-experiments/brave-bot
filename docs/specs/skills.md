@@ -25,6 +25,7 @@ read from, what each is trusted for, and how one is loaded.
 
 ## Clauses
 
+<a id="SKILL-1"></a>
 ### SKILL-1: a skill is one `SKILL.md` with `name` and `description` in frontmatter
 
 Both keys are required, and a file missing either is skipped with a note saying so. Other keys are
@@ -47,6 +48,7 @@ Write the subject in the imperative. Explain why in the body, never what.
 `verified-by: bravebot_agent::skills::the_body_is_everything_after_the_closing_marker`
 `verified-by: bravebot_agent::skills::a_marker_inside_the_body_is_left_alone`
 
+<a id="SKILL-2"></a>
 ### SKILL-2: only the name and description reach the prompt; the body waits for `load_skill`
 
 The description is what the planner decides from, so it should say *when* to use the skill rather
@@ -58,6 +60,7 @@ than what it contains.
 `verified-by: bravebot_agent::turn::a_skill_body_stays_out_of_the_context_until_it_is_asked_for`
 `verified-by: bravebot_agent::skills::skills_are_offered_in_the_same_order_every_time`
 
+<a id="SKILL-3"></a>
 ### SKILL-3: `~/.bravebot` is trusted by provenance, never by the trust map
 
 It is labelled from provenance, because the trust map is keyed by workspace-relative paths and has
@@ -73,6 +76,7 @@ the grant, on the same footing as the configuration that picks the model and the
 `verified-by: bravebot_agent::home::an_empty_home_is_treated_as_no_home_at_all`
 `verified-by: bravebot_agent::skills::a_skills_directory_that_does_not_exist_is_not_an_error`
 
+<a id="SKILL-4"></a>
 ### SKILL-4: a project's own files are read through the trust map
 
 A workspace `AGENTS.md` and `.bravebot/skills` are labelled as workspace content, so TRUST decides.
@@ -82,6 +86,7 @@ name is content too.
 `verified-by: bravebot_agent::skills::a_skill_in_an_untrusted_project_is_not_named_to_the_planner`
 `verified-by: bravebot_agent::skills::a_skill_the_trust_map_distrusts_stops_being_offered`
 
+<a id="SKILL-5"></a>
 ### SKILL-5: a source that fails `read_trusted_content` is dropped entirely, never quarantined
 
 Both `~/.bravebot` and a workspace source pass the trusted-content gate on the way into the system
@@ -93,6 +98,7 @@ description are content that would otherwise go into the prompt verbatim.
 
 `verified-by: bravebot_agent::skills::an_untrusted_skill_is_not_named_in_what_the_user_is_told`
 
+<a id="SKILL-6"></a>
 ### SKILL-6: what was skipped is counted, never named
 
 ```
@@ -105,6 +111,7 @@ name would be on the user's screen as though the agent had written it.
 
 `verified-by: bravebot_agent::skills::a_skill_that_was_skipped_is_counted_rather_than_passed_over_in_silence`
 
+<a id="SKILL-7"></a>
 ### SKILL-7: the most specific source wins
 
 Both `AGENTS.md` files are read, the global one first, so the project's own has the last word. A
@@ -112,6 +119,7 @@ project skill of the same name replaces a global one. This is the same "most spe
 
 `verified-by: bravebot_agent::skills::a_workspace_skill_shadows_a_home_skill_of_the_same_name`
 
+<a id="SKILL-8"></a>
 ### SKILL-8: `load_skill`'s name is never a path
 
 It selects from the set found before the turn started, so a name holding `../` or an absolute path
@@ -121,6 +129,7 @@ asked for.
 
 `verified-by: bravebot_agent::turn::loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed`
 
+<a id="SKILL-9"></a>
 ### SKILL-9: sources are looked for afresh every turn
 
 Writing a skill mid-session works, and so does having the agent write one. There is nothing to

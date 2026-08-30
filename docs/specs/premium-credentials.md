@@ -24,6 +24,7 @@ bravebot import-leo-creds --forget   # discard what was imported
 
 ## Clauses
 
+<a id="PREM-1"></a>
 ### PREM-1: this registers as a new device and never borrows the browser's credentials
 
 Only the subscription's **order id** is read from the browser profile. The credentials themselves
@@ -34,6 +35,7 @@ browser keeps its own, and nothing it holds is spent.
 `verified-by: bravebot_skus::profile::an_order_id_that_is_not_a_uuid_is_refused_rather_than_used`
 `verified-by: bravebot_skus::profile::uuids_are_recognised_and_near_misses_are_not`
 
+<a id="PREM-2"></a>
 ### PREM-2: a credential is never sent to the non-premium host
 
 The premium host and the credential travel together, because a credential belongs to a
@@ -43,6 +45,7 @@ does not belong.
 `verified-by: bravebot_aichat::client::a_subscribed_request_goes_to_the_premium_host_with_the_credential`
 `verified-by: bravebot_aichat::client::without_a_premium_host_no_credential_is_attached`
 
+<a id="PREM-3"></a>
 ### PREM-3: an order is checked before anything is registered against it
 
 An unpaid order, one asking for no credentials, one asking for an implausible number, and one
@@ -56,6 +59,7 @@ than assumed to be the only one.
 `verified-by: bravebot_skus::device::the_leo_item_is_picked_out_of_a_multi_item_order`
 `verified-by: bravebot_skus::device::an_order_says_how_many_credentials_to_ask_for`
 
+<a id="PREM-4"></a>
 ### PREM-4: a batch is verified against the issuer's key before it is stored
 
 A batch signed by the wrong key does not verify, one without a proof is refused, and one with no
@@ -67,6 +71,7 @@ signed credentials is an error. Tokens are matched by value, never by position.
 `verified-by: bravebot_skus::device::tokens_are_matched_by_value_not_by_position`
 `verified-by: bravebot_skus::device::a_well_formed_batch_is_decoded`
 
+<a id="PREM-5"></a>
 ### PREM-5: a credential is single-use and is never offered twice
 
 Credentials arrive in batches covering a few days and are spent one per request. A spent one is
@@ -80,6 +85,7 @@ of a batch is refused. A moment outside every validity window yields no credenti
 `verified-by: bravebot_skus::store::a_moment_outside_every_window_yields_no_credential`
 `verified-by: bravebot_skus::store::a_window_does_not_include_its_own_end`
 
+<a id="PREM-6"></a>
 ### PREM-6: nothing is written back unless a credential was actually spent
 
 A session that spends nothing never writes, and a detached batch has nowhere to write.
@@ -91,6 +97,7 @@ when nothing changed would ask the user for nothing.
 `verified-by: bravebot_skus::store::a_session_that_spends_nothing_never_writes`
 `verified-by: bravebot_skus::store::a_detached_batch_has_nowhere_to_write`
 
+<a id="PREM-7"></a>
 ### PREM-7: credentials live in the system keychain, and each channel is stored separately
 
 Not in a file. A malformed or empty entry is reported as such rather than treated as absent

@@ -24,6 +24,7 @@ that needs its parts labelled separately stays native rather than moving behind 
 
 ## Clauses
 
+<a id="MCP-1"></a>
 ### MCP-1: what a server returns is untrusted
 
 A tool result is content from outside, so it is labelled untrusted and quarantined like anything
@@ -31,6 +32,7 @@ else nobody vouched for. Nothing a server says about itself changes that.
 
 `verified-by: bravebot_mcp::stdio::a_tool_result_is_labelled_untrusted`
 
+<a id="MCP-2"></a>
 ### MCP-2: a call needs the capability, like any other effect
 
 A tool call without the capability granted is refused, so adding a server does not widen what the
@@ -38,6 +40,7 @@ agent may do.
 
 `verified-by: bravebot_mcp::stdio::a_tool_call_without_the_capability_is_refused`
 
+<a id="MCP-3"></a>
 ### MCP-3: a stdio server is not launched without confinement
 
 If the process cannot be confined it is not started, rather than started unconfined.
@@ -48,6 +51,7 @@ operating-system boundary exists for.
 `verified-by: bravebot_mcp::stdio::a_server_is_not_launched_without_confinement`
 `verified-by: bravebot_mcp::stdio::a_confined_server_completes_the_handshake_and_lists_tools`
 
+<a id="MCP-4"></a>
 ### MCP-4: bravebot advertises no capabilities of its own to a server
 
 The handshake offers nothing, so a server cannot ask this process to do anything on its behalf.
@@ -55,6 +59,7 @@ The handshake offers nothing, so a server cannot ask this process to do anything
 `verified-by: bravebot_mcp::protocol::initialize_advertises_no_capabilities`
 `verified-by: bravebot_mcp::protocol::call_params_carry_the_name_and_arguments`
 
+<a id="MCP-5"></a>
 ### MCP-5: a failure is reported, never treated as an empty result
 
 A server error, a tool-level error, and a server that exits early are all reported as failures. A
@@ -69,6 +74,7 @@ the truth is that nobody asked successfully.
 `verified-by: bravebot_mcp::protocol::an_error_response_parses`
 `verified-by: bravebot_mcp::http::a_reply_with_no_json_is_none`
 
+<a id="MCP-6"></a>
 ### MCP-6: only text content is taken from a result
 
 Non-text content is ignored rather than guessed at, and several text parts are joined.
@@ -76,6 +82,7 @@ Non-text content is ignored rather than guessed at, and several text parts are j
 `verified-by: bravebot_mcp::protocol::tool_result_text_is_joined`
 `verified-by: bravebot_mcp::protocol::non_text_content_is_ignored`
 
+<a id="MCP-7"></a>
 ### MCP-7: the transport is parsed strictly
 
 A request carries the protocol version, a notification has no id, and an HTTP reply framed as

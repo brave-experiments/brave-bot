@@ -25,6 +25,7 @@ it, and how long an answer lasts. It does not cover what a label means once assi
 
 ## The record
 
+<a id="TRUST-1"></a>
 ### TRUST-1: nothing is trusted until it is granted
 
 An empty map trusts no path. Trust is granted by a person and never inferred from silence, from
@@ -35,6 +36,7 @@ the answer decorative.
 
 `verified-by: bravebot_core::trust::an_empty_store_trusts_nothing`
 
+<a id="TRUST-2"></a>
 ### TRUST-2: the longest matching prefix decides
 
 Rules are keyed by path prefix and matched by whole segments. Both polarities are expressible, so
@@ -55,6 +57,7 @@ inside a `vendor` a person marked untrusted, without that answer leaking to its 
 `verified-by: bravebot_core::trust::equivalent_path_spellings_are_the_same_rule`
 `verified-by: bravebot_core::trust::a_later_decision_replaces_an_earlier_one`
 
+<a id="TRUST-3"></a>
 ### TRUST-3: relative and absolute rules are separate namespaces
 
 Keeping two namespaces is a workaround rather than a preference, and
@@ -83,6 +86,7 @@ prefix problem one map could not tell them apart.
 
 ## What a write does
 
+<a id="TRUST-4"></a>
 ### TRUST-4: what a write asks, and what it records
 
 Every row is normative. A write matching a row does exactly what that row says and nothing else.
@@ -120,6 +124,7 @@ write is shown.
 `verified-by: bravebot_core::policy::an_unvouched_path_prompts_either_way`
 `verified-by: bravebot_core::policy::a_file_written_with_untrusted_data_reads_back_untrusted`
 
+<a id="TRUST-5"></a>
 ### TRUST-5: reconciliation marks the exact path, never the parent
 
 Reconciliation records the file written, and no directory above it.
@@ -131,6 +136,7 @@ fetched page into a project nobody may edit.
 
 ## How long an answer lasts
 
+<a id="TRUST-6"></a>
 ### TRUST-6: the map belongs to the session, not the directory
 
 Every session start asks, whatever any earlier session in that directory answered. `/clear` begins
@@ -145,6 +151,7 @@ turn of the same session poisoned.
 
 `verified-by: none`
 
+<a id="TRUST-7"></a>
 ### TRUST-7: the startup question covers the whole workspace, and declining trusts nothing
 
 At startup the user is asked whether they trust the working directory. Yes writes a rule covering
@@ -163,6 +170,7 @@ anything inspected content. TRUST-7 is the first. Two more write a rule the same
 specs of their own: naming a file is [naming-files.md](naming-files.md), and dropping one on the
 window is [dropping.md](dropping.md).
 
+<a id="TRUST-8"></a>
 ### TRUST-8: a quarantined read offers the same rule, at the moment it bites
 
 When a turn reads a file nobody has vouched for, the user is shown the path and the first lines of
@@ -192,6 +200,7 @@ any of what it had done. One prompt would have let it read the file.
 
 `verified-by: none`
 
+<a id="TRUST-9"></a>
 ### TRUST-9: `/add-dir` makes a directory both reachable and trusted, for the session
 
 `/add-dir ~/notes` records an absolute rule (TRUST-3) that does two things together: the directory
@@ -211,6 +220,7 @@ outlive the answer that allowed it.
 
 ## Boundaries
 
+<a id="TRUST-10"></a>
 ### TRUST-10: no rule extends reach; reading, writing and listing stay confined
 
 Reading, writing, editing, listing and searching are confined to the working directory and to
@@ -223,6 +233,7 @@ includes nothing, since a directory is somewhere to type through rather than a f
 `verified-by: bravebot_agent::workspace::a_parent_component_cannot_climb_out_of_an_added_directory`
 `verified-by: bravebot_agent::workspace::a_symlink_out_of_an_added_directory_is_refused`
 
+<a id="TRUST-11"></a>
 ### TRUST-11: the map does not govern `~/.bravebot`
 
 `~/.bravebot` holds the user's history, sessions, standing instructions and skills, and is read as
@@ -236,6 +247,7 @@ the workspace. Asking it about one would be laundering.
 
 `verified-by: bravebot_agent::skills::a_skill_the_trust_map_distrusts_stops_being_offered`
 
+<a id="TRUST-12"></a>
 ### TRUST-12: `/status` lists the rules in force
 
 Every rule the session holds is readable back, so what a line vouched for does not have to be

@@ -13,6 +13,7 @@ has a spec of its own, linked from the table.
 
 ## Clauses
 
+<a id="TOOL-1"></a>
 ### TOOL-1: every argument is routing or content, and the split is fixed here
 
 Routing decides what a tool touches and must be trusted and public. Content is merely carried and
@@ -39,6 +40,7 @@ according to the trust map.
 `verified-by: bravebot_core::policy::routing_refuses_private_values`
 `verified-by: bravebot_core::policy::fetched_content_can_be_written_but_cannot_choose_the_path`
 
+<a id="TOOL-2"></a>
 ### TOOL-2: before adding a tool, ask what its routing field is
 
 If a person could not approve that field alone, the tool does not get built. A shell string is
@@ -47,6 +49,7 @@ excluded. An argument vector passes the test, which is why running a pipeline of
 
 `verified-by: none`
 
+<a id="TOOL-3"></a>
 ### TOOL-3: an unknown tool is reported to the planner rather than ignored
 
 `verified-by: bravebot_agent::turn::an_unknown_tool_is_reported_to_the_model`

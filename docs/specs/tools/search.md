@@ -14,6 +14,7 @@ content arguments. The result is the matching lines, or a reference.
 
 ## Clauses
 
+<a id="SEARCH-1"></a>
 ### SEARCH-1: the pattern is a literal substring, never a regular expression
 
 **Why.** A backtracking pattern arriving through a turn is a denial-of-service vector. The
@@ -21,6 +22,7 @@ content arguments. The result is the matching lines, or a reference.
 
 `verified-by: none`
 
+<a id="SEARCH-2"></a>
 ### SEARCH-2: a result touching several files is trusted only if every one of them is
 
 Otherwise it is quarantined whole. Unlike a listing, a search returns one reference for the whole
@@ -28,6 +30,7 @@ result rather than one per hit, so its hits are not addresses.
 
 `verified-by: none`
 
+<a id="SEARCH-3"></a>
 ### SEARCH-3: a truncated search tells the planner it is incomplete
 
 A complete one makes no such claim, so the planner can tell the difference between "nothing more"

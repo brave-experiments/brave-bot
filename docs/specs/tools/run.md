@@ -29,6 +29,7 @@ about shell strings and an argv vector is not one.
 
 ## Clauses
 
+<a id="RUN-1"></a>
 ### RUN-1: `run` takes a pipeline of argv stages, and never a command string
 
 ```
@@ -51,6 +52,7 @@ mode are separate modules, so a change to one cannot quietly become a shell for 
 `verified-by: bravebot_agent::exec::a_single_stage_returns_what_it_printed`
 `verified-by: bravebot_core::policy::an_empty_pipeline_is_refused`
 
+<a id="RUN-2"></a>
 ### RUN-2: argv is routing and must be endorsed by a person
 
 Program and arguments must be `(T,pub)`. Untrusted text never becomes an argument. The
@@ -60,6 +62,7 @@ endorsement is bound to that exact argv, so it cannot be reused for a different 
 `verified-by: bravebot_agent::exec::a_stage_runs_the_binary_it_was_resolved_to`
 `verified-by: bravebot_agent::exec::a_pipeline_with_missing_resolutions_does_not_run`
 
+<a id="RUN-3"></a>
 ### RUN-3: stdin is content and may be untrusted
 
 The planner names a quarantined reference and the policy layer supplies the bytes, so `sed` and `awk`
@@ -71,6 +74,7 @@ only the routing part has to be trustworthy.
 
 `verified-by: bravebot_agent::exec::a_stage_that_reads_stdin_is_given_nothing_rather_than_the_terminal`
 
+<a id="RUN-4"></a>
 ### RUN-4: output is untrusted and private by default, and nothing inferred changes that
 
 | | Label | Gate |
@@ -90,6 +94,7 @@ rather than inferences.
 `verified-by: bravebot_core::policy::output_of_a_vouched_command_is_still_private`
 `verified-by: bravebot_core::policy::one_unvouched_stage_makes_the_whole_output_untrusted`
 
+<a id="RUN-5"></a>
 ### RUN-5: every run asks, unless every stage was vouched for
 
 There is no read-only category. `foo --bar` might write to disk and nothing here can tell, and a
@@ -104,6 +109,7 @@ a program printed.
 `verified-by: bravebot_core::policy::a_vouched_command_is_not_asked_about_again`
 `verified-by: bravebot_core::policy::one_unvouched_stage_puts_the_whole_pipeline_to_a_person`
 
+<a id="RUN-6"></a>
 ### RUN-6: private input asks every time, whatever is vouched for
 
 Untrusted input is fine, since carrying bytes decides nothing. Private input hands the user's data
@@ -115,6 +121,7 @@ command is not consenting to hand it the user's data.
 
 `verified-by: bravebot_core::policy::private_input_asks_even_for_a_vouched_command`
 
+<a id="RUN-7"></a>
 ### RUN-7: vouching grants two things together, and the prompt asks for both
 
 ```
@@ -135,6 +142,7 @@ and do not let anything else mint an entry.
 `verified-by: bravebot_tui::confirm::a_run_prompt_asks_for_the_side_effects_and_the_output_together`
 `verified-by: bravebot_core::policy::a_turn_inherits_what_the_session_vouched_for`
 
+<a id="RUN-8"></a>
 ### RUN-8: an entry is keyed by resolved path and exact arguments
 
 `git log` says nothing about `git push`, and nothing about `git log --all`. `$PATH` and aliases
@@ -146,6 +154,7 @@ for and its output is what the next stage read.
 `verified-by: bravebot_core::policy::vouching_for_one_command_does_not_cover_another_of_the_same_program`
 `verified-by: bravebot_core::policy::vouching_does_not_follow_a_name_onto_a_different_binary`
 
+<a id="RUN-9"></a>
 ### RUN-9: the vouched list belongs to the session
 
 Empty at the start of every session, written into the session record, restored by `--resume`,
@@ -156,6 +165,7 @@ prompts stop, so it has to be readable back.
 
 `verified-by: bravebot_core::policy::a_fresh_policy_vouches_for_no_command`
 
+<a id="RUN-10"></a>
 ### RUN-10: the vouched-for list is not an allowlist and must never become one
 
 It never decides what may run. A command nobody vouched for still runs after a prompt, nothing is

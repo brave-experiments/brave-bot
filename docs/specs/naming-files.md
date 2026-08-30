@@ -28,6 +28,7 @@ name a file when you want it worked on.
 
 ## Clauses
 
+<a id="NAME-1"></a>
 ### NAME-1: a named file's contents enter the turn as trusted input
 
 `@path` in a prompt and `--file` on the command line do the same thing and are trusted for the same
@@ -35,6 +36,7 @@ reason.
 
 `verified-by: bravebot_agent::turn::naming_one_file_leaves_the_rest_of_the_workspace_quarantined`
 
+<a id="NAME-2"></a>
 ### NAME-2: the rule is for that file, and nothing beside it
 
 A rule on a file is more specific than any rule on the tree around it, so `@vendor/lib.js` is
@@ -43,6 +45,7 @@ trusted inside a `vendor` marked untrusted, and the rest of that directory stays
 `verified-by: bravebot_core::policy::naming_a_file_vouches_for_nothing_beside_it`
 `verified-by: bravebot_core::policy::a_named_file_is_trusted_inside_an_untrusted_tree`
 
+<a id="NAME-3"></a>
 ### NAME-3: the rule outlives the read
 
 The file can be edited afterwards, which is usually the point of naming it. Naming one also works
@@ -50,6 +53,7 @@ in a directory declined at startup.
 
 `verified-by: none`
 
+<a id="NAME-4"></a>
 ### NAME-4: typing `@` offers what is in the workspace, so the choice is informed
 
 The list opens on the root with directories first, a prefix narrows it, a slash descends, and
@@ -69,6 +73,7 @@ among what is offered.
 `verified-by: bravebot_tui::entries::a_slash_lists_what_is_inside_that_directory`
 `verified-by: bravebot_tui::entries::noise_directories_are_not_offered`
 
+<a id="NAME-5"></a>
 ### NAME-5: a name cannot leave the workspace
 
 `..` and an absolute path are refused rather than resolved, so a named file is always inside the
@@ -77,6 +82,7 @@ working directory or a directory opened for the session.
 `verified-by: bravebot_tui::references::a_reference_cannot_climb_out_of_the_workspace`
 `verified-by: bravebot_tui::entries::a_reference_cannot_climb_out_of_the_workspace`
 
+<a id="NAME-6"></a>
 ### NAME-6: a directory names nothing, and neither does prose
 
 A directory is somewhere to type through rather than a file to read, so naming one includes
@@ -92,6 +98,7 @@ content into the turn that no gesture chose.
 `verified-by: bravebot_tui::entries::what_counts_as_a_reference_being_typed`
 `verified-by: bravebot_tui::entries::every_referenced_file_is_collected`
 
+<a id="NAME-7"></a>
 ### NAME-7: sending finishes a half-typed name
 
 Enter sends a prompt ending in a finished reference, and completes one ending in a half-typed

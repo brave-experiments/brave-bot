@@ -14,6 +14,7 @@ arguments. The result is the paths, or one reference per entry when the planner 
 
 ## Clauses
 
+<a id="LIST-1"></a>
 ### LIST-1: a filename is content, so an untrusted listing is quarantined
 
 A listing is trusted only if every file it touched is. A file can be named to read like an
@@ -21,6 +22,7 @@ instruction, so the names are treated as content and not shown to the planner.
 
 `verified-by: bravebot_agent::turn::naming_one_file_leaves_the_rest_of_the_workspace_quarantined`
 
+<a id="LIST-2"></a>
 ### LIST-2: a quarantined listing returns one reference per entry, not one for the listing
 
 The planner passes the reference where it would have typed a path, and is never told a filename.
@@ -30,6 +32,7 @@ use. What came of that in practice was a planner guessing globs to see which cam
 
 `verified-by: bravebot_core::policy::a_reference_that_names_no_file_is_not_a_destination`
 
+<a id="LIST-3"></a>
 ### LIST-3: the glob is literal and the matcher does not backtrack
 
 The matcher is hand written. `*` and `?` do not cross `/`, `**` does, and brace groups are
@@ -39,6 +42,7 @@ unsupported. Version-control and build directories are skipped.
 
 `verified-by: none`
 
+<a id="LIST-4"></a>
 ### LIST-4: a truncated listing says it was truncated
 
 Output is capped, and the cap is reported.

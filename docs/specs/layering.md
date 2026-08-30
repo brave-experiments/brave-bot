@@ -13,6 +13,7 @@ this spec.
 
 ## Clauses
 
+<a id="LAYER-1"></a>
 ### LAYER-1: which crate may do what
 
 | Crate | Purpose | Depends on | Constraint |
@@ -31,6 +32,7 @@ this spec.
 
 `verified-by: by-construction (bravebot-core declares no dependencies at all)`
 
+<a id="LAYER-2"></a>
 ### LAYER-2: `bravebot-core` and `bravebot-agent` are both the driver
 
 Relocating a decision from one into the other does not remove it. A branch on untrusted bytes is
@@ -41,6 +43,7 @@ The kernel is where decisions derived from content are *taken*, not where they b
 
 `verified-by: none`
 
+<a id="LAYER-3"></a>
 ### LAYER-3: presentation crates display untrusted content on purpose
 
 `bravebot-tui` and `bravebot-cli` show quarantined content to the person watching. A terminal is
