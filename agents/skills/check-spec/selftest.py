@@ -41,10 +41,12 @@ guards:
 
 ## Clauses
 
+<a id="DEMO-1"></a>
 ### DEMO-1: the gate opens only once
 
 `verified-by: bravebot_demo::lib::the_gate_opens_only_once`
 
+<a id="DEMO-2"></a>
 ### DEMO-2: nothing else can open it
 
 `verified-by: by-construction (the field is private)`
@@ -97,6 +99,7 @@ def run_checks():
         findings.extend(check.check_front_matter(one))
         findings.extend(check.check_clause_numbering(one))
         findings.extend(check.check_coverage(one, index, crates))
+        findings.extend(check.check_anchors(one))
         findings.extend(check.check_governs(one))
         findings.extend(check.check_guards(one, sources))
         findings.extend(check.check_isolation(one, prefixes))
@@ -147,6 +150,11 @@ CASES = [
         "a clause id from another spec's series",
         lambda root: edit_spec(root, "### DEMO-1:", "### OTHER-1:"),
         "clause-prefix-mismatch",
+    ),
+    (
+        "a clause with no anchor to link to",
+        lambda root: edit_spec(root, '<a id="DEMO-2"></a>\n', ""),
+        "clause-anchor-missing",
     ),
     (
         "a clause with no verified-by at all",

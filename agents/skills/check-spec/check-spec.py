@@ -197,6 +197,25 @@ def check_coverage(spec, index, crates):
                 )
 
 
+def check_anchors(spec):
+    """A clause id is what an issue, a commit and a test name all point at, so it has to be
+    possible to link to one. The anchor a heading generates carries its title and breaks the
+    next time somebody rewords it, which is why the id gets an anchor of its own."""
+    for clause in spec.clauses:
+        wanted = f'<a id="{clause.id}"></a>'
+        above = spec.lines[clause.line - 2].strip() if clause.line >= 2 else ""
+        if above != wanted:
+            yield finding(
+                spec.rel,
+                ERROR,
+                "clause-anchor-missing",
+                f"`{clause.id}` has no `{wanted}` on the line above its heading",
+                clause=clause.id,
+                evidence=f"{spec.rel}:{clause.line}",
+                fix="without it, a link into this clause breaks when the heading is reworded",
+            )
+
+
 def check_governs(spec):
     for pattern in spec.governs:
         if any(character in pattern for character in "*?["):
@@ -590,6 +609,7 @@ def main():
         findings.extend(check_front_matter(spec))
         findings.extend(check_clause_numbering(spec))
         findings.extend(check_coverage(spec, index, crates))
+        findings.extend(check_anchors(spec))
         findings.extend(check_governs(spec))
         findings.extend(check_guards(spec, sources))
         findings.extend(check_isolation(spec, prefixes))

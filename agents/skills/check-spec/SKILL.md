@@ -119,6 +119,7 @@ finding to look at first. Nothing else. The report is the deliverable.
 | Check | Pass | Fails on |
 |---|---|---|
 | Clause ids in order, never renumbered, never duplicated | mechanical | error |
+| Every clause carries an anchor so it can be linked to | mechanical | error |
 | A withdrawn clause says what replaced it | mechanical | error |
 | Every clause carries a `verified-by` line | mechanical | error |
 | `verified-by` names a `#[test]` that exists, in the module it says | mechanical | error |
