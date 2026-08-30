@@ -1465,19 +1465,26 @@ impl Session {
     /// A marker goes whole. It is one thing on the screen and one thing to the user, so taking a
     /// character off the end of it would leave text standing for a picture that is no longer
     /// attached, and the user would have to keep pressing to find out.
+    ///
+    /// A marker the caret is covering goes first, before anything in front of it. The covering is
+    /// visible: the whole of that marker is drawn under the caret, and a press that took the
+    /// character beside it instead would take something the user could see was not selected.
     pub fn backspace(&mut self) {
         self.history.leave();
+        if let Some((start, end)) = self
+            .marker_at_caret()
+            .or_else(|| self.marker_before_caret())
+        {
+            self.input.replace_range(start..end, "");
+            self.caret = start;
+            self.completion = 0;
+            return;
+        }
         // Nothing before the caret is where the marker appears to be, so this is the press that
         // deletes it. Whatever follows stays and becomes an ordinary prompt: the mode is what was
         // deleted, not the words.
         if self.caret == 0 {
             self.shell = false;
-            return;
-        }
-        if let Some((start, end)) = self.marker_before_caret() {
-            self.input.replace_range(start..end, "");
-            self.caret = start;
-            self.completion = 0;
             return;
         }
         self.move_left();
@@ -2072,6 +2079,31 @@ mod tests {
         s.delete_forward();
 
         assert_eq!(s.input, " please");
+        assert!(
+            s.pasted_named(&s.input).is_empty(),
+            "the picture outlived its marker"
+        );
+    }
+
+    /// The caret covers a marker whole, so a press on it takes what is covered. Taking the
+    /// character in front instead deletes something the user can see is not the thing selected.
+    #[test]
+    fn backspace_on_a_covered_marker_takes_the_marker() {
+        let mut s = session();
+        for c in "abc".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        for c in "xyz".chars() {
+            s.type_char(c);
+        }
+        // Back onto the marker, which the caret then covers.
+        for _ in 0.."xyz".len() + 1 {
+            s.move_left();
+        }
+        s.backspace();
+
+        assert_eq!(s.input, "abcxyz");
         assert!(
             s.pasted_named(&s.input).is_empty(),
             "the picture outlived its marker"

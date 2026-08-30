@@ -99,16 +99,18 @@ carries a picture is said once per session.
 <a id="INPUT-6"></a>
 ### INPUT-6: a marker is deleted whole, in one press
 
-Backspace just after a marker takes all of it, and Delete with the caret on one takes all of it,
-whether it stands for a folded paste, a pasted picture or a dropped file. Only a marker the box
-wrote goes this way: square brackets the user typed are deleted a character at a time, as
-everything they typed is.
+Backspace and Delete each take the whole of the marker the caret covers, and Backspace takes the
+whole of one it sits just after, whether it stands for a folded paste, a pasted picture or a
+dropped file. A covered marker goes before the character in front of it, because it is the thing
+the caret is on. Only a marker the box wrote goes this way: square brackets the user typed are
+deleted a character at a time, as everything they typed is.
 
 **Why.** A marker is one thing on the screen and one thing to the person looking at it. Taking a
 character off the end leaves text that still reads as an attachment standing over something no
 longer attached, and the only way to find that out is to keep pressing.
 
 `verified-by: bravebot_tui::state::one_backspace_takes_the_whole_marker`
+`verified-by: bravebot_tui::state::backspace_on_a_covered_marker_takes_the_marker`
 `verified-by: bravebot_tui::state::one_backspace_takes_the_whole_folded_paste`
 `verified-by: bravebot_tui::state::delete_forward_takes_the_whole_marker`
 `verified-by: bravebot_tui::state::text_that_merely_looks_like_a_marker_is_deleted_one_character_at_a_time`
