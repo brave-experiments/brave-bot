@@ -65,6 +65,8 @@ impl Gate {
     pub fn open(&self) {}
 }
 
+fn opens_twice() {}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -190,6 +192,11 @@ CASES = [
     (
         "a guarded symbol that was renamed away",
         lambda root: edit_spec(root, "symbol: Gate::open", "symbol: Gate::unlock"),
+        "guard-missing",
+    ),
+    (
+        "a guarded symbol whose name is only the prefix of a function that exists",
+        lambda root: edit_spec(root, "symbol: Gate::open", "symbol: Gate::opens"),
         "guard-missing",
     ),
     (

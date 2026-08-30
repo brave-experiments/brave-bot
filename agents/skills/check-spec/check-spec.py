@@ -19,6 +19,7 @@ files and prints a pointer to them.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -218,12 +219,18 @@ def check_governs(spec):
 
 def guard_sites(symbol, sources):
     """Where a guarded symbol is named. `Type::method` also matches `.method(`, since
-    that is how most call sites read once the receiver has a type."""
+    that is how most call sites read once the receiver has a type.
+
+    The definition is matched on the whole name rather than on a prefix. A guard named
+    `vouch` matching `fn vouching_for_one_command` would report a renamed symbol as
+    present, which is the one answer this check must never give."""
     bare = symbol.split("::")[-1]
+    definition = re.compile(rf"\bfn\s+{re.escape(bare)}\s*[(<]")
+    call = f".{bare}("
     hits = []
     for path, lines in sources.items():
         for number, raw in enumerate(lines, start=1):
-            if symbol in raw or f".{bare}(" in raw or f"fn {bare}" in raw:
+            if symbol in raw or call in raw or definition.search(raw):
                 hits.append((str(path), number, raw.strip()))
     return hits
 
