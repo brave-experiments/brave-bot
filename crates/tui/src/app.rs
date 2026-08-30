@@ -1392,12 +1392,17 @@ fn compact_animated(
             }
         }
 
-        match from_worker.recv_timeout(FRAME) {
-            Ok(crate::remote_confirm::ToMain::Phase(phase)) => session.set_phase(phase),
-            Ok(crate::remote_confirm::ToMain::Narration(text)) => session.narrate(text),
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        // Drained for the same reason the turn's own loop drains: a summary is written the same
+        // way a reply is, a message at a time.
+        let carrying_on = drain_worker(&from_worker, |message| match message {
+            crate::remote_confirm::ToMain::Phase(phase) => session.set_phase(phase),
+            crate::remote_confirm::ToMain::Narration(text) => session.narrate(text),
+            crate::remote_confirm::ToMain::Streaming(text) => session.streaming(&text),
+            _ => {}
+        });
+
+        if !carrying_on {
+            break;
         }
     }
 
@@ -1569,8 +1574,8 @@ fn run_turn_animated(
             }
         }
 
-        match from_worker.recv_timeout(FRAME) {
-            Ok(crate::remote_confirm::ToMain::Write(request)) => {
+        let carrying_on = drain_worker(&from_worker, |message| match message {
+            crate::remote_confirm::ToMain::Write(request) => {
                 let answer = crate::confirm::ask(terminal, &request);
                 // Ctrl-C at the prompt is the same request it is anywhere else in a turn: stop.
                 // Set before the answer goes back, so the worker sees it as soon as it wakes.
@@ -1582,7 +1587,7 @@ fn run_turn_animated(
                 // answer and the loop below will collect its result.
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Write(answer.decision()));
             }
-            Ok(crate::remote_confirm::ToMain::Run(request)) => {
+            crate::remote_confirm::ToMain::Run(request) => {
                 let answer = crate::confirm::ask_run(terminal, &request);
                 // Ctrl-C at the prompt is the same request it is anywhere else in a turn: stop.
                 // Set before the answer goes back, so the worker sees it as soon as it wakes.
@@ -1596,7 +1601,7 @@ fn run_turn_animated(
                 // disagree with.
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Run(answer.decision()));
             }
-            Ok(crate::remote_confirm::ToMain::ReadOutput(request)) => {
+            crate::remote_confirm::ToMain::ReadOutput(request) => {
                 let answer = crate::confirm::ask_output(terminal, &request);
                 if answer == crate::confirm::Answer::Interrupt {
                     cancel.cancel();
@@ -1604,7 +1609,7 @@ fn run_turn_animated(
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
             }
-            Ok(crate::remote_confirm::ToMain::Vouch(request)) => {
+            crate::remote_confirm::ToMain::Vouch(request) => {
                 let answer = crate::confirm::ask_vouch(terminal, &request);
                 if answer == crate::confirm::Answer::Interrupt {
                     cancel.cancel();
@@ -1617,7 +1622,7 @@ fn run_turn_animated(
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Vouch(answer.decision()));
             }
-            Ok(crate::remote_confirm::ToMain::Ask(asking)) => {
+            crate::remote_confirm::ToMain::Ask(asking) => {
                 // A planner that loops back over the same decision should not make the user
                 // restate it. The note is what keeps that from being invisible: an answer given
                 // once and reused silently would look like a question that was never asked.
@@ -1653,23 +1658,21 @@ fn run_turn_animated(
             }
             // No reply: each of these is recorded and the next redraw, one iteration away,
             // shows it. That is what makes a long turn legible while it runs.
-            Ok(crate::remote_confirm::ToMain::Todos(rows)) => session.set_todos(rows),
-            Ok(crate::remote_confirm::ToMain::Written(written)) => session.set_written(written),
-            Ok(crate::remote_confirm::ToMain::Phase(phase)) => session.set_phase(phase),
-            Ok(crate::remote_confirm::ToMain::Narration(text)) => session.narrate(text),
-            Ok(crate::remote_confirm::ToMain::Notice(text)) => session.note_once(text),
-            Ok(crate::remote_confirm::ToMain::Streaming(text)) => session.streaming(&text),
-            Ok(crate::remote_confirm::ToMain::Started(activity)) => {
-                session.start_activity(activity)
-            }
-            Ok(crate::remote_confirm::ToMain::Finished(activity)) => {
-                session.finish_activity(activity)
-            }
-            Ok(crate::remote_confirm::ToMain::Quarantined(shown)) => session.show(shown),
-            Ok(crate::remote_confirm::ToMain::Landed(landing)) => session.landed(landing),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            // The worker dropped its senders, so the turn is over.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            crate::remote_confirm::ToMain::Todos(rows) => session.set_todos(rows),
+            crate::remote_confirm::ToMain::Written(written) => session.set_written(written),
+            crate::remote_confirm::ToMain::Phase(phase) => session.set_phase(phase),
+            crate::remote_confirm::ToMain::Narration(text) => session.narrate(text),
+            crate::remote_confirm::ToMain::Notice(text) => session.note_once(text),
+            crate::remote_confirm::ToMain::Streaming(text) => session.streaming(&text),
+            crate::remote_confirm::ToMain::Started(activity) => session.start_activity(activity),
+            crate::remote_confirm::ToMain::Finished(activity) => session.finish_activity(activity),
+            crate::remote_confirm::ToMain::Quarantined(shown) => session.show(shown),
+            crate::remote_confirm::ToMain::Landed(landing) => session.landed(landing),
+        });
+
+        // The worker dropped its senders, so the turn is over.
+        if !carrying_on {
+            break;
         }
     }
 
@@ -1703,6 +1706,36 @@ fn run_turn_animated(
         config.context_budget,
     );
     Ok((conversation, trust, programs, events))
+}
+
+/// Hand the worker's messages to `handle`: the one this frame waited for, and then everything
+/// already queued behind it.
+///
+/// `false` when the worker has dropped its senders and the turn is over.
+///
+/// Drained rather than taken one per pass, for the same reason terminal events are. A reply
+/// arrives as hundreds of small messages, a draw rebuilds the whole transcript from its markdown,
+/// and a frame for each spent longer laying out finished turns than the reply took to arrive: the
+/// queue outran the drawing and what was on the screen fell behind what had been said.
+fn drain_worker(
+    from_worker: &mpsc::Receiver<crate::remote_confirm::ToMain>,
+    mut handle: impl FnMut(crate::remote_confirm::ToMain),
+) -> bool {
+    let mut received = from_worker.recv_timeout(FRAME);
+    loop {
+        match received {
+            Ok(message) => handle(message),
+            Err(mpsc::RecvTimeoutError::Timeout) => return true,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+        }
+
+        // Whatever else is waiting, without waiting for it. Empty means the burst is over and the
+        // next frame shows all of it at once.
+        received = from_worker.try_recv().map_err(|gone| match gone {
+            mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+            mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+        });
+    }
 }
 
 /// Whether a key press asks for the turn in flight to stop.
@@ -1767,6 +1800,56 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A reply arrives as hundreds of messages and a draw rebuilds the whole transcript, so a
+    /// frame per message put the drawing behind the talking. Everything queued is taken before
+    /// the caller draws again, which is what keeps one frame's worth of reply to one frame.
+    #[test]
+    fn everything_the_worker_has_already_said_is_taken_in_one_pass() {
+        let (outbound, inbound) = std::sync::mpsc::channel();
+        for piece in ["a", "b", "c", "d"] {
+            outbound
+                .send(crate::remote_confirm::ToMain::Streaming(piece.to_string()))
+                .expect("queued");
+        }
+
+        let mut taken = Vec::new();
+        let carrying_on = drain_worker(&inbound, |message| {
+            if let crate::remote_confirm::ToMain::Streaming(text) = message {
+                taken.push(text);
+            }
+        });
+
+        assert!(carrying_on, "the worker is still there");
+        assert_eq!(
+            taken,
+            vec!["a", "b", "c", "d"],
+            "the burst took several passes"
+        );
+    }
+
+    /// The turn is over when the worker lets go of its senders, and the loop has to notice that
+    /// rather than waiting a frame at a time forever.
+    #[test]
+    fn a_worker_that_has_gone_ends_the_wait() {
+        let (outbound, inbound) = std::sync::mpsc::channel();
+        outbound
+            .send(crate::remote_confirm::ToMain::Streaming(
+                "last words".into(),
+            ))
+            .expect("queued");
+        drop(outbound);
+
+        let mut taken = Vec::new();
+        let carrying_on = drain_worker(&inbound, |message| taken.push(message));
+
+        assert_eq!(
+            taken.len(),
+            1,
+            "what was already said was dropped on the floor"
+        );
+        assert!(!carrying_on, "the loop would have gone on waiting");
     }
 
     fn ctrl(c: char) -> KeyEvent {
