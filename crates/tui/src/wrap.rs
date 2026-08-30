@@ -24,6 +24,12 @@ pub const MAX_ROWS: usize = 10;
 pub struct Wrapped {
     /// The rows, in order. Always at least one, so an empty input still shows a cursor.
     pub rows: Vec<String>,
+    /// Where each row begins in the text it was wrapped from, one to a row.
+    ///
+    /// Kept because a row is a slice of the line and some of what is drawn over it is located in
+    /// the line rather than in the row: a marker the caret covers is one span of the input, and
+    /// the wrap is free to put it across two rows.
+    pub starts: Vec<usize>,
     /// Which row the cursor sits on.
     pub cursor_row: usize,
     /// The cursor's column within that row, in display columns.
@@ -140,6 +146,7 @@ pub fn wrap(text: &str, width: usize, caret: usize) -> Wrapped {
         cursor_index: within,
         cursor_row,
         rows,
+        starts,
     }
 }
 

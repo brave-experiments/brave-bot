@@ -654,29 +654,39 @@ fn input_height(session: &Session, width: u16, height: u16) -> u16 {
     (rows + 2).min(ceiling) as u16
 }
 
-/// The row the caret is on, drawn as a block over the character it sits on.
+/// A row with `at..through` of it drawn as a block, which is where the caret is.
 ///
 /// A block rather than a glyph inserted between two characters, because inserting one moves
 /// everything after it by a column: the text shifted left and right under the caret as it moved,
 /// which is far more distracting than the caret itself. Nothing moves now, since the caret occupies
-/// a cell that was already there.
+/// cells that were already there.
 ///
-/// Past the end of the line there is no cell to occupy, so a highlighted space is added. That is
-/// the one place the caret still takes a column, and [`input_text_width`] reserves it.
-fn caret_spans(row: &str, at: usize, colour: Color) -> Vec<Span<'static>> {
-    // Reversed rather than a chosen pair of colours, so the cell inverts whatever the terminal's
-    // own foreground and background happen to be and stays legible on either kind of theme.
+/// An empty range is the caret past the end of the line, where there is no cell to occupy, so a
+/// highlighted space is added. That is the one place the caret still takes a column, and
+/// [`input_text_width`] reserves it.
+fn caret_spans(row: &str, at: usize, through: usize, colour: Color) -> Vec<Span<'static>> {
+    // Reversed rather than a chosen pair of colours, so the cells invert whatever the terminal's
+    // own foreground and background happen to be and stay legible on either kind of theme.
     let block = Style::default().fg(colour).add_modifier(Modifier::REVERSED);
 
     let mut spans = vec![Span::raw(row[..at].to_string())];
-    match row[at..].chars().next() {
-        Some(on) => {
-            spans.push(Span::styled(on.to_string(), block));
-            spans.push(Span::raw(row[at + on.len_utf8()..].to_string()));
-        }
-        None => spans.push(Span::styled(" ", block)),
+    if through > at {
+        spans.push(Span::styled(row[at..through].to_string(), block));
+        spans.push(Span::raw(row[through..].to_string()));
+    } else {
+        spans.push(Span::styled(" ", block));
     }
     spans
+}
+
+/// How much of the row starting at `start` a span of the line covers, in the row's own offsets.
+///
+/// `None` when the two do not meet, which is every row a covered marker does not reach.
+fn covered(row: &str, start: usize, span: (usize, usize)) -> Option<(usize, usize)> {
+    let (from, to) = span;
+    let at = from.saturating_sub(start).min(row.len());
+    let through = to.saturating_sub(start).min(row.len());
+    (at < through).then_some((at, through))
 }
 
 /// Draw what is running, above the box.
@@ -739,6 +749,7 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     );
     let visible = (area.height as usize).saturating_sub(2).max(1);
     let (first, rows) = wrapped.window(visible);
+    let marker = session.marker_at_caret();
 
     // Shell mode is coloured throughout rather than only in the marker, because the whole line
     // means something different: it goes to a shell instead of the model, and that is worth more
@@ -766,10 +777,17 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
                 "> "
             };
             let mut spans = vec![Span::styled(lead, Style::default().fg(colour))];
-            if index == wrapped.cursor_row {
-                spans.extend(caret_spans(row, wrapped.cursor_index, colour));
-            } else {
-                spans.push(Span::raw(row.clone()));
+            // A marker is one thing to the caret, so the caret covers the whole of it rather than
+            // the one character it happens to start with. The span is located in the line, not in
+            // the row, because the wrap is free to put a long marker across two of them.
+            match marker.and_then(|span| covered(row, wrapped.starts[index], span)) {
+                Some((at, through)) => spans.extend(caret_spans(row, at, through, colour)),
+                None if index == wrapped.cursor_row => {
+                    let at = wrapped.cursor_index;
+                    let on = row[at..].chars().next().map_or(at, |c| at + c.len_utf8());
+                    spans.extend(caret_spans(row, at, on, colour));
+                }
+                None => spans.push(Span::raw(row.clone())),
             }
             Line::from(spans)
         })
@@ -1922,6 +1940,53 @@ mod tests {
             .flat_map(|row| (0..width).map(move |column| (column, row)))
             .find(|at| buffer[*at].modifier.contains(Modifier::REVERSED))
             .map(|(column, row)| (column, row, buffer[(column, row)].symbol().to_string()))
+    }
+
+    /// Every cell the caret covers, in reading order.
+    ///
+    /// Read off the screen the same way [`caret_cell`] reads one, because what the caret covers is
+    /// a style over text the user can see and there is nothing else to search for.
+    fn caret_cells(session: &Session, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, session))
+            .expect("draw succeeds");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .flat_map(|row| (0..width).map(move |column| (column, row)))
+            .filter(|at| buffer[*at].modifier.contains(Modifier::REVERSED))
+            .map(|at| buffer[at].symbol().to_string())
+            .collect()
+    }
+
+    fn picture() -> crate::clipboard::Image {
+        crate::clipboard::Image {
+            media_type: "image/png",
+            bytes: b"pixels".to_vec(),
+        }
+    }
+
+    /// The caret crosses a marker in one press, so it has to be drawn over the whole of one:
+    /// a block on the opening bracket alone says the next press takes a bracket.
+    #[test]
+    fn the_caret_covers_a_whole_marker() {
+        let mut session = typed("look at ");
+        session.attach(picture());
+        session.move_left();
+
+        assert_eq!(caret_cells(&session, 40, 12), "[Image #1]");
+    }
+
+    /// A marker is a span of the line rather than of the row it landed on, and a narrow box puts
+    /// a long one across two rows. Covering only the row the caret is on would show half of it
+    /// highlighted and leave the rest looking like ordinary words.
+    #[test]
+    fn a_marker_the_wrap_split_is_covered_on_both_rows() {
+        let mut session = Session::new("test");
+        session.paste_text("one\ntwo\nthree\nfour");
+        session.move_left();
+
+        assert_eq!(caret_cells(&session, 22, 12), "[Pasted text #1 +4 lines]");
     }
 
     /// The bug: text past the right edge used to be clipped, cursor included, which looked like

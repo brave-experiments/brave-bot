@@ -127,3 +127,15 @@ dozen presses to cross what reads as a single word.
 
 `verified-by: bravebot_tui::state::the_caret_steps_over_a_marker_whole`
 `verified-by: bravebot_tui::state::the_caret_cannot_come_to_rest_inside_a_marker`
+
+
+<a id="INPUT-8"></a>
+### INPUT-8: the caret is drawn over the whole marker it is on
+
+Every cell of the marker is covered, including the part of one the box wrapped onto the next row.
+
+**Why.** The caret says what the next press acts on. A block over the opening bracket alone says
+the next press takes a bracket, which is the thing that no longer happens.
+
+`verified-by: bravebot_tui::render::the_caret_covers_a_whole_marker`
+`verified-by: bravebot_tui::render::a_marker_the_wrap_split_is_covered_on_both_rows`
