@@ -48,9 +48,10 @@ const MARKER: &str = "---";
 /// Read the frontmatter at the top of a `SKILL.md`, if it has one.
 ///
 /// Hand-written rather than a YAML dependency, per the conventions: this recognises `key: value`
-/// on a line and nothing else, so there is no parser to surprise us and nothing to backtrack.
-/// Keys other than `name` and `description` are ignored rather than refused, which leaves room
-/// for a file written for another agent to work here too.
+/// on a line, and a value continued on the lines indented beneath it, and nothing else. There is
+/// no parser to surprise us and nothing to backtrack. Keys other than `name` and `description`
+/// are ignored rather than refused, which leaves room for a file written for another agent to
+/// work here too.
 ///
 /// `None` means "not a skill", and every caller drops the file on that answer. A half-declared
 /// skill is included in that: a name with no description is one the planner cannot choose
@@ -61,24 +62,14 @@ pub fn parse_frontmatter(text: &str) -> Option<Frontmatter> {
         return None;
     }
 
-    let mut name = None;
-    let mut description = None;
+    let mut block = Vec::new();
     let mut closed = false;
-
     for line in lines {
         if line.trim_end() == MARKER {
             closed = true;
             break;
         }
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim().to_string();
-        match key.trim() {
-            "name" => name = Some(value),
-            "description" => description = Some(value),
-            _ => {}
-        }
+        block.push(line);
     }
 
     // An unterminated block is not frontmatter that happens to run long: it is a file whose whole
@@ -87,9 +78,88 @@ pub fn parse_frontmatter(text: &str) -> Option<Frontmatter> {
         return None;
     }
 
+    let mut name = None;
+    let mut description = None;
+
+    let mut at = 0;
+    while at < block.len() {
+        let line = block[at];
+        at += 1;
+
+        // Taken whether or not this line declares anything we want. A continuation belongs to
+        // the key above it however that key is spelled, and leaving one unconsumed is how a
+        // wrapped sentence holding a colon becomes a key of its own.
+        let opened_at = indent_of(line);
+        let mut wrapped = Vec::new();
+        while let Some(next) = block.get(at) {
+            if !next.trim().is_empty() && indent_of(next) <= opened_at {
+                break;
+            }
+            wrapped.push(*next);
+            at += 1;
+        }
+
+        let Some((key, first)) = line.split_once(':') else {
+            continue;
+        };
+        match key.trim() {
+            "name" => name = Some(value_of(first, &wrapped)),
+            "description" => description = Some(value_of(first, &wrapped)),
+            _ => {}
+        }
+    }
+
     let name = name.filter(|n| !n.is_empty())?;
     let description = description.filter(|d| !d.is_empty())?;
     Some(Frontmatter { name, description })
+}
+
+/// How many columns a line is indented by, which is what says whether it continues the one above.
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// One value, from what followed the colon and the lines indented under it.
+///
+/// A description is a sentence long enough that people wrap it, and every way of wrapping one
+/// ends up here: a folded or literal block introduced by `>` or `|`, a quoted scalar carried over
+/// several lines, or plain text simply continued. Folded because that is what wrapping means:
+/// the line breaks were the file's, not the sentence's, so they become spaces. A literal block
+/// asked for its newlines and keeps them.
+fn value_of(first: &str, wrapped: &[&str]) -> String {
+    let first = first.trim();
+    let (joiner, first) = match first {
+        "|" | "|-" | "|+" => ("\n", ""),
+        ">" | ">-" | ">+" => (" ", ""),
+        _ => (" ", first),
+    };
+
+    let mut parts = Vec::new();
+    if !first.is_empty() {
+        parts.push(first);
+    }
+    parts.extend(wrapped.iter().map(|l| l.trim()).filter(|l| !l.is_empty()));
+
+    unquoted(&parts.join(joiner))
+}
+
+/// A quoted scalar without its quotes, and anything else unchanged.
+///
+/// The quotes are YAML's, put there so a value may open with a character that would otherwise
+/// mean something. They are not part of what the planner is choosing from, and leaving them in
+/// puts a stray apostrophe at each end of every description on the screen.
+fn unquoted(value: &str) -> String {
+    let opens = value.chars().next();
+    let closes = value.chars().last();
+    match (opens, closes) {
+        (Some('\''), Some('\'')) if value.len() >= 2 => {
+            value[1..value.len() - 1].replace("''", "'")
+        }
+        (Some('"'), Some('"')) if value.len() >= 2 => {
+            value[1..value.len() - 1].replace("\\\"", "\"")
+        }
+        _ => value.to_string(),
+    }
 }
 
 /// Everything after the frontmatter block, which is what the planner is given when it asks.
@@ -450,6 +520,50 @@ mod tests {
         let text = "---\nname: n\ndescription: use this: always\n---\n";
         let parsed = parse_frontmatter(text).expect("parses");
         assert_eq!(parsed.description, "use this: always");
+    }
+
+    /// A description says when to use a skill, so it runs to a sentence or two and people wrap
+    /// it. Every real skill file in this repository does, and reading only the first line of one
+    /// left the value empty and the skill silently dropped.
+    #[test]
+    fn a_value_wrapped_over_several_lines_is_one_value() {
+        let text = "---\nname: n\ndescription:\n  'Check the specs, clause by clause. Runs the\n  \
+                    mechanical pass. Triggers on: check spec, spec drift.'\nargument-hint: '[x]'\n---\n";
+        let parsed = parse_frontmatter(text).expect("parses");
+        assert_eq!(
+            parsed.description,
+            "Check the specs, clause by clause. Runs the mechanical pass. Triggers on: check \
+             spec, spec drift."
+        );
+    }
+
+    /// A wrapped sentence contains colons, and a continuation line is not a declaration. Reading
+    /// one as a key ends the value early and puts half a sentence in the prompt.
+    #[test]
+    fn a_continuation_line_holding_a_colon_does_not_start_a_new_key() {
+        let text = "---\nname: n\ndescription: use it when\n  this holds: always\n---\n";
+        let parsed = parse_frontmatter(text).expect("parses");
+        assert_eq!(parsed.description, "use it when this holds: always");
+    }
+
+    /// The quotes are YAML's, put there so a value may open with a character that would otherwise
+    /// mean something. Leaving them in shows the planner an apostrophe at each end.
+    #[test]
+    fn the_quotes_around_a_scalar_are_not_part_of_it() {
+        let text = "---\nname: 'n'\ndescription: \"say when\"\n---\n";
+        let parsed = parse_frontmatter(text).expect("parses");
+        assert_eq!(parsed.name, "n");
+        assert_eq!(parsed.description, "say when");
+    }
+
+    /// `>` folds and `|` keeps its newlines, which is the whole difference between the two and
+    /// the only reason a file would choose one.
+    #[test]
+    fn a_folded_block_becomes_one_line_and_a_literal_block_keeps_its_own() {
+        let folded = parse_frontmatter("---\nname: n\ndescription: >\n  one\n  two\n---\n");
+        assert_eq!(folded.expect("parses").description, "one two");
+        let literal = parse_frontmatter("---\nname: n\ndescription: |\n  one\n  two\n---\n");
+        assert_eq!(literal.expect("parses").description, "one\ntwo");
     }
 
     /// The planner already has the name and the description. Sending them again spends context

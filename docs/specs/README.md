@@ -22,7 +22,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [pasting.md](pasting.md) | `PASTE` | 9 | what Ctrl-V puts into a turn, text or picture, and on what footing |
 | [dropping.md](dropping.md) | `DROP` | 7 | what dragging a file onto the terminal puts into a turn, and on what footing |
 | [shell-mode.md](shell-mode.md) | `SHELL` | 5 | the `!` prompt: a line the user typed, and why the planner can never reach it |
-| [skills.md](skills.md) | `SKILL` | 7 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
+| [skills.md](skills.md) | `SKILL` | 8 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
 | [instructions.md](instructions.md) | `INSTR` | 7 | which instruction files are looked for, where, in what order, and where what they say ends up |
 | [cli.md](cli.md) | `CLI` | 7 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
 | [terminal-input.md](terminal-input.md) | `INPUT` | 8 | what the user types into: the box, the keys, and where a terminal's own limits show through |
