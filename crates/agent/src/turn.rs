@@ -58,6 +58,10 @@ them.
 Use tools when you need information you do not have. When you have enough, answer the \
 task directly and concisely.
 
+Ask for everything you need at once. Several calls in one turn cost one round between us; the \
+same calls one turn at a time cost one round each, and the work waits for every one of them. \
+Where one result decides what to look at next, wait for it. Where they do not, ask together.
+
 Narrow your searches: pass a glob to list_files, or include to search, rather than listing \
 or searching everything. Results are capped, and a capped result says so. If it does, \
 narrow the query rather than assuming you have seen everything. A long file is returned one \
