@@ -47,7 +47,7 @@ the routing-versus-content split they share.
 | [tools/tool-surface.md](tools/tool-surface.md) | `TOOL` | 3 | the surface every tool shares |
 | [tools/read-file.md](tools/read-file.md) | `READ` | 4 | `read_file` |
 | [tools/list-files.md](tools/list-files.md) | `LIST` | 4 | `list_files` |
-| [tools/search.md](tools/search.md) | `SEARCH` | 3 | `search` |
+| [tools/search.md](tools/search.md) | `SEARCH` | 4 | `search` |
 | [tools/write-file.md](tools/write-file.md) | `WRITE` | 4 | `write_file` |
 | [tools/edit-file.md](tools/edit-file.md) | `EDIT` | 3 | `edit_file` |
 | [tools/spawn-processor.md](tools/spawn-processor.md) | `SPAWN` | 3 | `spawn_processor` |

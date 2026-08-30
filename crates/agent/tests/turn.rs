@@ -1702,6 +1702,113 @@ fn a_truncated_search_tells_the_model_it_is_incomplete() {
     );
 }
 
+/// A literal search for a pattern written as a regular expression finds nothing, and nothing
+/// reads as proof the string is absent. It is not: it proves nothing in the tree contains ".*".
+/// A real turn spent four rounds on "drop.*file", "attached.*render" and "fn.*attached", each
+/// answered with the same silence, and then gave up.
+#[test]
+fn an_empty_search_for_a_pattern_written_as_a_regex_says_the_match_is_literal() {
+    let scratch = Scratch::new("search-regex-empty");
+    std::fs::write(scratch.path.join("a.txt"), "dropped a file\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"drop.*file","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("find it"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("matched literally"),
+        "a search that could only have failed on its own syntax said nothing about it: {second}"
+    );
+}
+
+/// Advice on a search that worked would be noise, and worse, a suggestion that the hits are
+/// suspect. There is nothing to correct when the literal string was found.
+#[test]
+fn a_search_that_found_something_is_not_lectured_about_its_pattern() {
+    let scratch = Scratch::new("search-regex-found");
+    std::fs::write(scratch.path.join("a.txt"), "a.*b is here\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"a.*b","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("find it"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("matched literally"),
+        "a search that found its pattern was told to write a different one: {second}"
+    );
+}
+
+/// A plain substring that found nothing found nothing, and there is no advice to give. Saying
+/// this every time would teach the planner to ignore it on the one search where it is the answer.
+#[test]
+fn an_empty_search_for_a_plain_substring_is_left_to_speak_for_itself() {
+    let scratch = Scratch::new("search-plain-empty");
+    std::fs::write(scratch.path.join("a.txt"), "nothing of interest\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"handle_drop","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("find it"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("matched literally"),
+        "an ordinary search with no hits was given advice it had no use for: {second}"
+    );
+}
+
 /// The default footing is quarantine, so this is the case that matters: the notice a search
 /// writes into its own body reaches nobody when the body is the thing being withheld.
 #[test]

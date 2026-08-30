@@ -22,6 +22,26 @@ content arguments. The result is the matching lines, or a reference.
 
 `verified-by: none`
 
+<a id="SEARCH-4"></a>
+### SEARCH-4: a search that found nothing for a pattern written as a regular expression says so
+
+Only where nothing was found, and only for a sequence that could not plausibly have been meant
+literally. A search that found its pattern is told nothing, and neither is an ordinary substring
+that happens to be absent.
+
+**Why.** Nothing found reads as proof the string is absent. For `drop.*file` it proves something
+much narrower, and a planner with no way to tell the two apart writes another one: whole rounds go
+on rephrasing a question that was never asked. The same reason a truncated search says it is
+truncated, for the answer that looks most like a complete one.
+
+The advice is decided from the pattern, which the planner proposed and the routing gate vouched
+for; the result decides only whether there was anything to advise about.
+
+`verified-by: bravebot_agent::turn::an_empty_search_for_a_pattern_written_as_a_regex_says_the_match_is_literal`
+`verified-by: bravebot_agent::turn::a_search_that_found_something_is_not_lectured_about_its_pattern`
+`verified-by: bravebot_agent::turn::an_empty_search_for_a_plain_substring_is_left_to_speak_for_itself`
+`verified-by: bravebot_agent::tools::only_a_sequence_that_could_not_be_meant_literally_reads_as_a_regex`
+
 <a id="SEARCH-2"></a>
 ### SEARCH-2: a result touching several files is trusted only if every one of them is
 

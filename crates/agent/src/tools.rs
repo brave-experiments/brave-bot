@@ -2501,6 +2501,22 @@ fn ask_user<S: Sink, C: Confirmer>(
     }
 }
 
+/// Whether a pattern was probably written as a regular expression.
+///
+/// Deliberately narrow. Every one of these is a sequence that means nothing on its own and a
+/// great deal to a regex engine, so a false positive costs a sentence of advice on a search that
+/// found nothing anyway, while a looser test would lecture somebody searching for `foo.rs` or
+/// `fn(`. Literal matching, of course: a pattern matcher to catch pattern matchers is exactly the
+/// dependency the conventions rule out.
+fn reads_as_a_regex(pattern: &str) -> bool {
+    const TELLS: [&str; 10] = [
+        ".*", ".+", ".?", ".{", "[^", "(?", "\\d", "\\w", "\\s", "\\b",
+    ];
+    TELLS.iter().any(|tell| pattern.contains(tell))
+        || pattern.starts_with('^')
+        || pattern.ends_with('$')
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -2549,9 +2565,32 @@ fn search<S: Sink>(
                 let proof = policy.authorise_display_release("whether a search hit a cap");
                 shaped.declassify(&proof)
             };
+            // Asked of the pattern alone, and only where the promote gate left it trusted, so
+            // this reads no content and needs no witness. Nothing here looks at the result:
+            // whether to say it is decided below, inside the render gate, from whether anything
+            // was found.
+            let looks_like_a_regex = pattern
+                .clone()
+                .into_trusted()
+                .is_ok_and(|p| reads_as_a_regex(&p));
+
             let rendered = policy.render_in_place("search", &found, |found| {
                 let mut body = if found.matches.is_empty() {
-                    "(no matches)".to_string()
+                    let mut empty = "(no matches)".to_string();
+                    // A literal search for a pattern written as a regular expression finds
+                    // nothing and reads as proof the string is absent. What it actually proves is
+                    // that nothing in the tree contains ".*", and a planner with no way to tell
+                    // the two apart writes another one: four rounds of a real turn went on
+                    // "drop.*file", "attached.*render" and "fn.*attached", each answered with
+                    // nothing, before it gave up.
+                    if looks_like_a_regex {
+                        empty.push_str(
+                            "\n\n(this pattern is matched literally, character for character, \
+                             and it holds characters that only mean anything in a regular \
+                             expression; search for a plain substring instead)",
+                        );
+                    }
+                    empty
                 } else {
                     found
                         .matches
@@ -2591,6 +2630,42 @@ fn search<S: Sink>(
 
 #[cfg(test)]
 mod tests {
+
+    /// The advice costs a sentence on a search that found nothing anyway, so a false positive is
+    /// cheap. Lecturing somebody who searched for a filename or a call site is not: a test loose
+    /// enough to flag a bare dot or a bracket would fire on most of the searches that work.
+    #[test]
+    fn only_a_sequence_that_could_not_be_meant_literally_reads_as_a_regex() {
+        for pattern in [
+            "drop.*file",
+            "fn.+attached",
+            "a.?b",
+            "x.{2}y",
+            "[^a]",
+            "(?i)name",
+            r"\d+",
+            r"\wfoo",
+            r"\s*",
+            r"\btoken",
+            "^fn main",
+            "attached$",
+        ] {
+            assert!(reads_as_a_regex(pattern), "{pattern} was not recognised");
+        }
+
+        for pattern in [
+            "foo.rs",
+            "fn(",
+            "a + b",
+            "Vec<String>",
+            "self.path",
+            "impl Reporter for",
+            "3 * 4",
+            "who? me",
+        ] {
+            assert!(!reads_as_a_regex(pattern), "{pattern} was flagged");
+        }
+    }
 
     /// A model that namespaces a tool by the group it was offered in means the tool. Answering
     /// "no such tool" to that spends a round on a difference in spelling.
