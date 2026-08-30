@@ -129,6 +129,42 @@ fn the_arrows_and_enter_choose_among_the_offered_files() {
     );
 }
 
+/// A finished name is finished even when a directory shares its prefix and sorts above it in the
+/// list. Enter must send what the user typed rather than quietly swapping in a path they did not:
+/// a workspace holding both `test` and `tests/` is ordinary.
+#[test]
+fn enter_sends_a_finished_reference_a_directory_shares_a_prefix_with() {
+    let scratch = Scratch::new("prefix");
+    std::fs::write(scratch.path.join("test"), "a").expect("write");
+    std::fs::create_dir_all(scratch.path.join("tests")).expect("create");
+    let mut session = session(&scratch);
+    typing(&mut session, "explain @test");
+
+    assert_eq!(
+        handle_key(&mut session, key(KeyCode::Enter)),
+        Action::Submit("explain @test".to_string())
+    );
+}
+
+/// Sharing that prefix must not cost the arrows their meaning: a row the user walked to is a row
+/// they chose, and Enter takes it even though the typed name is a file of its own.
+#[test]
+fn the_arrows_still_choose_a_row_over_a_finished_reference() {
+    let scratch = Scratch::new("prefix-arrows");
+    std::fs::write(scratch.path.join("test"), "a").expect("write");
+    std::fs::create_dir_all(scratch.path.join("tests")).expect("create");
+    std::fs::create_dir_all(scratch.path.join("test-utils")).expect("create");
+    let mut session = session(&scratch);
+    typing(&mut session, "explain @test");
+
+    handle_key(&mut session, key(KeyCode::Down));
+    assert_eq!(
+        handle_key(&mut session, key(KeyCode::Enter)),
+        Action::Redraw
+    );
+    assert_eq!(session.input(), "explain @tests/", "the second entry");
+}
+
 /// A reference finished by a space closes the list, so the arrows go back to history and scrolling
 /// and the rest of the sentence can be typed.
 #[test]

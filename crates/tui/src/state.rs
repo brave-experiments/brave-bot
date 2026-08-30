@@ -1042,12 +1042,23 @@ impl Session {
             Offered::Commands(_) => self
                 .highlighted_completion()
                 .is_some_and(|command| command.name != self.input.trim()),
-            Offered::Files(_) => {
-                let Some(entry) = self.highlighted_entry() else {
+            Offered::Files(entries) => {
+                let Some(typed) = crate::entries::typed_reference(&self.input) else {
                     return false;
                 };
-                crate::entries::typed_reference(&self.input)
-                    .is_some_and(|typed| typed != entry.path)
+                // A name the user finished typing is a finished sentence, whatever the list
+                // happens to be highlighting: `@test` names a file of its own while a `tests/`
+                // beside it sorts above. Walking the list with the arrows is a choice among the
+                // rows and still wins, which is why this asks the untouched cursor.
+                if self.completion == 0
+                    && entries
+                        .iter()
+                        .any(|entry| !entry.is_directory && entry.path == typed)
+                {
+                    return false;
+                }
+                self.highlighted_entry()
+                    .is_some_and(|entry| typed != entry.path)
             }
         }
     }

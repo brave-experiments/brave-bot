@@ -107,6 +107,8 @@ reference rather than sending the fragment.
 
 `verified-by: bravebot_tui::references::enter_sends_a_prompt_that_ends_in_a_finished_reference`
 `verified-by: bravebot_tui::references::enter_completes_a_prompt_that_ends_in_a_half_typed_reference`
+`verified-by: bravebot_tui::references::enter_sends_a_finished_reference_a_directory_shares_a_prefix_with`
+`verified-by: bravebot_tui::references::the_arrows_still_choose_a_row_over_a_finished_reference`
 `verified-by: bravebot_tui::references::the_files_a_submitted_line_would_include`
 `verified-by: bravebot_tui::references::a_cursor_past_the_end_of_a_narrowed_list_still_names_a_file`
 
