@@ -35,6 +35,10 @@ transcript back does not depend on remembering the session.
 `verified-by: bravebot_tui::state::a_resumed_turn_shows_the_plan_it_worked_to`
 `verified-by: bravebot_tui::state::a_resumed_transcript_shows_the_calls_the_turn_made`
 `verified-by: bravebot_tui::state::a_resumed_session_carries_on_counting_what_it_has_spent`
+`verified-by: bravebot_agent::conversation::a_recounted_turn_says_what_it_did_and_not_only_what_it_said`
+`verified-by: bravebot_agent::conversation::every_call_in_a_round_is_recounted`
+`verified-by: bravebot_agent::conversation::what_a_call_returned_is_not_recounted`
+`verified-by: bravebot_agent::conversation::a_call_with_unreadable_arguments_is_still_recounted`
 
 
 <a id="VIEW-3"></a>

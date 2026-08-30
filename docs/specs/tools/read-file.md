@@ -35,6 +35,10 @@ bytes at another.
 Reads cap at 500 lines and 2000 characters per line, report the range returned, and give the
 offset to continue from.
 
+`verified-by: bravebot_agent::workspace::a_paged_read_is_capped_and_says_where_to_continue`
+`verified-by: bravebot_agent::workspace::the_reported_next_offset_returns_the_following_lines`
+`verified-by: bravebot_agent::workspace::an_over_long_line_is_shortened_and_counted`
+`verified-by: bravebot_agent::workspace::an_offset_past_the_end_returns_nothing_and_says_the_length`
 `verified-by: bravebot_agent::turn::the_model_can_ask_for_a_later_page`
 
 <a id="READ-3"></a>
@@ -42,7 +46,10 @@ offset to continue from.
 
 Never as a decoding error, which would read as a fault rather than as a fact about the file.
 
-`verified-by: none`
+`verified-by: bravebot_agent::workspace::a_binary_file_is_reported_as_binary`
+`verified-by: bravebot_agent::workspace::a_paged_read_of_a_binary_file_is_refused`
+`verified-by: bravebot_agent::workspace::text_files_are_not_mistaken_for_binary`
+`verified-by: bravebot_agent::workspace::an_empty_file_is_not_binary`
 
 <a id="READ-4"></a>
 ### READ-4: the planner may choose which file to read

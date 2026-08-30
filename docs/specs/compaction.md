@@ -64,7 +64,9 @@ counter**, since slots are written once and a name handed out twice would collid
 
 None of these may be relaxed to save room.
 
-`verified-by: bravebot_agent::conversation::compacting_forgets_a_measurement_of_the_conversation_it_replaced`
+`verified-by: bravebot_agent::conversation::a_reference_minted_before_compaction_still_names_its_content_after_it`
+`verified-by: bravebot_agent::conversation::compaction_does_not_rewind_the_reference_counter`
+`verified-by: bravebot_agent::conversation::compaction_does_not_restore_integrity_the_conversation_had_lost`
 
 <a id="COMPACT-4"></a>
 ### COMPACT-4: the cut never lands inside a round
@@ -93,6 +95,10 @@ cut that would not free more than it retains is not made at all.
 life and shortens nothing. Measured at 35 summaries in a turn that should have made none. Never
 relax this to compact sooner.
 
+`verified-by: bravebot_agent::conversation::a_cut_that_would_give_up_less_than_it_keeps_is_not_worth_a_request`
+`verified-by: bravebot_agent::conversation::a_long_turn_does_not_summarise_itself_once_per_round`
+`verified-by: bravebot_agent::conversation::a_head_that_is_only_an_earlier_summary_is_not_compacted_again`
+`verified-by: bravebot_agent::conversation::compacting_forgets_a_measurement_of_the_conversation_it_replaced`
 `verified-by: bravebot_agent::conversation::a_conversation_with_nothing_but_recent_exchanges_is_not_compacted`
 `verified-by: bravebot_agent::turn::a_conversation_nobody_has_measured_is_not_compacted`
 
@@ -102,10 +108,9 @@ relax this to compact sooner.
 The replaced messages go to an archive the transcript still reads and the session record still
 stores. The user owns their transcript; compaction is about what gets sent.
 
-`verified-by: bravebot_agent::conversation::a_recounted_turn_says_what_it_did_and_not_only_what_it_said`
-`verified-by: bravebot_agent::conversation::every_call_in_a_round_is_recounted`
-`verified-by: bravebot_agent::conversation::what_a_call_returned_is_not_recounted`
-`verified-by: bravebot_agent::conversation::a_call_with_unreadable_arguments_is_still_recounted`
+`verified-by: bravebot_agent::conversation::what_compaction_took_out_of_the_request_is_still_recounted_to_the_person`
+`verified-by: bravebot_agent::conversation::a_compacted_conversation_survives_being_written_down`
+`verified-by: bravebot_agent::conversation::the_summary_is_not_shown_as_something_the_user_said`
 
 <a id="COMPACT-7"></a>
 ### COMPACT-7: the budget is configurable, and a nonsensical one falls back

@@ -132,7 +132,8 @@ Reconciliation records the file written, and no directory above it.
 **Why.** One untrusted file does not taint its siblings. Marking the parent would turn a single
 fetched page into a project nobody may edit.
 
-`verified-by: none`
+`verified-by: bravebot_core::policy::untrusted_data_into_a_trusted_path_prompts_and_distrusts_the_path`
+`verified-by: bravebot_core::policy::trusted_data_into_an_untrusted_path_is_silent_and_trusts_the_path`
 
 ## How long an answer lasts
 
@@ -149,7 +150,9 @@ an exception: the answer honoured is the one that session's own user gave, and i
 that session's writes recorded, which is what stops a resumed turn reading back a file an earlier
 turn of the same session poisoned.
 
-`verified-by: none`
+`verified-by: bravebot_tui::sessions::a_record_that_predates_the_map_has_none_rather_than_an_empty_one`
+`verified-by: bravebot_tui::sessions::a_distrusted_path_inside_a_trusted_tree_survives_the_record`
+`verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
 
 <a id="TRUST-7"></a>
 ### TRUST-7: the startup question covers the whole workspace, and declining trusts nothing
