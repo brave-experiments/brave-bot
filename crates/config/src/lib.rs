@@ -31,7 +31,28 @@ pub const DEFAULT_MODEL: &str = "automatic";
 /// real one never fires and the session dies of the thing compaction exists to prevent. The cost
 /// of being wrong downward is a summary sooner than it was needed; the cost of being wrong upward
 /// is the feature not existing. See [`Config::context_budget`].
-pub const DEFAULT_CONTEXT_BUDGET: u64 = 100_000;
+///
+/// This was 100_000, which is not under any window the backend serves, so compaction could not
+/// fire: recorded sessions ended at 28,600, 34,751 and 34,800 prompt tokens having never once
+/// been summarised. The endpoint advertises a long-conversation limit per model, and the largest
+/// among the tool-capable models reachable without a subscription is 102,400 characters, which is
+/// something under thirty thousand tokens. So the ceiling this has to sit below is around there
+/// rather than around a hundred thousand, and it sits below it with room for the reply.
+///
+/// [`env_var::CONTEXT_BUDGET`] is the way out for anyone whose model is larger.
+pub const DEFAULT_CONTEXT_BUDGET: u64 = 24_000;
+
+/// The smallest context window worth using, in prompt tokens.
+///
+/// Not a limit anything enforces. It exists so [`DEFAULT_CONTEXT_BUDGET`] can be checked against
+/// the claim its own documentation makes, which is the claim that quietly stopped being true.
+pub const SMALLEST_USEFUL_WINDOW: u64 = 32_000;
+
+// Checked where it cannot be skipped. A budget above the window does not make compaction late, it
+// removes it, and the removal is silent: every round asks, no round qualifies, and the session
+// runs to exhaustion looking exactly like one that had nothing to summarise. A compile is a
+// better place to find that out than a transcript.
+const _: () = assert!(DEFAULT_CONTEXT_BUDGET < SMALLEST_USEFUL_WINDOW);
 
 /// A value that must not be printed.
 ///

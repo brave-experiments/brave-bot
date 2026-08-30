@@ -123,3 +123,29 @@ misconfiguration cannot quietly turn the mechanism off.
 `verified-by: bravebot_config::lib::a_budget_that_makes_no_sense_falls_back_rather_than_disabling_compaction`
 `verified-by: bravebot_agent::turn::a_conversation_past_the_budget_is_summarised_before_the_next_request`
 `verified-by: bravebot_agent::turn::compacting_on_request_reaches_the_model_and_shortens_the_conversation`
+
+<a id="COMPACT-8"></a>
+### COMPACT-8: compaction is tried before a request whose conversation is already over budget
+
+The figure compared is what the server said the **last** round's request came to, so the check is
+one round late by construction and the budget has to sit below the window rather than at it. A
+turn that has not measured anything yet compacts nothing: there is no figure to compare, and a
+guess would be one.
+
+It is tried before every round that qualifies, not once per turn. Ordinarily there is nothing
+worth cutting and nothing is sent, which costs nothing and says nothing. Only a summariser that
+**failed** stops it being tried again for the rest of the turn, because a call that errored once
+is not free to repeat.
+
+`/compact` asks for the same work on demand, at any size, and does not consult the budget.
+
+**Why the default sits well below any real window.** A budget above the window never fires, so
+being wrong upward does not make compaction late, it removes it. The default was once set above
+anything the backend serves and sessions ran to exhaustion having never been summarised. A default
+is therefore checked against the smallest window worth using rather than chosen to be generous,
+and anyone running a larger model raises it rather than discovering it was never doing anything.
+
+`verified-by: bravebot_agent::turn::a_conversation_past_the_budget_is_summarised_before_the_next_request`
+`verified-by: bravebot_agent::turn::a_conversation_nobody_has_measured_is_not_compacted`
+`verified-by: bravebot_agent::conversation::a_long_turn_does_not_summarise_itself_once_per_round`
+`verified-by: by-construction (the default budget is asserted below the smallest useful window at compile time)`
