@@ -80,6 +80,19 @@ impl From<Denial> for WorkspaceError {
     }
 }
 
+/// How far a read of a file's text may reach.
+///
+/// Named rather than passed as a flag because the two are not variants of a setting: everything
+/// here is confined to the workspace, and the one exception exists because a person's own gesture
+/// named the file. See [`Workspace::read_dropped_text`] for why that is the boundary.
+#[derive(Debug, Clone, Copy)]
+enum Reach {
+    /// The workspace and the directories the user added, and nowhere else.
+    Confined,
+    /// Wherever the drop pointed.
+    Dropped,
+}
+
 /// The directories file operations are confined to.
 ///
 /// One primary root, which every relative path is resolved against, plus any the user added by
@@ -298,6 +311,39 @@ impl Workspace {
         policy: &mut Policy<'_, S>,
         path: &Labelled<String>,
     ) -> Result<Labelled<String>, WorkspaceError> {
+        self.read_text(policy, path, Reach::Confined)
+    }
+
+    /// Read a text file a person dropped on the window, wherever on the disk it sits.
+    ///
+    /// [`Workspace::read`] in every respect but path confinement, and it gives that up for the
+    /// same reason [`Workspace::read_attachment`] does: a drop nearly always comes from
+    /// `~/Downloads` or `~/Desktop`, so confining it would refuse the case the gesture exists for.
+    /// A dropped `.md` is a dropped file exactly as a dropped `.png` is; that one becomes context
+    /// rather than bytes is a fact about its type, not about where it may live.
+    ///
+    /// What makes reaching out sound is the same thing there too: the path is precommitted into
+    /// routing before the turn starts, from a gesture a person made, and the routing gate refuses
+    /// anything that is not `(T,pub)`. No tool adds one, so nothing a model says can reach this,
+    /// and no file's contents can either.
+    ///
+    /// [`Workspace::resolve`] is untouched, so reading, writing, editing, listing and searching
+    /// stay confined exactly as they were: dropping a file lets that file be read, and grants
+    /// nothing else anywhere.
+    pub fn read_dropped_text<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+    ) -> Result<Labelled<String>, WorkspaceError> {
+        self.read_text(policy, path, Reach::Dropped)
+    }
+
+    fn read_text<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        reach: Reach,
+    ) -> Result<Labelled<String>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_read", "path", Role::Routing, path)?;
 
@@ -310,7 +356,12 @@ impl Workspace {
                 reason: "the path was not trusted",
             })?;
 
-        let resolved = self.resolve(&relative)?;
+        // Not a decision taken from the bytes: the caller says which of the two reads this is,
+        // and it says so from the shape of the gesture that produced the path.
+        let resolved = match reach {
+            Reach::Confined => self.resolve(&relative)?,
+            Reach::Dropped => self.resolve_attachment(&relative)?,
+        };
         let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {

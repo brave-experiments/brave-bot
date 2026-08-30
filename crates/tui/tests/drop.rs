@@ -185,6 +185,26 @@ fn a_dropped_text_file_is_context_rather_than_an_attachment() {
     assert_eq!(session.input(), "[File #1] ");
 }
 
+/// A text file comes from ~/Downloads as often as a screenshot does, and it has to reach the turn
+/// from there too: carried as a named file, its read is confined to the workspace and the whole
+/// turn fails instead.
+#[test]
+fn a_text_file_from_outside_the_workspace_is_dropped_all_the_same() {
+    let outside = Scratch::new("text-outside");
+    let path = outside.file("notes.md");
+
+    let workspace = Scratch::new("text-inside");
+    let mut session = session_in(&workspace);
+
+    assert!(session.drop_files(&path));
+    assert_eq!(session.attached()[0].kind, Kind::Text);
+    assert!(
+        session.attached()[0].name.starts_with('/'),
+        "{}",
+        session.attached()[0].name
+    );
+}
+
 /// Several files at once, which is what dropping a selection does.
 #[test]
 fn several_files_dropped_together_each_get_a_marker() {

@@ -6767,6 +6767,98 @@ fn attaching_a_file_vouches_for_it_the_way_naming_one_does() {
     );
 }
 
+/// A text file is dropped from the same places a screenshot is, which is to say from outside the
+/// workspace almost every time. It became a context file whose read is confined, so the whole turn
+/// failed with the prompt beside it unanswered: a drop has to reach its file whatever its type.
+#[test]
+fn a_dropped_text_file_from_outside_the_workspace_becomes_context() {
+    let elsewhere = Scratch::new("dropped-text-elsewhere");
+    std::fs::write(elsewhere.path.join("notes.md"), "the tail of the note").unwrap();
+
+    let scratch = Scratch::new("dropped-text-here");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("read it"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let dropped = elsewhere
+        .path
+        .join("notes.md")
+        .to_string_lossy()
+        .to_string();
+    let task = Task::new("what does it say").with_dropped_text(dropped);
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        // Nothing vouched for, which is what declining at startup leaves.
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("a drop from outside the workspace must not fail the turn");
+
+    let body = received.recv().expect("a request was sent");
+    assert!(
+        body.contains("the tail of the note"),
+        "the dropped file did not become context: {body}"
+    );
+}
+
+/// And the reach is that read's alone. A drop vouches for the one file it named, so a tool asking
+/// for its neighbour is refused exactly as it was before any drop happened.
+#[test]
+fn dropping_a_text_file_does_not_reach_anything_beside_it() {
+    let elsewhere = Scratch::new("dropped-text-neighbour");
+    std::fs::write(elsewhere.path.join("notes.md"), "the note").unwrap();
+    std::fs::write(elsewhere.path.join("secret.md"), "not for you").unwrap();
+
+    let scratch = Scratch::new("dropped-text-neighbour-here");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let neighbour = elsewhere
+        .path
+        .join("secret.md")
+        .to_string_lossy()
+        .to_string();
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read", &format!(r#"{{"path": "{neighbour}"}}"#)),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let dropped = elsewhere
+        .path
+        .join("notes.md")
+        .to_string_lossy()
+        .to_string();
+    let task = Task::new("read the other one too").with_dropped_text(dropped);
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("turn runs");
+
+    let _ = received.recv().expect("a request was sent");
+    let second = received.recv().expect("the tool result was sent back");
+    assert!(
+        !second.contains("not for you"),
+        "a drop reached a file beside it: {second}"
+    );
+}
+
 /// A turn with nothing attached must send exactly what it always sent, or every conversation
 /// that attaches nothing pays for a feature it is not using.
 #[test]

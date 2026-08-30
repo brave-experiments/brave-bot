@@ -1464,8 +1464,10 @@ fn run_turn_animated(
     for attached in session.sent_attachments().to_vec() {
         task = match attached.kind {
             crate::dropped::Kind::Attachment(media) => task.with_attachment(attached.name, media),
-            // A text file is context, which is what `@` and `--file` already do with one.
-            crate::dropped::Kind::Text => task.with_file(attached.name),
+            // A text file is context, which is what `@` and `--file` already do with one. It
+            // goes in as a drop rather than as a named file because a drop comes from wherever
+            // the user dragged it from, and that is rarely inside the workspace.
+            crate::dropped::Kind::Text => task.with_dropped_text(attached.name),
         };
     }
     // Pasted pictures, in the order the markers in the prompt number them. A model reading

@@ -1841,6 +1841,67 @@ fn attaching_from_outside_does_not_widen_any_other_read() {
     ));
 }
 
+/// A dropped `.md` comes from `~/Downloads` as often as a dropped `.png` does. That one becomes
+/// context and the other bytes is a fact about the type, not about where the file may live.
+#[test]
+fn a_dropped_text_file_may_come_from_outside_the_workspace() {
+    let elsewhere = Scratch::new("dropped-text-elsewhere");
+    std::fs::write(elsewhere.path.join("notes.md"), "the note").unwrap();
+
+    let scratch = Scratch::new("dropped-text-here");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let outside = elsewhere
+        .path
+        .join("notes.md")
+        .to_string_lossy()
+        .to_string();
+    let contents = workspace
+        .read_dropped_text(&mut policy, &Labelled::trusted(outside.clone()))
+        .expect("a dropped file is read wherever it came from");
+    // Reaching further is not trusting further: the contents are the user's data, and their
+    // integrity comes from the trust map exactly as an ordinary read's does.
+    assert_eq!(contents.label(), Label::untrusted_private());
+
+    let error = workspace
+        .read(&mut policy, &Labelled::trusted(outside))
+        .expect_err("an ordinary read must still be confined");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }));
+}
+
+/// The path is routing, so only a person's gesture can have put it there. A path the model
+/// composed is untrusted and gets no further than the gate, wherever it points.
+#[test]
+fn an_untrusted_path_is_not_read_as_a_drop() {
+    let scratch = Scratch::new("dropped-text-untrusted");
+    std::fs::write(scratch.path.join("notes.md"), "the note").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let chosen = Labelled::new("notes.md".to_string(), Label::untrusted_public());
+    let error = workspace
+        .read_dropped_text(&mut policy, &chosen)
+        .expect_err("untrusted routing must be refused");
+    assert!(matches!(error, WorkspaceError::Denied(_)));
+}
+
 /// Dropping a directory is a plausible slip, and reading one would otherwise fail further down
 /// with a message about bytes.
 #[test]

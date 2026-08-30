@@ -1287,7 +1287,7 @@ impl Session {
     /// Take a paste that turned out to be a drop, or say it was not one.
     ///
     /// A recognised file becomes a marker in the line and an attachment behind it. Anything else,
-    /// an unsupported type or a file the workspace cannot open, has its path written out, which is
+    /// an unsupported type or a path naming no file at all, has its path written out, which is
     /// what dropping a file did before any of this existed.
     ///
     /// Returns whether the text was a drop at all. A paste that was not one is left to

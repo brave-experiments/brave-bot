@@ -23,8 +23,8 @@ words typed beside it: the path came from a gesture rather than from anything a 
 sending the line is the grant. Nothing inspects the contents and nothing could.
 
 What makes reaching outside the workspace sound is not where the file sits but where its path came
-from. An attachment is fixed before the turn starts, and nothing a model says or a file contains
-can put a path there.
+from. A dropped file's path is fixed before the turn starts, and nothing a model says or a file
+contains can put one there.
 
 ## Clauses
 
@@ -36,6 +36,7 @@ justification cannot be checked from the bytes, so it lives at the call site: to
 terminal's drop handling and nothing else.
 
 `verified-by: bravebot_tui::drop::dropping_an_image_puts_a_marker_in_the_line`
+`verified-by: bravebot_agent::workspace::an_untrusted_path_is_not_read_as_a_drop`
 
 <a id="DROP-2"></a>
 ### DROP-2: a drop makes that file trusted
@@ -49,19 +50,24 @@ dropped file is trusted even inside a directory marked untrusted.
 <a id="DROP-3"></a>
 ### DROP-3: a drop makes that file reachable, wherever on the disk it is
 
-An attachment, and only an attachment, may name a file outside the working directory.
+A dropped file, and only a dropped file, may name a path outside the working directory. Whether it
+is carried as bytes or read as text makes no difference, since the same gesture produced both.
 
 Both grants are for the one file. Nothing else in the directory it came from becomes trusted or
 reachable, and reading, writing, editing, listing and searching stay confined exactly as they
 were.
 
 **Why.** A drop can come from anywhere on the disk and usually does, because the place someone
-drags a file from is rarely inside the project they are working on. Confining an attachment to the
+drags a file from is rarely inside the project they are working on. Confining a drop to the
 workspace would refuse the ordinary case. What makes reaching out sound is not where the file sits
 but that a person's gesture put its path there.
 
 `verified-by: bravebot_tui::drop::a_drop_from_outside_the_workspace_is_attached_all_the_same`
+`verified-by: bravebot_tui::drop::a_text_file_from_outside_the_workspace_is_dropped_all_the_same`
 `verified-by: bravebot_tui::drop::the_name_handed_to_the_task_is_relative_to_the_workspace`
+`verified-by: bravebot_agent::workspace::a_dropped_text_file_may_come_from_outside_the_workspace`
+`verified-by: bravebot_agent::turn::a_dropped_text_file_from_outside_the_workspace_becomes_context`
+`verified-by: bravebot_agent::turn::dropping_a_text_file_does_not_reach_anything_beside_it`
 
 <a id="DROP-4"></a>
 ### DROP-4: a recognised type is carried, and an unrecognised one is only a path

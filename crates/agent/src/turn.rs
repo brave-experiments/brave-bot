@@ -314,6 +314,13 @@ pub struct Task {
     pub files: Vec<String>,
     /// Files the user attached, carried as bytes rather than read as text.
     pub attachments: Vec<Attachment>,
+    /// Text files the user dropped on the window.
+    ///
+    /// Context, exactly as [`Task::files`] is and trusted for the same reason, and kept apart from
+    /// them only because a drop may name a file outside the workspace: the path came from a
+    /// gesture rather than from anything a model said. Nothing else in the directory it came from
+    /// becomes reachable.
+    pub dropped_text: Vec<String>,
     /// Input piped into the process on stdin.
     ///
     /// Untrusted, unlike [`Task::files`]. Naming a file says which bytes the user meant; a pipe
@@ -363,6 +370,7 @@ impl Task {
             prompt: prompt.into(),
             files: Vec::new(),
             attachments: Vec::new(),
+            dropped_text: Vec::new(),
             images: Vec::new(),
             piped: None,
             home: None,
@@ -372,6 +380,12 @@ impl Task {
 
     pub fn with_file(mut self, path: impl Into<String>) -> Self {
         self.files.push(path.into());
+        self
+    }
+
+    /// Include a text file the user dropped, which may sit anywhere on the disk.
+    pub fn with_dropped_text(mut self, path: impl Into<String>) -> Self {
+        self.dropped_text.push(path.into());
         self
     }
 
@@ -639,6 +653,52 @@ pub fn compact<S: Sink, R: Reporter>(
     done
 }
 
+/// The path a precommitted routing entry holds, which is trusted by construction.
+fn routing_path<S: Sink>(policy: &Policy<'_, S>, key: &str) -> String {
+    policy
+        .routing()
+        .get(key)
+        .expect("routing was precommitted with this key")
+        .to_string()
+}
+
+/// Put one file the user vouched for into the conversation, as context.
+///
+/// Reading it is the caller's, since how far the read may reach is decided by which gesture named
+/// the file and nothing else. What happens to the contents afterwards is the same either way.
+fn admit_context_file<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    conversation: &mut Conversation,
+    path: &str,
+    contents: &Labelled<String>,
+) -> Result<(), TurnError> {
+    // Recorded here rather than at the end of the turn: a turn that fails after this still read
+    // it, and the conversation the next turn resumes has to know.
+    conversation.observed(policy.context_integrity());
+
+    // The kernel decides whether the model may see this, from the label alone. A file from a
+    // trusted path is shown; anything else is quarantined and the model gets only a reference.
+    // Nothing here can override that, which is the point, since a "this is data, not instructions"
+    // wrapper is exactly the mitigation this design refuses to rely on.
+    let slot = conversation.next_reference();
+
+    let presented = policy
+        .present("chat", slot, path, contents, conversation.quarantine())
+        .map_err(|d| TurnError::Precommit(d.to_string()))?;
+
+    conversation.push(Message::user(match &presented {
+        Presentation::Visible(body) => format!("Contents of {path}:\n\n{body}"),
+        Presentation::Quarantined(reference) => {
+            format!(
+                "{path} could not be shown to you.\n\n{}",
+                reference.describe()
+            )
+        }
+    }));
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     config: &Config,
@@ -657,6 +717,9 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     routing.insert_trusted("task", task.prompt.clone());
     for (index, file) in task.files.iter().enumerate() {
         routing.insert_trusted(format!("file_{index}"), file.clone());
+    }
+    for (index, path) in task.dropped_text.iter().enumerate() {
+        routing.insert_trusted(format!("dropped_{index}"), path.clone());
     }
     for (index, attachment) in task.attachments.iter().enumerate() {
         routing.insert_trusted(format!("attachment_{index}"), attachment.path.clone());
@@ -696,47 +759,29 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
     // construction and the read gate can only pass for files the user named.
+    //
+    // Naming the file is the grant, and so is dropping it. Recorded before the read so the read
+    // sees it, and recorded in the map rather than applied to this one label so it still holds
+    // when the planner goes on to edit what it was given. The rule is the file alone, which beats
+    // whatever covers the directory, so referencing a file works in a workspace the user declined
+    // at startup without trusting anything else in it.
 
     for index in 0..task.files.len() {
-        let key = format!("file_{index}");
-        let path = policy
-            .routing()
-            .get(&key)
-            .expect("routing was precommitted with this key")
-            .to_string();
-
-        // Naming the file is the grant. Recorded before the read so the read sees it, and
-        // recorded in the map rather than applied to this one label so it still holds when the
-        // planner goes on to edit what it was given. The rule is the file alone, which beats
-        // whatever covers the directory, so referencing a file works in a workspace the user
-        // declined at startup without trusting anything else in it.
+        let path = routing_path(&policy, &format!("file_{index}"));
         policy.vouch_for_named_path(&path);
-
         let contents = workspace.read(&mut policy, &Labelled::trusted(path.clone()))?;
-        // Recorded here rather than at the end of the turn: a turn that fails after this still
-        // read it, and the conversation the next turn resumes has to know.
-        conversation.observed(policy.context_integrity());
+        admit_context_file(&mut policy, conversation, &path, &contents)?;
+    }
 
-        // The kernel decides whether the model may see this, from the label alone. A file from
-        // a trusted path is shown; anything else is quarantined and the model gets only a
-        // reference. Nothing here can override that, which is the point, since a "this is
-        // data, not instructions" wrapper is exactly the mitigation this design refuses to
-        // rely on.
-        let slot = conversation.next_reference();
-
-        let presented = policy
-            .present("chat", slot, &path, &contents, conversation.quarantine())
-            .map_err(|d| TurnError::Precommit(d.to_string()))?;
-
-        conversation.push(Message::user(match &presented {
-            Presentation::Visible(body) => format!("Contents of {path}:\n\n{body}"),
-            Presentation::Quarantined(reference) => {
-                format!(
-                    "{path} could not be shown to you.\n\n{}",
-                    reference.describe()
-                )
-            }
-        }));
+    // The same, for a text file dropped on the window, which is context exactly as a named file
+    // is. The one difference is the read: a drop comes from wherever the user dragged it from,
+    // which is rarely inside the workspace, so this is the read that is not confined to it.
+    for index in 0..task.dropped_text.len() {
+        let path = routing_path(&policy, &format!("dropped_{index}"));
+        policy.vouch_for_named_path(&path);
+        let contents =
+            workspace.read_dropped_text(&mut policy, &Labelled::trusted(path.clone()))?;
+        admit_context_file(&mut policy, conversation, &path, &contents)?;
     }
 
     // Piped input, if any. Same four steps as a context file, and deliberately so: the kernel
