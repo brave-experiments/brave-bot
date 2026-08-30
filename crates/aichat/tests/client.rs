@@ -99,51 +99,55 @@ fn serve_stream(frames: Vec<String>) -> (String, mpsc::Receiver<Captured>) {
     let port = listener.local_addr().expect("addr").port();
     let (sender, receiver) = mpsc::channel();
 
+    // Every connection, not just the first. A reply that stops early is sent again, so a server
+    // that answered once and went away would turn a retried request into a refused one, and the
+    // test would be asserting on the wrong failure.
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept");
-        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
 
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line).expect("request line");
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).expect("request line");
 
-        let mut headers = Vec::new();
-        let mut content_length = 0usize;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
-            }
-            if line == "\r\n" || line == "\n" {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':') {
-                let name = name.trim().to_string();
-                let value = value.trim().to_string();
-                if name.eq_ignore_ascii_case("content-length") {
-                    content_length = value.parse().unwrap_or(0);
+            let mut headers = Vec::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
                 }
-                headers.push((name, value));
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    let name = name.trim().to_string();
+                    let value = value.trim().to_string();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.parse().unwrap_or(0);
+                    }
+                    headers.push((name, value));
+                }
             }
-        }
 
-        let mut body = vec![0u8; content_length];
-        reader.read_exact(&mut body).expect("body");
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).expect("body");
 
-        let _ = sender.send(Captured {
-            request_line: request_line.trim().to_string(),
-            headers,
-            body: String::from_utf8_lossy(&body).to_string(),
-        });
+            let _ = sender.send(Captured {
+                request_line: request_line.trim().to_string(),
+                headers,
+                body: String::from_utf8_lossy(&body).to_string(),
+            });
 
-        // No content-length: the stream ends when the connection closes, as a real one does.
-        let _ = stream.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-        );
-        let _ = stream.flush();
-
-        for frame in frames {
-            let _ = stream.write_all(frame.as_bytes());
+            // No content-length: the stream ends when the connection closes, as a real one does.
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
             let _ = stream.flush();
+
+            for frame in &frames {
+                let _ = stream.write_all(frame.as_bytes());
+                let _ = stream.flush();
+            }
         }
     });
 
@@ -496,6 +500,76 @@ fn a_streamed_completion_arrives_in_pieces() {
         "the request did not ask for usage: {}",
         captured.body
     );
+}
+
+/// A server that hangs up mid-reply leaves the caller at the end of the bytes, exactly as one
+/// that finished does. Told apart only by what the server said, a cut-off reply came back as a
+/// whole one: the tool call the model was part way through writing vanished, and the turn ended
+/// on what read as a considered answer.
+#[test]
+fn a_stream_that_stops_before_the_server_says_it_is_finished_is_not_a_reply() {
+    let (endpoint, _received) = serve_stream(vec![
+        frame(r#"{"model":"m","choices":[{"delta":{"content":"Let me look at"}}]}"#),
+        frame(r#"{"choices":[{"delta":{"content":" the render code:"}}]}"#),
+        // and then nothing: no finish reason, no end-of-stream payload.
+    ]);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let mut client = AichatClient::new(&config, &egress);
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let failed = client
+        .complete_streaming(&mut policy, &request, |_| {})
+        .expect_err("a reply that stopped early is not an answer");
+
+    assert!(
+        failed
+            .to_string()
+            .contains("before the server said it was finished"),
+        "got: {failed}"
+    );
+}
+
+/// The end-of-stream payload and a finish reason are two ways of saying the same thing, and a
+/// server may send either. Requiring the one this backend happens to send would reject every
+/// reply from a server that sends only the other.
+#[test]
+fn either_way_of_saying_the_reply_is_over_is_accepted() {
+    for terminator in [
+        vec![frame(r#"{"choices":[{"finish_reason":"stop"}]}"#)],
+        vec![frame("[DONE]")],
+    ] {
+        let mut frames = vec![frame(
+            r#"{"model":"m","choices":[{"delta":{"content":"done"}}]}"#,
+        )];
+        frames.extend(terminator);
+
+        let (endpoint, _received) = serve_stream(frames);
+        let config = config_for(&endpoint);
+        let egress = Egress::new();
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing(),
+            ReleasePlan::new(),
+            CapabilitySet::from_iter([Capability::WebFetch]),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let mut client = AichatClient::new(&config, &egress);
+        let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+        client
+            .complete_streaming(&mut policy, &request, |_| {})
+            .expect("a reply the server said was over is an answer");
+    }
 }
 
 /// Tool calls arrive fragmented, and a streamed round has to reassemble them into something

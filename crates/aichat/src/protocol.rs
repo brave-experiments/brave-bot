@@ -470,6 +470,8 @@ pub struct StreamAccumulator {
     /// Chunks carrying text, which is the only honest live measure of output before the server
     /// reports its own count.
     content_chunks: u64,
+    /// Whether the server said the reply was over, rather than the bytes merely stopping.
+    ended: bool,
 }
 
 #[derive(Debug, Default)]
@@ -501,6 +503,12 @@ impl StreamAccumulator {
         }
 
         for choice in chunk.choices {
+            // One of the two ways this protocol says a reply is finished. Recorded before the
+            // delta is looked at, because the frame carrying it often carries nothing else.
+            if choice.finish_reason.is_some() {
+                self.ended = true;
+            }
+
             let Some(delta) = choice.delta else { continue };
 
             if let Some(text) = delta.content
@@ -536,6 +544,28 @@ impl StreamAccumulator {
     /// The reply so far.
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    /// Note that the stream reached its end-of-reply marker.
+    ///
+    /// Separate from [`StreamAccumulator::push`] because the marker is not a chunk: it is a
+    /// payload this protocol spells `[DONE]`, and the decoder is what recognises it.
+    pub fn mark_ended(&mut self) {
+        self.ended = true;
+    }
+
+    /// Whether the server said the reply was over.
+    ///
+    /// A server that finished and a server that hung up halfway both leave the caller at the end
+    /// of the bytes, so the difference cannot come from the bytes running out. It has to come
+    /// from something the server said, and in this protocol there are two such things: a finish
+    /// reason on a choice, and the end-of-stream payload. Either will do, because a server may
+    /// send one without the other, and the deployed backend sends only the second.
+    ///
+    /// Every streaming protocol has a marker of this kind, so a client for a different one
+    /// answers the same question from whatever its own marker is.
+    pub fn ended(&self) -> bool {
+        self.ended
     }
 
     /// Output tokens as best they can be known right now.

@@ -32,6 +32,12 @@ pub enum ChatError {
     Egress(EgressError),
     /// A well-formed response carrying no usable content.
     NoContent,
+    /// The stream stopped without the server saying the reply was over.
+    ///
+    /// Distinct from [`ChatError::NoContent`]: there may be a great deal of content, and the
+    /// problem is that there was going to be more. Retried like a connection that died, because
+    /// that is most often what it is.
+    Incomplete,
     /// A subscription is configured but no credential could be presented.
     ///
     /// Fails the request rather than falling back: see [`AichatClient::route`].
@@ -45,6 +51,9 @@ impl fmt::Display for ChatError {
             Self::Decode { detail } => write!(f, "unexpected response: {detail}"),
             Self::Egress(e) => write!(f, "{e}"),
             Self::NoContent => f.write_str("the response contained no message content"),
+            Self::Incomplete => {
+                f.write_str("the reply stopped before the server said it was finished")
+            }
             Self::Subscription(detail) => write!(
                 f,
                 "the Leo subscription could not be used: {detail}. Run `bravebot import-leo-creds` to \
@@ -326,6 +335,7 @@ impl<'a> AichatClient<'a> {
 
             for payload in decoder.push(&bytes) {
                 if payload == STREAM_DONE {
+                    accumulated.mark_ended();
                     continue;
                 }
                 // A chunk that will not parse is skipped rather than failing the turn: servers
@@ -343,6 +353,15 @@ impl<'a> AichatClient<'a> {
                 counted_by_server: accumulated.usage_is_reported(),
                 attempt,
             });
+        }
+
+        // Checked before the reply is taken apart, because the question is about the stream and
+        // not about what it managed to carry. A server that hangs up mid-reply leaves the same
+        // end of input as one that finished, so without this a cut-off answer was returned as a
+        // whole one: the tool call the model was in the middle of writing simply vanished, and
+        // the turn ended on what looked like a considered reply.
+        if !accumulated.ended() {
+            return Err(ChatError::Incomplete);
         }
 
         let (content, model, calls, usage) = accumulated.finish();
@@ -405,7 +424,17 @@ const BACKOFF: Duration = Duration::from_secs(1);
 /// connection. A reply that arrived and would not decode is not a connection problem, and
 /// asking for it again would produce the same thing.
 fn worth_another_attempt(attempt: u32, error: &ChatError) -> bool {
-    attempt < ATTEMPTS && matches!(error, ChatError::Egress(e) if e.is_transient())
+    if attempt >= ATTEMPTS {
+        return false;
+    }
+    match error {
+        ChatError::Egress(e) => e.is_transient(),
+        // A reply that stopped early is a request that did not complete, whatever the socket
+        // thought. Sending it again is the same remedy, and the partial is thrown away for the
+        // same reason: half a reply cannot be continued by a second stream.
+        ChatError::Incomplete => true,
+        _ => false,
+    }
 }
 
 fn backoff(failures: u32) -> Duration {
