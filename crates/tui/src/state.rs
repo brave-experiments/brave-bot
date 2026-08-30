@@ -786,15 +786,27 @@ impl Session {
         (start, end)
     }
 
-    /// Move the caret one character towards the start.
+    /// Move the caret one character towards the start, counting a marker as one.
+    ///
+    /// A marker stands for one thing, and a caret resting in the middle of one would be a caret
+    /// between two halves of a picture. So it is stepped over whole, in either direction, and the
+    /// places the caret can rest are the same places the user can see.
     pub fn move_left(&mut self) {
+        if let Some((start, _)) = self.marker_before_caret() {
+            self.caret = start;
+            return;
+        }
         if let Some(c) = self.input[..self.caret].chars().next_back() {
             self.caret -= c.len_utf8();
         }
     }
 
-    /// Move the caret one character towards the end.
+    /// Move the caret one character towards the end, counting a marker as one.
     pub fn move_right(&mut self) {
+        if let Some((_, end)) = self.marker_at_caret() {
+            self.caret = end;
+            return;
+        }
         if let Some(c) = self.input[self.caret..].chars().next() {
             self.caret += c.len_utf8();
         }
@@ -927,13 +939,21 @@ impl Session {
         self.input[start..self.caret].chars().count()
     }
 
-    /// Delete the character after the caret.
+    /// Delete the character after the caret, or the whole marker the caret is on.
+    ///
+    /// Whole for the reason [`Session::backspace`] takes one whole: the caret rests on a marker
+    /// as it rests on a character, and half a marker stands for nothing.
     pub fn delete_forward(&mut self) {
         if self.caret == self.input.len() {
             return;
         }
         self.history.leave();
-        self.input.remove(self.caret);
+        match self.marker_at_caret() {
+            Some((start, end)) => self.input.replace_range(start..end, ""),
+            None => {
+                self.input.remove(self.caret);
+            }
+        }
         self.completion = 0;
     }
 
@@ -1405,20 +1425,34 @@ impl Session {
             .chain(self.pasted_text.iter().map(|pasted| pasted.marker.as_str()))
     }
 
-    /// Where the marker the caret is deleting into starts and ends, if it is in one.
+    /// Where every marker in the line starts and ends.
     ///
     /// Found by looking the line up rather than by remembering a position, because the line is
     /// edited around a marker and a remembered offset would be wrong the first time somebody
-    /// rewrote the sentence in front of it. A caret at the very start of a marker is not in it:
-    /// what sits before that caret is ordinary text and deleting it is an ordinary deletion.
-    fn marker_around_caret(&self) -> Option<(usize, usize)> {
-        self.markers()
-            .flat_map(|marker| {
-                self.input
-                    .match_indices(marker)
-                    .map(|(at, found)| (at, at + found.len()))
-            })
+    /// rewrote the sentence in front of it.
+    fn marker_spans(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.markers().flat_map(|marker| {
+            self.input
+                .match_indices(marker)
+                .map(|(at, found)| (at, at + found.len()))
+        })
+    }
+
+    /// The marker the caret would move back into, if it is against one.
+    ///
+    /// A caret at the very start of a marker is not against it from this side: what sits before
+    /// that caret is ordinary text, and moving over it or deleting it is an ordinary press.
+    fn marker_before_caret(&self) -> Option<(usize, usize)> {
+        self.marker_spans()
             .find(|&(start, end)| start < self.caret && self.caret <= end)
+    }
+
+    /// The marker the caret is on, meaning the one the next forward press would move over.
+    ///
+    /// A caret at the end of a marker is past it, and what lies ahead is the text after it.
+    pub fn marker_at_caret(&self) -> Option<(usize, usize)> {
+        self.marker_spans()
+            .find(|&(start, end)| start <= self.caret && self.caret < end)
     }
 
     /// Delete the character before the caret, or leave shell mode where there is nothing left to
@@ -1440,7 +1474,7 @@ impl Session {
             self.shell = false;
             return;
         }
-        if let Some((start, end)) = self.marker_around_caret() {
+        if let Some((start, end)) = self.marker_before_caret() {
             self.input.replace_range(start..end, "");
             self.caret = start;
             self.completion = 0;
@@ -1975,21 +2009,73 @@ mod tests {
         );
     }
 
-    /// The caret reaches the middle of a marker like any other run of text, and a press there is
-    /// still a press on the marker: half of one left in the line stands for nothing.
+    /// One press of the arrow key crosses a marker, in either direction. It stands for one thing
+    /// and reads as one thing, so counting the characters it happens to be spelled with is a
+    /// dozen presses to cross what looks like a single word.
     #[test]
-    fn a_backspace_inside_a_marker_takes_all_of_it() {
+    fn the_caret_steps_over_a_marker_whole() {
+        let mut s = session();
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+
+        s.move_left();
+        assert_eq!(s.caret(), "look at ".len());
+
+        s.move_right();
+        assert_eq!(s.caret(), "look at [Image #1]".len());
+    }
+
+    /// The property behind stepping over one whole: there is nowhere inside a marker for the
+    /// caret to be. A caret between two halves of a picture is a caret in a place the user cannot
+    /// see, and the next thing they type would land there.
+    #[test]
+    fn the_caret_cannot_come_to_rest_inside_a_marker() {
         let mut s = session();
         s.attach(picture(b"pixels"));
         for c in " please".chars() {
             s.type_char(c);
         }
-        for _ in 0..(" please".len() + 5) {
+
+        let inside = 1.."[Image #1]".len();
+        for _ in 0..s.input.len() {
+            s.move_left();
+            assert!(
+                !inside.contains(&s.caret()),
+                "the caret rested inside a marker"
+            );
+        }
+        for _ in 0..s.input.len() {
+            s.move_right();
+            assert!(
+                !inside.contains(&s.caret()),
+                "the caret rested inside a marker"
+            );
+        }
+    }
+
+    /// Delete takes what the caret is on, and the caret is on the whole marker: the half of the
+    /// line Backspace cannot reach must not be the half where a marker can be broken.
+    #[test]
+    fn delete_forward_takes_the_whole_marker() {
+        let mut s = session();
+        s.attach(picture(b"pixels"));
+        for c in " please".chars() {
+            s.type_char(c);
+        }
+        // Back over the words, and then the one press that crosses the marker.
+        for _ in 0.." please".len() + 1 {
             s.move_left();
         }
-        s.backspace();
+        assert_eq!(s.caret(), 0);
+        s.delete_forward();
 
         assert_eq!(s.input, " please");
+        assert!(
+            s.pasted_named(&s.input).is_empty(),
+            "the picture outlived its marker"
+        );
     }
 
     /// A marker for folded words goes whole for the same reason a picture's does, and taking it

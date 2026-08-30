@@ -99,16 +99,31 @@ carries a picture is said once per session.
 <a id="INPUT-6"></a>
 ### INPUT-6: a marker is deleted whole, in one press
 
-Backspace with the caret inside a marker or just after one takes all of it, whether it stands for a
-folded paste, a pasted picture or a dropped file. Only a marker the box wrote goes this way: square
-brackets the user typed are deleted a character at a time, as everything they typed is.
+Backspace just after a marker takes all of it, and Delete with the caret on one takes all of it,
+whether it stands for a folded paste, a pasted picture or a dropped file. Only a marker the box
+wrote goes this way: square brackets the user typed are deleted a character at a time, as
+everything they typed is.
 
 **Why.** A marker is one thing on the screen and one thing to the person looking at it. Taking a
 character off the end leaves text that still reads as an attachment standing over something no
 longer attached, and the only way to find that out is to keep pressing.
 
 `verified-by: bravebot_tui::state::one_backspace_takes_the_whole_marker`
-`verified-by: bravebot_tui::state::a_backspace_inside_a_marker_takes_all_of_it`
 `verified-by: bravebot_tui::state::one_backspace_takes_the_whole_folded_paste`
+`verified-by: bravebot_tui::state::delete_forward_takes_the_whole_marker`
 `verified-by: bravebot_tui::state::text_that_merely_looks_like_a_marker_is_deleted_one_character_at_a_time`
 `verified-by: bravebot_tui::drop::one_backspace_takes_the_whole_marker`
+
+
+<a id="INPUT-7"></a>
+### INPUT-7: the caret steps over a marker whole, and never rests inside one
+
+One press of Left or Right crosses a marker in either direction, and there is no position within
+one for the caret to stop at.
+
+**Why.** A caret between two halves of a picture is in a place the person cannot see, and whatever
+they type next lands there. Counting out the characters a marker happens to be spelled with is a
+dozen presses to cross what reads as a single word.
+
+`verified-by: bravebot_tui::state::the_caret_steps_over_a_marker_whole`
+`verified-by: bravebot_tui::state::the_caret_cannot_come_to_rest_inside_a_marker`
