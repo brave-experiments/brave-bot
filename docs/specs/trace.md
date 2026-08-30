@@ -118,3 +118,5 @@ ok      approval: src/config.py: a path nobody has vouched for either way, askin
 `--trace` on a one-shot run prints the same thing, and Ctrl-T toggles it in a session. Each line is
 one gate that ran: what it checked, the label it saw, and what it allowed. It is the fastest way to
 find out why something was refused.
+
+`verified-by: bravebot_tui::app::ctrl_t_toggles_the_trail`

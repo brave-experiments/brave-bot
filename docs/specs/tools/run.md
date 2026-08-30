@@ -10,8 +10,8 @@ governs:
   - crates/tui/src/confirm.rs
 guards:
   - symbol: Policy::read_output
-  - symbol: Policy::vouch_for_command
-  - symbol: TrustedPrograms::vouch
+  - symbol: Policy::remember_command
+  - symbol: TrustedPrograms::trust
 ---
 
 ## Scope

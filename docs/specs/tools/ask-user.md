@@ -6,7 +6,7 @@ governs:
   - crates/core/src/ask.rs
   - crates/tui/src/ask.rs
 guards:
-  - symbol: Policy::before_asking
+  - symbol: Policy::record_answers
 ---
 
 ## Scope
