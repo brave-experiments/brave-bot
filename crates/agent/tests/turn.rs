@@ -1618,6 +1618,10 @@ fn a_truncated_search_tells_the_model_it_is_incomplete() {
 }
 
 /// And the ordinary case must stay quiet, or the model learns to ignore the notice.
+///
+/// Trusted deliberately. Run against an empty trust store the result is quarantined, the model
+/// is handed a reference rather than the body, and the assertion below holds whether or not the
+/// search claims truncation: it would pass against code that claimed it every time.
 #[test]
 fn a_complete_search_makes_no_truncation_claim() {
     let scratch = Scratch::new("search-complete");
@@ -1633,18 +1637,23 @@ fn a_complete_search_makes_no_truncation_claim() {
     let mut sink = RecordingSink::new();
 
     let task = Task::new("find needle");
-    turn::run(
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut bravebot_agent::confirm::Unattended,
         &mut sink,
+        trusting_the_workspace(),
     )
     .expect("turn runs");
 
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
+    assert!(
+        second.contains("a.txt:1: needle"),
+        "the model was not shown the search body, so the assertion below proves nothing: {second}"
+    );
     assert!(
         !second.contains("incomplete"),
         "a complete search claimed to be truncated: {second}"
