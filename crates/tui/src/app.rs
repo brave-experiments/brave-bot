@@ -299,9 +299,11 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         // Escape means "stop what is happening" before it means anything else, so a turn in
         // flight is cancelled first. The prompt comes back for editing rather than being lost.
         KeyCode::Esc if session.status == Status::Working => Action::Cancel,
-        // Then it discards a half-typed prompt, and only leaves once the line is already empty.
-        // Pressing it to abandon a thought should not also end the session.
-        KeyCode::Esc if !session.input().is_empty() => {
+        // Then it discards a half-typed prompt, and only leaves once there is nothing left to
+        // discard. Pressing it to abandon a thought should not also end the session, and an armed
+        // shell mode is something to abandon even with no line behind it: the marker is on screen,
+        // and Backspace at that same caret already backs out of it.
+        KeyCode::Esc if !session.input().is_empty() || session.shell => {
             session.clear_input();
             Action::Redraw
         }
@@ -2403,6 +2405,21 @@ mod tests {
 
         assert!(!session.shell, "the mode survived being cancelled");
         assert!(session.input().is_empty());
+    }
+
+    /// The mode is part of the line even when nothing was typed behind the marker, so Escape
+    /// leaves it rather than ending the session. Backspace at the same caret already does, and
+    /// having the two keys disagree is how a press meant to back out of a mode loses the session.
+    #[test]
+    fn escape_leaves_shell_mode_armed_on_an_empty_line() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!");
+        assert!(session.shell, "the mode was never armed");
+
+        let action = handle_key(&mut session, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::Redraw, "escape ended the session");
+        assert!(!session.shell, "the mode survived being cancelled");
     }
 
     /// A `!` mid-sentence is punctuation. Treating it as the mode would make "no way!" a command.
