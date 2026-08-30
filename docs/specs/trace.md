@@ -31,6 +31,7 @@ asked", which is most of what anyone asks it.
 `verified-by: bravebot_core::policy::a_read_and_a_write_leave_different_trails`
 `verified-by: bravebot_core::policy::promotion_appears_in_the_audit_trail`
 `verified-by: bravebot_core::policy::the_audit_trail_records_the_precommit_first`
+`verified-by: bravebot_core::policy::a_turn_cannot_begin_without_routing`
 
 ### TRACE-2: the trail holds no content
 

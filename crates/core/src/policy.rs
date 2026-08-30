@@ -219,9 +219,18 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         sink: &'sink mut S,
     ) -> Gated<Self> {
         if routing.is_empty() {
+            let message = "routing precommit failed: routing must not be empty".to_string();
+            // Emitted here rather than through `deny`, which needs the policy this call is
+            // refusing to build. A refusal that recorded nothing would leave the turn with no
+            // trail at all, which is the case somebody most needs one for.
+            sink.emit(Event::GateBlocked {
+                gate: "precommit",
+                detail: String::new(),
+                reason: message.clone(),
+            });
             return Err(Denial {
                 principle: Principle::IntegrityGate,
-                message: "routing precommit failed: routing must not be empty".into(),
+                message,
             });
         }
         let keys: Vec<_> = routing.keys().collect();
@@ -3177,6 +3186,25 @@ mod tests {
         )
         .expect_err("empty routing must be refused");
         assert_eq!(err.principle, Principle::IntegrityGate);
+
+        let blocked: Vec<_> = sink.blocked().collect();
+        assert_eq!(
+            blocked.len(),
+            1,
+            "the refusal left no record: {:?}",
+            sink.events()
+        );
+        assert!(
+            matches!(
+                blocked[0],
+                Event::GateBlocked {
+                    gate: "precommit",
+                    ..
+                }
+            ),
+            "the record does not name the gate that refused: {:?}",
+            blocked[0]
+        );
     }
 
     #[test]
