@@ -438,6 +438,13 @@ pub struct Outcome {
     /// Kept apart from the total because it answers a different question: the total is dominated by
     /// the history each round re-sends, while this tracks how much the model actually produced.
     pub output_tokens: u64,
+    /// What the last round's request came to, as the server counted it.
+    ///
+    /// Occupancy rather than cost, and the difference matters. [`Outcome::tokens`] adds every
+    /// round together and so says what the turn spent; this says how full the context was when it
+    /// ended, which is the only figure worth comparing against
+    /// [`bravebot_config::Config::context_budget`].
+    pub context_tokens: u64,
     /// The reply, released for display while the policy was still open.
     display: String,
     /// What to tell the person watching about standing instructions and skills.
@@ -576,6 +583,60 @@ pub fn run_with_trust<S: Sink, C: Confirmer>(
         TrustedPrograms::new(),
         &Cancel::new(),
     )
+}
+
+/// Compact a conversation on its own, outside any turn.
+///
+/// What `/compact` runs. A turn compacts when the budget says it must; this is the same work
+/// asked for by a person who can see the session getting long and would rather choose the moment
+/// than have one chosen for them.
+///
+/// `Ok(None)` where there was nothing worth compacting. The policy is the one thing that has to
+/// be built rather than borrowed: [`bravebot_core::policy::Policy::adopt_summary`] is the gate, and a
+/// gate needs a turn to record itself in. Its routing is the request the user made by typing the
+/// command, which is their own words in the same sense a prompt is.
+///
+/// No workspace, no confirmer, and one capability. Nothing here reads a file, writes one, or asks
+/// anybody anything: the whole of it is one model call over an exchange the planner has already
+/// seen. So [`Capability::WebFetch`] is granted, because reaching the model is egress and the
+/// gate asks, and nothing else is, because there is nothing else to do.
+pub fn compact<S: Sink, R: Reporter>(
+    config: &Config,
+    egress: &Egress,
+    conversation: &mut Conversation,
+    model: Option<&str>,
+    reporter: &mut R,
+    sink: &mut S,
+    trust: TrustStore,
+) -> Result<Option<crate::compact::Compacted>, crate::compact::CompactError> {
+    let mut routing = Routing::new();
+    routing.insert_trusted("task", "summarise the conversation so far");
+
+    // The integrity is inherited for the same reason a turn inherits it: a fresh policy is not a
+    // fresh context, and a summary is a function of everything the exchange has held.
+    let capabilities = CapabilitySet::from_iter([Capability::WebFetch]);
+    let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)?
+        .with_trust(trust)
+        .resuming(conversation.context());
+
+    reporter.phase(Phase::Compacting);
+
+    let mut subscription = config
+        .premium_endpoint
+        .as_deref()
+        .and_then(crate::ImportedSubscription::discover);
+    let mut chat = crate::processor::Chat {
+        config,
+        egress,
+        subscription: subscription
+            .as_mut()
+            .map(|s| s as &mut dyn bravebot_aichat::Subscription),
+        model,
+    };
+
+    let done = crate::compact::compact(&mut policy, &mut chat, conversation);
+    policy.finish();
+    done
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -793,11 +854,62 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // output to a running total that also holds prompt tokens would make the figure jump by the
     // size of the re-sent history every round.
     let mut output_tokens = 0u64;
+    // Seeded from the conversation rather than starting at zero. A session is many turns, and a
+    // figure that began again with each one would only notice a conversation growing inside a
+    // single long turn: fifty short turns would fill the context with nothing watching.
+    let mut context_tokens = conversation.last_request_tokens();
+    // Cleared only by a failure. A summary that could not be made once will not be made on the
+    // next round either, and a turn should not spend a request per round finding that out.
+    let mut may_compact = true;
     let completion = loop {
         // Checked before each request rather than mid-flight: a request already on the wire has
         // to finish, but nothing new needs to start.
         if cancel.is_cancelled() {
             return Err(TurnError::Cancelled);
+        }
+
+        // Before the request rather than after the reply that overflowed. The figure being
+        // compared is the last round's, so this is one round late by construction, which is why
+        // the budget sits below any window rather than at it.
+        if may_compact && context_tokens >= config.context_budget {
+            reporter.phase(Phase::Compacting);
+            let mut chat = crate::processor::Chat {
+                config,
+                egress,
+                subscription: subscription
+                    .as_mut()
+                    .map(|s| s as &mut dyn bravebot_aichat::Subscription),
+                model: task.model.as_deref(),
+            };
+            match crate::compact::compact(&mut policy, &mut chat, conversation) {
+                Ok(Some(done)) => {
+                    tokens += done.usage.total();
+                    output_tokens += done.usage.completion_tokens;
+                    reporter.narration(format!(
+                        "the conversation was getting long, so {} earlier messages were \
+                         summarised and the last {} kept as they are",
+                        done.summarised, done.kept
+                    ));
+                }
+                // Nothing to shorten yet, which is the ordinary answer and not worth a word.
+                // Nothing was sent, so asking again next round is free, and a round or two later
+                // there usually is something.
+                //
+                // Said nothing rather than saying so. Once a conversation is past the budget and
+                // cannot get under it, this is the answer on nearly every round of every turn for
+                // the rest of the session, and a line the user can do nothing about, repeated
+                // forever, buries the ones they can. What it was there to prevent, a session
+                // running out of room with no warning, is the context gauge's job, and the gauge
+                // does it better: it is always on screen, and it says nothing twice.
+                Ok(None) => {}
+                // The conversation is untouched, so the turn carries on with the history it had.
+                // Failing the turn over this would turn a request that might still have fit into
+                // one that certainly does not happen.
+                Err(e) => {
+                    may_compact = false;
+                    reporter.narration(format!("the conversation could not be summarised: {e}"));
+                }
+            }
         }
 
         // Said before the request goes out, so the longest silence in a turn is explained
@@ -844,6 +956,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         };
         tokens += completion.usage.total();
         output_tokens += completion.usage.completion_tokens;
+        context_tokens = completion.usage.prompt_tokens;
+        conversation.measured(context_tokens);
 
         // The budget is spent, so this round is the answer whatever it holds. A planner that
         // asked for a tool anyway does not get one: a request that offered none is not one a
@@ -1222,6 +1336,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         programs,
         tokens,
         output_tokens,
+        context_tokens,
         clean: policy.finish(),
         display,
         notices: notices.into_iter().map(|n| n.message).collect(),

@@ -302,6 +302,14 @@ pub struct Session {
     pub turns: usize,
     /// Tokens spent across the whole session.
     pub tokens: u64,
+    /// How large the last request was, and the budget it is compacted at.
+    ///
+    /// `None` until a request has been measured, which is the honest reading: nothing has been
+    /// counted yet, and drawing a gauge at zero would claim it had.
+    ///
+    /// Not the same figure as [`Session::tokens`], which adds every round of every turn together
+    /// and so says what the session has cost. This says how full the context is now.
+    occupancy: Option<(u64, u64)>,
     /// Prompts already sent, for recall with the arrow keys.
     pub history: crate::history::History,
     /// What the mouse is sweeping over, or what it last swept over.
@@ -434,6 +442,7 @@ impl Session {
             confinement: confinement.into(),
             turns: 0,
             tokens: 0,
+            occupancy: None,
             history: crate::history::History::new(),
             selection: None,
             copied: None,
@@ -515,13 +524,19 @@ impl Session {
         // exactly like thinking and is not: nothing is being worked out and what the model had
         // written has been thrown away.
         //
+        // Compacting is one of them too: the request is being summarised, which takes as long as
+        // a round and produces nothing to look at, so without a word for it the session looks
+        // stuck at the moment it is doing the most.
+        //
         // Thinking is not one of them, and neither is the call in flight or the task in hand:
         // both of those are already on their own lines in the transcript above, and repeating
         // the running call here left the spinner reading "Isolated processor(index.html,
         // server.py)…", which is a strange thing for a word beside a spinner to be. What that
         // word is for is showing that the session is alive while the answer takes its time.
         match self.phase {
-            Some(phase @ (Phase::Planning | Phase::Reconnecting)) => Some(phase.word().to_string()),
+            Some(phase @ (Phase::Planning | Phase::Reconnecting | Phase::Compacting)) => {
+                Some(phase.word().to_string())
+            }
             _ => None,
         }
     }
@@ -577,6 +592,7 @@ impl Session {
         self.transcript.clear();
         self.turns = 0;
         self.tokens = 0;
+        self.occupancy = None;
         self.written = 0;
         self.todos.clear();
         self.phase = None;
@@ -1611,6 +1627,47 @@ impl Session {
         self.running = None;
     }
 
+    /// Record how full the context is, against the budget it is compacted at.
+    pub fn measured(&mut self, used: u64, budget: u64) {
+        self.occupancy = Some((used, budget));
+    }
+
+    /// How full the context is, as a percentage, or `None` where nothing has been measured.
+    ///
+    /// Capped at a hundred rather than allowed past it. The budget is a guess at a window nobody
+    /// reports, so a request larger than it is a session that will be compacted next round, not a
+    /// context that is a hundred and forty per cent full.
+    /// Zero reads as "not measured" rather than as an empty context. No request costs nothing, so
+    /// the figure only ever arrives as zero when there has not been one to count: before the
+    /// first turn, and after a compaction has shortened the conversation underneath it.
+    pub fn fullness(&self) -> Option<u64> {
+        let (used, budget) = self.occupancy?;
+        (used > 0 && budget > 0).then(|| (used * 100 / budget).min(100))
+    }
+
+    /// Enter the working state for something that is not a turn.
+    ///
+    /// `/compact` makes a model call and takes as long as a round does, so the spinner has to run
+    /// for it or the session reads as stopped at the moment it is busiest. Not a turn: nothing
+    /// joins the transcript, the count of turns does not move, and the task list is left alone,
+    /// since the work it describes is still outstanding afterwards.
+    pub fn begin_aside(&mut self) {
+        self.status = Status::Working;
+        self.scroll = 0;
+        self.phase = None;
+        self.running = None;
+        self.started = Some(Instant::now());
+    }
+
+    /// Leave it again, adding what it cost to the session's total.
+    pub fn end_aside(&mut self, tokens: u64) {
+        self.status = Status::Idle;
+        self.started = None;
+        self.phase = None;
+        self.running = None;
+        self.tokens += tokens;
+    }
+
     pub fn note(&mut self, message: impl Into<String>) {
         self.transcript.push(Entry::system(message));
     }
@@ -2105,6 +2162,64 @@ mod tests {
         s.take_edited("an older prompt, revised");
         assert!(!s.history.is_browsing(), "still browsing after an edit");
         assert_eq!(s.input, "an older prompt, revised");
+    }
+
+    /// A gauge reading zero before anything has been sent would be a claim about a context
+    /// nobody has counted, in a session that has not started.
+    #[test]
+    fn nothing_is_said_about_the_context_until_a_request_has_been_measured() {
+        assert_eq!(Session::new("none").fullness(), None);
+    }
+
+    #[test]
+    fn how_full_the_context_is_comes_back_as_a_percentage() {
+        let mut s = Session::new("none");
+        s.measured(25_000, 100_000);
+        assert_eq!(s.fullness(), Some(25));
+    }
+
+    /// The budget is a guess at a window nobody reports, so a request larger than it is a session
+    /// about to be compacted rather than a context a hundred and forty per cent full.
+    #[test]
+    fn a_request_past_the_budget_reads_as_full_rather_than_more_than_full() {
+        let mut s = Session::new("none");
+        s.measured(140_000, 100_000);
+        assert_eq!(s.fullness(), Some(100));
+    }
+
+    /// After a compaction nothing has been counted for the shortened conversation, and the old
+    /// figure describes an exchange that is no longer being sent. Better to say nothing until the
+    /// next turn counts it than to show a percentage that is no longer about anything.
+    #[test]
+    fn a_context_measured_at_nothing_is_a_context_nobody_has_measured() {
+        let mut s = Session::new("none");
+        s.measured(0, 100_000);
+        assert_eq!(s.fullness(), None);
+    }
+
+    /// A new session's context is empty, so the gauge from the old one would be describing a
+    /// conversation that no longer exists.
+    #[test]
+    fn clearing_a_session_forgets_how_full_the_old_one_was() {
+        let mut s = Session::new("none");
+        s.measured(90_000, 100_000);
+        s.clear();
+        assert_eq!(s.fullness(), None);
+    }
+
+    /// Compacting is not a turn: it adds nothing to the transcript, and a turn count that moved
+    /// for it would make the next turn look like the one after two.
+    #[test]
+    fn an_aside_works_without_becoming_a_turn() {
+        let mut s = Session::new("none");
+        s.begin_aside();
+        assert_eq!(s.status, Status::Working);
+        s.end_aside(400);
+
+        assert_eq!(s.status, Status::Idle);
+        assert_eq!(s.turns, 0);
+        assert_eq!(s.tokens, 400);
+        assert!(s.transcript.is_empty());
     }
 
     #[test]

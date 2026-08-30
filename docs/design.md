@@ -100,6 +100,33 @@ The confinement here is the capability set rather than an OS boundary: there is 
 *code* involved, only untrusted *content*, and the caller is the same trusted driver as
 everywhere else.
 
+## Compacting a conversation
+
+Each round re-sends the whole history, so a session that runs long enough is refused by the
+server. Compaction replaces the older part of the exchange, in the request only, with a summary
+of it.
+
+The summariser is a **planner-context call, not a processor**, and the difference is the whole of
+why it is sound. A processor is the one component allowed to read untrusted content, and the price
+is that everything it produces is quarantined: what it could make here is a summary the planner may
+not read, which is not a summary the planner can carry on from. What licenses this call instead is
+the opposite property. Every message in a conversation has already been past `present`: either the
+kernel judged it trusted and showed it, or what went in was a reference and the bytes stayed in
+quarantine. So a model given that exchange is given exactly what the planner was given, and R5
+holds because `label_model_output` labels the answer from the context rather than upgrading
+anything.
+
+Where the context has gone untrusted, the summary is untrusted, and there is nowhere for it to go:
+quarantining it would hand the planner a reference to its own history. `Policy::adopt_summary`
+refuses, and the session carries on with the conversation it had. That is longer than anyone
+wanted and is the one outcome here that is never wrong.
+
+Nothing else moves. The quarantine is untouched, so a reference handed out earlier still resolves;
+the reference counter does not rewind, since slots are written once; the integrity does not
+recover, since compaction is not a fresh session. And what is shortened is the request, not the
+record: the replaced messages are still the person's own transcript and are still read back to
+them.
+
 ## Design
 
 - **One network egress path.** A single chokepoint, revalidated on every redirect hop, so a

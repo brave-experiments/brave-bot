@@ -25,6 +25,14 @@ include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 /// server's list has to put this one back.
 pub const DEFAULT_MODEL: &str = "automatic";
 
+/// How many prompt tokens a conversation may reach before it is compacted.
+///
+/// Low enough to be under any window worth calling a context window, since a budget above the
+/// real one never fires and the session dies of the thing compaction exists to prevent. The cost
+/// of being wrong downward is a summary sooner than it was needed; the cost of being wrong upward
+/// is the feature not existing. See [`Config::context_budget`].
+pub const DEFAULT_CONTEXT_BUDGET: u64 = 100_000;
+
 /// A value that must not be printed.
 ///
 /// `Debug` and `Display` are deliberately redacting, and the inner value is only
@@ -104,6 +112,14 @@ pub struct Config {
     /// Model to request when the user has not picked one. The server may substitute a different
     /// one regardless.
     pub default_model: String,
+    /// How many prompt tokens one request may reach before the conversation is compacted.
+    ///
+    /// A guess, and it has to be one. The server reports what a request cost but never what it
+    /// had room for, the default model is `automatic` and resolves per request, and there is no
+    /// tokeniser here to count with. So this is a number chosen to be comfortably under the
+    /// smallest window worth using, and [`env_var::CONTEXT_BUDGET`] is the way out of it for
+    /// anyone whose model is smaller or much larger.
+    pub context_budget: u64,
 }
 
 /// A value captured when this binary was built, or `None` if the build had none.
@@ -171,12 +187,21 @@ impl Config {
             .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
             .map(|value| value.trim_end_matches('/').to_string());
 
+        // Nonsense falls back to the default rather than disabling compaction, which is what a
+        // zero or an unparseable value would otherwise quietly do. A mistyped budget should cost
+        // someone the setting they wanted, not the thing that keeps their session alive.
+        let context_budget = lookup(env_var::CONTEXT_BUDGET)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|budget| *budget > 0)
+            .unwrap_or(DEFAULT_CONTEXT_BUDGET);
+
         Ok(Self {
             signing_key,
             key_id,
             endpoint: endpoint.trim_end_matches('/').to_string(),
             premium_endpoint,
             default_model,
+            context_budget,
         })
     }
 
@@ -239,6 +264,42 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.default_model, "some-pinned-model");
+    }
+
+    #[test]
+    fn the_context_budget_has_a_default() {
+        let config = Config::from_lookup(complete_env).unwrap();
+        assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
+    }
+
+    /// The default is a guess at a window nobody reports, so someone running a model it is wrong
+    /// for needs a way to say so without rebuilding.
+    #[test]
+    fn the_context_budget_can_be_overridden() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::CONTEXT_BUDGET => Some(" 4096 ".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert_eq!(config.context_budget, 4096);
+    }
+
+    /// A mistyped budget must cost someone the setting they wanted, never compaction itself: a
+    /// zero or a word would otherwise read as a conversation that may grow forever, which is the
+    /// failure the budget exists to prevent.
+    #[test]
+    fn a_budget_that_makes_no_sense_falls_back_rather_than_disabling_compaction() {
+        for value in ["0", "", "   ", "lots", "-1", "1e6", "100_000"] {
+            let config = Config::from_lookup(|k| match k {
+                env_var::CONTEXT_BUDGET => Some(value.into()),
+                other => complete_env(other),
+            })
+            .unwrap();
+            assert_eq!(
+                config.context_budget, DEFAULT_CONTEXT_BUDGET,
+                "{value:?} was read as a budget"
+            );
+        }
     }
 
     /// The variable is prefixed like every other one. A bare `MODEL` is a name anything in a

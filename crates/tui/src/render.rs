@@ -849,12 +849,29 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         return;
     }
 
+    // Only once a request has been measured. A gauge reading zero before anything has been sent
+    // would be a claim about a context nobody has counted.
+    let context = match session.fullness() {
+        Some(percent) => format!("  ·  context {percent}%"),
+        None => String::new(),
+    };
+
     // The commands are no longer listed here. Typing a slash lists every one of them with what it
     // does, which is both more than this line could hold and the moment a user wants to know.
+    //
+    // What the session is doing comes before the bindings, because the line is wider than a
+    // terminal at eighty or a hundred and twenty columns and the end of it is cut. A binding cut
+    // off is one a user learns once and remembers; a figure cut off is the one thing here they
+    // cannot know any other way.
+    //
+    // Shell mode leads the bindings for the same reason, and it is the one exception. The others
+    // change how a line is edited; this one changes where the line goes, so a user who never
+    // learns it never learns that the mode is there at all.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  ctrl-g editor  ·  / for commands  ·  ! for shell  ·  @ for files  ·  confinement {}",
+                "  {trail}  ·  confinement {}{context}  ·  ! for shell  ·  ctrl-g editor  ·  \
+                 / for commands  ·  @ for files",
                 session.confinement
             ),
             dim(),
@@ -1226,11 +1243,11 @@ mod tests {
         assert_ne!(buffer.cell((6, 0)).expect("cell").bg, Color::Blue);
     }
 
-    /// The confinement sits at the end of the hints, so it is the first thing a narrow terminal
-    /// cuts off. Asserted at a width an ordinary terminal actually has, and against that row
-    /// alone: the heading names the confinement too, so matching it anywhere on the screen says
-    /// nothing about whether the hint line still carries it. Widening this to make it pass would
-    /// be hiding the truncation, and so would asserting against the whole screen again.
+    /// The bindings sit after the confinement, so they are the first thing a narrow terminal cuts
+    /// off. Asserted at a width an ordinary terminal actually has, and against that row alone: the
+    /// heading names the confinement too, so matching it anywhere on the screen says nothing about
+    /// whether the hint line still carries it. Widening this to make it pass would be hiding the
+    /// truncation, and so would asserting against the whole screen again.
     #[test]
     fn the_hint_line_says_how_to_find_the_commands_and_reports_confinement() {
         let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
@@ -1256,6 +1273,25 @@ mod tests {
                 command.name
             );
         }
+    }
+
+    /// The figure a person needs to decide whether to compact by hand, on the line they already
+    /// read for the state of the session.
+    #[test]
+    fn the_hint_line_says_how_full_the_context_is() {
+        let mut session = Session::new("none");
+        session.measured(62_000, 100_000);
+        let output = rendered_at(&session, 120, 24);
+
+        assert!(output.contains("context 62%"), "{output}");
+    }
+
+    /// Before anything has been measured there is no figure, and a gauge at zero would be a claim
+    /// about a context nobody counted.
+    #[test]
+    fn the_hint_line_says_nothing_about_an_unmeasured_context() {
+        let output = rendered_at(&Session::new("none"), 120, 24);
+        assert!(!output.contains("context"), "{output}");
     }
 
     /// Narrowing shows only what still matches, so the list answers what the half-typed word could
