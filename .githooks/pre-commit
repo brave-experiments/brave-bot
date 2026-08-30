@@ -1,0 +1,24 @@
+#!/bin/sh
+# Refuse a commit that the fast half of `make check` would fail.
+#
+# Not the tests: those are slow enough that running them on every commit would make people
+# reach for --no-verify, and a hook everyone bypasses guards nothing. Formatting and clippy
+# are seconds, and they are what a commit most often lands broken on, since there is no
+# change small enough to be exempt from them: a comment, a document, or a rename fails these
+# as readily as anything else.
+#
+# `make check` is still the thing that has to pass before a commit. This only catches the
+# half of it that is cheap enough to check here, and it reads the working tree rather than
+# what is staged, so a partial `git add` can still commit something these did not see.
+
+if ! cargo fmt --all -- --check; then
+    echo >&2
+    echo "pre-commit: formatting. Run 'make fmt' and stage the result." >&2
+    exit 1
+fi
+
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo >&2
+    echo "pre-commit: clippy. Fix the warnings above." >&2
+    exit 1
+fi

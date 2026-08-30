@@ -89,6 +89,12 @@ to find one. There is no exemption for a change that only touched a comment, a d
 name: fmt and clippy fail on those as readily as on anything else. If a check cannot pass for a
 reason outside the change, say so in the commit message rather than leaving it to be discovered.
 
+Run it on its own and read what it exits with. Piped into a filter, the status you see belongs to
+the filter: `make check | grep error` reports success on a formatting failure, because a fmt diff
+says nothing matching that pattern and grep exited happily. `make init` installs a pre-commit hook
+that refuses a commit failing fmt or clippy, but it stops there. The tests are too slow to run on
+every commit, so nothing but running `make check` tells you about those.
+
 **One change per commit, with its tests in that same commit.** A commit is the unit somebody
 reads, reverts, and bisects on, so it has to stand up alone: the change, the tests that pin it,
 and any documentation the change makes wrong if it lands without it. Tests that arrive a commit

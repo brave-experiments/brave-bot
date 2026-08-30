@@ -11,7 +11,8 @@ help:
 	@echo "bravebot $(VERSION)"
 	@echo
 	@echo "Development:"
-	@echo "  make init           Link agents/ into .claude/ and .bravebot/"
+	@echo "  make init           Link agents/ into .claude/ and .bravebot/, install hooks"
+	@echo "  make hooks          Point git at the checked-in pre-commit hook"
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"
 	@echo "  make check          Format check, clippy, and tests"
@@ -35,8 +36,14 @@ help:
 # root. This creates the symlinks that bridge them. The links are gitignored, so a fresh
 # clone needs it once, and it is idempotent, so re-running costs nothing.
 .PHONY: init
-init:
+init: hooks
 	python3 agents/setup.py link
+
+# .git/hooks is not versioned, so a fresh clone commits with nothing checking it until this
+# runs. Idempotent, and part of `init` so nobody has to know it exists.
+.PHONY: hooks
+hooks:
+	git config core.hooksPath .githooks
 
 .PHONY: build
 build:
