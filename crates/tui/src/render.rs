@@ -951,13 +951,14 @@ fn tail_of(path: &str, room: usize) -> String {
 /// filenames are read out of the directory to show a person which files are in it, never to decide
 /// anything and never reaching a model from here.
 fn draw_offered(frame: &mut Frame, area: Rect, session: &Session, offered: &crate::state::Offered) {
-    // Waiting prompts first, nearest the box. They are the only rows here describing something
-    // the person has already done, and a line they believe they have sent has to be visible
-    // without hunting for it.
-    let mut lines = queued_lines(session, area.width);
-    // Then attachments: they are a fact about the line, while what is offered is a guess about
-    // where it is going, and the fact belongs nearer the box.
-    lines.extend(attached_lines(session, area.width));
+    // Attachments first, nearest the box, because they belong to the line still in it: they are
+    // what the next Enter will carry, and a file staged mid-turn appeared below the queue, which
+    // reads as belonging to a prompt already gone.
+    let mut lines = attached_lines(session, area.width);
+    // Then waiting prompts, which describe something already done. Below the line they are no
+    // part of, and still above what is offered, since a line the person believes they have sent
+    // has to be visible without hunting for it.
+    lines.extend(queued_lines(session, area.width));
     lines.extend(match offered {
         crate::state::Offered::Nothing => Vec::new(),
         crate::state::Offered::Commands(commands) => command_lines(session, commands),
@@ -1428,6 +1429,36 @@ mod tests {
         assert!(
             output.contains("shot.png"),
             "the file was not named: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// An attachment belongs to the line still in the box, and a queued prompt has already gone.
+    /// Drawn the other way round, a file staged during a turn sat under prompts it was no part
+    /// of, which reads as though it went with one of them.
+    #[test]
+    fn what_is_attached_is_drawn_above_what_is_waiting() {
+        let directory = std::env::temp_dir().join("bravebot-render-attached-order");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch");
+        std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
+
+        let mut session = Session::new("none").in_workspace(&directory);
+        session.type_char('a');
+        session.submit();
+        for c in "the waiting prompt".chars() {
+            session.type_char(c);
+        }
+        assert!(session.queue(), "nothing was queued");
+        session.drop_files(&directory.join("shot.png").to_string_lossy());
+
+        let output = rendered(&session);
+        let attached = output.find("shot.png").expect("the file was not named");
+        let waiting = output.find("QUEUED").expect("nothing said it was waiting");
+        assert!(
+            attached < waiting,
+            "the attachment was drawn under the queue: {output}"
         );
 
         let _ = std::fs::remove_dir_all(&directory);

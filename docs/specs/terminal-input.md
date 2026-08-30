@@ -221,3 +221,18 @@ while the first is in flight, and the queue is what makes that refusal visible i
 `verified-by: bravebot_tui::state::there_is_nothing_to_queue_when_the_line_is_blank_or_nothing_is_running`
 `verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`
 `verified-by: bravebot_tui::render::a_prompt_stops_waiting_once_its_turn_begins`
+
+<a id="INPUT-11"></a>
+### INPUT-11: what is attached is drawn nearest the box, above what is waiting
+
+The rows beneath the box run in one order: what the line in the box carries, then the prompts
+waiting for the turn in flight, then what the half-typed line could still become.
+
+**Why.** An attachment is part of the line still being composed, and the prompts below it have
+already gone. Drawn the other way round, a file staged during a turn sat underneath prompts it
+was no part of, which reads as though it went with one of them, and the row for the file the
+person had just dropped moved further from the box with every prompt they queued.
+
+`verified-by: bravebot_tui::render::what_is_attached_is_drawn_above_what_is_waiting`
+`verified-by: bravebot_tui::render::an_attached_file_is_named_under_the_box`
+`verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`
