@@ -125,6 +125,8 @@ their tag, are different questions.
 
 `verified-by: bravebot_core::ask::the_key_distinguishes_questions_that_differ_anywhere`
 `verified-by: bravebot_core::ask::the_key_distinguishes_questions_that_differ_in_their_tag`
+`verified-by: bravebot_core::ask::no_question_can_spell_the_key_of_another`
+`verified-by: bravebot_core::ask::a_choice_with_no_detail_differs_from_one_with_an_empty_detail`
 `verified-by: bravebot_core::ask::the_key_is_stable_for_the_same_question`
 `verified-by: bravebot_core::ask::two_series_holding_the_same_questions_in_a_different_order_have_different_keys`
 `verified-by: bravebot_tui::ask::a_series_answered_entirely_from_memory_asks_nothing`

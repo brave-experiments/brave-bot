@@ -178,28 +178,54 @@ pub fn prompt(question: &Question) -> Prompt {
     }
 }
 
+/// One field, written so its own bytes cannot be read as the structure around them.
+///
+/// The length is the whole of what makes the encoding injective. A reader takes exactly that
+/// many bytes, so a `: ` inside a label is text rather than a boundary, and no arrangement of
+/// fields can spell the string another arrangement spells. Written in bytes rather than
+/// characters because bytes are what a reader would count.
+fn field(out: &mut String, name: &str, value: &str) {
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(&value.len().to_string());
+    out.push(':');
+    out.push_str(value);
+}
+
 /// One stable string standing for the whole question.
 ///
 /// Used as the value the routing gate checks and, through [`Prompt::key`], as the key for
 /// remembering an answer. Includes every field that changes what the person is asked, the tag
 /// among them, so two questions that differ anywhere are different keys and the second is put to
 /// them rather than answered from memory.
+///
+/// Every field is length-prefixed, and the choices are counted before they are listed, so the
+/// question can be read back out of the string and only one question can produce it. A plain
+/// concatenation could not: a tag of `Deploy` with a sentence of `Region: which one?` spelled
+/// exactly what a tag of `Deploy: Region` with a sentence of `which one?` spelled, and the
+/// second question was then answered from the first's memory without ever being shown. The
+/// text of each field is still there in the clear, which is what keeps the gated value legible
+/// in the trail.
 pub fn canonical(question: &Question) -> String {
     let mut out = String::new();
     out.push_str(if question.multiple {
-        "pick any: "
+        "pick any"
     } else {
-        "pick one: "
+        "pick one"
     });
-    out.push_str(&question.header);
-    out.push_str(": ");
-    out.push_str(&question.prompt);
+    out.push('\n');
+    field(&mut out, "tag", &question.header);
+    out.push('\n');
+    field(&mut out, "ask", &question.prompt);
+    out.push_str(&format!("\nchoices {}", question.choices.len()));
     for choice in &question.choices {
-        out.push_str("\n- ");
-        out.push_str(&choice.label);
+        out.push('\n');
+        field(&mut out, "choice", &choice.label);
+        // Absent and empty are different answers to "is there a detail", and a key that
+        // confused them would be two questions again.
         if let Some(detail) = &choice.detail {
-            out.push_str(": ");
-            out.push_str(detail);
+            out.push(' ');
+            field(&mut out, "detail", detail);
         }
     }
     out
@@ -424,6 +450,86 @@ mod tests {
         let mut retagged = question();
         retagged.header = "Caching".into();
         assert_ne!(canonical(&one), canonical(&retagged));
+    }
+
+    /// The bug the length prefixes exist for. Two questions that differ in their tag and their
+    /// sentence used to spell the same key, and the second was then filtered out of the
+    /// outstanding set and reported to the planner as answered with the first's answer, without
+    /// the person ever seeing it. Nothing a question can contain may spell another question.
+    #[test]
+    fn no_question_can_spell_the_key_of_another() {
+        let split_early = Question::new(
+            "Deploy",
+            "Region: which one?",
+            vec![Choice::new("us-east", None)],
+            false,
+        );
+        let split_late = Question::new(
+            "Deploy: Region",
+            "which one?",
+            vec![Choice::new("us-east", None)],
+            false,
+        );
+        assert_ne!(
+            canonical(&split_early),
+            canonical(&split_late),
+            "the tag and the sentence ran together"
+        );
+
+        let separator_in_label = Question::new(
+            "Deploy",
+            "Which?",
+            vec![Choice::new("us-east: the eastern one", None)],
+            false,
+        );
+        let label_and_detail = Question::new(
+            "Deploy",
+            "Which?",
+            vec![Choice::new("us-east", Some("the eastern one".into()))],
+            false,
+        );
+        assert_ne!(
+            canonical(&separator_in_label),
+            canonical(&label_and_detail),
+            "a label carrying a separator read as a label plus a detail"
+        );
+
+        let newline_in_label = Question::new(
+            "Deploy",
+            "Which?",
+            vec![Choice::new("us-east\n- us-west", None)],
+            false,
+        );
+        let two_choices = Question::new(
+            "Deploy",
+            "Which?",
+            vec![Choice::new("us-east", None), Choice::new("us-west", None)],
+            false,
+        );
+        assert_ne!(
+            canonical(&newline_in_label),
+            canonical(&two_choices),
+            "one label read as two choices"
+        );
+    }
+
+    /// A detail nobody wrote and a detail written empty are different questions, and the one
+    /// place an encoding of an optional field usually loses the difference.
+    #[test]
+    fn a_choice_with_no_detail_differs_from_one_with_an_empty_detail() {
+        let bare = Question::new(
+            "Deploy",
+            "Which?",
+            vec![Choice::new("us-east", None)],
+            false,
+        );
+        let empty = Question::new(
+            "Deploy",
+            "Which?",
+            vec![Choice::new("us-east", Some(String::new()))],
+            false,
+        );
+        assert_ne!(canonical(&bare), canonical(&empty));
     }
 
     #[test]
