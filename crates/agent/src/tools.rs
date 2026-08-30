@@ -2509,8 +2509,14 @@ fn ask_user<S: Sink, C: Confirmer>(
 /// `fn(`. Literal matching, of course: a pattern matcher to catch pattern matchers is exactly the
 /// dependency the conventions rule out.
 fn reads_as_a_regex(pattern: &str) -> bool {
-    const TELLS: [&str; 10] = [
-        ".*", ".+", ".?", ".{", "[^", "(?", "\\d", "\\w", "\\s", "\\b",
+    const TELLS: [&str; 23] = [
+        ".*", ".+", ".?", ".{", "[^", "(?", // quantifiers and groups
+        "\\d", "\\w", "\\s", "\\b", // classes
+        // An escape before punctuation, which is the tell that actually shows up. Nobody writing
+        // a literal writes `attached\(\)` for `attached()`: the backslash is only there because
+        // the writer believed something was going to parse it. The letter escapes above are kept
+        // separate from these because `\n` and `\t` are ordinary things to look for in source.
+        "\\(", "\\)", "\\[", "\\]", "\\{", "\\}", "\\.", "\\*", "\\+", "\\?", "\\|", "\\^", "\\$",
     ];
     TELLS.iter().any(|tell| pattern.contains(tell))
         || pattern.starts_with('^')
@@ -2636,7 +2642,12 @@ mod tests {
     /// enough to flag a bare dot or a bracket would fire on most of the searches that work.
     #[test]
     fn only_a_sequence_that_could_not_be_meant_literally_reads_as_a_regex() {
+        // Taken from a real session: four rounds went on these, each answered with nothing.
         for pattern in [
+            r"attached\(\)",
+            r"\.attached\(",
+            r"Vec<\[u8\]>",
+            r"a\|b",
             "drop.*file",
             "fn.+attached",
             "a.?b",
@@ -2656,6 +2667,9 @@ mod tests {
         for pattern in [
             "foo.rs",
             "fn(",
+            // Ordinary things to look for in source, escapes and all.
+            r"\n",
+            r"\t",
             "a + b",
             "Vec<String>",
             "self.path",
