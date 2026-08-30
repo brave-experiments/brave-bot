@@ -299,17 +299,16 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         // Escape means "stop what is happening" before it means anything else, so a turn in
         // flight is cancelled first. The prompt comes back for editing rather than being lost.
         KeyCode::Esc if session.status == Status::Working => Action::Cancel,
-        // Then it discards a half-typed prompt, and only leaves once there is nothing left to
-        // discard. Pressing it to abandon a thought should not also end the session, and an armed
-        // shell mode is something to abandon even with no line behind it: the marker is on screen,
-        // and Backspace at that same caret already backs out of it.
-        KeyCode::Esc if !session.input().is_empty() || session.shell => {
+        // Then it discards a half-typed prompt, and an armed shell mode is something to abandon
+        // even with no line behind it: the marker is on screen, and Backspace at that same caret
+        // already backs out of it.
+        //
+        // On an empty line it does nothing at all. It used to leave, which made every press a
+        // question of what was in the box: the key for abandoning a thought was the key for
+        // ending the session as soon as the thought was short enough. Ctrl-C is the way out.
+        KeyCode::Esc => {
             session.clear_input();
             Action::Redraw
-        }
-        KeyCode::Esc => {
-            session.quit();
-            Action::Quit
         }
         // Before every arm that sends, because this is the one Enter that does not: a paragraph is
         // written in the box rather than only pasted into it, and the box grows to hold it. Shell
@@ -2362,11 +2361,14 @@ mod tests {
         assert!(session.is_quitting());
     }
 
+    /// Escape on an empty line used to leave, which made every press a question of what was in
+    /// the box: the key for abandoning a thought ended the session as soon as the thought was
+    /// short enough. It abandons, and never more than that.
     #[test]
-    fn escape_quits_on_an_empty_line() {
+    fn escape_on_an_empty_line_does_not_quit() {
         let mut session = Session::new("none");
-        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Quit);
-        assert!(session.is_quitting());
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
+        assert!(!session.is_quitting(), "escape ended the session");
     }
 
     /// Escape is how a half-typed prompt is abandoned, so it must not also end the session
@@ -2447,14 +2449,16 @@ mod tests {
         assert!(!wants_quit(key(KeyCode::Up)));
     }
 
-    /// And a second press then leaves, so the key still reaches the exit without a detour.
+    /// And a second press does the same thing again rather than leaving. A key pressed twice in
+    /// a row should not mean two different things, least of all when the second is the exit.
     #[test]
-    fn escape_twice_clears_then_quits() {
+    fn escape_twice_clears_and_stays() {
         let mut session = Session::new("none");
         handle_key(&mut session, key(KeyCode::Char('x')));
 
         assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
-        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Quit);
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
+        assert!(!session.is_quitting());
     }
 
     /// Ctrl-D only quits on an empty line, matching shell behaviour, so it cannot discard

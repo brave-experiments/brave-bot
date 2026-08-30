@@ -70,7 +70,8 @@ is why a marker exists rather than a list the user cannot edit.
 <a id="INPUT-4"></a>
 ### INPUT-4: escape clears a line before it quits
 
-Escape on a typed line clears it without quitting; on an empty line it quits.
+Escape discards a half-typed prompt, and does nothing at all on a line with nothing on it. It
+never ends the session.
 
 **Escape stops a turn; Ctrl-C leaves.** They are different requests and the keys do not share.
 Ctrl-C ends the session wherever it is pressed, with a turn running, during a summary, while a
@@ -82,11 +83,17 @@ session where it was.
 somebody trying to get out pressed it and read "cancelling…", and while a turn ran there was no
 way out at all.
 
+Escape used to leave as well, once the line was empty. That made every press a question of what
+was in the box: the key for abandoning a thought ended the session as soon as the thought was
+short enough, and pressing it twice in a row meant two different things, the second of which was
+the exit. One way out, and it is the one people already reach for.
+
 Ctrl-G opens `$VISUAL` or `$EDITOR` and takes back what was saved, and does nothing while a turn
 runs.
 
 `verified-by: bravebot_tui::app::escape_clears_a_typed_line_without_quitting`
-`verified-by: bravebot_tui::app::escape_quits_on_an_empty_line`
+`verified-by: bravebot_tui::app::escape_on_an_empty_line_does_not_quit`
+`verified-by: bravebot_tui::app::escape_twice_clears_and_stays`
 `verified-by: bravebot_tui::app::ctrl_c_quits`
 `verified-by: bravebot_tui::app::escape_stops_a_turn_and_ctrl_c_leaves`
 `verified-by: bravebot_tui::app::ctrl_c_leaves_while_a_turn_is_running`
