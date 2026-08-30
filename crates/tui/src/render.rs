@@ -873,6 +873,60 @@ fn attached_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Prompts that have been sent and are waiting for the turn in flight to end.
+///
+/// The line as it was typed, and under it the word saying what has happened to it. Marked rather
+/// than merely indented, because a person who pressed Enter has to be able to tell at a glance
+/// that the words went somewhere: a line sitting quietly under the box is what this replaced, and
+/// it read as a key press that had been ignored.
+///
+/// The prompt is the user's own text on its way back to them, so nothing here is a decision and
+/// nothing is labelled. Control characters go through `printable` all the same, since a prompt can
+/// be pasted and a paste can carry anything.
+fn queued_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for waiting in &session.queued {
+        let room = (width as usize).saturating_sub(4);
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default().fg(Color::Blue)),
+            Span::styled(
+                printable(&head_of(&waiting.prompt, room)),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                " QUEUED ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    lines
+}
+
+/// The opening of a line, with an ellipsis where it was cut.
+///
+/// The opposite end from [`tail_of`], and for the opposite reason: a path is identified by its
+/// end and a sentence by its beginning. A queued prompt runs to one row, and the words that say
+/// which prompt it is are the first ones.
+fn head_of(line: &str, room: usize) -> String {
+    // A prompt may be a paragraph; it is one row here, so the rest is not shown at all.
+    let first = line.lines().next().unwrap_or("");
+    let characters: Vec<char> = first.chars().collect();
+    if characters.len() <= room && first.len() == line.len() {
+        return first.to_string();
+    }
+    let kept: String = characters
+        .iter()
+        .take(room.saturating_sub(1))
+        .collect::<String>();
+    format!("{kept}…")
+}
+
 /// A path shortened from the left, keeping as much of the end as will fit.
 ///
 /// From the left because the end is the part that identifies the file. Cutting the other way is
@@ -897,9 +951,13 @@ fn tail_of(path: &str, room: usize) -> String {
 /// filenames are read out of the directory to show a person which files are in it, never to decide
 /// anything and never reaching a model from here.
 fn draw_offered(frame: &mut Frame, area: Rect, session: &Session, offered: &crate::state::Offered) {
-    // Attachments first: they are a fact about the line, while what is offered is a guess about
+    // Waiting prompts first, nearest the box. They are the only rows here describing something
+    // the person has already done, and a line they believe they have sent has to be visible
+    // without hunting for it.
+    let mut lines = queued_lines(session, area.width);
+    // Then attachments: they are a fact about the line, while what is offered is a guess about
     // where it is going, and the fact belongs nearer the box.
-    let mut lines = attached_lines(session, area.width);
+    lines.extend(attached_lines(session, area.width));
     lines.extend(match offered {
         crate::state::Offered::Nothing => Vec::new(),
         crate::state::Offered::Commands(commands) => command_lines(session, commands),
@@ -1115,6 +1173,45 @@ mod tests {
             let mut session = working();
             session.start_activity(Activity::running("Read", "src/main.rs"));
             assert!(rendered(&session).contains("Read(src/main.rs)"));
+        }
+
+        /// A person who pressed Enter has to be able to see that the words went somewhere. The
+        /// line sitting quietly under the box is what this replaced, and it read as a key press
+        /// that had been ignored.
+        #[test]
+        fn a_waiting_prompt_is_shown_as_waiting() {
+            let mut session = working();
+            for c in "do some long task".chars() {
+                session.type_char(c);
+            }
+            assert!(session.queue());
+
+            let output = rendered(&session);
+            assert!(
+                output.contains("do some long task"),
+                "the prompt was not shown"
+            );
+            assert!(output.contains("QUEUED"), "nothing said it was waiting");
+        }
+
+        /// It stops being drawn the moment its own turn starts, because from then on it is in
+        /// the transcript like any other prompt and two copies is one too many.
+        #[test]
+        fn a_prompt_stops_waiting_once_its_turn_begins() {
+            let mut session = working();
+            for c in "do some long task".chars() {
+                session.type_char(c);
+            }
+            session.queue();
+            session.complete("an answer", Vec::new(), 0);
+            session.send_queued().expect("it went");
+
+            let output = rendered(&session);
+            assert!(!output.contains("QUEUED"), "still drawn as waiting");
+            assert!(
+                output.contains("do some long task"),
+                "it left the screen entirely"
+            );
         }
 
         /// Nearly every call reads into the planner's context, so a line saying so appeared

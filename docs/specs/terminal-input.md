@@ -164,3 +164,39 @@ this one was silent, so the two paths walk one list of keys rather than a list e
 `verified-by: bravebot_tui::state::a_recalled_prompt_still_cannot_be_sent_while_a_turn_is_running`
 `verified-by: bravebot_tui::app::a_long_paste_folds_while_a_turn_is_running`
 `verified-by: bravebot_tui::app::ctrl_j_is_not_swallowed_while_a_turn_runs`
+
+<a id="INPUT-10"></a>
+### INPUT-10: a prompt sent while a turn runs waits for it, and says that it is waiting
+
+Enter mid-turn takes the line out of the box and holds it. It is drawn under the box, marked, so
+the person can see that what they sent went somewhere. Waiting prompts go in the order they were
+typed, one turn each, as soon as the session is free to start one.
+
+A waiting prompt is **not** in the transcript. It has not happened; it moves there at the moment
+its own turn begins, and it is drawn as waiting only until then. What it names is settled when it
+is queued, not when it is sent, because a file the person took off the line afterwards was never
+part of that prompt. It is in the prompt history from the moment it is queued, since from the
+person's side that is when they sent it.
+
+Stopping a turn drops what was lined up behind it, and says how much that was. A person reaching
+for Escape is taking the session back, and sending the next prompt on their behalf is the opposite
+of what they asked for.
+
+Shift-Enter still starts a line rather than sending it, so a paragraph can be written mid-turn and
+is not sent half-finished.
+
+**Why.** Enter mid-turn used to reach nothing at all. The line stayed in the box until the person
+noticed the turn had ended and pressed it again, which is indistinguishable from a key press that
+was ignored. This does not weaken what a running turn refuses: a second turn still cannot begin
+while the first is in flight, and the queue is what makes that refusal visible instead of silent.
+
+`verified-by: bravebot_tui::app::enter_queues_a_prompt_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::starting_a_line_mid_turn_does_not_queue_it`
+`verified-by: bravebot_tui::state::a_prompt_sent_while_a_turn_runs_waits_for_it`
+`verified-by: bravebot_tui::state::a_waiting_prompt_goes_when_the_turn_ends`
+`verified-by: bravebot_tui::state::waiting_prompts_go_in_the_order_they_were_typed`
+`verified-by: bravebot_tui::state::stopping_a_turn_drops_what_was_waiting_behind_it`
+`verified-by: bravebot_tui::state::a_waiting_prompt_is_in_the_history_already`
+`verified-by: bravebot_tui::state::there_is_nothing_to_queue_when_the_line_is_blank_or_nothing_is_running`
+`verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`
+`verified-by: bravebot_tui::render::a_prompt_stops_waiting_once_its_turn_begins`

@@ -192,6 +192,21 @@ impl Entry {
     }
 }
 
+/// A prompt typed while a turn was running, waiting for it to end.
+///
+/// Settled when it was queued rather than when it is sent, because what it names is what the box
+/// held at that moment. A file the user took off the line afterwards was never part of this
+/// prompt, and one they added belongs to whatever they type next.
+#[derive(Debug, Clone)]
+pub struct Queued {
+    /// The line, as it was typed.
+    pub prompt: String,
+    /// Files it named, settled at the moment it was queued.
+    attached: Vec<Attached>,
+    /// Pictures it named, settled at the same moment and for the same reason.
+    pasted: Vec<AttachedImage>,
+}
+
 /// What the session is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -348,6 +363,11 @@ pub struct Session {
     /// to name it, and scanning back through the transcript for the tail would be a worse way
     /// to answer a question the session already knows the answer to.
     pub running: Option<Activity>,
+    /// Prompts typed and sent while a turn was running, in the order they were typed.
+    ///
+    /// Not in the transcript: they have not happened. They are drawn under the box as waiting,
+    /// and each moves into the transcript at the moment its own turn begins.
+    pub queued: Vec<Queued>,
     /// The reply the model is writing right now, as far as it has got.
     ///
     /// Not in the transcript, because it is not a thing that happened yet: it is drawn at the
@@ -458,6 +478,7 @@ impl Session {
             todos: Vec::new(),
             phase: None,
             running: None,
+            queued: Vec::new(),
             streaming: String::new(),
             answers: Vec::new(),
             pasted: Vec::new(),
@@ -1126,7 +1147,8 @@ impl Session {
     /// a count of the offered list alone. Folding attachments into that would let the cursor walk
     /// off the end of what it is choosing between.
     pub fn rows_beneath_the_box(&self) -> usize {
-        self.attached.len() + self.offered_count()
+        // Two rows a piece: the prompt, and the word saying it has not gone yet.
+        self.queued.len() * 2 + self.attached.len() + self.offered_count()
     }
 
     /// Move down what is offered, stopping at the end.
@@ -1696,15 +1718,87 @@ impl Session {
         // user deleted is an attachment they took off, and it goes nowhere. Pictures settle the
         // same way and at the same moment, since a marker rubbed out means the same thing whether
         // the thing behind it was dropped or pasted.
-        self.sent = self.attachments_named(&prompt);
-        self.attached.clear();
-        self.sent_pasted = self.pasted_named(&prompt);
-        self.pasted.clear();
-        self.set_input(String::new());
+        let taken = self.take_line(&prompt);
+        // Recorded here rather than in `begin_turn`, because a queued prompt was recorded when it
+        // was queued: from the person's side that is when they sent it.
         self.history.push(prompt.clone());
         if self.persist {
             crate::store::append_history(&prompt);
         }
+        Some(self.begin_turn(prompt, taken))
+    }
+
+    /// Take the current line as a prompt to send when the turn in flight has finished.
+    ///
+    /// The line leaves the box exactly as it would on sending, and is remembered in the history
+    /// the same way, because from the person's side they have sent it. What has not happened yet
+    /// is the turn, so nothing goes into the transcript until this one's own turn begins.
+    ///
+    /// Only while a turn is running. With none there is nothing to wait for and
+    /// [`Session::submit`] is what Enter means.
+    pub fn queue(&mut self) -> bool {
+        if self.status != Status::Working {
+            return false;
+        }
+        let prompt = self.input.trim().to_string();
+        if prompt.is_empty() {
+            return false;
+        }
+        let (attached, pasted) = self.take_line(&prompt);
+        self.history.push(prompt.clone());
+        if self.persist {
+            crate::store::append_history(&prompt);
+        }
+        self.queued.push(Queued {
+            prompt,
+            attached,
+            pasted,
+        });
+        self.scroll = 0;
+        true
+    }
+
+    /// Begin the turn for the prompt queued longest ago, if the session is free to start one.
+    pub fn send_queued(&mut self) -> Option<String> {
+        if self.status != Status::Idle || self.queued.is_empty() {
+            return None;
+        }
+        let next = self.queued.remove(0);
+        Some(self.begin_turn(next.prompt, (next.attached, next.pasted)))
+    }
+
+    /// Forget everything waiting, and say how much that was.
+    ///
+    /// `None` when there was nothing, so a caller has nothing to say either.
+    pub fn drop_queued(&mut self) -> Option<String> {
+        let dropped = self.queued.len();
+        if dropped == 0 {
+            return None;
+        }
+        self.queued.clear();
+        Some(match dropped {
+            1 => "the prompt waiting behind that turn was dropped too".to_string(),
+            n => format!("the {n} prompts waiting behind that turn were dropped too"),
+        })
+    }
+
+    /// Clear the line and settle what it named.
+    ///
+    /// Everything still named goes; a marker the user deleted is an attachment they took off, and
+    /// it goes nowhere. Pictures settle the same way and at the same moment, since a marker rubbed
+    /// out means the same thing whether the thing behind it was dropped or pasted.
+    fn take_line(&mut self, prompt: &str) -> (Vec<Attached>, Vec<AttachedImage>) {
+        let attached = self.attachments_named(prompt);
+        self.attached.clear();
+        let pasted = self.pasted_named(prompt);
+        self.pasted.clear();
+        self.set_input(String::new());
+        (attached, pasted)
+    }
+
+    /// Start a turn for a prompt, whether it was sent just now or waited for its turn.
+    fn begin_turn(&mut self, prompt: String, taken: (Vec<Attached>, Vec<AttachedImage>)) -> String {
+        (self.sent, self.sent_pasted) = taken;
         self.transcript.push(Entry::user(prompt.clone()));
         self.status = Status::Working;
         self.scroll = 0;
@@ -1716,7 +1810,7 @@ impl Session {
         self.phase = None;
         self.running = None;
         self.started = Some(Instant::now());
-        Some(prompt)
+        prompt
     }
 
     /// Record a completed turn, and what it cost.
@@ -2938,6 +3032,129 @@ mod tests {
             s.history.is_empty(),
             "the cancelled prompt stayed in history"
         );
+    }
+
+    /// Enter mid-turn used to do nothing at all: the line sat in the box until the person
+    /// noticed the turn had ended and pressed it again. It goes now, and waits its turn.
+    #[test]
+    fn a_prompt_sent_while_a_turn_runs_waits_for_it() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        assert!(s.queue(), "the line was not taken");
+        assert!(s.input.is_empty(), "the line stayed in the box");
+        assert_eq!(s.queued.len(), 1);
+
+        // Still one turn: queueing is not starting.
+        assert_eq!(s.turns, 1);
+        assert_eq!(
+            s.transcript.iter().filter(|e| e.text == "second").count(),
+            0,
+            "a prompt that has not been sent was written into the transcript"
+        );
+    }
+
+    /// It goes when the turn it waited for is over, and not before. Sending it while the first
+    /// was still running is the thing a running turn refuses.
+    #[test]
+    fn a_waiting_prompt_goes_when_the_turn_ends() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        s.queue();
+
+        assert!(
+            s.send_queued().is_none(),
+            "it went while a turn was running"
+        );
+
+        s.complete("an answer", Vec::new(), 0);
+        assert_eq!(s.send_queued().as_deref(), Some("second"));
+        assert_eq!(s.status, Status::Working);
+        assert_eq!(s.turns, 2);
+        assert!(s.queued.is_empty());
+        assert!(s.send_queued().is_none(), "it went twice");
+    }
+
+    /// Typed in one order, sent in that order. A queue that reordered what somebody said would
+    /// be worse than one that dropped it.
+    #[test]
+    fn waiting_prompts_go_in_the_order_they_were_typed() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for line in ["second", "third"] {
+            for c in line.chars() {
+                s.type_char(c);
+            }
+            s.queue();
+        }
+        assert_eq!(s.queued.len(), 2);
+
+        s.complete("an answer", Vec::new(), 0);
+        assert_eq!(s.send_queued().as_deref(), Some("second"));
+        s.complete("another", Vec::new(), 0);
+        assert_eq!(s.send_queued().as_deref(), Some("third"));
+    }
+
+    /// A person reaching for Escape is taking the session back. Firing off what they lined up
+    /// behind the turn they just stopped is the opposite of what they asked for.
+    #[test]
+    fn stopping_a_turn_drops_what_was_waiting_behind_it() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        s.queue();
+
+        let said = s.drop_queued().expect("something was waiting");
+        assert!(said.contains("dropped"), "said: {said}");
+        assert!(s.queued.is_empty());
+        assert!(s.drop_queued().is_none(), "said so twice");
+    }
+
+    /// A line waiting to go is a line that was sent, so it is in the history like any other.
+    #[test]
+    fn a_waiting_prompt_is_in_the_history_already() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        s.queue();
+
+        assert_eq!(s.history.len(), 2, "the queued line was not remembered");
+        s.recall_older();
+        assert_eq!(s.input, "second");
+    }
+
+    /// Nothing to queue is not a queue of nothing, and with no turn running Enter sends rather
+    /// than waits.
+    #[test]
+    fn there_is_nothing_to_queue_when_the_line_is_blank_or_nothing_is_running() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        assert!(!s.queue(), "a blank line was queued");
+
+        s.complete("an answer", Vec::new(), 0);
+        for c in "next".chars() {
+            s.type_char(c);
+        }
+        assert!(!s.queue(), "queued with no turn to wait for");
+        assert_eq!(s.input, "next", "the line was taken anyway");
     }
 
     /// The box takes words while a turn runs, so it takes recalled ones too. Refusing here was

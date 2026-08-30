@@ -516,6 +516,14 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         return Action::Paste;
     }
 
+    // After the arm that starts a line, so Shift-Enter still writes a paragraph, and before the
+    // ladder, where Enter means nothing. A second turn still must not begin while the first is in
+    // flight; what changes is that the line no longer waits in the box for the person to notice
+    // the turn has ended and press Enter again.
+    if key.code == KeyCode::Enter && session.queue() {
+        return Action::Redraw;
+    }
+
     // The same ladder the idle path uses, rather than a shorter copy of it. Nothing in it sends,
     // so there is nothing here for a running turn to refuse.
     navigate(session, key)
@@ -1026,37 +1034,46 @@ fn event_loop(
                 needs_draw = true;
             }
             Action::Submit(prompt) => {
-                // Both are threaded through: a turn that writes untrusted data into a trusted
-                // path records that, and the next turn must honour it, and a turn that has been
-                // had is a turn the next one can be asked about.
-                let events;
-                (conversation, trust, programs, events) = run_turn_animated(
-                    terminal,
-                    &mut session,
-                    config,
-                    &workspace,
-                    &prompt,
-                    conversation,
-                    trust,
-                    programs,
-                )?;
+                // A prompt sent while this one was running goes when it ends, in the order it was
+                // typed, and so does anything typed during that one. Looping here rather than
+                // going back round the outer loop keeps a queued prompt from waiting on a key
+                // press that nobody is there to make.
+                let mut sending = Some(prompt);
+                while let Some(prompt) = sending {
+                    // Both are threaded through: a turn that writes untrusted data into a trusted
+                    // path records that, and the next turn must honour it, and a turn that has been
+                    // had is a turn the next one can be asked about.
+                    let events;
+                    (conversation, trust, programs, events) = run_turn_animated(
+                        terminal,
+                        &mut session,
+                        config,
+                        &workspace,
+                        &prompt,
+                        conversation,
+                        trust,
+                        programs,
+                    )?;
 
-                // Written after each turn rather than at the end, because the end may never
-                // come: the session worth resuming is the one whose machine slept and never
-                // woke. Best-effort, like everything else under ~/.bravebot.
-                stored.save(
-                    &prompt,
-                    crate::sessions::Standing {
-                        conversation: &conversation.snapshot(),
-                        turns: session.turns,
-                        tokens: session.tokens,
-                        todos: &session.todos_by_turn(),
-                        trust: &trust,
-                        programs: &programs,
-                        directories: workspace.added_directories(),
-                    },
-                );
-                stored.append_audit(session.turns, &events);
+                    // Written after each turn rather than at the end, because the end may never
+                    // come: the session worth resuming is the one whose machine slept and never
+                    // woke. Best-effort, like everything else under ~/.bravebot.
+                    stored.save(
+                        &prompt,
+                        crate::sessions::Standing {
+                            conversation: &conversation.snapshot(),
+                            turns: session.turns,
+                            tokens: session.tokens,
+                            todos: &session.todos_by_turn(),
+                            trust: &trust,
+                            programs: &programs,
+                            directories: workspace.added_directories(),
+                        },
+                    );
+                    stored.append_audit(session.turns, &events);
+
+                    sending = session.send_queued();
+                }
             }
             Action::Run(line) => {
                 let events =
@@ -1703,6 +1720,12 @@ fn run_turn_animated(
 
     if matches!(outcome, Err(turn::TurnError::Cancelled)) {
         session.restore(prompt);
+        // Stopping the turn stops what was lined up behind it. A person reaching for Escape is
+        // taking the session back, and firing off the next prompt on their behalf is the opposite
+        // of what they asked for. Said rather than done quietly, because they typed those.
+        if let Some(dropped) = session.drop_queued() {
+            session.note(dropped);
+        }
         return Ok((conversation, fallback, fallback_programs, events));
     }
 
@@ -3201,6 +3224,52 @@ mod tests {
             Action::Redraw
         );
         assert!(session.input().is_empty(), "Down did not walk back out");
+    }
+
+    /// Enter mid-turn used to reach nothing, so the line sat in the box while the person waited
+    /// to notice the turn had ended. It goes now, and says that it is waiting.
+    #[test]
+    fn enter_queues_a_prompt_while_a_turn_is_running() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        for c in "second".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            handle_key_while_working(&mut session, key(KeyCode::Enter)),
+            Action::Redraw
+        );
+        assert!(session.input().is_empty(), "the line stayed in the box");
+        assert_eq!(session.queued.len(), 1);
+        assert_eq!(session.queued[0].prompt, "second");
+    }
+
+    /// Shift-Enter writes a paragraph mid-turn as it does at rest, so it must not be caught by
+    /// the arm that queues. A queued half-sentence is worse than one that waits to be finished.
+    #[test]
+    fn starting_a_line_mid_turn_does_not_queue_it() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+
+        for c in "half".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(
+            &mut session,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        );
+
+        assert!(
+            session.queued.is_empty(),
+            "a paragraph was sent half-written"
+        );
+        assert!(session.input().contains('\n'), "no line was started");
     }
 
     /// The two paths differ over what may be sent and over nothing else. They drifted once, in
