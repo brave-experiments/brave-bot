@@ -147,6 +147,28 @@ fn deleting_the_marker_takes_the_attachment_off() {
     );
 }
 
+/// Two presses, not thirteen: the trailing space a drop leaves, and then the marker whole. A
+/// marker is one thing on the screen, and a user who starts rubbing one out has already decided.
+#[test]
+fn one_backspace_takes_the_whole_marker() {
+    let scratch = Scratch::new("whole");
+    let path = scratch.file("shot.png");
+    let mut session = session_in(&scratch);
+
+    session.drop_files(&path);
+    assert_eq!(session.input(), "[Image #1] ");
+
+    session.backspace();
+    session.backspace();
+
+    assert_eq!(session.input(), "");
+    session.submit();
+    assert!(
+        session.sent_attachments().is_empty(),
+        "a file whose marker was deleted was still sent"
+    );
+}
+
 /// Markers are never reused, or deleting one would renumber the marker sitting in the line the
 /// user is looking at.
 #[test]

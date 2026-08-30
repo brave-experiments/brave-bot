@@ -1396,12 +1396,41 @@ impl Session {
         &self.sent_pasted
     }
 
+    /// Every marker standing in the line for something carried beside it.
+    fn markers(&self) -> impl Iterator<Item = &str> {
+        self.attached
+            .iter()
+            .map(|attached| attached.marker.as_str())
+            .chain(self.pasted.iter().map(|pasted| pasted.marker.as_str()))
+            .chain(self.pasted_text.iter().map(|pasted| pasted.marker.as_str()))
+    }
+
+    /// Where the marker the caret is deleting into starts and ends, if it is in one.
+    ///
+    /// Found by looking the line up rather than by remembering a position, because the line is
+    /// edited around a marker and a remembered offset would be wrong the first time somebody
+    /// rewrote the sentence in front of it. A caret at the very start of a marker is not in it:
+    /// what sits before that caret is ordinary text and deleting it is an ordinary deletion.
+    fn marker_around_caret(&self) -> Option<(usize, usize)> {
+        self.markers()
+            .flat_map(|marker| {
+                self.input
+                    .match_indices(marker)
+                    .map(|(at, found)| (at, at + found.len()))
+            })
+            .find(|&(start, end)| start < self.caret && self.caret <= end)
+    }
+
     /// Delete the character before the caret, or leave shell mode where there is nothing left to
     /// delete.
     ///
     /// Deleting back past the `!` leaves the mode, which is where the marker appears to be: a user
     /// who typed it by mistake gets rid of it the way they got rid of any other character. Without
     /// this the mode could only be left by clearing the whole line.
+    ///
+    /// A marker goes whole. It is one thing on the screen and one thing to the user, so taking a
+    /// character off the end of it would leave text standing for a picture that is no longer
+    /// attached, and the user would have to keep pressing to find out.
     pub fn backspace(&mut self) {
         self.history.leave();
         // Nothing before the caret is where the marker appears to be, so this is the press that
@@ -1409,6 +1438,12 @@ impl Session {
         // deleted, not the words.
         if self.caret == 0 {
             self.shell = false;
+            return;
+        }
+        if let Some((start, end)) = self.marker_around_caret() {
+            self.input.replace_range(start..end, "");
+            self.caret = start;
+            self.completion = 0;
             return;
         }
         self.move_left();
@@ -1919,6 +1954,70 @@ mod tests {
             s.sent_pasted().is_empty(),
             "a picture nothing referred to was sent"
         );
+    }
+
+    /// A marker is one thing on the screen, so it is one press to get rid of. Nibbling a character
+    /// off the end would leave text that still reads as an attachment behind a picture that is no
+    /// longer attached, and the user would only find out by carrying on pressing.
+    #[test]
+    fn one_backspace_takes_the_whole_marker() {
+        let mut s = session();
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        s.backspace();
+
+        assert_eq!(s.input, "look at ");
+        assert!(
+            s.pasted_named(&s.input).is_empty(),
+            "the picture outlived its marker"
+        );
+    }
+
+    /// The caret reaches the middle of a marker like any other run of text, and a press there is
+    /// still a press on the marker: half of one left in the line stands for nothing.
+    #[test]
+    fn a_backspace_inside_a_marker_takes_all_of_it() {
+        let mut s = session();
+        s.attach(picture(b"pixels"));
+        for c in " please".chars() {
+            s.type_char(c);
+        }
+        for _ in 0..(" please".len() + 5) {
+            s.move_left();
+        }
+        s.backspace();
+
+        assert_eq!(s.input, " please");
+    }
+
+    /// A marker for folded words goes whole for the same reason a picture's does, and taking it
+    /// takes the words behind it rather than leaving them to arrive unannounced.
+    #[test]
+    fn one_backspace_takes_the_whole_folded_paste() {
+        let mut s = session();
+        for c in "look: ".chars() {
+            s.type_char(c);
+        }
+        s.paste_text("one\ntwo\nthree\nfour");
+        s.backspace();
+
+        assert_eq!(s.input, "look: ");
+        assert_eq!(s.unfolded(s.input()), "look: ");
+    }
+
+    /// Only a marker goes whole. Ordinary square brackets are something the user typed and are
+    /// deleted a character at a time, like every other character they typed.
+    #[test]
+    fn text_that_merely_looks_like_a_marker_is_deleted_one_character_at_a_time() {
+        let mut s = session();
+        for c in "[Image #7]".chars() {
+            s.type_char(c);
+        }
+        s.backspace();
+
+        assert_eq!(s.input, "[Image #7");
     }
 
     /// The pictures travel with the words they were pasted into, in the order the markers number
