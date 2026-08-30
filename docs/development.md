@@ -21,6 +21,41 @@ comes out on any host:
 make all-platforms
 ```
 
+## Agent configuration
+
+`agents/` is the checked-in source of truth for what an agent reads in this repo: `AGENTS.md`
+and the skills under `agents/skills/`. Nothing discovers it there. Claude Code looks under
+`.claude/`, and bravebot reads `AGENTS.md` at the workspace root and skills from
+`.bravebot/skills`, so a fresh clone links the one source into both:
+
+```sh
+make init
+```
+
+That creates symlinks and nothing else:
+
+```
+.claude/skills/<name>    ->  agents/skills/<name>
+.bravebot/skills/<name>  ->  agents/skills/<name>
+.claude/CLAUDE.md        ->  agents/AGENTS.md
+AGENTS.md                ->  agents/AGENTS.md
+```
+
+The links are gitignored, so they are derived state and a skill is written once rather than
+copied once per tool. Re-running is idempotent and silent, a stale link is refreshed, and a real
+file somebody put in a discovery directory by hand is left alone rather than replaced.
+`python3 agents/setup.py list` shows the current state, and `unlink` removes only the links it
+owns.
+
+Slash commands and subagents are Claude Code concepts, so `agents/commands/` and `agents/agents/`
+link into `.claude/` alone. Neither has to exist: whatever is present is linked, and a directory
+added later needs no change to the script.
+
+`make init` does not grant trust. bravebot loads a workspace skill only from a path a person
+vouched for ([TRUST-1](specs/trust-map.md)), and a script granting that on your behalf is the
+inference that clause forbids, so expect to be asked about `.bravebot/skills` the first time you
+start it in this tree.
+
 ## Which build wrote a session
 
 Every session record carries the build that produced it, and `bravebot --version` prints the same

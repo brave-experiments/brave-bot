@@ -11,6 +11,7 @@ help:
 	@echo "bravebot $(VERSION)"
 	@echo
 	@echo "Development:"
+	@echo "  make init           Link agents/ into .claude/ and .bravebot/"
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"
 	@echo "  make check          Format check, clippy, and tests"
@@ -28,6 +29,14 @@ help:
 	@echo "  make windows-arm64  Windows aarch64"
 	@echo
 	@echo "  make clean          Remove build output"
+
+# agents/ is the checked-in source of truth for skills and AGENTS.md, and no tool reads
+# it: Claude Code looks under .claude/ and bravebot under .bravebot/ and the workspace
+# root. This creates the symlinks that bridge them. The links are gitignored, so a fresh
+# clone needs it once, and it is idempotent, so re-running costs nothing.
+.PHONY: init
+init:
+	python3 agents/setup.py link
 
 .PHONY: build
 build:
