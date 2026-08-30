@@ -4,7 +4,6 @@ title: Skills and standing instructions
 status: normative
 governs:
   - crates/agent/src/skills.rs
-  - crates/agent/src/home.rs
 guards:
   - symbol: Policy::label_user_configuration
   - symbol: Policy::read_trusted_content
@@ -13,15 +12,11 @@ guards:
 ## Scope
 
 The two kinds of file that steer a turn before the user types anything: `AGENTS.md`, which says
-how work is done somewhere, and a skill, which says how one kind of task is done. Where each is
-read from, what each is trusted for, and how one is loaded.
+how work is done somewhere, and a skill, which says how one kind of task is done. What a skill
+file looks like, what each source is trusted for, and how one is loaded.
 
-```
-~/.bravebot/AGENTS.md                           applies to every project
-~/.bravebot/skills/<name>/SKILL.md              available in every project
-<workspace>/AGENTS.md                           applies to this project
-<workspace>/.bravebot/skills/<name>/SKILL.md    available in this project
-```
+Which files are looked for, where, and in what order is a separate question, and it is
+[instructions.md](instructions.md) that answers it.
 
 ## Clauses
 
@@ -71,10 +66,6 @@ Nothing is assumed from silence. An empty directory offers nothing, and putting 
 the grant, on the same footing as the configuration that picks the model and the endpoint.
 
 `verified-by: bravebot_agent::skills::a_home_skill_is_not_labelled_by_a_rule_meant_for_the_workspace`
-`verified-by: bravebot_agent::home::the_home_directory_is_the_one_the_environment_names`
-`verified-by: bravebot_agent::home::an_absent_home_is_not_an_error`
-`verified-by: bravebot_agent::home::an_empty_home_is_treated_as_no_home_at_all`
-`verified-by: bravebot_agent::skills::a_skills_directory_that_does_not_exist_is_not_an_error`
 
 <a id="SKILL-4"></a>
 ### SKILL-4: a project's own files are read through the trust map
@@ -112,12 +103,10 @@ name would be on the user's screen as though the agent had written it.
 `verified-by: bravebot_agent::skills::a_skill_that_was_skipped_is_counted_rather_than_passed_over_in_silence`
 
 <a id="SKILL-7"></a>
-### SKILL-7: the most specific source wins
+### SKILL-7: withdrawn, the most specific source wins
 
-Both `AGENTS.md` files are read, the global one first, so the project's own has the last word. A
-project skill of the same name replaces a global one. This is the same "most specific wins" rule the trust map uses.
-
-`verified-by: bravebot_agent::skills::a_workspace_skill_shadows_a_home_skill_of_the_same_name`
+Replaced by [instructions.md](instructions.md), which owns the order sources are read in along
+with the rest of resolution.
 
 <a id="SKILL-8"></a>
 ### SKILL-8: `load_skill`'s name is never a path
@@ -130,12 +119,9 @@ asked for.
 `verified-by: bravebot_agent::turn::loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed`
 
 <a id="SKILL-9"></a>
-### SKILL-9: sources are looked for afresh every turn
+### SKILL-9: withdrawn, sources are looked for afresh every turn
 
-Writing a skill mid-session works, and so does having the agent write one. There is nothing to
-reload and no session to restart.
-
-`verified-by: none`
+Replaced by [instructions.md](instructions.md), which owns when resolution runs.
 
 ## Known costs
 

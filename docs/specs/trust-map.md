@@ -236,11 +236,10 @@ includes nothing, since a directory is somewhere to type through rather than a f
 <a id="TRUST-11"></a>
 ### TRUST-11: the map does not govern `~/.bravebot`
 
-`~/.bravebot` holds the user's history, sessions, standing instructions and skills, and is read as
-trusted by provenance rather than by any rule here. A project's own `AGENTS.md` and
-`.bravebot/skills` are **not** covered by that and are read through this spec, so they load when
-the directory was vouched for and are left out when it was not. See
-[skills.md](skills.md).
+The user's own directory is read as trusted by provenance rather than by any rule here. A
+project's own files are **not** covered by that and are read through this spec, whatever their
+names. What is kept in that directory and how it is found is
+[instructions.md](instructions.md); what it is trusted for is [skills.md](skills.md).
 
 **Why.** The map is keyed by workspace-relative paths and has nothing to say about a path outside
 the workspace. Asking it about one would be laundering.
