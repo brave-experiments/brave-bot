@@ -53,6 +53,8 @@ replaced, so the content cannot draw its own.
 
 `verified-by: bravebot_tui::marking::quarantined_content_cannot_paint_its_own_margin`
 `verified-by: bravebot_tui::render::quarantined_content_is_shown_and_marked_on_every_line`
+`verified-by: bravebot_cli::progress::quarantined_content_is_shown_and_marked_on_every_line`
+`verified-by: bravebot_cli::progress::quarantined_content_cannot_paint_its_own_margin`
 
 ## Known costs
 
