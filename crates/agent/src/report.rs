@@ -280,6 +280,14 @@ pub trait Reporter {
     /// leave undrawn.
     fn narration(&mut self, _text: String) {}
 
+    /// The reply as the model writes it, in the words added since the last call.
+    ///
+    /// Released for a screen and nowhere else, exactly as the finished text is. Sent whether or
+    /// not it is empty: whether there is anything to draw is a question about the text, and the
+    /// driver does not get to ask questions about it. An interface that draws this replaces what
+    /// it drew when the round's finished text arrives, so nothing is said twice.
+    fn streaming(&mut self, _text: String) {}
+
     /// Say what the turn found before it started: which standing instructions and skills loaded,
     /// and which did not.
     ///
@@ -347,6 +355,8 @@ pub struct RecordingReporter {
     pub phases: Vec<Phase>,
     /// Everything the model said between tool calls, in order.
     pub narration: Vec<String>,
+    /// Every fragment of a reply as it arrived, in order.
+    pub streamed: Vec<String>,
     /// What loaded and what did not, in order.
     pub notices: Vec<String>,
     /// Quarantined content released for the screen.
@@ -370,6 +380,10 @@ impl Reporter for RecordingReporter {
 
     fn narration(&mut self, text: String) {
         self.narration.push(text);
+    }
+
+    fn streaming(&mut self, text: String) {
+        self.streamed.push(text);
     }
 
     fn notice(&mut self, text: String) {

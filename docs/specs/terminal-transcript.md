@@ -96,3 +96,27 @@ question out of view.
 
 `verified-by: bravebot_tui::trust_prompt::a_tiny_terminal_still_renders`
 `verified-by: bravebot_tui::confirm::a_tiny_terminal_still_renders_the_prompt`
+
+<a id="VIEW-6"></a>
+### VIEW-6: a reply is drawn as it arrives, and the round that ends replaces it
+
+The words are drawn where the finished entry will be and in the shape it will have, so nothing on
+the screen moves when the round ends. A round that finishes with nothing to say takes its own tail
+down, and so does a turn that fails, is stopped, or has to send its request again: what an
+abandoned attempt had written is no part of the reply that replaces it.
+
+**Why.** The longest silence in a turn is the one while the model writes, and it is the silence
+with the most to show. A counter reports that something is happening; it does not report what.
+
+The words are untrusted model output released for a screen, on the same footing as everything else
+in this file and through the same gate. Released once for the round rather than once per frame,
+because it is one release however many pieces it arrives in.
+
+`verified-by: bravebot_tui::render::a_reply_is_drawn_while_it_is_still_arriving`
+`verified-by: bravebot_tui::render::a_reply_looks_the_same_arriving_as_it_does_arrived`
+`verified-by: bravebot_tui::state::a_streamed_reply_grows_rather_than_being_replaced`
+`verified-by: bravebot_tui::state::the_finished_round_takes_over_from_the_reply_that_was_arriving`
+`verified-by: bravebot_tui::state::a_reply_that_was_arriving_is_taken_down_however_the_round_ends`
+`verified-by: bravebot_tui::state::a_round_starting_afresh_starts_from_an_empty_tail`
+`verified-by: bravebot_agent::turn::the_reply_reaches_the_interface_while_it_is_being_written`
+`verified-by: bravebot_agent::turn::showing_a_reply_as_it_arrives_is_recorded_once_for_the_round`

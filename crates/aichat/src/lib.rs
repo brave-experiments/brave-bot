@@ -239,11 +239,13 @@ impl<'a> AichatClient<'a> {
     /// Send a chat completion request and read the reply as it arrives.
     ///
     /// Identical to [`AichatClient::complete`] in what it produces and in the gates it passes;
-    /// `progress` is called as chunks land so a caller can show that something is happening.
+    /// `progress` is called as chunks land so a caller can show the reply arriving.
     ///
-    /// What `progress` receives is deliberately narrow: how much the model has written, and
-    /// nothing of what it wrote. The reply is untrusted model output, so handing the text to a
-    /// callback would be handing untrusted content to the driver. A count is not content.
+    /// What it receives is how much the model has written and the words written since the last
+    /// call, still labelled. The words are untrusted model output and stay that way here: this
+    /// crate mints nothing, and a caller that wants to read them needs a witness of its own,
+    /// which the display gate is the only reasonable place to get. A caller with nowhere to draw
+    /// them can ignore them and read the count.
     pub fn complete_streaming<S: Sink>(
         &mut self,
         policy: &mut Policy<'_, S>,
@@ -260,6 +262,7 @@ impl<'a> AichatClient<'a> {
                     // while it is happening. Nothing of the abandoned attempt survives: the reply
                     // starts again from nothing, and the count says so.
                     progress(Progress {
+                        written: Labelled::new("", Label::untrusted_public()),
                         output_tokens: 0,
                         counted_by_server: false,
                         attempt,
@@ -317,6 +320,10 @@ impl<'a> AichatClient<'a> {
             // is relabelled with exactly the label it arrived under.
             let (bytes, _) = piece.into_parts_for_decoding();
 
+            // Where the reply stood before this chunk was folded in, so what the chunk added can
+            // be handed on without sending the whole reply again on every frame of a long one.
+            let written_before = accumulated.content().len();
+
             for payload in decoder.push(&bytes) {
                 if payload == STREAM_DONE {
                     continue;
@@ -331,6 +338,7 @@ impl<'a> AichatClient<'a> {
             }
 
             progress(Progress {
+                written: Labelled::new(&accumulated.content()[written_before..], label),
                 output_tokens: accumulated.output_tokens(),
                 counted_by_server: accumulated.usage_is_reported(),
                 attempt,
@@ -354,10 +362,18 @@ impl<'a> AichatClient<'a> {
 
 /// How far a streamed reply has got.
 ///
-/// Carries no reply text by design. The point is to report progress without the driver ever
-/// holding untrusted model output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Progress {
+/// The words are borrowed from the reply being assembled and carry the label the stream arrived
+/// under, so nothing here is a copy and nothing here is readable without a witness. A caller with
+/// a screen has one; a caller without a screen never mints it and never sees the text.
+/// Neither `Copy` nor comparable, because the labelled words are neither. That is the point:
+/// a value that cannot be compared cannot be branched on by accident.
+#[derive(Debug, Clone)]
+pub struct Progress<'a> {
+    /// What the model wrote since the last report, still labelled.
+    ///
+    /// The part rather than the whole, so drawing a reply as it arrives costs what the reply
+    /// costs rather than the square of it.
+    pub written: Labelled<&'a str>,
     /// Output tokens so far: the server's own figure once it has given one, and until then a count
     /// of the chunks that carried text.
     pub output_tokens: u64,

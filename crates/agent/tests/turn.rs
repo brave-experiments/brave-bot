@@ -1224,6 +1224,80 @@ fn what_did_not_load_is_reported_even_when_the_turn_never_finishes() {
     );
 }
 
+/// A reply held back until the round is over leaves a person watching a token counter for as
+/// long as the model writes, which is the longest silence in a turn and the one with the most
+/// to show. The words are released for a screen the moment they arrive, in the pieces they
+/// arrive in, and the pieces put back together are the reply.
+#[test]
+fn the_reply_reaches_the_interface_while_it_is_being_written() {
+    let scratch = Scratch::new("streaming");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![reply_with("the answer, at some length")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ask something"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        reporter.streamed.concat(),
+        outcome.reply_for_display(),
+        "what was drawn as the reply arrived is not the reply"
+    );
+    assert!(
+        !reporter.streamed.is_empty(),
+        "nothing was drawn while the model wrote"
+    );
+}
+
+/// Releasing text for a screen is a decision, and every decision this system makes is on the
+/// record. One line for the round, not one per frame: a trail with an entry per chunk would
+/// bury every other entry in it.
+#[test]
+fn showing_a_reply_as_it_arrives_is_recorded_once_for_the_round() {
+    let scratch = Scratch::new("streaming-trail");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![reply_with("a reply in several pieces")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ask something"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let released = sink
+        .events()
+        .iter()
+        .filter(|event| format!("{event:?}").contains("as the model writes it"))
+        .count();
+    assert_eq!(
+        released, 1,
+        "the release was recorded {released} times for one round"
+    );
+}
+
 /// The first wait is the long one, and the least self-explanatory: no tool has been called
 /// yet, so without this the user is watching a spinner with nothing beside it.
 #[test]

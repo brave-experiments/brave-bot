@@ -51,6 +51,8 @@ pub enum ToMain {
     Narration(String),
     /// What loaded before the turn started, and what did not. No reply.
     Notice(String),
+    /// What the model has written since the last frame. No reply.
+    Streaming(String),
     /// A tool call has begun. No reply.
     Started(Activity),
     /// The tool call last announced has finished. No reply.
@@ -169,6 +171,10 @@ impl Reporter for RemoteReporter {
 
     fn notice(&mut self, text: String) {
         let _ = self.outbound.send(ToMain::Notice(text));
+    }
+
+    fn streaming(&mut self, text: String) {
+        let _ = self.outbound.send(ToMain::Streaming(text));
     }
 
     fn tool_started(&mut self, activity: Activity) {
@@ -484,6 +490,7 @@ mod tests {
         reporter.phase(Phase::Thinking);
         reporter.narration("nobody is listening".into());
         reporter.notice("nobody is listening to this either".into());
+        reporter.streaming("nor this".into());
         reporter.tool_started(Activity::running("Read", "a.rs"));
         reporter.tool_finished(Activity::running("Read", "a.rs").done("1 line"));
     }
@@ -510,6 +517,7 @@ mod tests {
                     ToMain::Phase(_) => seen.push("phase"),
                     ToMain::Narration(_) => seen.push("narration"),
                     ToMain::Notice(_) => seen.push("notice"),
+                    ToMain::Streaming(_) => seen.push("streaming"),
                     ToMain::Started(_) => seen.push("started"),
                     ToMain::Finished(_) => seen.push("finished"),
                     ToMain::Quarantined(_) => seen.push("quarantined"),
@@ -531,6 +539,7 @@ mod tests {
         reporter.phase(Phase::Planning);
         reporter.narration("about to write".into());
         reporter.notice("AGENTS.md was not loaded".into());
+        reporter.streaming("about".into());
         reporter.tool_started(Activity::running("Write", "notes.md"));
         reporter.tool_finished(Activity::running("Write", "notes.md").done("1 line"));
         assert_eq!(confirmer.confirm_write(&request()), Decision::Approve);
@@ -542,6 +551,7 @@ mod tests {
                 "phase",
                 "narration",
                 "notice",
+                "streaming",
                 "started",
                 "finished",
                 "write"

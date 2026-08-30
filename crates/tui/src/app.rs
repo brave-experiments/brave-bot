@@ -1658,6 +1658,7 @@ fn run_turn_animated(
             Ok(crate::remote_confirm::ToMain::Phase(phase)) => session.set_phase(phase),
             Ok(crate::remote_confirm::ToMain::Narration(text)) => session.narrate(text),
             Ok(crate::remote_confirm::ToMain::Notice(text)) => session.note_once(text),
+            Ok(crate::remote_confirm::ToMain::Streaming(text)) => session.streaming(&text),
             Ok(crate::remote_confirm::ToMain::Started(activity)) => {
                 session.start_activity(activity)
             }

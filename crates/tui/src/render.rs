@@ -432,6 +432,48 @@ pub fn draw(frame: &mut Frame, session: &Session) {
 /// `width` is the terminal's, and a table is laid out against what is left of it after the lead.
 /// `height` is the transcript area's, which only the opening mark uses: it floats down from the
 /// top edge by a share of whatever room there is.
+/// Draw what the model said, styled rather than shown with its markdown markers.
+///
+/// Used for a finished turn in the transcript and for the reply still arriving beneath it, which
+/// is what makes the handover invisible: the same words in the same shape in the same place, so
+/// the moment a round ends nothing on the screen moves.
+fn assistant_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    let source: Vec<&str> = text.lines().collect();
+    let room = (width as usize).saturating_sub(LEAD);
+    let lead = |at: usize| {
+        if at == 0 {
+            Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Green))
+        } else {
+            Span::raw("  ")
+        }
+    };
+
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while at < source.len() {
+        // A table is several source lines drawn as one block, so it is tried first and the lines
+        // it consumed are skipped. Anything that is not one falls through to the styling every
+        // other line gets.
+        match table::table(&source[at..], room, Style::default()) {
+            Some(laid) => {
+                for (index, row) in laid.rows.into_iter().enumerate() {
+                    let mut spans = vec![lead(at + index)];
+                    spans.extend(row);
+                    lines.push(Line::from(spans));
+                }
+                at += laid.consumed;
+            }
+            None => {
+                let mut spans = vec![lead(at)];
+                spans.extend(markdown::spans(source[at], Style::default()));
+                lines.push(Line::from(spans));
+                at += 1;
+            }
+        }
+    }
+    lines
+}
+
 fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -463,40 +505,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
             }
             // The model writes markdown whether or not it is asked to, so the reply is styled
             // rather than shown with its markers.
-            Speaker::Assistant => {
-                let source: Vec<&str> = entry.text.lines().collect();
-                let room = (width as usize).saturating_sub(LEAD);
-                let lead = |at: usize| {
-                    if at == 0 {
-                        Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Green))
-                    } else {
-                        Span::raw("  ")
-                    }
-                };
-
-                let mut at = 0;
-                while at < source.len() {
-                    // A table is several source lines drawn as one block, so it is tried first
-                    // and the lines it consumed are skipped. Anything that is not one falls
-                    // through to the styling every other line gets.
-                    match table::table(&source[at..], room, Style::default()) {
-                        Some(laid) => {
-                            for (index, row) in laid.rows.into_iter().enumerate() {
-                                let mut spans = vec![lead(at + index)];
-                                spans.extend(row);
-                                lines.push(Line::from(spans));
-                            }
-                            at += laid.consumed;
-                        }
-                        None => {
-                            let mut spans = vec![lead(at)];
-                            spans.extend(markdown::spans(source[at], Style::default()));
-                            lines.push(Line::from(spans));
-                            at += 1;
-                        }
-                    }
-                }
-            }
+            Speaker::Assistant => lines.extend(assistant_lines(&entry.text, width)),
             Speaker::System => {
                 for text in entry.text.lines() {
                     lines.push(Line::from(Span::styled(
@@ -561,6 +570,15 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
         if entry.speaker != Speaker::Tool {
             lines.push(Line::raw(""));
         }
+    }
+
+    // The reply being written right now, under everything that has already happened. Drawn from
+    // the session rather than from the transcript because it is not an entry yet: when the round
+    // ends the same words arrive as one, in this same place and this same shape, and the tail is
+    // dropped in the same breath. Nothing on the screen moves at the handover.
+    if !session.streaming.is_empty() {
+        lines.extend(assistant_lines(&session.streaming, width));
+        lines.push(Line::raw(""));
     }
 
     // One blank above it and no more. Every entry already leaves a trailing blank behind it, so
@@ -1093,6 +1111,32 @@ mod tests {
             let mut session = working();
             session.start_activity(Activity::running("Read", "src/main.rs"));
             assert!(rendered(&session).contains("Read(src/main.rs)"));
+        }
+
+        /// The longest silence in a turn is the one while the model writes, and it is the one
+        /// with the most to show. A token counter is not what is being written.
+        #[test]
+        fn a_reply_is_drawn_while_it_is_still_arriving() {
+            let mut session = working();
+            session.streaming("Looking at the render code");
+            assert!(
+                rendered(&session).contains("Looking at the render code"),
+                "the reply was invisible until the round was over"
+            );
+        }
+
+        /// The tail and the entry that replaces it are the same words drawn the same way in the
+        /// same place, which is what makes the handover invisible. Drawn differently, a finished
+        /// round would make the screen jump for no reason a reader could name.
+        #[test]
+        fn a_reply_looks_the_same_arriving_as_it_does_arrived() {
+            let mut arriving = working();
+            arriving.streaming("# Heading\n\nSome **bold** prose.");
+
+            let mut arrived = working();
+            arrived.narrate("# Heading\n\nSome **bold** prose.");
+
+            assert_eq!(rendered(&arriving), rendered(&arrived));
         }
 
         #[test]

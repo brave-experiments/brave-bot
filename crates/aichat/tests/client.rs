@@ -449,10 +449,22 @@ fn a_streamed_completion_arrives_in_pieces() {
     let mut client = AichatClient::new(&config, &egress);
     let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
 
+    // The witness a caller with a screen mints. Without one the words in each report cannot be
+    // read at all, which is the arrangement: a caller with nowhere to draw them never asks.
+    let shown = policy.authorise_display_release("the reply as the model writes it");
+
     let mut seen = Vec::new();
+    let mut written = String::new();
     let completion = client
-        .complete_streaming(&mut policy, &request, |progress| seen.push(progress))
+        .complete_streaming(&mut policy, &request, |progress| {
+            written.push_str(progress.written.declassify(&shown));
+            seen.push((progress.output_tokens, progress.counted_by_server));
+        })
         .expect("streamed completion succeeds");
+
+    // Each report carries what arrived since the last one, so the pieces put back together are
+    // the reply. Sending the whole of it every time would cost the square of a long answer.
+    assert_eq!(written, "hello from the model");
 
     assert_eq!(completion.model, "served-model");
     // Streamed or not, model output is untrusted.
@@ -460,7 +472,7 @@ fn a_streamed_completion_arrives_in_pieces() {
     assert_eq!(completion.usage.completion_tokens, 3);
 
     // The count rose while the reply arrived, which is the point of streaming it.
-    let counts: Vec<u64> = seen.iter().map(|p| p.output_tokens).collect();
+    let counts: Vec<u64> = seen.iter().map(|(count, _)| *count).collect();
     assert!(
         counts.windows(2).all(|w| w[1] >= w[0]),
         "the count went backwards: {counts:?}"
@@ -470,8 +482,8 @@ fn a_streamed_completion_arrives_in_pieces() {
         "the count never moved: {counts:?}"
     );
     // And it ends on the server's figure, not the estimate.
-    assert_eq!(seen.last().expect("progress was reported").output_tokens, 3);
-    assert!(seen.last().expect("reported").counted_by_server);
+    assert_eq!(seen.last().expect("progress was reported").0, 3);
+    assert!(seen.last().expect("reported").1);
 
     let captured = received.recv().expect("request captured");
     assert!(

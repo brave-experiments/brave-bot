@@ -348,6 +348,13 @@ pub struct Session {
     /// to name it, and scanning back through the transcript for the tail would be a worse way
     /// to answer a question the session already knows the answer to.
     pub running: Option<Activity>,
+    /// The reply the model is writing right now, as far as it has got.
+    ///
+    /// Not in the transcript, because it is not a thing that happened yet: it is drawn at the
+    /// tail and replaced by the entry the round produces. Keeping it apart is what makes that
+    /// handover free of a duplicate, and it is why a session written to disk holds finished
+    /// turns rather than a half-finished sentence.
+    pub streaming: String,
     /// Answers the user has already given this session, keyed by the question.
     ///
     /// A repeated question is answered from here rather than put to them again, since a planner
@@ -451,6 +458,7 @@ impl Session {
             todos: Vec::new(),
             phase: None,
             running: None,
+            streaming: String::new(),
             answers: Vec::new(),
             pasted: Vec::new(),
             sent_pasted: Vec::new(),
@@ -636,6 +644,22 @@ impl Session {
     /// Record what the turn is waiting on.
     pub fn set_phase(&mut self, phase: Phase) {
         self.phase = Some(phase);
+        // A phase is announced once at the top of every round and again when a request is being
+        // sent afresh. Either way what was on the screen belongs to a reply that is over or to
+        // one that has been thrown away, so the tail starts empty.
+        self.streaming.clear();
+    }
+
+    /// Add what the model has written since the last frame to the reply taking shape.
+    ///
+    /// Empty text is dropped here rather than by the turn, for the same reason narration is:
+    /// this side may look at released text, and the turn may not.
+    pub fn streaming(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.streaming.push_str(text);
+        self.scroll = 0;
     }
 
     /// Record what the model said on its way to the next tool call.
@@ -644,6 +668,10 @@ impl Session {
     /// This side may: the text has been released, and a blank line in a transcript is a
     /// presentation question.
     pub fn narrate(&mut self, text: impl Into<String>) {
+        // Cleared first, and whatever the text turns out to be. This is the same words the tail
+        // has been showing, now on their way into the transcript, so leaving the tail up would
+        // draw them twice; and a round that said nothing has nothing to leave up either.
+        self.streaming.clear();
         let text = text.into();
         if text.trim().is_empty() {
             return;
@@ -1704,6 +1732,7 @@ impl Session {
         self.started = None;
         self.phase = None;
         self.running = None;
+        self.streaming.clear();
         // Accumulated across the session: the figure answers "what has this cost me", which is
         // about the session rather than the last turn.
         self.tokens += tokens;
@@ -1722,6 +1751,7 @@ impl Session {
         self.started = None;
         self.phase = None;
         self.running = None;
+        self.streaming.clear();
     }
 
     /// Record how full the context is, against the budget it is compacted at.
@@ -3202,6 +3232,62 @@ mod tests {
             let entry = s.transcript.last().expect("an entry");
             assert_eq!(entry.speaker, Speaker::Assistant);
             assert_eq!(entry.text, "Let me look at the config first.");
+        }
+
+        /// The words arrive a fragment at a time and are one reply, so they accumulate rather
+        /// than replace. Replacing left the screen showing whatever the last frame happened to
+        /// carry, which for a long answer is the last three characters of it.
+        #[test]
+        fn a_streamed_reply_grows_rather_than_being_replaced() {
+            let mut s = working();
+            s.streaming("Let me look ");
+            s.streaming("at the config ");
+            s.streaming("first.");
+            assert_eq!(s.streaming, "Let me look at the config first.");
+        }
+
+        /// The tail and the entry are the same words, so leaving the tail up would draw them
+        /// twice: once as the reply arriving and once as the reply that arrived.
+        #[test]
+        fn the_finished_round_takes_over_from_the_reply_that_was_arriving() {
+            let mut s = working();
+            s.streaming("Let me look at the config first.");
+            s.narrate("Let me look at the config first.");
+
+            assert!(s.streaming.is_empty(), "the tail was drawn twice");
+            assert_eq!(
+                s.transcript.last().expect("an entry").text,
+                "Let me look at the config first."
+            );
+        }
+
+        /// A round that ends with nothing to say still has to take its tail down, and a round
+        /// whose reply is the turn's answer does too. Left up, half a sentence sat under the
+        /// finished answer for the rest of the session.
+        #[test]
+        fn a_reply_that_was_arriving_is_taken_down_however_the_round_ends() {
+            let mut s = working();
+            s.streaming("half a thought");
+            s.narrate("");
+            assert!(s.streaming.is_empty(), "a silent round left its tail up");
+
+            s.streaming("half a thought");
+            s.complete("the answer", Vec::new(), 0);
+            assert!(s.streaming.is_empty(), "a finished turn left its tail up");
+
+            s.streaming("half a thought");
+            s.fail("error: something went wrong");
+            assert!(s.streaming.is_empty(), "a failed turn left its tail up");
+        }
+
+        /// What a request that was thrown away had written is not part of the reply that
+        /// replaces it, and a phase is announced at the top of every round and on every retry.
+        #[test]
+        fn a_round_starting_afresh_starts_from_an_empty_tail() {
+            let mut s = working();
+            s.streaming("this reply was abandoned");
+            s.set_phase(Phase::Reconnecting);
+            assert!(s.streaming.is_empty());
         }
 
         /// A round with no prose still reports, so the blank has to be dropped here: an empty

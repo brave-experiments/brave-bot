@@ -989,6 +989,12 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // The client lives for one round rather than for the turn, so that a processor spawned
         // later in the round can present the same subscription. A credential is single-use and
         // whichever call comes next asks for its own.
+        // Minted before the request goes out, because the gate needs the policy and the policy
+        // is lent to the client for the duration of the call. One witness for the round rather
+        // than one per frame: the release is the same release however many chunks it arrives in,
+        // and a trail with a line per chunk would bury every other line in it.
+        let as_written = policy.authorise_display_release("the reply as the model writes it");
+
         let completion = {
             let mut client = AichatClient::new(config, egress);
             if let Some(subscription) = subscription.as_mut() {
@@ -1005,6 +1011,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     reporter.phase(phase);
                 }
                 reporter.output_tokens(written_before + progress.output_tokens);
+                // Straight through to the screen. Sent whether or not there is anything in it:
+                // asking would be a question about untrusted text, and the interface is the side
+                // allowed to ask that one.
+                reporter.streaming(progress.written.declassify(&as_written).to_string());
             })?
         };
         tokens += completion.usage.total();

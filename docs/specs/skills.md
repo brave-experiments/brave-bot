@@ -119,7 +119,12 @@ asked for.
 `verified-by: bravebot_agent::turn::loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed`
 
 <a id="SKILL-9"></a>
-### SKILL-9: a value may be wrapped over the lines indented beneath it
+### SKILL-9: withdrawn, sources are looked for afresh every turn
+
+Replaced by [instructions.md](instructions.md), which owns when resolution runs.
+
+<a id="SKILL-10"></a>
+### SKILL-10: a value may be wrapped over the lines indented beneath it
 
 A description says *when* to use a skill, so it runs to a sentence or two and files wrap it. The
 lines indented under a key continue that key's value however the file spells the wrap: folded or
@@ -137,8 +142,8 @@ the colon, an empty value and a skill dropped for being half-declared.
 `verified-by: bravebot_agent::skills::a_folded_block_becomes_one_line_and_a_literal_block_keeps_its_own`
 `verified-by: bravebot_agent::skills::the_quotes_around_a_scalar_are_not_part_of_it`
 
-<a id="SKILL-10"></a>
-### SKILL-10: a notice is said when it is learned, not when the turn ends
+<a id="SKILL-11"></a>
+### SKILL-11: a notice is said when it is learned, not when the turn ends
 
 What loaded and what did not is known before the first request goes out, and that is when it is
 said. A turn that fails, is cancelled, or never reaches an answer has said it already.
@@ -150,11 +155,6 @@ run that said nothing about it.
 
 `verified-by: bravebot_agent::turn::what_did_not_load_reaches_the_interface_when_it_is_learned`
 `verified-by: bravebot_agent::turn::what_did_not_load_is_reported_even_when_the_turn_never_finishes`
-
-<a id="SKILL-9"></a>
-### SKILL-9: withdrawn, sources are looked for afresh every turn
-
-Replaced by [instructions.md](instructions.md), which owns when resolution runs.
 
 ## Known costs
 
