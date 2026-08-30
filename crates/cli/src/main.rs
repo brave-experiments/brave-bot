@@ -8,7 +8,7 @@ use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::event::{Event, RecordingSink, Role};
 use bravebot_core::trust::TrustStore;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -215,9 +215,10 @@ fn run_task(args: &[String]) -> ExitCode {
             // terminal is not a decision, so it is released explicitly for display.
             println!("{}", outcome.reply_for_display());
             if trace {
-                println!();
-                print_trace(&sink);
-                println!("model: {}", outcome.model);
+                let mut stderr = std::io::stderr().lock();
+                writeln!(stderr).expect("write trace separator");
+                print_trace(&mut stderr, &sink);
+                writeln!(stderr, "model: {}", outcome.model).expect("write model name");
             }
             if outcome.clean {
                 ExitCode::SUCCESS
@@ -279,24 +280,28 @@ fn piped_input(source: impl Read, is_tty: bool) -> Result<Option<String>, String
 }
 
 /// Print the audit trail: what was checked, allowed, and refused.
-fn print_trace(sink: &RecordingSink) {
-    println!("audit trail");
+fn print_trace(output: &mut impl Write, sink: &RecordingSink) {
+    macro_rules! trace {
+        ($($arg:tt)*) => {
+            writeln!(output, $($arg)*).expect("write audit trail")
+        };
+    }
+
+    trace!("audit trail");
     for event in sink.events() {
         match event {
-            Event::GatePassed { gate, detail } => println!("  ok      {gate}: {detail}"),
-            Event::GateBlocked { gate, reason, .. } => println!("  BLOCK   {gate}: {reason}"),
+            Event::GatePassed { gate, detail } => trace!("  ok      {gate}: {detail}"),
+            Event::GateBlocked { gate, reason, .. } => trace!("  BLOCK   {gate}: {reason}"),
             Event::Observed { capability, label } => {
-                println!("  observe {capability} produced {label}")
+                trace!("  observe {capability} produced {label}")
             }
-            Event::SlotWritten { slot, label } => println!("  slot    {slot} at {label}"),
+            Event::SlotWritten { slot, label } => trace!("  slot    {slot} at {label}"),
             Event::SlotDeferred {
                 slot,
                 label,
                 origin,
-            } => println!("  defer   {slot} holds {origin}, unread, at {label}"),
-            Event::Declassified { slot, from, to, .. } => {
-                println!("  release {slot} {from} -> {to}")
-            }
+            } => trace!("  defer   {slot} holds {origin}, unread, at {label}"),
+            Event::Declassified { slot, from, to, .. } => trace!("  release {slot} {from} -> {to}"),
             Event::ActionField {
                 tool,
                 field,
@@ -309,7 +314,7 @@ fn print_trace(sink: &RecordingSink) {
                     Role::Routing => "routing",
                     Role::Content => "content",
                 };
-                println!("  {mark} {tool}.{field} [{role}] {label}");
+                trace!("  {mark} {tool}.{field} [{role}] {label}");
             }
         }
     }
@@ -598,5 +603,12 @@ mod tests {
             piped_input(at_the_cap.as_slice(), false).is_ok(),
             "the cap itself is allowed"
         );
+    }
+
+    #[test]
+    fn trace_is_rendered_to_the_supplied_output() {
+        let mut output = Vec::new();
+        print_trace(&mut output, &RecordingSink::new());
+        assert_eq!(String::from_utf8(output).unwrap(), "audit trail\n");
     }
 }
