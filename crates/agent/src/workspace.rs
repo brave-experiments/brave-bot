@@ -732,7 +732,7 @@ pub fn read_label() -> Label {
 /// Caps on directory walks, so a large tree cannot stall a turn or flood the model's
 /// context. Truncation is size hygiene, not filtering: nothing is inspected to decide
 /// what to drop.
-const MAX_ENTRIES: usize = 2_000;
+pub(crate) const MAX_ENTRIES: usize = 2_000;
 const MAX_MATCHES: usize = 200;
 const MAX_MATCH_LINE: usize = 500;
 
@@ -875,8 +875,14 @@ pub struct Listing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Matches {
     pub matches: Vec<Match>,
-    /// Whether matches were left out because a cap was reached.
+    /// Whether matches were left out because the match cap was reached.
     pub truncated: bool,
+    /// Whether files were left unopened because the walk hit its entry cap.
+    ///
+    /// A separate fact from `truncated` and the more dangerous of the two: a search that stopped
+    /// short of the tree reports no matches for a needle it never looked for, which reads exactly
+    /// like the needle not being there.
+    pub unvisited: bool,
 }
 
 impl Workspace {
@@ -923,7 +929,9 @@ impl Workspace {
         let root = self.resolve(&relative)?;
 
         let mut found = Vec::new();
-        self.walk_filtered(&root, glob.as_deref(), &mut found)?;
+        // Ignored here: what a listing left out is the entry it drops below, which the count
+        // answers exactly.
+        let _ = self.walk_filtered(&root, glob.as_deref(), &mut found)?;
         found.sort();
 
         // Labelled after the walk, because which paths were visited is not known before it. A
@@ -1004,7 +1012,9 @@ impl Workspace {
         let root = self.resolve(&relative)?;
 
         let mut paths = Vec::new();
-        self.walk_filtered(&root, glob.as_deref(), &mut paths)?;
+        // Whether every file was reached, which the count cannot answer: a tree of exactly the
+        // cap fills `paths` without a single file being left out.
+        let unvisited = self.walk_filtered(&root, glob.as_deref(), &mut paths)?;
         paths.sort();
 
         // Trusted only if every file the search reads is trusted.
@@ -1042,7 +1052,14 @@ impl Workspace {
         let truncated = matches.len() > MAX_MATCHES;
         matches.truncate(MAX_MATCHES);
 
-        Ok(Labelled::new(Matches { matches, truncated }, label))
+        Ok(Labelled::new(
+            Matches {
+                matches,
+                truncated,
+                unvisited,
+            },
+            label,
+        ))
     }
 
     /// Collect workspace-relative paths of regular files beneath `directory`.
@@ -1058,12 +1075,16 @@ impl Workspace {
     /// cap, so the cap bounds *matches* rather than files examined. Filtering afterwards
     /// would make a narrow pattern return nothing in a large tree, which looks identical to
     /// the file being absent.
+    ///
+    /// Answers whether it stopped at the cap with entries still unvisited, which the length of
+    /// `out` cannot: a directory holding exactly one past the cap fills it without anything
+    /// being left behind.
     fn walk_filtered(
         &self,
         directory: &Path,
         pattern: Option<&str>,
         out: &mut Vec<String>,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<bool, WorkspaceError> {
         let entries = std::fs::read_dir(directory).map_err(|e| WorkspaceError::Io {
             path: self.relative_display(directory),
             detail: e.to_string(),
@@ -1071,7 +1092,7 @@ impl Workspace {
 
         for entry in entries.flatten() {
             if out.len() > MAX_ENTRIES {
-                return Ok(());
+                return Ok(true);
             }
             let path = entry.path();
             let Ok(kind) = entry.file_type() else {
@@ -1089,7 +1110,11 @@ impl Workspace {
                 if IGNORED_DIRECTORIES.contains(&name.as_ref()) {
                     continue;
                 }
-                self.walk_filtered(&path, pattern, out)?;
+                // Propagated rather than left to the next iteration's check, which a directory
+                // with nothing after it never reaches.
+                if self.walk_filtered(&path, pattern, out)? {
+                    return Ok(true);
+                }
                 continue;
             }
             if kind.is_file() {
@@ -1100,7 +1125,7 @@ impl Workspace {
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// How a path is named back to the caller.

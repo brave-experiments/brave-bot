@@ -2511,26 +2511,36 @@ fn search<S: Sink>(
                 tally(found.matches.len(), "match", "matches")
             });
             let rendered = policy.render_in_place("search", &found, |found| {
-                if found.matches.is_empty() {
-                    return "(no matches)".to_string();
+                let mut body = if found.matches.is_empty() {
+                    "(no matches)".to_string()
+                } else {
+                    found
+                        .matches
+                        .iter()
+                        .map(|m| format!("{}:{}: {}", m.path, m.line, m.text))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                // The empty result is the one that most needs this. A search that stopped before
+                // it reached the file holding the needle reports nothing, and nothing reads as an
+                // answer: the model concludes the string does not occur in the tree.
+                if found.unvisited {
+                    body.push_str(&format!(
+                        "\n\n(this search stopped after {} files and did not reach the whole \
+                         tree; search a subdirectory to cover the rest)",
+                        crate::workspace::MAX_ENTRIES
+                    ));
                 }
-                let lines = found
-                    .matches
-                    .iter()
-                    .map(|m| format!("{}:{}: {}", m.path, m.line, m.text))
-                    .collect::<Vec<_>>()
-                    .join("\n");
                 if found.truncated {
                     // Without this a model that gets exactly the cap concludes it has
                     // every occurrence, which is how a rename misses call sites.
-                    format!(
-                        "{lines}\n\n(this search stopped at {} matches and is \
-                         incomplete; narrow the pattern or search a subdirectory)",
+                    body.push_str(&format!(
+                        "\n\n(this search stopped at {} matches and is incomplete; narrow the \
+                         pattern or search a subdirectory)",
                         found.matches.len()
-                    )
-                } else {
-                    lines
+                    ));
                 }
+                body
             });
             Produced::new(rendered, proposed_where, note).of_content()
         }

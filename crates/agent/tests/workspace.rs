@@ -679,6 +679,80 @@ fn a_listing_past_the_cap_reports_truncation() {
     assert_eq!(listing.files.len(), 2_000, "the cap was not applied");
 }
 
+/// A search that stopped before it had opened every file has not answered the question it was
+/// asked, and the empty result is the dangerous one: nothing found reads as nothing there.
+#[test]
+fn a_search_that_could_not_reach_every_file_says_so() {
+    let scratch = Scratch::new("search-unvisited");
+    // One past the cap, so the walk returns with entries it never looked at.
+    for n in 0..2_002 {
+        std::fs::write(scratch.path.join(format!("f{n:05}.txt")), "filler").unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+            None,
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert!(found.matches.is_empty(), "the filler must not match");
+    assert!(
+        found.unvisited,
+        "the walk stopped at the cap and the search did not say so"
+    );
+}
+
+/// A tree of exactly the cap leaves nothing behind, so it must make no claim: the count of
+/// collected paths cannot tell this case from the one above, which is why the walk answers it.
+#[test]
+fn a_search_that_reached_every_file_makes_no_claim() {
+    let scratch = Scratch::new("search-visited-all");
+    for n in 0..2_001 {
+        std::fs::write(scratch.path.join(format!("f{n:05}.txt")), "filler").unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            &Labelled::trusted("needle".to_string()),
+            &Labelled::trusted(".".to_string()),
+            None,
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert!(
+        !found.unvisited,
+        "every file was searched and the search claimed otherwise"
+    );
+}
+
 /// The ordinary case must not claim truncation, or the notice becomes noise the model
 /// learns to ignore.
 #[test]
