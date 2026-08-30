@@ -251,18 +251,22 @@ fn activity_lines(
         )));
     }
 
-    // Where it went, which is the thing "Read(index.html)" does not say. Whether the model can
-    // now read that file is the difference the whole design turns on, and it was invisible.
-    if let Some(landing) = landing {
+    // Where it went, which is the thing "Read(index.html)" does not say. Only where that is
+    // worth a row: a read landing in the planner's context is what nearly every call does, and a
+    // line under nearly every call is a line that distinguishes nothing while crowding out the
+    // ones that do. What the design turns on is the exception, and the exception still says so,
+    // here and again in the marked block the content itself is drawn in.
+    if let Some(landing) = landing.filter(|l| *l != Landing::Context) {
         // Blue on a black terminal is the one colour in the palette a reader has to squint at:
         // the ANSI blue most terminals ship is nearly the background. The three that are used
         // elsewhere here are legible on both kinds of terminal, and the difference between them
         // carries the meaning: cyan for what the model has, yellow for what is kept from it, and
         // the dim grey the rest of the detail lines already use for what has not happened.
         let colour = match landing {
-            Landing::Context => Style::default().fg(Color::Cyan),
             Landing::Quarantined => Style::default().fg(Color::Yellow),
             Landing::Reserved => dim(),
+            // Filtered out above: the ordinary landing is drawn by not being drawn.
+            Landing::Context => dim(),
         };
         lines.push(Line::from(Span::styled(
             format!("    {}", landing.describe()),
@@ -1111,6 +1115,40 @@ mod tests {
             let mut session = working();
             session.start_activity(Activity::running("Read", "src/main.rs"));
             assert!(rendered(&session).contains("Read(src/main.rs)"));
+        }
+
+        /// Nearly every call reads into the planner's context, so a line saying so appeared
+        /// under nearly every call and distinguished nothing. It crowded out the lines that do.
+        #[test]
+        fn the_ordinary_landing_is_not_given_a_line_of_its_own() {
+            let mut session = working();
+            session.finish_activity(Activity::running("Read", "src/main.rs").done("12 lines"));
+            session.landed(bravebot_agent::report::Landing::Context);
+
+            let output = rendered(&session);
+            assert!(
+                output.contains("Read(src/main.rs)"),
+                "the call itself is still drawn"
+            );
+            assert!(
+                !output.contains("planner's context"),
+                "the ordinary case took a row anyway"
+            );
+        }
+
+        /// What the design turns on is the exception, and dropping the ordinary line is what
+        /// leaves room for it to be noticed.
+        #[test]
+        fn a_result_the_planner_may_not_read_still_says_so() {
+            let mut session = working();
+            session.finish_activity(Activity::running("Read", "notes.md").done("3 lines"));
+            session.landed(bravebot_agent::report::Landing::Quarantined);
+            assert!(rendered(&session).contains("only an isolated processor"));
+
+            let mut named = working();
+            named.finish_activity(Activity::running("List", ".").done("4 files"));
+            named.landed(bravebot_agent::report::Landing::Reserved);
+            assert!(rendered(&named).contains("only its name is known"));
         }
 
         /// The longest silence in a turn is the one while the model writes, and it is the one

@@ -27,7 +27,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [cli.md](cli.md) | `CLI` | 7 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
 | [terminal-input.md](terminal-input.md) | `INPUT` | 8 | what the user types into: the box, the keys, and where a terminal's own limits show through |
 | [commands.md](commands.md) | `CMD` | 7 | a line beginning with `/`: where one may come from, when a line is one, and what it does to the line |
-| [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 6 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
+| [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 7 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
 | [premium-credentials.md](premium-credentials.md) | `PREM` | 7 | importing a Leo Premium subscription and spending its credentials |
 | [sandboxing.md](sandboxing.md) | `SANDBOX` | 5 | operating-system confinement for processes running code we did not write |
 | [mcp.md](mcp.md) | `MCP` | 7 | tools that come from outside this repository, and what they are allowed to do |

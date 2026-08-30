@@ -120,3 +120,20 @@ because it is one release however many pieces it arrives in.
 `verified-by: bravebot_tui::state::a_round_starting_afresh_starts_from_an_empty_tail`
 `verified-by: bravebot_agent::turn::the_reply_reaches_the_interface_while_it_is_being_written`
 `verified-by: bravebot_agent::turn::showing_a_reply_as_it_arrives_is_recorded_once_for_the_round`
+
+<a id="VIEW-7"></a>
+### VIEW-7: where a result went is drawn only where that is not the ordinary answer
+
+A call whose result the planner may read says nothing about it. A result the planner may not read
+says so, and so does a name that was never opened.
+
+**Why.** Nearly every call reads into the planner's context, and a line under nearly every call
+distinguishes nothing while crowding out the lines that do. What the design turns on is the
+exception, and the exception is still marked twice over: on the call, and again in the margin of
+the block its content is drawn in.
+
+Recording is unaffected. What is dropped here is a row on a screen, not a fact: where every result
+went is still in the audit trail, which is what the record is for.
+
+`verified-by: bravebot_tui::render::the_ordinary_landing_is_not_given_a_line_of_its_own`
+`verified-by: bravebot_tui::render::a_result_the_planner_may_not_read_still_says_so`
