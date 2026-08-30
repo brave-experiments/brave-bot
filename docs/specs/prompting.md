@@ -110,6 +110,8 @@ for nothing.
 `verified-by: bravebot_tui::confirm::the_run_keys_separate_running_once_from_running_always`
 `verified-by: bravebot_tui::confirm::enter_does_not_approve_a_run`
 `verified-by: bravebot_tui::confirm::a_run_that_releases_private_data_offers_no_standing_permission`
+`verified-by: bravebot_tui::confirm::pressing_always_at_a_private_input_prompt_grants_nothing`
+`verified-by: bravebot_tui::confirm::a_private_input_run_can_still_be_approved_once_or_refused`
 `verified-by: bravebot_tui::confirm::saying_no_to_a_run_vouches_for_nothing`
 `verified-by: bravebot_tui::confirm::ctrl_c_refuses_the_run_and_vouches_for_nothing`
 `verified-by: bravebot_tui::trust_prompt::declining_trusts_nothing`

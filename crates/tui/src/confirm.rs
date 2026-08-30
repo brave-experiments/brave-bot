@@ -341,7 +341,14 @@ impl RunAnswer {
 /// Interpret one key press at a run prompt, or `None` for a key that answers nothing.
 ///
 /// Separated from the loop so it can be tested without a terminal.
-fn run_answer_for(key: KeyEvent) -> Option<RunResponse> {
+///
+/// Takes the request and not only the key, because which keys the prompt offers depends on what
+/// is being asked. A run that releases private data is asked about every time whatever is
+/// remembered, so the prompt neither draws `a` nor promises anything about it, and the answer has
+/// to agree with the drawing: a key that grants a standing permission the same screen says cannot
+/// be granted is worse than an unbound one. Unbound is what it becomes, for the reason Enter is:
+/// this prompt starts a program, and a key pressed out of habit from the previous prompt must not.
+fn run_answer_for(key: KeyEvent, request: &RunRequest) -> Option<RunResponse> {
     // The prompt blocks the whole interface, so without this Ctrl-C would do nothing at the one
     // moment a user is most likely to press it.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -353,7 +360,9 @@ fn run_answer_for(key: KeyEvent) -> Option<RunResponse> {
 
     match key.code {
         KeyCode::Char('y' | 'Y') => Some(RunResponse::Answer(RunAnswer::Approve)),
-        KeyCode::Char('a' | 'A') => Some(RunResponse::Answer(RunAnswer::ApproveAlways)),
+        KeyCode::Char('a' | 'A') if !request.releases_private() => {
+            Some(RunResponse::Answer(RunAnswer::ApproveAlways))
+        }
         KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(RunResponse::Answer(RunAnswer::Reject)),
         KeyCode::Up => Some(RunResponse::Scroll(-1)),
         KeyCode::Down => Some(RunResponse::Scroll(1)),
@@ -396,7 +405,7 @@ pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> 
             // Presses only: asking for disambiguated keys reports releases too, and a release
             // taken for a press approves whatever the press had just approved, twice.
             Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
-            Ok(TermEvent::Key(key)) => match run_answer_for(key) {
+            Ok(TermEvent::Key(key)) => match run_answer_for(key, request) {
                 Some(RunResponse::Answer(answer)) => return answer,
                 Some(RunResponse::Scroll(by)) => {
                     scroll = scroll.saturating_add_signed(by).min(most);
@@ -1073,15 +1082,63 @@ mod tests {
         );
     }
 
+    /// The drawing and the answer have to agree. The key row stopped offering `a` for a run that
+    /// releases private data, but the handler went on accepting it, so a reviewer pressing it out
+    /// of habit from the previous prompt granted a session-long permission the same screen had
+    /// just told them could not be granted, over a command it never named.
+    #[test]
+    fn pressing_always_at_a_private_input_prompt_grants_nothing() {
+        let pressed = run_answer_for(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &a_run(true),
+        );
+        assert_eq!(
+            pressed, None,
+            "`a` answered a prompt that does not offer it"
+        );
+
+        let shouted = run_answer_for(
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+            &a_run(true),
+        );
+        assert_eq!(shouted, None, "the shifted spelling still answered");
+    }
+
+    /// Refusing `a` must not take the answers the prompt does offer with it: a private run can
+    /// still be approved for this one time, and still refused.
+    #[test]
+    fn a_private_input_run_can_still_be_approved_once_or_refused() {
+        assert_eq!(
+            run_answer_for(
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+                &a_run(true)
+            ),
+            Some(RunResponse::Answer(RunAnswer::Approve))
+        );
+        assert_eq!(
+            run_answer_for(
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+                &a_run(true)
+            ),
+            Some(RunResponse::Answer(RunAnswer::Reject))
+        );
+    }
+
     /// Three answers, and the one that grants a standing permission is a key of its own rather
     /// than a follow-up question nobody would read.
     #[test]
     fn the_run_keys_separate_running_once_from_running_always() {
-        let once = run_answer_for(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        let once = run_answer_for(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &a_run(false),
+        );
         assert_eq!(once, Some(RunResponse::Answer(RunAnswer::Approve)));
         assert!(!RunAnswer::Approve.decision().remember);
 
-        let always = run_answer_for(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let always = run_answer_for(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &a_run(false),
+        );
         assert_eq!(always, Some(RunResponse::Answer(RunAnswer::ApproveAlways)));
         assert!(RunAnswer::ApproveAlways.decision().remember);
     }
@@ -1090,7 +1147,10 @@ mod tests {
     #[test]
     fn enter_does_not_approve_a_run() {
         assert_eq!(
-            run_answer_for(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            run_answer_for(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &a_run(false)
+            ),
             None
         );
     }
@@ -1101,7 +1161,7 @@ mod tests {
     fn ctrl_c_refuses_the_run_and_vouches_for_nothing() {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(
-            run_answer_for(key),
+            run_answer_for(key, &a_run(false)),
             Some(RunResponse::Answer(RunAnswer::Interrupt))
         );
         let decision = RunAnswer::Interrupt.decision();
@@ -1114,7 +1174,7 @@ mod tests {
     fn saying_no_to_a_run_vouches_for_nothing() {
         let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
         assert_eq!(
-            run_answer_for(key),
+            run_answer_for(key, &a_run(false)),
             Some(RunResponse::Answer(RunAnswer::Reject))
         );
         assert!(!RunAnswer::Reject.decision().remember);

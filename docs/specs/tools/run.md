@@ -120,6 +120,8 @@ too, and `a` is not offered for those runs at all.
 command is not consenting to hand it the user's data.
 
 `verified-by: bravebot_core::policy::private_input_asks_even_for_a_vouched_command`
+`verified-by: bravebot_tui::confirm::a_run_that_releases_private_data_offers_no_standing_permission`
+`verified-by: bravebot_tui::confirm::pressing_always_at_a_private_input_prompt_grants_nothing`
 
 <a id="RUN-7"></a>
 ### RUN-7: vouching grants two things together, and the prompt asks for both
