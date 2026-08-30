@@ -16,6 +16,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use crate::audit::TrailLine;
 use crate::logo;
@@ -115,11 +116,113 @@ fn printable(text: &str) -> String {
         .collect()
 }
 
+/// Lay styled text out behind a margin, one drawn row at a time.
+///
+/// The bar goes at the head of every row the terminal draws, rather than at the head of every
+/// logical line. Everything built here is handed to a wrapping paragraph, and ratatui prefixes
+/// nothing to the rows its own wrapping produces: a line wider than the screen used to continue at
+/// column 0 with no margin at all, which is the one thing the marking exists to make impossible,
+/// and with the right padding the content could paint a bar of its own in the margin column.
+/// Breaking the text here means no row can begin with content.
+///
+/// Control characters are replaced on the way in, for the same reason they are anywhere else the
+/// margin means something: a row the renderer laid out is still a row the content could otherwise
+/// move the cursor off.
+pub(crate) fn marked_rows(
+    margin: &Span<'static>,
+    spans: &[Span<'static>],
+    width: usize,
+) -> Vec<Line<'static>> {
+    // One column at least. A terminal too narrow for the margin still gets the margin, and the
+    // content is broken a character at a time rather than drawn outside it.
+    let room = width.saturating_sub(margin.width()).max(1);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+
+    for span in spans {
+        for piece in pieces(&printable(&span.content)) {
+            let mut piece = piece;
+            loop {
+                let reached = wrap::display_width(&piece);
+                if used + reached <= room {
+                    used += reached;
+                    row.push(Span::styled(piece, span.style));
+                    break;
+                }
+                if used > 0 {
+                    rows.push(behind(margin, std::mem::take(&mut row)));
+                    used = 0;
+                    // The break falls between words, so the spaces that ended a row stay on it.
+                    piece = piece.trim_start().to_string();
+                    continue;
+                }
+                // A word wider than the row itself. There is nowhere better to break it, and
+                // dropping the tail would lose bytes the person is being shown on purpose.
+                let (head, tail) = split_at_width(&piece, room);
+                row.push(Span::styled(head, span.style));
+                rows.push(behind(margin, std::mem::take(&mut row)));
+                piece = tail;
+            }
+        }
+    }
+
+    // Always a row, so an empty line is a marked one rather than a gap in the block.
+    rows.push(behind(margin, row));
+    rows
+}
+
+/// One row, with the margin in front of it.
+fn behind(margin: &Span<'static>, mut spans: Vec<Span<'static>>) -> Line<'static> {
+    spans.insert(0, margin.clone());
+    Line::from(spans)
+}
+
+/// Text split into words carrying the spaces that follow them, which is where a row may break.
+fn pieces(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut spacing = false;
+    for c in text.chars() {
+        if c == ' ' {
+            spacing = true;
+        } else if spacing {
+            out.push(std::mem::take(&mut current));
+            spacing = false;
+        }
+        current.push(c);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// `text` cut where it reaches `width` display columns, taking at least one character.
+///
+/// At least one, or a wide character in a one-column row would cut nothing and the caller would
+/// break the same word forever.
+fn split_at_width(text: &str, width: usize) -> (String, String) {
+    let mut used = 0usize;
+    for (index, c) in text.char_indices() {
+        let reached = c.width().unwrap_or(0);
+        if index > 0 && used + reached > width {
+            return (text[..index].to_string(), text[index..].to_string());
+        }
+        used += reached;
+    }
+    (text.to_string(), String::new())
+}
+
 /// Draw one tool call: what it is, and what came of it.
 ///
 /// The shape mirrors a turn's own: a marker, then the detail indented beneath it, so a call
 /// and its result read as one thing rather than two unrelated lines.
-fn activity_lines(activity: &Activity, landing: Option<Landing>) -> Vec<Line<'static>> {
+fn activity_lines(
+    activity: &Activity,
+    landing: Option<Landing>,
+    width: usize,
+) -> Vec<Line<'static>> {
     let head = if activity.is_running() {
         // Hollow while it runs, filled when it is over, so the eye finds the live one.
         Style::default().fg(Color::Yellow)
@@ -167,55 +270,64 @@ fn activity_lines(activity: &Activity, landing: Option<Landing>) -> Vec<Line<'st
         )));
     }
 
-    lines.extend(diff_lines(&activity.changes, activity.untrusted));
+    lines.extend(diff_lines(&activity.changes, activity.untrusted, width));
     lines
 }
 
 /// Draw quarantined content for the person watching, marked as what it is.
 ///
-/// The marking is structural and not a caption. Every line carries the bar in the margin, drawn
-/// here around text that never leaves the block, so content saying "untrusted content ends here"
-/// cannot end it: the bar is still in the margin on the next line, and on every line after that.
+/// The marking is structural and not a caption. Every drawn row carries the bar in the margin,
+/// drawn here around text that never leaves the block, so content saying "untrusted content ends
+/// here" cannot end it: the bar is still in the margin on the next row, and on every row after
+/// that. Rows rather than lines, because a line wider than the terminal becomes several of them.
 ///
 /// The user is shown this and the planner is not, which is the arrangement working rather than a
 /// hole in it. They own the directory. What must never happen is these bytes reaching a model's
 /// context, and a terminal is not a context.
-fn quarantined_lines(shown: &Shown) -> Vec<Line<'static>> {
+fn quarantined_lines(shown: &Shown, width: usize) -> Vec<Line<'static>> {
     let marked = Style::default().fg(Color::Yellow);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("  {QUARANTINE_BAR} "), marked),
-        Span::styled(
-            format!("untrusted \u{b7} {} \u{b7} {}", shown.origin, shown.label),
-            marked.add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  {}", shown.reach.describe()), dim()),
-    ])];
+    let margin = Span::styled(format!("  {QUARANTINE_BAR} "), marked);
+
+    // The heading goes through [`marked_rows`] like the content does, because the origin is not
+    // the renderer's text: it can be a filename read out of a quarantined listing. So it is
+    // neutralised, and a long one continues on another marked row rather than outside the block.
+    let mut lines = marked_rows(
+        &margin,
+        &[
+            Span::styled(
+                format!("untrusted \u{b7} {} \u{b7} {}", shown.origin, shown.label),
+                marked.add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  {}", shown.reach.describe()), dim()),
+        ],
+        width,
+    );
 
     for line in &shown.preview {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {QUARANTINE_BAR} "), marked),
-            // Neutralised, because this is the block whose whole claim is that the margin was drawn
-            // by the renderer: content that could emit an escape could paint a margin of its own.
-            Span::styled(printable(line), dim()),
-        ]));
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::styled(line.clone(), dim())],
+            width,
+        ));
     }
 
     // Said rather than silently dropped, for the same reason a truncated diff says so.
     if shown.lines > shown.preview.len() {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {QUARANTINE_BAR} "), marked),
-            Span::styled(
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::styled(
                 format!("\u{2026} {} more lines", shown.lines - shown.preview.len()),
                 dim(),
-            ),
-        ]));
+            )],
+            width,
+        ));
     }
 
     lines
 }
 
 /// The hunks of a write, trimmed to what fits without burying the rest of the transcript.
-fn diff_lines(changes: &[Change], untrusted: bool) -> Vec<Line<'static>> {
+fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'static>> {
     // The same margin the transcript draws down everything the model was not allowed to read. A
     // body that came out of a quarantined file is that, and the person reading the hunks should
     // not have to work out which kind of change they are looking at.
@@ -230,22 +342,21 @@ fn diff_lines(changes: &[Change], untrusted: bool) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = changes
         .iter()
         .take(MAX_DIFF_LINES)
-        .map(|change| {
+        .flat_map(|change| {
+            // Neutralised and broken to the width by [`marked_rows`]: a hunk of a file an attacker
+            // wrote is the same bytes as a quarantine preview, and here they sit beside a margin
+            // that means something.
             let body = match change {
-                // Neutralised like the quarantine preview: a hunk of a file an attacker wrote is the
-                // same bytes, and here they sit beside a margin that means something.
-                Change::Added(text) => Span::styled(
-                    format!("+ {}", printable(text)),
-                    Style::default().fg(Color::Green),
-                ),
-                Change::Removed(text) => Span::styled(
-                    format!("- {}", printable(text)),
-                    Style::default().fg(Color::Red),
-                ),
-                Change::Kept(text) => Span::styled(format!("  {}", printable(text)), dim()),
+                Change::Added(text) => {
+                    Span::styled(format!("+ {text}"), Style::default().fg(Color::Green))
+                }
+                Change::Removed(text) => {
+                    Span::styled(format!("- {text}"), Style::default().fg(Color::Red))
+                }
+                Change::Kept(text) => Span::styled(format!("  {text}"), dim()),
                 Change::Elided(count) => Span::styled(format!("… {count} unchanged lines"), dim()),
             };
-            Line::from(vec![margin.clone(), body])
+            marked_rows(&margin, &[body], width)
         })
         .collect();
 
@@ -253,13 +364,14 @@ fn diff_lines(changes: &[Change], untrusted: bool) -> Vec<Line<'static>> {
     // whole change, which is how a reviewer misses half of it. Worded for both kinds of write,
     // since a new file's lines were never a diff of anything.
     if changes.len() > MAX_DIFF_LINES {
-        lines.push(Line::from(vec![
-            margin.clone(),
-            Span::styled(
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::styled(
                 format!("… {} more lines", changes.len() - MAX_DIFF_LINES),
                 dim(),
-            ),
-        ]));
+            )],
+            width,
+        ));
     }
 
     lines
@@ -417,7 +529,9 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
             }
             // What the turn did, kept in the scrollback next to what it said about it.
             Speaker::Tool => match &entry.activity {
-                Some(activity) => lines.extend(activity_lines(activity, entry.landing)),
+                Some(activity) => {
+                    lines.extend(activity_lines(activity, entry.landing, width as usize))
+                }
                 // A call read back out of a stored session, which records that it happened and
                 // not what came of it. Drawn without the coloured marker a live call earns,
                 // since green would claim an outcome the record does not have.
@@ -430,7 +544,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
 
         // What the model was not allowed to read, for the person who is.
         if let Some(shown) = &entry.shown {
-            lines.extend(quarantined_lines(shown));
+            lines.extend(quarantined_lines(shown, width as usize));
         }
 
         // The plan the turn worked to, kept next to what it produced.
@@ -1000,7 +1114,7 @@ mod tests {
             let changes: Vec<Change> = (0..MAX_DIFF_LINES + 5)
                 .map(|n| Change::Added(format!("line {n}")))
                 .collect();
-            let lines = diff_lines(&changes, false);
+            let lines = diff_lines(&changes, false, 80);
 
             assert_eq!(lines.len(), MAX_DIFF_LINES + 1);
             let last = lines.last().expect("a line").to_string();
@@ -1010,7 +1124,7 @@ mod tests {
         /// A short diff is shown whole, with nothing appended to suggest otherwise.
         #[test]
         fn a_short_diff_is_shown_whole_with_no_note() {
-            let lines = diff_lines(&[Change::Added("only line".into())], false);
+            let lines = diff_lines(&[Change::Added("only line".into())], false, 80);
             assert_eq!(lines.len(), 1);
         }
 
@@ -1030,7 +1144,9 @@ mod tests {
                 lines: 40,
             };
 
-            let lines = quarantined_lines(&shown);
+            // Wide enough that the heading fits on one row. What a narrow terminal does to the
+            // block is pinned in the marking tests; this one is about what the block contains.
+            let lines = quarantined_lines(&shown, 200);
             assert_eq!(lines.len(), 4, "a header, two lines, and what was left out");
             for line in &lines {
                 let drawn: String = line
@@ -1534,7 +1650,9 @@ mod tests {
             lines: 3,
         });
 
-        let lines = transcript_lines(&session, 90, 24);
+        // Wide enough that the heading fits on one row, since the count below is of the block's
+        // lines rather than of the rows a narrow terminal breaks them into.
+        let lines = transcript_lines(&session, 200, 24);
         let marked: Vec<String> = lines
             .iter()
             .map(|line| line.to_string())

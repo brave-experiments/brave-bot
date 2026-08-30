@@ -46,18 +46,30 @@ the person watching, because an agent that will not say which file it is working
 nobody. It is the planner that may not read untrusted content, and a terminal is not a planner's
 context. It reaches a screen under a witness minted for release to a display and for nothing else.
 
-What must hold is how it is drawn. A bar runs down the margin of every line of the block, and the
-content never gets to draw its own, so a file containing "untrusted content ends here" ends
+What must hold is how it is drawn. A bar runs down the margin of every **drawn row** of the block,
+and the content never gets to draw its own, so a file containing "untrusted content ends here" ends
 nothing. A caption can be imitated by the thing it captions; a margin cannot. Never replace the bar
 with a heading, and never show untrusted content outside a marked block.
 
-Every control character is replaced with a visible glyph on the way to the screen. Replaced rather
-than dropped, since a character silently removed is one the user cannot tell was ever in the file.
+Rows rather than lines, because a line longer than the terminal is wide becomes several of them. It
+is broken to the width by the same step that draws the margin, and each row it breaks into carries
+a bar of its own. Leaving the break to the paragraph the block is drawn in is the same defect as
+omitting the margin: the continuation starts at column 0, which is untrusted content outside the
+block, positioned wherever the content's own padding chose to put it. Nothing is dropped to make a
+line fit. The block's heading is laid out the same way and for the same reason, since the origin
+named in it can be a filename read out of a quarantined listing.
+
+Every control character is replaced with a visible glyph on the way to the screen, in the heading
+as well as the content. Replaced rather than dropped, since a character silently removed is one the
+user cannot tell was ever in the file.
 
 `verified-by: bravebot_tui::marking::quarantined_content_cannot_paint_its_own_margin`
 `verified-by: bravebot_tui::marking::a_neutralised_escape_is_still_visible`
 `verified-by: bravebot_tui::marking::text_without_control_characters_is_drawn_as_it_is`
 `verified-by: bravebot_tui::render::quarantined_content_is_shown_and_marked_on_every_line`
+`verified-by: bravebot_tui::marking::a_wrapped_preview_line_is_marked_on_every_row_it_reaches`
+`verified-by: bravebot_tui::marking::wrapped_content_cannot_paint_a_bar_in_the_margin_column`
+`verified-by: bravebot_tui::marking::a_long_origin_keeps_the_heading_inside_the_block`
 `verified-by: bravebot_agent::turn::quarantined_content_reaches_the_person_and_not_the_planner`
 
 <a id="VIEW-4"></a>

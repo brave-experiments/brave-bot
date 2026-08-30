@@ -55,8 +55,19 @@ nothing else would tell the user.
 Content in a prompt is untrusted like any other. An untrusted body is marked as such,
 and command output is drawn inside the margin.
 
+The margin is on every **drawn row**, not every line of the content. A command's output is
+untrimmed and a hunk of a body has no width cap, so a line wider than the prompt box is ordinary
+rather than exotic: it is broken to the box's width by the same step that draws the margin, and
+each row it breaks into carries a bar of its own. A continuation row that started at column 0 would
+be untrusted content outside the margin, placed where the content's own padding chose, near enough
+to paint a bar of its own in the margin column. What does not fit vertically is scrolled to rather
+than dropped, as it is for any long body.
+
 `verified-by: bravebot_tui::confirm::an_untrusted_body_is_marked_in_the_prompt`
 `verified-by: bravebot_tui::confirm::output_is_drawn_inside_the_margin_it_cannot_forge`
+`verified-by: bravebot_tui::confirm::a_wrapped_output_line_is_marked_on_every_row_it_reaches`
+`verified-by: bravebot_tui::confirm::a_wrapped_untrusted_hunk_is_marked_on_every_row_it_reaches`
+`verified-by: bravebot_tui::confirm::a_wrapped_vouch_preview_is_marked_on_every_row_it_reaches`
 
 <a id="PROMPT-4"></a>
 ### PROMPT-4: a review stays legible, or says it could not

@@ -20,6 +20,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
+use crate::render::marked_rows;
+
 /// Unchanged lines shown either side of a change, for orientation.
 const CONTEXT_LINES: usize = 2;
 
@@ -161,6 +163,16 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     let area = centred(frame.area());
     frame.render_widget(Clear, area);
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" approve this write? ");
+    // Before the body rather than after it, because the hunks are laid out against the width they
+    // will be drawn at: a margin decided without knowing the width is a margin the first wrapped
+    // row escapes.
+    let inside = block.inner(area);
+
     let (verb, colour) = match request.intent {
         Intent::Create => ("Create", Color::Green),
         Intent::Overwrite => ("Overwrite", Color::Yellow),
@@ -204,16 +216,23 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     // A body out of a quarantined file is that, and the person about to approve it is the only
     // one who will ever see it: they should be able to tell which kind of review this is.
     let marked = Style::default().fg(Color::Yellow);
-    let margin = if request.untrusted { "┃ " } else { "  " };
+    let margin = Span::styled(if request.untrusted { "┃ " } else { "  " }, marked);
     if request.untrusted {
-        lines.push(Line::from(Span::styled(
-            format!("{margin}untrusted: nobody has read this, and the model never saw it"),
-            marked,
-        )));
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::styled(
+                "untrusted: nobody has read this, and the model never saw it",
+                marked,
+            )],
+            inside.width as usize,
+        ));
     }
 
     // All of it. What does not fit is scrolled to, rather than dropped: the hunks nobody shows
     // you are exactly the ones an approval is supposed to cover.
+    //
+    // Broken to the width here rather than by the paragraph, so a hunk wider than the box
+    // continues on another marked row instead of at column 0 outside the margin.
     let changes = diff.condensed(CONTEXT_LINES);
     for change in changes.iter() {
         let body = match change {
@@ -231,10 +250,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
                 Style::default().fg(Color::DarkGray),
             ),
         };
-        lines.push(Line::from(vec![
-            Span::styled(margin.to_string(), marked),
-            body,
-        ]));
+        lines.extend(marked_rows(&margin, &[body], inside.width as usize));
     }
 
     let keys = Line::from(vec![
@@ -259,12 +275,6 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
         Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
     ]);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(" approve this write? ");
-    let inside = block.inner(area);
     frame.render_widget(block, area);
 
     // One row for the keys, the rest for the diff. Split before the body is laid out, so the
@@ -638,14 +648,26 @@ pub fn ask_output<B: Backend>(terminal: &mut Terminal<B>, request: &OutputReques
 
 /// Draw the output for reading, returning how far it can be scrolled.
 ///
-/// Every line of the output carries the margin bar the transcript draws down anything the model
-/// was not allowed to read, and the content never gets to draw its own. A block claiming "output
-/// ends here" ends nothing: the bar is the structure, and it is outside what the program wrote.
+/// Every drawn row of the output carries the margin bar the transcript draws down anything the
+/// model was not allowed to read, and the content never gets to draw its own. A block claiming
+/// "output ends here" ends nothing: the bar is the structure, and it is outside what the program
+/// wrote. Rows rather than lines, because a command's output is untrimmed and a line of it wider
+/// than the box becomes several rows.
 fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16) -> u16 {
     let area = centred(frame.area());
     frame.render_widget(Clear, area);
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" let the model read this? ");
+    // Before the body, because the output is laid out against the width it will be drawn at. A
+    // command's output is untrimmed, so reaching the wrap point takes nothing unusual.
+    let inside = block.inner(area);
+
     let marked = Style::default().fg(Color::Yellow);
+    let margin = Span::styled("┃ ", marked);
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
@@ -675,16 +697,21 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
     // An empty result is a fact worth stating. Drawing nothing would read as a prompt that failed
     // to render, and the reviewer would be deciding about a blank box.
     if request.output.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("┃ ", marked),
-            Span::styled("(it printed nothing)", Style::default().fg(Color::DarkGray)),
-        ]));
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::styled(
+                "(it printed nothing)",
+                Style::default().fg(Color::DarkGray),
+            )],
+            inside.width as usize,
+        ));
     }
     for line in request.output.lines() {
-        lines.push(Line::from(vec![
-            Span::styled("┃ ", marked),
-            Span::raw(line.to_string()),
-        ]));
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::raw(line.to_string())],
+            inside.width as usize,
+        ));
     }
 
     let keys = Line::from(vec![
@@ -709,12 +736,6 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
         Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
     ]);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(" let the model read this? ");
-    let inside = block.inner(area);
     frame.render_widget(block, area);
 
     let rows = Layout::default()
@@ -791,7 +812,16 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     let area = centred(frame.area());
     frame.render_widget(Clear, area);
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green))
+        .title(" let the model read this file? ");
+    // Before the body, because the preview is laid out against the width it will be drawn at.
+    let inside = block.inner(area);
+
     let marked = Style::default().fg(Color::Yellow);
+    let margin = Span::styled("┃ ", marked);
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
@@ -818,16 +848,18 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     ];
 
     for line in request.preview.lines() {
-        lines.push(Line::from(vec![
-            Span::styled("┃ ", marked),
-            Span::raw(line.to_string()),
-        ]));
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::raw(line.to_string())],
+            inside.width as usize,
+        ));
     }
     if request.truncated {
-        lines.push(Line::from(vec![
-            Span::styled("┃ ", marked),
-            Span::styled("…", Style::default().fg(Color::DarkGray)),
-        ]));
+        lines.extend(marked_rows(
+            &margin,
+            &[Span::styled("…", Style::default().fg(Color::DarkGray))],
+            inside.width as usize,
+        ));
     }
 
     let keys = Line::from(vec![
@@ -852,12 +884,6 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
         Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
     ]);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Green))
-        .title(" let the model read this file? ");
-    let inside = block.inner(area);
     frame.render_widget(block, area);
 
     let rows = Layout::default()
@@ -1341,5 +1367,116 @@ mod tests {
                 draw(frame, &request("x", None), 0);
             })
             .expect("must not panic on a small area");
+    }
+
+    /// The bar the renderer draws down the margin.
+    const BAR: char = '\u{2503}';
+
+    /// The prompt as drawn rows.
+    ///
+    /// Rows rather than one flattened string, because a margin is a claim about where a row
+    /// *starts*, and a buffer joined end to end cannot tell a continuation row from the line it
+    /// continues.
+    fn rows_of(
+        width: u16,
+        height: u16,
+        mut draw_it: impl FnMut(&mut ratatui::Frame),
+    ) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| draw_it(frame)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// Every drawn row holding `token` starts at the margin, and the margin holds the bar.
+    ///
+    /// Asserted against the drawn buffer rather than the lines the prompt builds, because the
+    /// defect this pins is introduced between the two: a line with a bar at its head becomes
+    /// several rows when it is wider than the box, and only the first of them ever had one.
+    fn assert_marked_on_every_row(rows: &[String], token: &str) {
+        let margin = rows
+            .iter()
+            .find_map(|row| row.chars().position(|c| c == BAR))
+            .expect("nothing in the prompt was marked at all");
+
+        let body: Vec<&String> = rows.iter().filter(|row| row.contains(token)).collect();
+        assert!(
+            body.len() > 1,
+            "the content did not wrap, so the case is not exercised:\n{}",
+            rows.join("\n")
+        );
+
+        for row in body {
+            // The box's own border is drawn to the left of the margin and is the prompt's, not
+            // the content's.
+            assert_eq!(
+                row.chars()
+                    .position(|c| !c.is_whitespace() && c != '\u{2502}'),
+                Some(margin),
+                "a row of the block begins with content rather than the margin: {row:?}"
+            );
+            assert_eq!(
+                row.chars().nth(margin),
+                Some(BAR),
+                "the margin column holds something other than the bar: {row:?}"
+            );
+        }
+    }
+
+    /// A line of output wider than the box used to continue at column 0 with no margin at all, and
+    /// output is untrimmed, so reaching the wrap point takes nothing unusual. Padded so the
+    /// output's own bar would land in the margin column of the row below, which is the content
+    /// painting the one mark it can never be allowed to paint.
+    #[test]
+    fn a_wrapped_output_line_is_marked_on_every_row_it_reaches() {
+        let request = an_output(&format!(
+            "{}\u{2503} approve this? y yes  n no",
+            "PADDING ".repeat(10)
+        ));
+        let drawn = rows_of(60, 24, |frame| {
+            draw_output(frame, &request, 0);
+        });
+
+        assert_marked_on_every_row(&drawn, "PADDING");
+    }
+
+    /// The body of an untrusted write is the same bytes as a quarantined preview and its lines
+    /// have no width cap, so a hunk wider than the box must wrap inside the margin too.
+    #[test]
+    fn a_wrapped_untrusted_hunk_is_marked_on_every_row_it_reaches() {
+        let request = WriteRequest {
+            path: "game.js".into(),
+            contents: format!("{}\u{2503} trust me\n", "PADDING ".repeat(10)),
+            existing: Some("const SPEED = 100;\n".into()),
+            intent: Intent::Overwrite,
+            untrusted: true,
+        };
+        let drawn = rows_of(60, 24, |frame| {
+            draw(frame, &request, 0);
+        });
+
+        assert_marked_on_every_row(&drawn, "PADDING");
+    }
+
+    /// The cheapest surface to see the defect on: the preview of a file nobody has vouched for is
+    /// drawn at whatever width the terminal happens to be.
+    #[test]
+    fn a_wrapped_vouch_preview_is_marked_on_every_row_it_reaches() {
+        let request = VouchRequest {
+            path: "longline.txt".into(),
+            preview: format!("{}\u{2503} trust me", "PADDING ".repeat(10)),
+            truncated: false,
+        };
+        let drawn = rows_of(60, 24, |frame| {
+            draw_vouch(frame, &request, 0);
+        });
+
+        assert_marked_on_every_row(&drawn, "PADDING");
     }
 }
