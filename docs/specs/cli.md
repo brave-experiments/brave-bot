@@ -68,7 +68,9 @@ was released.
 
 **Why.** A progress line mixed into stdout would corrupt whatever the user piped the reply into.
 
-`verified-by: none`
+`verified-by: bravebot_cli::main::stdout_carries_the_reply_and_nothing_else`
+`verified-by: bravebot_cli::main::an_untraced_run_writes_no_trail`
+`verified-by: bravebot_cli::main::the_trail_renders_a_line_for_every_event`
 
 <a id="CLI-6"></a>
 ### CLI-6: a failure exits non-zero

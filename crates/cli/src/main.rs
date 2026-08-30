@@ -206,25 +206,21 @@ fn run_task(args: &[String]) -> ExitCode {
         &Cancel::new(),
     ) {
         Ok(outcome) => {
-            // To stderr with the rest of the progress, so stdout stays the reply and nothing
-            // else. These are the driver's own words about what loaded, never file contents.
-            for notice in &outcome.notices {
-                eprintln!("note: {notice}");
-            }
             // The reply is untrusted model output. Printing it is safe, since the
             // terminal is not a decision, so it is released explicitly for display.
-            println!("{}", outcome.reply_for_display());
-            if trace {
-                let mut stderr = std::io::stderr().lock();
-                let _ = writeln!(stderr);
-                print_trace(&mut stderr, &sink);
-                let _ = writeln!(stderr, "model: {}", outcome.model);
-            }
+            report(
+                &mut std::io::stdout().lock(),
+                &mut std::io::stderr().lock(),
+                &Finished {
+                    reply: outcome.reply_for_display(),
+                    notices: &outcome.notices,
+                    trail: trace.then_some((&sink, outcome.model.as_str())),
+                    clean: outcome.clean,
+                },
+            );
             if outcome.clean {
                 ExitCode::SUCCESS
             } else {
-                eprintln!();
-                eprintln!("note: a policy gate refused something during this turn");
                 ExitCode::FAILURE
             }
         }
@@ -277,6 +273,43 @@ fn piped_input(source: impl Read, is_tty: bool) -> Result<Option<String>, String
     // Lossy because the bytes are never decided from: they go into a slot and the planner is shown
     // a reference, so a replacement character changes nothing that matters.
     Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
+}
+
+/// What a finished turn has to say, before anything decides where it goes.
+struct Finished<'a> {
+    reply: &'a str,
+    /// The driver's own words about what loaded and what did not, never anything read out of a
+    /// file.
+    notices: &'a [String],
+    /// The trail and the model behind it, when `--trace` asked for them.
+    trail: Option<(&'a RecordingSink, &'a str)>,
+    /// Whether no gate refused anything during the turn.
+    clean: bool,
+}
+
+/// Write a finished turn: the reply to `reply`, every other word to `beside`.
+///
+/// Which stream each part lands on is the whole of what this decides, so it takes both rather
+/// than reaching for stdout and stderr itself: a run's output is then something a test can read
+/// back. A notice or an audit trail sharing the reply's stream would corrupt whatever the reply
+/// was piped into.
+fn report(reply: &mut impl Write, beside: &mut impl Write, run: &Finished<'_>) {
+    for notice in run.notices {
+        let _ = writeln!(beside, "note: {notice}");
+    }
+    let _ = writeln!(reply, "{}", run.reply);
+    if let Some((sink, model)) = run.trail {
+        let _ = writeln!(beside);
+        print_trace(beside, sink);
+        let _ = writeln!(beside, "model: {model}");
+    }
+    if !run.clean {
+        let _ = writeln!(beside);
+        let _ = writeln!(
+            beside,
+            "note: a policy gate refused something during this turn"
+        );
+    }
 }
 
 /// Print the audit trail: what was checked, allowed, and refused.
@@ -578,6 +611,10 @@ fn report_confinement(ok: &mut bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bravebot_core::capability::Capability;
+    use bravebot_core::event::Sink;
+    use bravebot_core::label::Label;
+    use bravebot_core::slot::SlotId;
 
     /// An interactive `bravebot -p "task"` must not block waiting for a pipe that is not coming.
     #[test]
@@ -609,19 +646,123 @@ mod tests {
         );
     }
 
+    fn trail_of(events: Vec<Event>) -> RecordingSink {
+        let mut sink = RecordingSink::new();
+        for event in events {
+            sink.emit(event);
+        }
+        sink
+    }
+
+    /// Reads back what a run would have written, as the two streams it writes to.
+    fn written(run: &Finished<'_>) -> (String, String) {
+        let mut reply = Vec::new();
+        let mut beside = Vec::new();
+        report(&mut reply, &mut beside, run);
+        (
+            String::from_utf8(reply).expect("utf-8"),
+            String::from_utf8(beside).expect("utf-8"),
+        )
+    }
+
+    /// The reply is what gets piped onward, so anything else sharing its stream corrupts the
+    /// file at the other end. This is the whole of what makes a one-shot run pipeable.
     #[test]
-    fn trace_is_rendered_to_the_supplied_output() {
+    fn stdout_carries_the_reply_and_nothing_else() {
+        let sink = trail_of(vec![Event::GatePassed {
+            gate: "display",
+            detail: "assistant reply shown to the user".into(),
+        }]);
+        let (reply, beside) = written(&Finished {
+            reply: "ok",
+            notices: &["a skill was loaded".to_string()],
+            trail: Some((&sink, "qwen-3-235b")),
+            clean: false,
+        });
+
+        assert_eq!(reply, "ok\n");
+        assert!(beside.contains("audit trail"), "got: {beside}");
+        assert!(beside.contains("note: a skill was loaded"), "got: {beside}");
+        assert!(beside.contains("model: qwen-3-235b"), "got: {beside}");
+        assert!(beside.contains("a policy gate refused"), "got: {beside}");
+    }
+
+    /// Without `--trace` the trail is not written at all, rather than written somewhere quieter.
+    #[test]
+    fn an_untraced_run_writes_no_trail() {
+        let (reply, beside) = written(&Finished {
+            reply: "ok",
+            notices: &[],
+            trail: None,
+            clean: true,
+        });
+
+        assert_eq!(reply, "ok\n");
+        assert!(beside.is_empty(), "got: {beside}");
+    }
+
+    /// Every arm of the trail is a line somebody reads to see what the turn was allowed to do,
+    /// so a refusal has to be as legible as a pass.
+    #[test]
+    fn the_trail_renders_a_line_for_every_event() {
+        let sink = trail_of(vec![
+            Event::GatePassed {
+                gate: "capability",
+                detail: "file_read granted".into(),
+            },
+            Event::GateBlocked {
+                gate: "network",
+                detail: "egress".into(),
+                reason: "host not allowed".into(),
+            },
+            Event::Observed {
+                capability: Capability::FileRead,
+                label: Label::untrusted_private(),
+            },
+            Event::SlotWritten {
+                slot: SlotId::new("file:a.rs"),
+                label: Label::untrusted_private(),
+            },
+            Event::SlotDeferred {
+                slot: SlotId::new("file:b.rs"),
+                label: Label::untrusted_private(),
+                origin: "b.rs".into(),
+            },
+            Event::Declassified {
+                slot: SlotId::new("reply"),
+                from: Label::untrusted_public(),
+                to: Label::trusted_public(),
+                reason: "present",
+            },
+            Event::ActionField {
+                tool: "write".into(),
+                field: "path".into(),
+                role: Role::Routing,
+                label: Label::untrusted_public(),
+                allowed: false,
+            },
+        ]);
+
         let mut output = Vec::new();
-        print_trace(&mut output, &RecordingSink::new());
-        assert_eq!(String::from_utf8(output).unwrap(), "audit trail\n");
+        print_trace(&mut output, &sink);
+        let trail = String::from_utf8(output).expect("utf-8");
+        let lines: Vec<&str> = trail.lines().collect();
+
+        assert_eq!(lines[0], "audit trail");
+        assert_eq!(lines.len(), 8, "a line each, plus the heading: {trail}");
+        assert!(lines[1].contains("ok      capability: file_read granted"));
+        assert!(lines[2].contains("BLOCK   network: host not allowed"));
+        assert!(lines[3].starts_with("  observe "));
+        assert!(lines[4].starts_with("  slot    file:a.rs"));
+        assert!(lines[5].contains("holds b.rs, unread"));
+        assert!(lines[6].starts_with("  release reply "));
+        assert!(lines[7].contains("BLOCK") && lines[7].contains("write.path [routing]"));
     }
 
     /// The trail is written after the reply is already on stdout, so a stderr nobody is reading
     /// must not take the run down with it: the exit code still has a turn to report on.
     #[test]
     fn a_closed_stream_does_not_stop_the_trail() {
-        use bravebot_core::event::Sink;
-
         struct Closed;
         impl Write for Closed {
             fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
