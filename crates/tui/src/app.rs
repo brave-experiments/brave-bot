@@ -1072,7 +1072,12 @@ fn event_loop(
                     );
                     stored.append_audit(session.turns, &events);
 
-                    sending = session.send_queued();
+                    // Nothing waiting goes out after somebody has asked to leave.
+                    sending = if session.is_quitting() {
+                        None
+                    } else {
+                        session.send_queued()
+                    };
                 }
             }
             Action::Run(line) => {
@@ -1283,6 +1288,10 @@ fn run_command(
         while event::poll(Duration::ZERO)? {
             match event::read()? {
                 TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
+                TermEvent::Key(key) if wants_quit(key) => {
+                    session.quit();
+                    cancel.cancel();
+                }
                 TermEvent::Key(key) if wants_cancel(key) => {
                     cancel.cancel();
                     session.note("stopping…");
@@ -1390,6 +1399,11 @@ fn compact_animated(
                     // nothing here can stop it. Said once, because the alternative is a key that does
                     // nothing and says nothing, which reads as the interface having hung at the one
                     // moment it is working hardest.
+                    TermEvent::Key(key) if wants_quit(key) => {
+                        // Nothing here can stop the request, so the session leaves once it comes
+                        // back rather than pretending the key did more than it did.
+                        session.quit();
+                    }
                     TermEvent::Key(key) if wants_cancel(key) => {
                         session
                             .note_once("summarising cannot be interrupted; it takes one request");
@@ -1579,6 +1593,12 @@ fn run_turn_animated(
                     // for a press would type every character twice, and cancel the turn on the way up
                     // from the Escape that already cancelled it.
                     TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
+                    TermEvent::Key(key) if wants_quit(key) => {
+                        // The turn stops on the way out: a request nobody will be here to read is
+                        // one there is no reason to finish.
+                        session.quit();
+                        cancel.cancel();
+                    }
                     TermEvent::Key(key) if wants_cancel(key) => {
                         cancel.cancel();
                         session.note("cancelling…");
@@ -1719,6 +1739,12 @@ fn run_turn_animated(
     let events = sink.events().to_vec();
 
     if matches!(outcome, Err(turn::TurnError::Cancelled)) {
+        // Not when the cancel was somebody leaving. Restoring returns the session to idle, which
+        // would put it back in the loop it was on its way out of, and hand back a prompt to a box
+        // nobody is going to see.
+        if session.is_quitting() {
+            return Ok((conversation, fallback, fallback_programs, events));
+        }
         session.restore(prompt);
         // Stopping the turn stops what was lined up behind it. A person reaching for Escape is
         // taking the session back, and firing off the next prompt on their behalf is the opposite
@@ -1777,11 +1803,17 @@ fn drain_worker(
 
 /// Whether a key press asks for the turn in flight to stop.
 ///
-/// Escape is the obvious key, and Ctrl-C is included because a user reaching for the usual
-/// interrupt should not have to discover a different one.
+/// Escape, and only Escape. Ctrl-C used to be here too, on the reasoning that somebody reaching
+/// for the usual interrupt should not have to discover a different one. What they are reaching
+/// for is the usual way out of a terminal program, and answering it with a turn that stopped and
+/// a session that did not left no way out at all: Ctrl-C did nothing whatever at the prompt.
 fn wants_cancel(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Esc)
-        || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')))
+}
+
+/// Whether a key press asks to leave.
+fn wants_quit(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'))
 }
 
 /// Fold a finished turn into the session.
@@ -2400,15 +2432,19 @@ mod tests {
         assert!(!session.is_quitting(), "cancelling ended the session");
     }
 
-    /// The keys that ask a running turn to stop. Ctrl-C is included because it is what a user
-    /// reaches for out of habit.
+    /// Escape stops the turn and Ctrl-C leaves, and the two are not the same request. Ctrl-C
+    /// used to stop the turn too, which left it saying "cancelling…" to somebody trying to get
+    /// out of the program.
     #[test]
-    fn cancel_keys_are_escape_and_ctrl_c() {
+    fn escape_stops_a_turn_and_ctrl_c_leaves() {
         assert!(wants_cancel(key(KeyCode::Esc)));
-        assert!(wants_cancel(ctrl('c')));
-        assert!(!wants_cancel(key(KeyCode::Char('c'))));
-        assert!(!wants_cancel(key(KeyCode::Enter)));
-        assert!(!wants_cancel(key(KeyCode::Up)));
+        assert!(!wants_cancel(ctrl('c')), "ctrl-c is not a request to stop");
+
+        assert!(wants_quit(ctrl('c')));
+        assert!(!wants_quit(key(KeyCode::Esc)), "escape is not a way out");
+        assert!(!wants_quit(key(KeyCode::Char('c'))));
+        assert!(!wants_quit(key(KeyCode::Enter)));
+        assert!(!wants_quit(key(KeyCode::Up)));
     }
 
     /// And a second press then leaves, so the key still reaches the exit without a detour.
@@ -2843,17 +2879,13 @@ mod tests {
         );
     }
 
-    /// Escape and ctrl-c stop a turn, and a person who has just typed /compact will try them.
-    /// Nothing here can stop one request, so the key has to be answered rather than swallowed: a
-    /// key that does nothing and says nothing reads as an interface that has hung.
+    /// A person who has just typed /compact will reach for one of these, and nothing here can
+    /// stop the one request a summary takes. Both are answered rather than swallowed: a key that
+    /// does nothing and says nothing reads as an interface that has hung.
     #[test]
     fn a_key_that_would_stop_a_turn_is_answered_during_a_summary() {
-        for key in [key(KeyCode::Esc), ctrl('c')] {
-            assert!(
-                wants_cancel(key),
-                "{key:?} should read as a request to stop"
-            );
-        }
+        assert!(wants_cancel(key(KeyCode::Esc)));
+        assert!(wants_quit(ctrl('c')));
     }
 
     /// COMMANDS is the one place the set is written down, so a command missing from it is a
@@ -3224,6 +3256,37 @@ mod tests {
             Action::Redraw
         );
         assert!(session.input().is_empty(), "Down did not walk back out");
+    }
+
+    /// Ctrl-C is how a person leaves a terminal program. Answering it with a turn that stopped
+    /// and a session that carried on left them pressing it and reading "cancelling…", with no way
+    /// out at all while a turn ran.
+    #[test]
+    fn ctrl_c_leaves_while_a_turn_is_running() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        assert_eq!(session.status, Status::Working);
+
+        // What the working loops do with it, which is not something handle_key_while_working
+        // decides: leaving is the loop's business, and the key never reaches the ladder.
+        assert!(wants_quit(ctrl('c')));
+        assert!(!wants_cancel(ctrl('c')));
+
+        session.quit();
+        assert!(session.is_quitting());
+    }
+
+    /// Escape is still the key that stops a turn, and stopping a turn is not leaving. Losing that
+    /// distinction is what made Ctrl-C useless as a way out.
+    #[test]
+    fn escape_stops_the_turn_without_ending_the_session() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+
+        assert!(wants_cancel(key(KeyCode::Esc)));
+        assert!(!session.is_quitting(), "stopping a turn ended the session");
     }
 
     /// Enter mid-turn used to reach nothing, so the line sat in the box while the person waited

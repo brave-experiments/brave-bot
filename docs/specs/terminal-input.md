@@ -70,14 +70,27 @@ is why a marker exists rather than a list the user cannot edit.
 <a id="INPUT-4"></a>
 ### INPUT-4: escape clears a line before it quits
 
-Escape on a typed line clears it without quitting; on an empty line it quits. Escape and Ctrl-C
-both cancel a running turn. Ctrl-G opens `$VISUAL` or `$EDITOR` and takes back what was saved, and
-does nothing while a turn runs.
+Escape on a typed line clears it without quitting; on an empty line it quits.
+
+**Escape stops a turn; Ctrl-C leaves.** They are different requests and the keys do not share.
+Ctrl-C ends the session wherever it is pressed, with a turn running, during a summary, while a
+command runs, or at rest, and a turn in flight is stopped on the way out because a reply nobody
+will be here to read is one there is no reason to wait for. Escape stops the turn and leaves the
+session where it was.
+
+**Why.** Ctrl-C is how a person leaves a terminal program. It used to cancel the turn instead, so
+somebody trying to get out pressed it and read "cancelling…", and while a turn ran there was no
+way out at all.
+
+Ctrl-G opens `$VISUAL` or `$EDITOR` and takes back what was saved, and does nothing while a turn
+runs.
 
 `verified-by: bravebot_tui::app::escape_clears_a_typed_line_without_quitting`
 `verified-by: bravebot_tui::app::escape_quits_on_an_empty_line`
 `verified-by: bravebot_tui::app::ctrl_c_quits`
-`verified-by: bravebot_tui::app::cancel_keys_are_escape_and_ctrl_c`
+`verified-by: bravebot_tui::app::escape_stops_a_turn_and_ctrl_c_leaves`
+`verified-by: bravebot_tui::app::ctrl_c_leaves_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::escape_stops_the_turn_without_ending_the_session`
 `verified-by: bravebot_tui::app::ctrl_g_asks_for_the_editor`
 `verified-by: bravebot_tui::app::the_editor_key_does_nothing_while_a_turn_runs`
 
