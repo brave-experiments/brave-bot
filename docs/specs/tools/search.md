@@ -36,5 +36,13 @@ result rather than one per hit, so its hits are not addresses.
 A complete one makes no such claim, so the planner can tell the difference between "nothing more"
 and "nothing more shown".
 
+Both caps count: one that stopped at the limit on matches and one that stopped before it had
+opened every file are equally partial. The second is the more dangerous, because with nothing
+found there is nothing to look incomplete. The claim reaches the planner whether or not it may
+read the result, since a notice written inside a body the planner is never shown tells it nothing.
+
 `verified-by: bravebot_agent::turn::a_truncated_search_tells_the_model_it_is_incomplete`
 `verified-by: bravebot_agent::turn::a_complete_search_makes_no_truncation_claim`
+`verified-by: bravebot_agent::turn::a_quarantined_search_still_tells_the_model_it_is_incomplete`
+`verified-by: bravebot_agent::workspace::a_search_that_could_not_reach_every_file_says_so`
+`verified-by: bravebot_agent::workspace::a_search_that_reached_every_file_makes_no_claim`

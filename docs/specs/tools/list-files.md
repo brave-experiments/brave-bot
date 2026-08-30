@@ -47,8 +47,12 @@ unsupported. Version-control and build directories are skipped.
 <a id="LIST-4"></a>
 ### LIST-4: a truncated listing says it was truncated
 
-Output is capped, and the cap is reported.
+Output is capped, and the cap is reported. Reported to the planner whether or not it may read the
+names, since a listing handed over as one reference per entry is exactly the case where a notice
+inside the body reaches nobody.
 
 **Why.** Silence would let the planner conclude a file does not exist when the answer was cut off.
 
-`verified-by: none`
+`verified-by: bravebot_agent::workspace::a_listing_past_the_cap_reports_truncation`
+`verified-by: bravebot_agent::workspace::a_listing_within_the_cap_reports_no_truncation`
+`verified-by: bravebot_agent::turn::a_quarantined_listing_tells_the_model_it_was_capped`

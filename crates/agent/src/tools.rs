@@ -504,6 +504,9 @@ pub struct Output {
     pub deferred: Option<Deferral>,
     /// The entries of a listing this call reserved, one reference each.
     pub entries: Option<Entries>,
+    /// Whether a cap cut the result short, so the turn can say so beside the reference it hands
+    /// over. Text inside a quarantined result reaches nobody who could act on it.
+    pub incomplete: bool,
     /// The slot this result stands for unchanged, where there is one.
     pub unchanged_from: Option<SlotId>,
     /// Which document a processor's answer is about, where it produced one.
@@ -557,6 +560,12 @@ struct Produced {
     deferred: Option<Deferral>,
     /// Set by a listing the planner may not read.
     entries: Option<Entries>,
+    /// Whether the result is a sample rather than the whole answer, because a cap was reached.
+    ///
+    /// A fact about the result rather than text inside it, so it survives quarantine. The notice
+    /// written into `text` reaches the planner only when the planner may read `text` at all,
+    /// which by default it may not.
+    incomplete: bool,
     /// The change a write made, for showing under the line it belongs to.
     changes: Vec<crate::diff::Change>,
     /// Whether those lines are content nobody vouched for.
@@ -601,6 +610,7 @@ impl Produced {
             failed: false,
             deferred: None,
             entries: None,
+            incomplete: false,
             changes: Vec::new(),
             untrusted: false,
             unchanged_from: None,
@@ -638,6 +648,12 @@ impl Produced {
     }
 
     /// A listing whose entries were reserved rather than shown.
+    /// Say the result was cut short by a cap, whoever ends up being allowed to read it.
+    fn capped(mut self, incomplete: bool) -> Self {
+        self.incomplete = incomplete;
+        self
+    }
+
     fn with_entries(mut self, entries: Entries) -> Self {
         self.entries = Some(entries);
         self
@@ -925,6 +941,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 origin: produced.origin,
                 deferred: produced.deferred,
                 entries: produced.entries,
+                incomplete: produced.incomplete,
                 unchanged_from: produced.unchanged_from,
                 answers_for: produced.answers_for,
                 said: produced.said,
@@ -971,6 +988,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         origin: produced.origin,
         deferred: produced.deferred,
         entries: produced.entries,
+        incomplete: produced.incomplete,
         unchanged_from: produced.unchanged_from,
         answers_for: produced.answers_for,
         said: produced.said,
@@ -993,6 +1011,7 @@ fn problem(text: impl Into<String>) -> Produced {
         failed: true,
         deferred: None,
         entries: None,
+        incomplete: false,
         changes: Vec::new(),
         untrusted: false,
         unchanged_from: None,
@@ -1419,6 +1438,15 @@ fn list_files<S: Sink>(
             //
             // The label decides, not the contents: whether the planner may see these names is
             // the same question `present` would ask a moment later.
+            // Shape, not content, and released for the same reason as the count below: a planner
+            // handed exactly the cap with nothing said about it reads a sample as the whole tree.
+            let truncated = {
+                let shaped =
+                    policy.render_in_place("list_files", &listing, |listing| listing.truncated);
+                let proof = policy.authorise_display_release("whether a listing hit its cap");
+                shaped.declassify(&proof)
+            };
+
             if !listing.label().is_trusted() {
                 let count = {
                     let shaped = policy
@@ -1430,6 +1458,7 @@ fn list_files<S: Sink>(
                     policy.render_in_place("list_files", &listing, |listing| listing.files.clone());
                 return Produced::new(Labelled::trusted(String::new()), proposed_dir.clone(), note)
                     .of_content()
+                    .capped(truncated)
                     .with_entries(Entries {
                         origin: format!("an entry in \"{proposed_dir}\""),
                         paths,
@@ -1453,7 +1482,9 @@ fn list_files<S: Sink>(
                     listing.files.join("\n")
                 }
             });
-            Produced::new(rendered, proposed_dir, note).of_content()
+            Produced::new(rendered, proposed_dir, note)
+                .of_content()
+                .capped(truncated)
         }
         Err(e) => problem(format!("error: {e}")),
     }
@@ -2510,6 +2541,15 @@ fn search<S: Sink>(
             let note = note_for(policy, "search", &found, |found| {
                 tally(found.matches.len(), "match", "matches")
             });
+
+            // Either cap leaves the answer partial, and the distinction between them matters to
+            // whoever reads the body. To the turn it does not: a sample is a sample.
+            let incomplete = {
+                let shaped = policy
+                    .render_in_place("search", &found, |found| found.truncated || found.unvisited);
+                let proof = policy.authorise_display_release("whether a search hit a cap");
+                shaped.declassify(&proof)
+            };
             let rendered = policy.render_in_place("search", &found, |found| {
                 let mut body = if found.matches.is_empty() {
                     "(no matches)".to_string()
@@ -2542,7 +2582,9 @@ fn search<S: Sink>(
                 }
                 body
             });
-            Produced::new(rendered, proposed_where, note).of_content()
+            Produced::new(rendered, proposed_where, note)
+                .of_content()
+                .capped(incomplete)
         }
         Err(e) => problem(format!("error: {e}")),
     }

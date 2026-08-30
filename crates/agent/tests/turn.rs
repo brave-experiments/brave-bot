@@ -1617,6 +1617,88 @@ fn a_truncated_search_tells_the_model_it_is_incomplete() {
     );
 }
 
+/// The default footing is quarantine, so this is the case that matters: the notice a search
+/// writes into its own body reaches nobody when the body is the thing being withheld.
+#[test]
+fn a_quarantined_search_still_tells_the_model_it_is_incomplete() {
+    let scratch = Scratch::new("search-truncated-quarantined");
+    let body: String = (0..300).map(|_| "needle\n").collect();
+    std::fs::write(scratch.path.join("a.txt"), body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("search", r#"{"pattern":"needle","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("find needle");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("a.txt:1: needle"),
+        "the matches reached the model, so this is not the quarantined case: {second}"
+    );
+    assert!(
+        second.contains("incomplete"),
+        "a capped search reached the model as a plain reference: {second}"
+    );
+}
+
+/// The same hole on the listing side. A planner given a capped sample of a tree and no notice
+/// concludes that a file it cannot find is not there.
+#[test]
+fn a_quarantined_listing_tells_the_model_it_was_capped() {
+    let scratch = Scratch::new("list-truncated-quarantined");
+    // One past the cap, so entries are dropped rather than exactly filling it.
+    for n in 0..2_001 {
+        std::fs::write(scratch.path.join(format!("f{n:05}.txt")), "x").unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("list_files", r#"{"directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is here");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("f00001.txt"),
+        "the names reached the model, so this is not the quarantined case: {second}"
+    );
+    assert!(
+        second.contains("incomplete"),
+        "a capped listing reached the model as a plain count: {second}"
+    );
+}
+
 /// And the ordinary case must stay quiet, or the model learns to ignore the notice.
 ///
 /// Trusted deliberately. Run against an empty trust store the result is quarantined, the model

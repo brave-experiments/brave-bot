@@ -1220,9 +1220,19 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     preview,
                 });
 
+                // Here or nowhere. A listing writes its own truncation notice into its body,
+                // and the planner is not being given the body: it gets the references, and a
+                // capped sample of a tree read as the whole of it is how a planner concludes a
+                // file it cannot find does not exist.
+                let capped = if output.incomplete {
+                    " The listing stopped at that many entries and is incomplete: list a \
+                     subdirectory to see the rest."
+                } else {
+                    ""
+                };
                 format!(
                     "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are \
-                     quarantined, one reference each.\n\n{}",
+                     quarantined, one reference each.{capped}\n\n{}",
                     output.tool,
                     references.len(),
                     described.join("\n")
@@ -1318,8 +1328,21 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                                 preview: shown.preview,
                             });
                         }
+                        // The reference describes shape and provenance, and a cap is neither,
+                        // so a search that stopped short reaches the planner looking exactly
+                        // like one that found everything there was.
+                        let capped = if output.incomplete {
+                            format!(
+                                "\n\nThe {} stopped at a cap, so this result is incomplete: it \
+                                 is a sample and not the whole answer. Narrow it, or work \
+                                 through a subdirectory to cover the rest.",
+                                output.tool
+                            )
+                        } else {
+                            String::new()
+                        };
                         format!(
-                            "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}",
+                            "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}{capped}",
                             output.tool,
                             reference.describe()
                         )
