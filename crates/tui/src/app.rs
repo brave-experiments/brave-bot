@@ -1368,33 +1368,38 @@ fn compact_animated(
             .draw(|frame| render::draw(frame, session))
             .map_err(io::Error::other)?;
 
-        // Input is still read, so a long summary does not leave the interface deaf.
-        while event::poll(Duration::ZERO)? {
-            match event::read()? {
-                // A summary is one request, so there is no round for a cancel to land between and
-                // nothing here can stop it. Said once, because the alternative is a key that does
-                // nothing and says nothing, which reads as the interface having hung at the one
-                // moment it is working hardest.
-                TermEvent::Key(key) if wants_cancel(key) => {
-                    session.note_once("summarising cannot be interrupted; it takes one request");
-                }
-                TermEvent::Key(key) => {
-                    handle_key_while_working(session, key);
-                }
-                TermEvent::Paste(text) => handle_paste_while_working(session, &text),
-                TermEvent::Mouse(mouse) => {
-                    let action = handle_mouse(session, mouse);
-                    if action == Action::Copy {
-                        copy_selection(terminal, session)?;
+        // Input is still read, so a long summary does not leave the interface deaf, and the
+        // frame waits here for the reason the turn loop waits here: a key press has to wake the
+        // loop rather than queue behind whatever it was blocking on.
+        if event::poll(FRAME)? {
+            while event::poll(Duration::ZERO)? {
+                match event::read()? {
+                    // A summary is one request, so there is no round for a cancel to land between and
+                    // nothing here can stop it. Said once, because the alternative is a key that does
+                    // nothing and says nothing, which reads as the interface having hung at the one
+                    // moment it is working hardest.
+                    TermEvent::Key(key) if wants_cancel(key) => {
+                        session
+                            .note_once("summarising cannot be interrupted; it takes one request");
                     }
+                    TermEvent::Key(key) => {
+                        handle_key_while_working(session, key);
+                    }
+                    TermEvent::Paste(text) => handle_paste_while_working(session, &text),
+                    TermEvent::Mouse(mouse) => {
+                        let action = handle_mouse(session, mouse);
+                        if action == Action::Copy {
+                            copy_selection(terminal, session)?;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
         // Drained for the same reason the turn's own loop drains: a summary is written the same
         // way a reply is, a message at a time.
-        let carrying_on = drain_worker(&from_worker, |message| match message {
+        let carrying_on = drain_worker(&from_worker, Duration::ZERO, |message| match message {
             crate::remote_confirm::ToMain::Phase(phase) => session.set_phase(phase),
             crate::remote_confirm::ToMain::Narration(text) => session.narrate(text),
             crate::remote_confirm::ToMain::Streaming(text) => session.streaming(&text),
@@ -1546,35 +1551,44 @@ fn run_turn_animated(
         // Input is polled here rather than in the outer loop, which is blocked for the duration
         // of the turn. Without this the interface would take none at all while working, and a
         // long turn is exactly when someone wants to copy what has appeared so far.
-        // Everything waiting, not one event per pass: this loop wakes at the frame rate, so a
-        // drag read one event at a time would take seconds to catch up with the pointer.
-        while event::poll(Duration::ZERO)? {
-            match event::read()? {
-                // Presses only, for the reason the outer loop ignores releases: a release taken
-                // for a press would type every character twice, and cancel the turn on the way up
-                // from the Escape that already cancelled it.
-                TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
-                TermEvent::Key(key) if wants_cancel(key) => {
-                    cancel.cancel();
-                    session.note("cancelling…");
-                }
-                TermEvent::Key(key) => {
-                    handle_key_while_working(session, key);
-                }
-                TermEvent::Paste(text) => handle_paste_while_working(session, &text),
-                TermEvent::Mouse(mouse) => {
-                    // Bound rather than tested inline, because handling the event scrolls and
-                    // moves the selection whatever it returns. A match guard would hide that.
-                    let action = handle_mouse(session, mouse);
-                    if action == Action::Copy {
-                        copy_selection(terminal, session)?;
+        //
+        // This is also where the frame does its waiting, and that is the point of it. Waiting on
+        // the worker instead left a key press sitting for up to a frame before anything looked at
+        // it, so typing during a turn lagged and typing between turns did not, for no reason a
+        // person could see. A keystroke wakes this the instant it arrives; the worker's messages
+        // are collected on the way past and drawn at the frame rate, which is all they need.
+        //
+        // Everything waiting, not one event per pass: a drag read one event at a time would take
+        // seconds to catch up with the pointer.
+        if event::poll(FRAME)? {
+            while event::poll(Duration::ZERO)? {
+                match event::read()? {
+                    // Presses only, for the reason the outer loop ignores releases: a release taken
+                    // for a press would type every character twice, and cancel the turn on the way up
+                    // from the Escape that already cancelled it.
+                    TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
+                    TermEvent::Key(key) if wants_cancel(key) => {
+                        cancel.cancel();
+                        session.note("cancelling…");
                     }
+                    TermEvent::Key(key) => {
+                        handle_key_while_working(session, key);
+                    }
+                    TermEvent::Paste(text) => handle_paste_while_working(session, &text),
+                    TermEvent::Mouse(mouse) => {
+                        // Bound rather than tested inline, because handling the event scrolls and
+                        // moves the selection whatever it returns. A match guard would hide that.
+                        let action = handle_mouse(session, mouse);
+                        if action == Action::Copy {
+                            copy_selection(terminal, session)?;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
-        let carrying_on = drain_worker(&from_worker, |message| match message {
+        let carrying_on = drain_worker(&from_worker, Duration::ZERO, |message| match message {
             crate::remote_confirm::ToMain::Write(request) => {
                 let answer = crate::confirm::ask(terminal, &request);
                 // Ctrl-C at the prompt is the same request it is anywhere else in a turn: stop.
@@ -1711,6 +1725,10 @@ fn run_turn_animated(
 /// Hand the worker's messages to `handle`: the one this frame waited for, and then everything
 /// already queued behind it.
 ///
+/// `wait` is how long to block for the first, and a caller already blocking on something else
+/// passes nothing. Which of the two a loop waits on decides how quickly it answers a key press,
+/// so the choice belongs to the caller rather than here.
+///
 /// `false` when the worker has dropped its senders and the turn is over.
 ///
 /// Drained rather than taken one per pass, for the same reason terminal events are. A reply
@@ -1719,9 +1737,10 @@ fn run_turn_animated(
 /// queue outran the drawing and what was on the screen fell behind what had been said.
 fn drain_worker(
     from_worker: &mpsc::Receiver<crate::remote_confirm::ToMain>,
+    wait: Duration,
     mut handle: impl FnMut(crate::remote_confirm::ToMain),
 ) -> bool {
-    let mut received = from_worker.recv_timeout(FRAME);
+    let mut received = from_worker.recv_timeout(wait);
     loop {
         match received {
             Ok(message) => handle(message),
@@ -1815,7 +1834,7 @@ mod tests {
         }
 
         let mut taken = Vec::new();
-        let carrying_on = drain_worker(&inbound, |message| {
+        let carrying_on = drain_worker(&inbound, FRAME, |message| {
             if let crate::remote_confirm::ToMain::Streaming(text) = message {
                 taken.push(text);
             }
@@ -1842,7 +1861,7 @@ mod tests {
         drop(outbound);
 
         let mut taken = Vec::new();
-        let carrying_on = drain_worker(&inbound, |message| taken.push(message));
+        let carrying_on = drain_worker(&inbound, FRAME, |message| taken.push(message));
 
         assert_eq!(
             taken.len(),
