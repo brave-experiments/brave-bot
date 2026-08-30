@@ -242,6 +242,7 @@ Every rule the session holds is readable back, so what a line vouched for does n
 remembered.
 
 `verified-by: bravebot_tui::status::an_added_directory_is_reported`
+`verified-by: bravebot_tui::status::every_trust_rule_is_listed_however_many_there_are`
 
 ## Known costs
 

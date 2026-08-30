@@ -20,11 +20,11 @@ use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::trust::TrustStore;
 use std::path::Path;
 
-/// How many trust rules are listed before the rest become a count.
+/// How many vouched commands are listed before the rest become a count.
 ///
-/// A session that has written a good deal accumulates a rule per file, and a panel that scrolled the
-/// transcript away would be reporting less usefully than one that says how many it left out.
-const MAX_RULES: usize = 6;
+/// The trust map is listed in full because a rule nobody can read is a file whose footing has to
+/// be remembered. This list is capped for now; whether that is the same problem is #57.
+const MAX_COMMANDS: usize = 6;
 
 /// One line of the report: a label, a value, and an optional aside.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,18 +129,12 @@ pub fn report(facts: &Facts<'_>) -> Report {
         lines.push(Line::new("Trust", "nothing vouched for"));
     } else {
         lines.push(Line::new("Trust", plural(rules.len(), "rule")));
-        for (path, integrity) in rules.iter().take(MAX_RULES) {
+        for (path, integrity) in rules.iter() {
             let shown = if path.is_empty() { "." } else { path };
             lines.push(match integrity {
                 Integrity::Trusted => Line::new("", shown).with_note("trusted"),
                 Integrity::Untrusted => Line::new("", shown).with_note("untrusted"),
             });
-        }
-        if rules.len() > MAX_RULES {
-            lines.push(Line::new(
-                "",
-                format!("… and {} more", rules.len() - MAX_RULES),
-            ));
         }
     }
 
@@ -156,13 +150,13 @@ pub fn report(facts: &Facts<'_>) -> Report {
             Line::new("Trusted commands", plural(vouched.len(), "command"))
                 .with_note("run unasked, and their output is trusted"),
         );
-        for command in vouched.iter().take(MAX_RULES) {
+        for command in vouched.iter().take(MAX_COMMANDS) {
             lines.push(Line::new("", command.display()));
         }
-        if vouched.len() > MAX_RULES {
+        if vouched.len() > MAX_COMMANDS {
             lines.push(Line::new(
                 "",
-                format!("… and {} more", vouched.len() - MAX_RULES),
+                format!("… and {} more", vouched.len() - MAX_COMMANDS),
             ));
         }
     }
@@ -378,18 +372,21 @@ mod tests {
         assert!(shown.contains("untrusted"), "{shown}");
     }
 
-    /// A long session accumulates a rule per file written, and a panel that scrolled everything away
-    /// would report less than one that says what it left out.
+    /// Every rule is readable back however many there are. A session that wrote a dozen files
+    /// holds a rule each, and a rule the panel will not show is one whose subject has to be
+    /// remembered instead, which is the thing this report exists to save anyone doing.
     #[test]
-    fn a_long_trust_map_is_capped_and_says_how_much_it_left_out() {
+    fn every_trust_rule_is_listed_however_many_there_are() {
         let config = config_for("http://127.0.0.1:1", None);
         let mut trust = trusting();
-        for index in 0..MAX_RULES + 4 {
+        for index in 0..12 {
             trust.distrust(&format!("file{index}.txt"));
         }
 
         let shown = rendered(&report(&facts(&config, &trust)));
-        assert!(shown.contains("and 5 more"), "{shown}");
+        for index in 0..12 {
+            assert!(shown.contains(&format!("file{index}.txt")), "{shown}");
+        }
     }
 
     /// A directory opened with /add-dir is reachable and vouched for, so a panel that omitted it
