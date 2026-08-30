@@ -165,9 +165,9 @@ the next press takes a bracket, which is the thing that no longer happens.
 <a id="INPUT-9"></a>
 ### INPUT-9: the box behaves the same whether or not a turn is running
 
-Typing, editing, pasting, completing, walking back through earlier prompts and scrolling the
-transcript all do while a turn is in flight exactly what they do at rest. What a running turn
-refuses is **sending**, and nothing else.
+Typing, editing, pasting, dropping a file, completing, walking back through earlier prompts and
+scrolling the transcript all do while a turn is in flight exactly what they do at rest. What a
+running turn refuses is **sending**, and nothing else.
 
 **Why.** The box took nothing at all mid-turn once, and it was opened up a piece at a time:
 characters, then editing, then pasting. Walking the history was left behind, so a person could
@@ -183,6 +183,7 @@ this one was silent, so the two paths walk one list of keys rather than a list e
 `verified-by: bravebot_tui::state::recall_works_while_a_turn_is_running`
 `verified-by: bravebot_tui::state::a_recalled_prompt_still_cannot_be_sent_while_a_turn_is_running`
 `verified-by: bravebot_tui::app::a_long_paste_folds_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::a_file_dropped_while_a_turn_is_running_is_attached`
 `verified-by: bravebot_tui::app::ctrl_j_is_not_swallowed_while_a_turn_runs`
 
 <a id="INPUT-10"></a>

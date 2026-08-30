@@ -479,9 +479,16 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
 /// reply worth reading. Named rather than bound inline at each working loop, because there are two
 /// of them and writing the same arm twice is how they came to disagree.
 ///
+/// A drop is recognised here too, since a drop reaches the terminal as a paste of the path and a
+/// running turn is when people drop a file: they are watching a reply and want to hand over the
+/// screenshot it is about. Without this the path was written out as prose, so the line said
+/// nothing about a file and the attachment was never staged.
+///
 /// Nothing comes back, since both loops redraw every frame regardless of what the event was.
 pub fn handle_paste_while_working(session: &mut Session, text: &str) {
-    session.paste_text(text);
+    if !session.drop_files(text) {
+        session.paste_text(text);
+    }
 }
 
 /// Interpret a key press while a turn is running.
@@ -2188,6 +2195,30 @@ mod tests {
         handle_paste_while_working(&mut session, "first\nsecond\nthird\nfourth");
 
         assert_eq!(session.input(), "[Pasted text #1 +4 lines]");
+    }
+
+    /// A drop reaches the terminal as a paste, so a working loop that only pasted wrote the path
+    /// out as prose: the file was never staged, and the line said nothing about an attachment.
+    /// A turn in flight is when people drop a file, because they are reading a reply and want to
+    /// hand over the picture it is about.
+    #[test]
+    fn a_file_dropped_while_a_turn_is_running_is_attached() {
+        let directory = std::env::temp_dir().join("bravebot-app-drop-while-working");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch");
+        let file = directory.join("shot.png");
+        std::fs::write(&file, [0x89u8, 0x50]).expect("write");
+
+        let mut session = Session::new("none").in_workspace(&directory);
+        session.type_char('a');
+        session.submit();
+        handle_paste_while_working(&mut session, &file.to_string_lossy());
+
+        assert_eq!(session.input(), "[Image #1] ");
+        assert_eq!(session.attached().len(), 1, "nothing was staged");
+        assert_eq!(session.attached()[0].name, "shot.png");
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// A paragraph can be written in the box rather than only pasted into it. Shift-Enter is the
