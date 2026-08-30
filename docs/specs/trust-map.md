@@ -205,8 +205,9 @@ any of what it had done. One prompt would have let it read the file.
 
 `/add-dir ~/notes` records an absolute rule (TRUST-3) that does two things together: the directory
 becomes reachable, since an absolute path is otherwise refused whatever the map says, and it is
-recorded as trusted. It lasts the session, `--resume` carries it, and `/clear` closes it. A
-directory already inside the project is refused.
+recorded as trusted. It lasts the session, `--resume` carries both halves, and `/clear` closes it.
+A directory already inside the project is refused. A directory a resume cannot open again, because
+it has moved or gone, is said so rather than passed over.
 
 **Why.** Either half alone is no use, one leaving a rule about files nothing can open and the other
 leaving a directory that prompts on every edit. It closes with the session for the reason every
@@ -217,6 +218,8 @@ outlive the answer that allowed it.
 `verified-by: bravebot_agent::workspace::closing_added_directories_makes_them_unreachable_again`
 `verified-by: bravebot_agent::workspace::a_new_file_can_be_created_in_an_added_directory`
 `verified-by: bravebot_agent::turn::a_turn_can_read_a_file_in_an_added_directory`
+`verified-by: bravebot_tui::sessions::a_resumed_session_can_still_open_the_directory_it_added`
+`verified-by: bravebot_tui::sessions::a_directory_that_has_gone_since_is_reported_on_resume`
 
 ## Boundaries
 

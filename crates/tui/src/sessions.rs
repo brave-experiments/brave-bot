@@ -30,6 +30,7 @@
 //! the list rather than taken as a reason to fail.
 
 use bravebot_agent::conversation::Snapshot;
+use bravebot_agent::workspace::Workspace;
 use bravebot_core::label::Integrity;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::todo::{self, Item, List, Row, Status};
@@ -96,6 +97,17 @@ pub struct Record {
     /// output is trusted, which is what a session that recorded nothing should do.
     #[serde(default)]
     pub programs: Vec<StoredCommand>,
+    /// Which directories this session opened with `/add-dir`, canonical.
+    ///
+    /// The trust map carries only half of what `/add-dir` did. The other half is reachability: an
+    /// absolute path is refused whatever the map says unless the directory is open, so a record
+    /// with the rule and not the directory resumes holding a rule about files nothing can open.
+    /// Both halves are written, and both come back together.
+    ///
+    /// Empty for a record written before this was kept, which needs no question: such a session
+    /// resumes with the rules it recorded and nothing open, exactly as it did before.
+    #[serde(default)]
+    pub directories: Vec<String>,
     /// Which build wrote this record: the version, the commit, and whether the tree was
     /// modified. See [`crate::BUILD`].
     ///
@@ -184,6 +196,26 @@ impl Record {
         )
     }
 
+    /// Open again the directories this session added, and say which could not be opened.
+    ///
+    /// The map is only half of what `/add-dir` granted, and it is the half that is no use alone:
+    /// restoring the rule without the directory leaves every path under it refused for escaping
+    /// the workspace, with nothing on screen to say why. So the reachability is restored beside
+    /// the rule that vouches for it.
+    ///
+    /// A directory that has since been moved or deleted comes back as a line for the user rather
+    /// than as silence, because the rule about it does come back and a rule about files nothing
+    /// can open is the failure this exists to rule out.
+    pub fn reopen_added_directories(&self, workspace: &mut Workspace) -> Vec<String> {
+        self.directories
+            .iter()
+            .filter_map(|directory| match workspace.add_directory(directory) {
+                Ok(_) => None,
+                Err(error) => Some(format!("could not reopen {directory}: {error}")),
+            })
+            .collect()
+    }
+
     /// The task lists this session kept, shaped for a screen.
     ///
     /// A status this build does not recognise parses as outstanding work, which is
@@ -226,6 +258,7 @@ pub struct Standing<'a> {
     pub todos: &'a BTreeMap<usize, Vec<Row>>,
     pub trust: &'a TrustStore,
     pub programs: &'a TrustedPrograms,
+    pub directories: &'a [PathBuf],
 }
 
 /// A live session, holding where to write and what has been written.
@@ -366,6 +399,11 @@ impl Handle {
                     program: c.program.clone(),
                     args: c.args.clone(),
                 })
+                .collect(),
+            directories: standing
+                .directories
+                .iter()
+                .map(|d| d.display().to_string())
                 .collect(),
             build: Some(crate::BUILD.to_string()),
             conversation: standing.conversation.clone(),
@@ -941,6 +979,7 @@ mod tests {
             todos: BTreeMap::new(),
             trust: None,
             programs: Vec::new(),
+            directories: Vec::new(),
             build: None,
             conversation: Snapshot {
                 messages: Vec::new(),

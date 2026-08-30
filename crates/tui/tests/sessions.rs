@@ -5,6 +5,7 @@
 //! person can read.
 
 use bravebot_agent::Conversation;
+use bravebot_agent::Workspace;
 use bravebot_aichat::protocol::Message;
 use bravebot_core::capability::Capability;
 use bravebot_core::event::Event;
@@ -129,6 +130,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &a_program_list(),
+            directories: &[],
         },
     );
     handle.append_audit(
@@ -201,6 +203,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             // Carried forward the way a live session carries it, so the assertion below is about
             // the list surviving a re-save and a resume rather than about one write.
             programs: &a_program_list(),
+            directories: &[],
         },
     );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
@@ -227,6 +230,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
             programs: &TrustedPrograms::new(),
+            directories: &[],
         },
     );
     assert_eq!(sessions::list(&elsewhere).len(), 1);
@@ -246,6 +250,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             // Carried forward the way a live session carries it, so the assertion below is about
             // the list surviving a re-save and a resume rather than about one write.
             programs: &a_program_list(),
+            directories: &[],
         },
     );
     let listed = sessions::list(&scratch.project);
@@ -351,6 +356,7 @@ fn the_audit_keeps_the_time_each_event_happened() {
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
+            directories: &[],
         },
     );
 
@@ -408,6 +414,7 @@ fn renaming_a_session_rewrites_the_record_immediately() {
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
+            directories: &[],
         },
     );
     let derived = sessions::list(&scratch.project)[0].title.clone();
@@ -447,6 +454,7 @@ fn a_chosen_name_survives_the_next_turn() {
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
+            directories: &[],
         },
     );
 
@@ -480,4 +488,115 @@ fn an_empty_name_is_refused() {
         assert!(!handle.rename(empty), "{empty:?} was accepted");
     }
     assert_eq!(handle.title(), "a real name");
+}
+
+/// `/add-dir` grants two things at once and only one of them is a trust rule. Carrying the rule
+/// alone across a resume left an absolute rule about a tree nothing could open: every path under
+/// it refused for escaping the workspace, with nothing on screen to say why.
+#[test]
+fn a_resumed_session_can_still_open_the_directory_it_added() {
+    let scratch = Scratch::new("added-directories");
+    let notes = scratch.project.parent().expect("a root").join("notes");
+    std::fs::create_dir_all(&notes).expect("create the directory to add");
+    std::fs::write(notes.join("todo.md"), "buy milk").expect("write");
+
+    let mut workspace = Workspace::new(&scratch.project).expect("workspace");
+    let added = workspace
+        .add_directory(notes.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+    let todo = added.join("todo.md").display().to_string();
+
+    let mut trust = TrustStore::new();
+    trust.trust(&added.display().to_string());
+
+    let conversation = a_conversation();
+    let mut handle = Handle::begin(&scratch.project);
+    handle.save(
+        "read my notes",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 10,
+            todos: &BTreeMap::new(),
+            trust: &trust,
+            programs: &TrustedPrograms::new(),
+            directories: workspace.added_directories(),
+        },
+    );
+
+    let record = sessions::load(&scratch.project, handle.id()).expect("the session loads");
+    assert_eq!(
+        record.directories,
+        vec![added.display().to_string()],
+        "the record kept the rule but not the directory it was about"
+    );
+
+    // Where a resume starts from: a workspace built for the working directory, nothing open.
+    let mut resumed = Workspace::new(&scratch.project).expect("workspace");
+    assert!(
+        resumed.survey(&todo).is_err(),
+        "the file was reachable before anything reopened its directory"
+    );
+
+    assert!(
+        record.reopen_added_directories(&mut resumed).is_empty(),
+        "a directory that is still there is not worth a line"
+    );
+    assert!(
+        record
+            .trust_map()
+            .expect("the session recorded a map")
+            .is_trusted(&todo),
+        "the rule half of what /add-dir granted"
+    );
+    assert_eq!(
+        resumed.survey(&todo).expect("the file is readable again"),
+        "buy milk".len(),
+        "the reachable half of what /add-dir granted"
+    );
+}
+
+/// The rule comes back whatever became of the tree, so a directory that has gone since has to be
+/// said out loud: passing over it silently leaves precisely the rule about files nothing can open
+/// that restoring the directory exists to prevent.
+#[test]
+fn a_directory_that_has_gone_since_is_reported_on_resume() {
+    let scratch = Scratch::new("added-directory-gone");
+    let notes = scratch.project.parent().expect("a root").join("notes");
+    std::fs::create_dir_all(&notes).expect("create the directory to add");
+
+    let mut workspace = Workspace::new(&scratch.project).expect("workspace");
+    let added = workspace
+        .add_directory(notes.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let conversation = a_conversation();
+    let mut handle = Handle::begin(&scratch.project);
+    handle.save(
+        "read my notes",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 10,
+            todos: &BTreeMap::new(),
+            trust: &TrustStore::new(),
+            programs: &TrustedPrograms::new(),
+            directories: workspace.added_directories(),
+        },
+    );
+    std::fs::remove_dir_all(&notes).expect("the directory goes away between sessions");
+
+    let record = sessions::load(&scratch.project, handle.id()).expect("the session loads");
+    let mut resumed = Workspace::new(&scratch.project).expect("workspace");
+    let notes_said = record.reopen_added_directories(&mut resumed);
+
+    assert_eq!(notes_said.len(), 1, "{notes_said:?}");
+    assert!(
+        notes_said[0].contains(&added.display().to_string()),
+        "the line does not say which directory: {notes_said:?}"
+    );
+    assert!(
+        resumed.added_directories().is_empty(),
+        "a directory that could not be opened was counted as open"
+    );
 }

@@ -868,6 +868,12 @@ fn event_loop(
             // person who vouched for them. Unlike the map there is nothing to ask about an
             // absent list, since an empty one simply means every run asks.
             let vouched = record.trusted_programs();
+            // The other half of `/add-dir`, which the map cannot carry: a directory has to be
+            // open for an absolute path in it to resolve at all. Restored here so the rule and
+            // the reach come back together, rather than the rule alone.
+            for note in record.reopen_added_directories(&mut workspace) {
+                session.note(note);
+            }
             (conversation, handle, inherited, vouched)
         }
     };
@@ -983,6 +989,7 @@ fn event_loop(
                         todos: &session.todos_by_turn(),
                         trust: &trust,
                         programs: &programs,
+                        directories: workspace.added_directories(),
                     },
                 );
                 stored.append_audit(session.turns, &events);
@@ -1039,6 +1046,7 @@ fn event_loop(
                         todos: &session.todos_by_turn(),
                         trust: &trust,
                         programs: &programs,
+                        directories: workspace.added_directories(),
                     },
                 );
                 stored.append_audit(session.turns, &events);
@@ -1058,6 +1066,7 @@ fn event_loop(
                         todos: &session.todos_by_turn(),
                         trust: &trust,
                         programs: &programs,
+                        directories: workspace.added_directories(),
                     },
                 );
                 stored.append_audit(session.turns, &events);
