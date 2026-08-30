@@ -53,6 +53,7 @@ what is about to be sent is what the prompt says, and deleting the marker drops 
 `verified-by: bravebot_tui::render::a_folded_paste_keeps_its_lines_off_the_screen`
 `verified-by: bravebot_tui::app::a_paste_that_ends_in_a_newline_does_not_send_it`
 `verified-by: bravebot_tui::app::a_pasted_prompt_is_sent_when_the_user_says_so`
+`verified-by: bravebot_tui::app::a_long_paste_folds_while_a_turn_is_running`
 
 
 <a id="PASTE-2"></a>

@@ -454,6 +454,18 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     }
 }
 
+/// Take a paste while a turn is running.
+///
+/// The same folding as the idle path, for the same reason: a stack trace pasted mid-turn would
+/// otherwise push the reply being read off the screen, and mid-turn is exactly when there is a
+/// reply worth reading. Named rather than bound inline at each working loop, because there are two
+/// of them and writing the same arm twice is how they came to disagree.
+///
+/// Nothing comes back, since both loops redraw every frame regardless of what the event was.
+pub fn handle_paste_while_working(session: &mut Session, text: &str) {
+    session.paste_text(text);
+}
+
 /// Interpret a key press while a turn is running.
 ///
 /// Only the ones that cannot start anything. What the user types goes into the box and stays
@@ -1369,7 +1381,7 @@ fn compact_animated(
                 TermEvent::Key(key) => {
                     handle_key_while_working(session, key);
                 }
-                TermEvent::Paste(text) => session.paste(&text),
+                TermEvent::Paste(text) => handle_paste_while_working(session, &text),
                 TermEvent::Mouse(mouse) => {
                     let action = handle_mouse(session, mouse);
                     if action == Action::Copy {
@@ -1544,7 +1556,7 @@ fn run_turn_animated(
                 TermEvent::Key(key) => {
                     handle_key_while_working(session, key);
                 }
-                TermEvent::Paste(text) => session.paste_text(&text),
+                TermEvent::Paste(text) => handle_paste_while_working(session, &text),
                 TermEvent::Mouse(mouse) => {
                     // Bound rather than tested inline, because handling the event scrolls and
                     // moves the selection whatever it returns. A match guard would hide that.
@@ -2018,6 +2030,17 @@ mod tests {
         assert_eq!(session.input(), "write me a game\n");
         assert_eq!(session.status, Status::Idle, "the paste started a turn");
         assert!(session.transcript.is_empty(), "the paste sent something");
+    }
+
+    /// A working loop is where a paste most needs folding, since a turn in flight is what the
+    /// long paste would push off the screen. One of the two loops used to write the paste whole,
+    /// so this pins the folding at the seam they now share rather than at either call site.
+    #[test]
+    fn a_long_paste_folds_while_a_turn_is_running() {
+        let mut session = Session::new("none");
+        handle_paste_while_working(&mut session, "first\nsecond\nthird\nfourth");
+
+        assert_eq!(session.input(), "[Pasted text #1 +4 lines]");
     }
 
     /// A paragraph can be written in the box rather than only pasted into it. Shift-Enter is the
