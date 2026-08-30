@@ -23,6 +23,9 @@ npm/bin/*-bin.exe
 # macOS
 .DS_Store
 
+# Python (the spec-check scripts)
+__pycache__/
+
 # Editors
 *.swp
 *.swo

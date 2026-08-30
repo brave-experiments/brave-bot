@@ -14,6 +14,7 @@ help:
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"
 	@echo "  make check          Format check, clippy, and tests"
+	@echo "  make check-spec     Check docs/specs against the implementation"
 	@echo "  make check-linux    The same checks on Linux, current stable toolchain"
 	@echo "  make fmt            Apply formatting"
 	@echo
@@ -46,6 +47,16 @@ check:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
 	cargo test --all
+
+# The mechanical half of the spec check: clause numbering, the tests each clause names,
+# the paths it governs, the symbols it guards, and the table in the specs README. No model
+# is involved, so this is deterministic and belongs in CI. Whether the code actually does
+# what a clause says needs a reading of the governed source: run the check-spec skill for
+# that half.
+.PHONY: check-spec
+check-spec:
+	python3 agents/skills/check-spec/selftest.py
+	python3 agents/skills/check-spec/check-spec.py --mechanical-only
 
 # Runs the same checks on Linux with the current stable toolchain. Worth doing before
 # pushing platform-specific code: a macOS host never compiles the Linux backend, and
