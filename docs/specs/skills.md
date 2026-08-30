@@ -1,0 +1,136 @@
+---
+id: SKILL
+title: Skills and standing instructions
+status: normative
+governs:
+  - crates/agent/src/skills.rs
+  - crates/agent/src/home.rs
+guards:
+  - symbol: Policy::label_user_configuration
+  - symbol: Policy::read_trusted_content
+---
+
+## Scope
+
+The two kinds of file that steer a turn before the user types anything: `AGENTS.md`, which says
+how work is done somewhere, and a skill, which says how one kind of task is done. Where each is
+read from, what each is trusted for, and how one is loaded.
+
+```
+~/.bravebot/AGENTS.md                           applies to every project
+~/.bravebot/skills/<name>/SKILL.md              available in every project
+<workspace>/AGENTS.md                           applies to this project
+<workspace>/.bravebot/skills/<name>/SKILL.md    available in this project
+```
+
+## Clauses
+
+### SKILL-1: a skill is one `SKILL.md` with `name` and `description` in frontmatter
+
+Both keys are required, and a file missing either is skipped with a note saying so. Other keys are
+ignored, so a skill written for another agent works here. A file with no frontmatter is not a
+skill.
+
+```markdown
+---
+name: commit-style
+description: How commit messages are written here. Use before writing one.
+---
+
+Write the subject in the imperative. Explain why in the body, never what.
+```
+
+`verified-by: bravebot_agent::skills::frontmatter_without_a_name_or_description_is_skipped`
+`verified-by: bravebot_agent::skills::a_file_with_no_frontmatter_is_not_a_skill`
+`verified-by: bravebot_agent::skills::an_unterminated_frontmatter_block_is_skipped_rather_than_swallowing_the_body`
+`verified-by: bravebot_agent::skills::keys_other_than_name_and_description_are_ignored`
+`verified-by: bravebot_agent::skills::the_body_is_everything_after_the_closing_marker`
+`verified-by: bravebot_agent::skills::a_marker_inside_the_body_is_left_alone`
+
+### SKILL-2: only the name and description reach the prompt; the body waits for `load_skill`
+
+The description is what the planner decides from, so it should say *when* to use the skill rather
+than what it contains.
+
+**Why.** A directory of long skills would otherwise crowd out the task.
+
+`verified-by: bravebot_agent::skills::what_the_prompt_advertises_holds_no_bodies`
+`verified-by: bravebot_agent::turn::a_skill_body_stays_out_of_the_context_until_it_is_asked_for`
+`verified-by: bravebot_agent::skills::skills_are_offered_in_the_same_order_every_time`
+
+### SKILL-3: `~/.bravebot` is trusted by provenance, never by the trust map
+
+It is labelled from provenance, because the trust map is keyed by workspace-relative paths and has
+nothing to say about a path outside the workspace. Never label a workspace path this way: that
+would be laundering.
+
+Nothing is assumed from silence. An empty directory offers nothing, and putting a file there is
+the grant, on the same footing as the configuration that picks the model and the endpoint.
+
+`verified-by: bravebot_agent::skills::a_home_skill_is_not_labelled_by_a_rule_meant_for_the_workspace`
+`verified-by: bravebot_agent::home::the_home_directory_is_the_one_the_environment_names`
+`verified-by: bravebot_agent::home::an_absent_home_is_not_an_error`
+`verified-by: bravebot_agent::home::an_empty_home_is_treated_as_no_home_at_all`
+`verified-by: bravebot_agent::skills::a_skills_directory_that_does_not_exist_is_not_an_error`
+
+### SKILL-4: a project's own files are read through the trust map
+
+A workspace `AGENTS.md` and `.bravebot/skills` are labelled as workspace content, so TRUST decides.
+`.bravebot/skills` is checked for trust **before it is enumerated at all**, because a directory
+name is content too.
+
+`verified-by: bravebot_agent::skills::a_skill_in_an_untrusted_project_is_not_named_to_the_planner`
+`verified-by: bravebot_agent::skills::a_skill_the_trust_map_distrusts_stops_being_offered`
+
+### SKILL-5: a source that fails `read_trusted_content` is dropped entirely, never quarantined
+
+Both `~/.bravebot` and a workspace source pass the trusted-content gate on the way into the system
+prompt, and a refusal drops the source.
+
+**Why.** A reference to an instruction is no use to anyone: an instruction is either followed or
+absent, and one from a directory nobody vouched for has to be absent. A skill's name and
+description are content that would otherwise go into the prompt verbatim.
+
+`verified-by: bravebot_agent::skills::an_untrusted_skill_is_not_named_in_what_the_user_is_told`
+
+### SKILL-6: what was skipped is counted, never named
+
+```
+AGENTS.md was not loaded: this directory is not trusted
+2 skills in .bravebot/skills were not loaded: this directory is not trusted
+```
+
+**Why.** A directory in an untrusted project can be named to read like an instruction, and that
+name would be on the user's screen as though the agent had written it.
+
+`verified-by: bravebot_agent::skills::a_skill_that_was_skipped_is_counted_rather_than_passed_over_in_silence`
+
+### SKILL-7: the most specific source wins
+
+Both `AGENTS.md` files are read, the global one first, so the project's own has the last word. A
+project skill of the same name replaces a global one. This is the same "most specific wins" rule the trust map uses.
+
+`verified-by: bravebot_agent::skills::a_workspace_skill_shadows_a_home_skill_of_the_same_name`
+
+### SKILL-8: `load_skill`'s name is never a path
+
+It selects from the set found before the turn started, so a name holding `../` or an absolute path
+matches nothing and the call is refused: there is no lookup for it to reach. A name merely close to
+a real one is refused too, rather than guessed at, since guessing would load instructions nobody
+asked for.
+
+`verified-by: bravebot_agent::turn::loading_a_skill_that_does_not_exist_is_refused_rather_than_guessed`
+
+### SKILL-9: sources are looked for afresh every turn
+
+Writing a skill mid-session works, and so does having the agent write one. There is nothing to
+reload and no session to restart.
+
+`verified-by: none`
+
+## Known costs
+
+- **A skill downloaded into `~/.bravebot/skills` is trusted exactly as far as a config file the
+  user pasted is.** The name, the description and the body all go to the model as instructions.
+  Nothing downstream second-guesses it, because everything downstream is built to trust what the
+  user vouched for. Read one before installing it.

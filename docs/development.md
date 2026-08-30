@@ -75,26 +75,26 @@ where the interface bugs have been. `contrib/drive_tui.py` runs a scripted sessi
 terminal so those paths can be exercised, and `contrib/README.md` says how. It needs a backend and
 writes real sessions, so it is a tool to reach for deliberately rather than part of `make check`.
 
-## Conventions
+## Spec-enforced development
 
-- **Never use an em-dash**, anywhere: not in documentation, commit messages, code comments, or
-  pull requests. A comma, a colon, a semicolon, parentheses, or two sentences will do.
-- Comments explain **why**, never what. Prefer no comment to a restatement of the code.
-- Tests are behavioural and named as sentences. A doc comment on a test says why the property
-  matters, not what the test does.
-- Test refusals and denials, not just happy paths. A test that would pass against the buggy
-  code is worthless: verify a new test fails before the fix.
-- Small commits, one property each. Run `make check` before committing.
-- No new dependencies without a reason that survives scrutiny. Patterns that arrive through a
-  turn are attack surface: prefer literal matching and hand-written, non-backtracking matchers
-  to a regex engine.
+This project is developed against the mini-specs in [specs/](specs/), which are the source of
+truth for how it behaves: each clause carries the tests that pin it, and is reviewed
+closely by a human before it changes. Code under a spec's `governs` list is reviewed against that
+spec rather than on its own, and automation checks that every clause still has coverage.
 
 ## Reviewing for the rule
 
-[The rule](design.md#the-rule-everything-else-is-predicated-on) is what the whole repository is
-predicated on, and the subtle violations look like safety features. The driver may **carry**
-untrusted content and hand it to an effect, but it may not **branch** on it: no `if`, `match`,
-comparison, or early return whose condition derives from untrusted bytes.
+Everything here is predicated on one statement: **untrusted content never enters the driver's
+context or the planner's**. The *planner* is the model deciding what to do next. The *driver* is
+this Rust code, meaning `bravebot-core` and `bravebot-agent` both. Both halves are stated as
+clauses in [specs/labels.md](specs/labels.md).
+
+The subtle violations look like safety features, which is what makes them hard to spot. Four
+things to look for in a diff:
+
+**1. A branch on untrusted bytes.** The driver may carry untrusted content and hand it to an
+effect. It may not branch on it: no `if`, `match`, comparison, or early return whose condition
+derives from untrusted bytes.
 
 ```rust
 // WRONG: the driver decided whether to write, from untrusted bytes.
@@ -104,16 +104,25 @@ if text.matches(old).count() > 1 {
 }
 ```
 
-Moving such a branch from `bravebot-agent` into `bravebot-core` does not fix it. `bravebot-core`
-is the driver too, and relocating a decision is not the same as removing it. Nor does "it is
-only for a message to the model", which is R1.
+That reads like a careful refusal. It is a decision taken from bytes an attacker may have written,
+and the specs refuse it: a decision may be taken only from trusted content. The right move is `Policy::read_trusted_content`, which hands over the
+bytes when they are trusted and refuses otherwise, so the untrusted case cannot be taken by
+accident.
 
-A declassification witness is **not permission to inspect**. Minting one records that bytes
-moved somewhere they were already allowed to go: a filesystem write, an HTTP body, or a human's
-screen. The three legitimate destinations have gates of their own, `Policy::present`,
-`Policy::render_in_place`, and `Policy::read_trusted_content`. A `declassify` call outside those
-is almost certainly a violation.
+**2. The same branch, moved into the kernel.** `bravebot-core` is the driver too, so relocating a
+decision is not removing it. "It is only for a message to the model" does not help either, because
+a message to the model *is* the planner's context.
 
-Never construct a `Labelled` by hand to give a value a better label than its inputs had. That
-is laundering, whichever crate it happens in. If a value derived from untrusted input needs to
-be trusted for something to work, the design is wrong, not the label.
+**3. A `declassify` outside the three gates.** A witness is not permission to inspect. Minting one
+records that bytes moved somewhere they were already allowed to go: a filesystem write, an HTTP
+body, or a person's screen. Each of those has a gate of its own, `Policy::present`,
+`Policy::render_in_place` and `Policy::read_trusted_content`. A `declassify` anywhere
+else is almost certainly a violation.
+
+**4. A `Labelled` built by hand.** Never construct one to give a value a better label than its
+inputs had. That is laundering, whichever crate it happens in. If a value derived from
+untrusted input has to be trusted for something to work, the design is wrong, not the label.
+
+Two places in the kernel do branch on untrusted bytes, deliberately. Both are named under Known
+costs in [specs/labels.md](specs/labels.md), because an unlisted exception is indistinguishable
+from a violation.

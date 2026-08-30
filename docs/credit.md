@@ -5,6 +5,9 @@ project: that indirect prompt injection can be made structurally impossible rath
 unlikely, by enforcing information-flow labels at every boundary and separating routing from
 content so untrusted text cannot redirect an action.
 
+Everyone who has worked on it is listed under
+[contributors](https://github.com/brave-experiments/brave-bot/graphs/contributors).
+
 [SafeHouse](https://github.com/brave-experiments/safehouse) is the research driver and proof of
 concept behind the product, brave-bot, this repository.
 

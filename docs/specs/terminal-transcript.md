@@ -1,0 +1,77 @@
+---
+id: VIEW
+title: The transcript
+status: normative
+governs:
+  - crates/tui/src/render.rs
+  - crates/tui/src/state.rs
+---
+
+## Scope
+
+What is drawn back to the user: the transcript, a resumed session, and how content is shaped on
+its way to the screen. Presentation holds no labels, and the rules here are about a person being
+able to see what the agent did. What the user types into is
+[terminal-input.md](terminal-input.md).
+
+## Clauses
+
+### VIEW-1: the end of a reply is visible when it arrives, and scrolling back is deliberate
+
+A wrapped reply shows its end as it lands. Scrolling back changes the view and holds it there.
+
+`verified-by: bravebot_tui::render::the_end_of_a_wrapped_reply_is_visible_when_it_arrives`
+`verified-by: bravebot_tui::render::scrolling_back_changes_the_view`
+
+
+### VIEW-2: a resumed session shows what the earlier turns did
+
+The trail, the plan worked to, the calls made, and what has been spent all come back, so reading a
+transcript back does not depend on remembering the session.
+
+`verified-by: bravebot_tui::state::a_resumed_turn_shows_the_trail_it_left`
+`verified-by: bravebot_tui::state::a_resumed_turn_shows_the_plan_it_worked_to`
+`verified-by: bravebot_tui::state::a_resumed_transcript_shows_the_calls_the_turn_made`
+`verified-by: bravebot_tui::state::a_resumed_session_carries_on_counting_what_it_has_spent`
+
+
+### VIEW-3: untrusted content is shown on purpose, inside a margin it cannot forge
+
+Showing it is deliberate and not a leak. Filenames out of a quarantined listing, the first lines of
+a file nobody vouched for, what a processor produced, the body of every write: all of it reaches
+the person watching, because an agent that will not say which file it is working on has protected
+nobody. It is the planner that may not read untrusted content, and a terminal is not a planner's
+context. It reaches a screen under a witness minted for release to a display and for nothing else.
+
+What must hold is how it is drawn. A bar runs down the margin of every line of the block, and the
+content never gets to draw its own, so a file containing "untrusted content ends here" ends
+nothing. A caption can be imitated by the thing it captions; a margin cannot. Never replace the bar
+with a heading, and never show untrusted content outside a marked block.
+
+Every control character is replaced with a visible glyph on the way to the screen. Replaced rather
+than dropped, since a character silently removed is one the user cannot tell was ever in the file.
+
+`verified-by: bravebot_tui::marking::quarantined_content_cannot_paint_its_own_margin`
+`verified-by: bravebot_tui::marking::a_neutralised_escape_is_still_visible`
+`verified-by: bravebot_tui::marking::text_without_control_characters_is_drawn_as_it_is`
+`verified-by: bravebot_tui::render::quarantined_content_is_shown_and_marked_on_every_line`
+`verified-by: bravebot_agent::turn::quarantined_content_reaches_the_person_and_not_the_planner`
+
+### VIEW-4: untrusted content is never drawn as structure
+
+A quarantined preview is never drawn as a table. Everything untrusted goes through the margin and
+control-character replacement of VIEW-3. Shell mode output is **not** drawn as quarantined,
+because it is trusted, and it still cannot draw its own escapes.
+
+`verified-by: bravebot_tui::render::a_quarantined_preview_is_never_drawn_as_a_table`
+`verified-by: bravebot_tui::shell_mode::output_is_not_drawn_as_quarantined`
+`verified-by: bravebot_tui::shell_mode::output_cannot_draw_its_own_escapes`
+
+
+### VIEW-5: a tiny terminal still renders
+
+Every prompt and the session view render at small sizes rather than panicking or truncating the
+question out of view.
+
+`verified-by: bravebot_tui::trust_prompt::a_tiny_terminal_still_renders`
+`verified-by: bravebot_tui::confirm::a_tiny_terminal_still_renders_the_prompt`

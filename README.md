@@ -1,203 +1,44 @@
 # brave-bot
 
-A coding agent whose defining property is **structural resistance to indirect prompt
-injection**.
+Brave Bot is a general-purpose agent, meant as a drop-in replacement for Claude Code, Codex and
+opencode. Its defining property is **structural resistance to indirect prompt injection**.
 
-Point it at a repository and ask it questions. What makes it different is what happens when a
-file, a dependency, or a web page it reads contains text designed to hijack the agent: that
-text cannot redirect anything, because it never reaches the parts of the system that decide.
-The protection is not a filter that has to recognise an attack, so there is nothing for an
-attacker to phrase their way past.
+## Getting started
 
-> Status: early but working. It answers questions about a real workspace, choosing and
-> chaining its own tools, with every decision recorded.
+`npm install -g @brave/bravebot`, then run `bravebot` in a repository. See
+[docs/getting-started.md](docs/getting-started.md) for installing, running, and what it asks you.
 
-## Install
+## How it works
 
-```sh
-npm install -g @brave/bravebot
-```
+Before data is processed it is labelled as trusted or untrusted and as public or private.
+An example of untrusted content is text from a web page. An example of private data is a project's secrets.
+Brave Bot can work with untrusted and private content, but it never lets that content into its planner's context.
+Processors are used to work on immutable untrusted content. A processor is a sub-agent with no tools, no memory and no conversation. It can read untrusted content and rewrite it, but nothing it produces can direct what happens next.
+One or more labelled data slots are passed into a processor, and it outputs at most one new immutable data slot.
+The planner is never influenced by untrusted context.
 
-This downloads the release binary for your platform and verifies its checksum. macOS, Linux,
-and Windows on both x86_64 and arm64 are supported. To build from source instead, see
-[docs/development.md](docs/development.md).
+Traces of the gates running are in [docs/specs/](docs/specs/README.md).
 
-## Using it
+## Specs
 
-```sh
-bravebot                                  # interactive session
-bravebot "what does src/main.rs do?"      # one-shot
-bravebot "explain this" --file notes.md   # with named context
-bravebot doctor                           # check configuration and confinement
-bravebot import-leo-creds                 # use a Leo Premium subscription
-```
+Behaviour is specified clause by clause, and each clause names the tests that pin it. See
+[docs/specs/](docs/specs/README.md).
 
-In the prompt: Left/Right move a character and Ctrl-Left/Ctrl-Right a word, Home/End reach
-the ends of the line, Delete and Backspace take a character either side of the caret, and
-Ctrl-W, Ctrl-U and Ctrl-K take a word, the start of the line or the rest of it. The readline
-bindings Ctrl-A, Ctrl-E, Ctrl-B and Ctrl-F work too, for terminals that send nothing for the
-named keys. PageUp takes the start of the line and then the line before it, PageDown the end of
-the line and then the line after. Shift-Enter starts a new line instead of sending, and the box
-grows to hold it.
+## Data collection, usage, and retention
 
-Most terminals send the same byte for Enter whichever modifier was held, so Shift-Enter needs
-either a terminal that reports the modifier (Ghostty, Kitty, WezTerm) or one configured to send
-a newline for the chord. In iTerm2 that is Settings, Keys, Key Bindings: add Shift-Enter and
-choose "Send Text" with `\n`. Terminal.app is Settings, Profiles, Keyboard. Ctrl-J does the same
-thing everywhere and needs no configuration at all.
+We do not use your data and we do not store it. Prompts and used file contents are sent to Brave's
+endpoint to produce a reply and are discarded once it has been produced. Nothing is retained and
+nothing is used for training. Local settings are stored in `~/.bravebot` on your own machine.
 
-Ctrl-V pastes, and is the key to use for a screenshot: Command-V is your terminal's own chord,
-never reaches bravebot, and can only carry text, so a picture pasted with it silently arrives as
-nothing. A pasted picture appears in the prompt as `[Image #1]`, and deleting the marker takes it
-back. See [docs/tools.md](docs/tools.md) for what that means for trust.
+## Development
 
-Paste more than a couple of lines of text and it folds the same way, as
-`[Pasted text #2 +40 lines]`, so a stack trace does not push the reply you were reading off the
-screen. The words are still what gets sent; deleting the marker drops them.
+`cargo build` and `make check`, which runs fmt, clippy and the tests. See
+[docs/development.md](docs/development.md) for cross-builds, configuration, and the conventions
+here.
 
-In a session: the mouse wheel scrolls, as do Up/Down and the page keys once the prompt has
-nowhere left to move within, Ctrl-Home/Ctrl-End jump to either end of the transcript, Ctrl-T toggles the
-audit trail, Ctrl-G writes the prompt in `$VISUAL` or `$EDITOR` and takes back what you
-saved, Esc cancels a running turn. Add `--trace` to a one-shot run for the same audit trail:
-which gate checked what, the label every value carried, and what was released.
+## Credit
 
-## What it will and will not do for you
-
-**It reads freely.** The agent picks which files to open as it works, because a read cannot
-change anything and it is confined to your working directory.
-
-**It never writes without you.** Every write is your decision, not the model's. Your approval
-covers that one exact path and cannot be reused for another. In a one-shot `bravebot "..."` run
-there is nobody to ask, so writes are refused rather than applied unseen.
-
-**Edits are shown as a diff.** An edit names the exact passage to replace, so you review a few
-lines rather than a whole file. If that passage is missing or ambiguous, or the file changed
-since it was read, the edit is refused instead of guessed.
-
-**It can work in files it is not allowed to read.** In an untrusted directory the model never
-sees a line of your code. It can still change it: the file goes to an isolated processor, a
-second model with no tools, no memory and nothing but that one file, which returns the new
-version into quarantine. You see the diff and approve it. Nothing that read the file was in a
-position to act, and nothing that acted had read it.
-
-Worth being plain about the trade: a processor is a model call, so the contents of an untrusted
-file do reach the backend when you ask for work in one. What changes is not where the bytes go,
-since a trusted directory has always sent them there, but that the thing reading them can do
-nothing at all.
-
-**It runs programs, but the agent gets no shell.** You can ask for `git commit`, `gh api`, `sed`,
-`awk`, or anything else installed, and stages compose the way a pipeline does. What the *agent* cannot
-get is a shell: `run` takes a program and a list of arguments, never a command string, so there are no
-pipes, no `&&`, and no `$(...)`. That is what makes it approvable. A command string is its own
-destination and payload at once, with nothing separable for you to see, while an argument list is
-something you can read and have executed verbatim. Nothing is escaped or re-parsed, so `; rm -rf /`
-inside an argument is just an argument.
-
-**You get a shell, with `!`.** Type `! cargo test` and it runs in your own `$SHELL`, globs and
-redirection and all, with nothing to approve: the prompt exists so a person endorses a command the
-*agent* proposed, and this one you typed yourself. What it prints goes to the model in full, so you
-can follow it with "fix the first failure". The trade is the one you make by pressing "always" at a
-command prompt: `! cat something-a-stranger-wrote.md` hands those words to the model as though they
-were yours. [Shell mode](docs/tools.md#shell-mode).
-
-**You approve every command.** There is no list of allowed programs and no sandbox around them: they
-run with the access your own shell would give them, because `git push` needs your SSH keys and the
-set of tools you might ask for cannot be listed in advance. What protects you is that you see the
-exact argument list first and your approval covers only that one, so it cannot be reused for a
-different command.
-
-**Output from a command the agent ran is never trusted.** Whatever such a program prints is treated as
-untrusted and private, since it could contain anything a file or a website put there. Untrusted data
-can still be piped *into* a tool, which is what lets `sed` and `awk` work on files nobody vouched for.
-But the model receives a description of the output rather than the text, so it cannot read what it
-just ran. That is a real limitation and a deliberate one.
-
-Two things lift it, and both are you saying so rather than anything being inspected: approving a
-command with "always", or running it yourself with `!`.
-[Why this matters](docs/design.md#why-some-things-are-absent), and
-[the full model](docs/tools.md#running-programs).
-
-## Trusted directories
-
-At startup you are asked whether you trust the working directory.
-
-**Trust it** and files there are read normally, so ordinary work proceeds without a prompt for
-every edit. **Decline** and nothing is trusted, so every write is shown to you first.
-
-Content from an untrusted source, a web page or a file outside a trusted path, is quarantined:
-the model can pass it along, hand it to an isolated processor, and write the result somewhere,
-but never read any of it, and none of it can decide what happens next. If such content is
-written into a trusted directory, that one file is recorded as untrusted, so reading it back
-does not launder it.
-
-You are only ever prompted about one thing: **may this path stop being trusted?** The full
-rules are in [docs/trust.md](docs/trust.md).
-
-## Skills and AGENTS.md
-
-Put standing instructions in `AGENTS.md` and they apply to every task in that directory. Put a
-skill in `~/.bravebot/skills/<name>/SKILL.md` and it is available in every project:
-
-```markdown
----
-name: commit-style
-description: How commit messages are written here. Use before writing one.
----
-
-Write the subject in the imperative. Explain why in the body, never what.
-```
-
-Only the name and the description are put in front of the model, which loads the body when the
-task calls for it. Your own `~/.bravebot` is trusted for being yours; a project's `AGENTS.md`
-and `.bravebot/skills` are read through the trust map, so they load when you vouched for the
-directory and are left out when you did not. See [docs/skills.md](docs/skills.md).
-
-## Configuration
-
-Configuration is built into the released binary, so there is nothing to set up. `bravebot doctor`
-reports what it will use. To point it at a different backend, see
-[docs/development.md](docs/development.md#configuration).
-
-## Leo Premium
-
-If you subscribe to Leo Premium in Brave, you can use it here:
-
-```
-bravebot import-leo-creds            # from Brave (stable)
-bravebot import-leo-creds nightly    # or beta, or development
-```
-
-Premium requests are then used automatically, and `bravebot doctor` reports how much is left.
-`--forget` discards what was imported.
-
-This **registers as an additional device** rather than borrowing the browser's credentials. Only
-the subscription's order id is read from the browser; the credentials themselves are generated
-here and signed by Brave, exactly as a second browser on another machine would. The browser keeps
-its own, and nothing it holds is spent.
-
-The credentials are single-use and arrive in batches covering a few days. When a batch runs out
-or expires, a replacement is obtained automatically, so this is normally a one-time step. They
-are kept in the system keychain, not in a file, so importing and the first request of a session
-may ask for your password.
-
-Requirements and limits:
-
-- **macOS and Linux.** Windows is not supported.
-- The build must know the premium host. Without it premium is unavailable, and a credential is
-  never sent to the non-premium host, since it does not belong there.
-- A credential only works against the deployment that issued it, so import from the Brave channel
-  matching the environment the binary is configured for. Mismatching them returns 401.
-- Sign in to Leo in that Brave install first: a subscription that is not in the profile cannot be
-  imported.
-
-## Other links
-
-- [How it works](docs/design.md), the labelling model and the six rules it enforces
-- [Tools](docs/tools.md), what each tool touches and what it may carry
-- [Trusted directories](docs/trust.md), the trust map specification
-- [Skills](docs/skills.md), standing instructions and reusable skills, and what each is trusted for
-- [Development](docs/development.md), building, configuring, and the conventions here
-- [Credit](docs/credit.md)
+[docs/credit.md](docs/credit.md).
 
 ## License
 

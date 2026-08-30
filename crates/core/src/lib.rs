@@ -10,7 +10,7 @@
 //! Ali Shahin Shamsabadi and Brian R. Bondy developed the idea this crate implements: the
 //! `L = I × C` lattice, write-once quarantine, and the routing/content asymmetry that
 //! makes injected text unable to redirect an action. Ali built the first prototype of it
-//! in SafeHouse; this applies the same idea to a coding agent.
+//! in SafeHouse; this applies the same idea to a general-purpose agent.
 
 pub mod ask;
 pub mod cancel;

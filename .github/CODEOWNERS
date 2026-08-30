@@ -1,0 +1,15 @@
+# Review is required for the things that decide behaviour, and for the front door.
+#
+# docs/specs is normative: a clause change is a behaviour change, whatever the code does.
+# Manifests are here because "no new dependencies without a reason that survives scrutiny"
+# is a rule nothing else enforces.
+#
+# Last matching pattern wins, so keep the more specific rules below the general ones.
+
+/docs/specs/ @bbondy @AliShahin
+
+/README.md @bbondy
+
+/Cargo.toml @bbondy
+/crates/*/Cargo.toml @bbondy
+/package.json @bbondy

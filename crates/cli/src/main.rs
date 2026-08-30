@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    println!("bravebot {VERSION}: a coding agent resistant to prompt injection");
+    println!("bravebot {VERSION}: a general-purpose agent resistant to prompt injection");
     println!();
     println!("Usage:");
     println!("  bravebot                               Start an interactive session");

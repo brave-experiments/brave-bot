@@ -15,7 +15,7 @@
 //!
 //! That is the whole justification, so the prompt has to ask for it in those terms. A person
 //! agreeing to this is agreeing that the command's side effects and its output are both theirs to
-//! answer for. See `docs/tools.md`.
+//! answer for. See `docs/specs/running-programs.md`.
 //!
 //! # Distinct from `crate::pure`
 //!

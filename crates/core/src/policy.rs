@@ -595,7 +595,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// Eligibility is judged from `(program, args)`, which are trusted by the time they reach here,
     /// since argv is routing and has either been promoted or endorsed. So this is a comparison on
-    /// trusted data, which R3 permits. It is nonetheless the most consequential such comparison in
+    /// trusted data, which the rule permits. It is nonetheless the most consequential such comparison in
     /// the kernel, because a gap in the table means untrusted bytes labelled trusted.
     pub fn label_command_output(
         &mut self,

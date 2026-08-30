@@ -1,7 +1,7 @@
 {
   "name": "@brave/bravebot",
   "version": "0.1.0",
-  "description": "A coding agent with structural resistance to indirect prompt injection",
+  "description": "A general-purpose agent with structural resistance to indirect prompt injection",
   "license": "MPL-2.0",
   "repository": {
     "type": "git",

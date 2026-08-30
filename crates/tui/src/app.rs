@@ -1077,7 +1077,7 @@ fn event_loop(
 /// The path recorded is the canonical one, not the name typed: `~/notes/../notes` and a symlink
 /// both name a directory whose rules should be about where it actually is.
 ///
-/// Session-scoped on purpose. `docs/trust.md` is explicit that trust is not sticky per directory,
+/// Session-scoped on purpose. `docs/specs/trust-map.md` is explicit that trust is not sticky per directory,
 /// so a later session starts without this and is asked again. It does survive `--resume`, since
 /// that restores the map its own user gave.
 fn add_directory(

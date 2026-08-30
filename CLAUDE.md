@@ -1,45 +1,31 @@
 # bravebot
 
-A coding agent resistant to prompt injection. The guarantee is structural: untrusted content
-can be carried and written, but it can never decide what happens.
+A general-purpose agent resistant to prompt injection. The guarantee is structural: untrusted
+content can be carried and written, but it can never decide what happens.
 
 ## The rule that overrides everything
 
 **The driver and the planner NEVER have untrusted content in their context.**
 
-The whole repository is predicated on this. It is not a matter of degree, not a matter of the
-model behaving well, and not "influenced but unable to act". Untrusted content does not enter
-either context at all.
+The whole repository is predicated on this. It is not a matter of degree, not a matter of the model
+behaving well, and not "influenced but unable to act". Untrusted content does not enter either
+context at all.
 
-The driver is the Rust code here. The planner is the model. Neither receives untrusted bytes.
+The driver is the Rust code here, meaning `bravebot-core` and `bravebot-agent` both. The planner is
+the model. Neither receives untrusted bytes.
 
-- The driver may **carry** untrusted content (`Labelled<String>`) and **hand it to** an effect
-  without ever seeing it.
-- The driver may **not branch** on untrusted content: no `if`, `match`, comparison, or early
-  return whose condition is derived from untrusted bytes.
-- Moving such a branch from `bravebot-agent` into `bravebot-core` does not fix it.
-  `bravebot-core` is the driver too. Relocating a decision is not the same as removing it.
+- The driver may **carry** untrusted content and **hand it to** an effect without ever seeing it.
+- The driver may **not branch** on it: no `if`, `match`, comparison, or early return whose
+  condition derives from untrusted bytes.
+- Moving such a branch from `bravebot-agent` into `bravebot-core` does not fix it. `bravebot-core`
+  is the driver too, and relocating a decision is not the same as removing it.
 
-Never weaken this statement. If an implementation cannot satisfy it, the implementation is
-wrong. Do not restate the rule to match the code.
+Never weaken this statement. If an implementation cannot satisfy it, the implementation is wrong.
+Do not restate the rule to match the code.
 
-`Labelled<T>` enforces the mechanical half at compile time: no `Deref`, `PartialEq`, or
-`Display`, and no infallible accessor. Reading requires a `Declassification` witness only the
-policy layer can mint.
+## Reviewing for it
 
-**A witness is not permission to inspect.** Minting one does not make reading untrusted content
-acceptable; it records that bytes moved somewhere they were already allowed to go, such as a
-filesystem write, an HTTP body, or a human's screen. The three legitimate destinations have gates
-of their own:
-
-- `Policy::present` decides whether the planner sees content or a reference.
-- `Policy::render_in_place` reshapes content for presentation without exposing it.
-- `Policy::read_trusted_content` hands over bytes only when they are trusted, and **refuses**
-  otherwise.
-
-If you are calling `declassify` outside those, you are almost certainly adding a violation.
-
-Watch for this in review. The subtle violations look like safety features:
+The subtle violations look like safety features.
 
 ```rust
 // WRONG: the driver decided whether to write, from untrusted bytes.
@@ -51,426 +37,50 @@ if text.matches(old).count() > 1 {
 
 ```rust
 // ALSO WRONG: relocating the same branch into bravebot-core does not fix it.
-// And "it is only for a message to the model" does not either. That is R1.
+// And "it is only for a message to the model" does not either: that is the planner's context.
 messages.push(Message::user(format!("Contents:\n{}", text)));
 ```
 
-## A person may read what a model may not
-
-The rule is about a model's context, not about secrecy. The user owns the workspace, and an
-agent that will not tell them which file it is working on has not protected them from anything:
-it has left them unable to say whether it is about to rewrite their game or their private keys.
-So untrusted content **is shown**: filenames out of a quarantined listing, the first lines of a
-file nobody vouched for, what a processor produced, the body of every write. `Reporter::quarantined`
-is the way it reaches a screen, and `Policy::authorise_display_release` is the witness for it.
-
-What must never happen is unchanged, and it is the only thing that matters here: those bytes do
-not enter the planner's context and they do not enter a processor's input except as its declared
-slots. A terminal is not a context. Passing content to the person watching is the arrangement
-working, not a hole in it.
-
-Everything shown is **marked**, and marked structurally. The renderer draws a bar down the margin
-of every line of the block, and the content never gets to draw its own margin, so a file
-containing "untrusted content ends here" ends nothing. A caption can be imitated by the thing it
-captions; a margin cannot. Never replace the bar with a heading, and never show untrusted content
-outside a marked block.
-
-That holds only while content cannot draw. A terminal acts on the bytes it is sent, so an escape
-sequence in shown text would let the text colour itself, move the cursor, or paint a margin the
-renderer never drew, which is the forgery the margin exists to rule out. `render::printable`
-replaces every control character with a visible glyph, and everything untrusted goes through it on
-the way to the screen. Replaced rather than dropped, since a character silently removed is one the
-user cannot tell was ever in the file.
-
-## Trusted content may be examined; untrusted content may not
-
-The rule bans deciding from **untrusted** content. Trusted content carries no such
-restriction, since it came from a path the user vouched for, so comparing it decides nothing an
-attacker can steer. `Policy::read_trusted_content` is the gate: it returns the bytes if they
-are trusted and refuses otherwise, so a caller cannot quietly take the untrusted case.
-
-This is why `edit_file` requires a trusted file. Locating a passage is a comparison, so on an
-untrusted file it is refused rather than performed.
-
-Integrity is the only axis that matters for this. Workspace content is private as a matter of
-course, and examining it in-process releases nothing.
-
-## Processors: the one thing that reads untrusted content
-
-The rule names the driver and the planner. A **processor** is neither, and it exists because an
-agent that may not read a file also cannot change it: `edit_file` refuses on an untrusted file,
-and `write_file` would need a body the planner could only have guessed.
-
-A processor is a second model instance holding **no capabilities at all**. No tools, no
-conversation, no memory of the session, no workspace, no spawn. It is given the slots its spec
-names and returns text, and that text goes straight into a new slot at the label taint gives it.
-The planner gets a reference, exactly as it would for a file it may not read.
-
-So untrusted content reaching a processor can do one thing: change the bytes in a slot nobody
-has read. It cannot redirect an effect, because nothing it produces can reach a routing field.
-
-The properties this rests on, none of which may be relaxed:
-
-- **The spec is built by the driver and frozen before the run.** `Policy::before_processor` is
-  the only thing that constructs a `ProcessorSpec`, and nothing widens one afterwards.
-- **The output label is computed before the processor runs**, by taint over the inputs. Nothing
-  the processor writes has any say in how what it writes is labelled.
-- **The input is assembled inside the kernel.** `Policy::compose_processor_input` concatenates
-  the slots; the driver carries the result wrapped and hands it to the call.
-- **No tools, ever.** The request carries no tool list. A processor with one tool is a second
-  planner with untrusted content in its context, which is the thing this design refuses.
-- **One call, no loop.** There is no round for a reply to steer.
-- **The output is never shown to the planner.** It is presented like any other untrusted
-  content: a reference, and nothing else.
-- **An answer is for one document.** A processor produces one however many it was given, and
-  `Policy::write_belongs_here` refuses a write of it anywhere but the file the planner said the
-  call was about. Where the planner said nothing and there was more than one, the answer belongs
-  nowhere and may be written nowhere. This is not a label rule and cannot be one: every gate
-  passed when a planner wrote a game's HTML into a Python script, because the destination was a
-  path it named and a person approved.
-- **Nothing a processor writes is a file unless it says where the file begins.** Everything
-  before `ProcessorSpec::NOTE_MARKER` is a remark for the person watching: it reaches a screen
-  and stops, no model reads it, it is not part of any file, and it cannot be another processor's
-  input. Everything after the line is the document. An answer with no line names no document and
-  can be written nowhere.
-
-  That way round on purpose. It was the other way, prose being the default and the line the
-  exception, and a processor explaining why it was leaving a Python script alone wrote the
-  explanation over the script. A processor has one output and has always wanted two, so forgetting
-  which is which has to fail towards changing nothing.
-
-The confinement is the capability set, not an operating system boundary. `bravebot-sandbox` confines
-processes running code we did not write; a processor's caller is our own code, and putting it in
-a subprocess would confine the wrong thing.
-
-Quarantined content reaches a file through `write_file`'s `contents_ref`.
-`Policy::declassify_into_workspace` is what lets a private slot become a file body, and it is
-sound only because the destination is inside the boundary the bytes came from: nothing leaves.
-Never reach for it for a network body, a command line, or a message to someone.
-
-## Compaction: a summary is not a processor's job
-
-Each round re-sends the whole conversation, so a long session grows its own request until the
-server refuses it. Compaction replaces the older part of the exchange, **in the request only**,
-with a summary of it, and `bravebot-agent`'s `compact` is where that happens.
-
-The summariser is a **planner-context call**. Reaching for a processor here is the obvious move
-and it is wrong: a processor's output is quarantined by construction, so what it can produce is a
-summary the planner may not read, which is not a summary the planner can carry on from. Never
-route compaction through `spawn_processor`.
-
-What licenses the call is that there is nothing new to read. Every message in a conversation has
-already been past `Policy::present`: trusted and shown, or quarantined with only a reference going
-in. So the summariser's context is the planner's context, and `Policy::label_model_output` labels
-its answer from that context, exactly as it labels the planner's own words. The label the client
-returns is the network's, not the context's, so the text is relabelled on the way back, the way
-every other round already does it.
-
-`Policy::adopt_summary` is the gate, and it **refuses** once the context has gone untrusted. Do not
-make it quarantine the summary instead: a reference to the planner's own history is not a history.
-Do not relabel to get past it. A conversation that cannot be shortened stays long, and the caller
-leaves it exactly as it was.
-
-Three things compaction never touches, and none of them may be relaxed to save room: the
-**quarantine**, which holds the only copy of what a surviving reference names; the **reference
-counter**, since slots are written once and a name handed out twice collides; and the
-**integrity**, since nothing here has un-read what the conversation read.
-
-The cut lands where a round is not in progress, chosen from roles and call ids. `with_system`
-answers an unanswered call by looking only at the run of results immediately after it, so a cut
-between a call and its results leaves the head saying the call never ran and the tail holding an
-answer to a call that is not there. Whole exchanges are given up first, since the boundary between
-two of them is the one a person would draw. A turn that has gone long on its own has no earlier
-exchange to give, because it adds one prompt however many rounds follow, so there it gives up
-earlier **rounds** instead.
-
-**A cut must give up at least as much as it keeps.** Summarising costs a model call, and a request
-has a floor it cannot go below, the system prompt and the tool schemas, so a budget under that
-floor is unreachable however much history is given up. Without this a turn in that position
-summarises itself once per round for the rest of its life and shortens nothing: measured at 35
-summaries in a turn that should have made none. Never relax it to compact sooner.
-
-And what is shortened is the request, not the record. The replaced messages go to an archive that
-`recounted` still reads and the snapshot still stores. The user owns their transcript; compaction
-is about what gets sent.
-
-## Where trusted data comes from
-
-Model output is a function of the model's context and nothing else. So when the context holds
-only trusted input, what the model produces is derived only from trusted input, and
-`Policy::label_model_output` labels it accordingly. `Policy::context_integrity` tracks this and
-only ever falls.
-
-It falls when `Policy::present` **shows** the planner something, never when a turn merely reads
-something. The distinction is load-bearing. A quarantined read puts a reference in the context, not
-the bytes, and a slot id with a line count carries no instruction: the context has not met that
-content and must not be marked as though it had. Lowering integrity at the read instead labels the
-planner's own words untrusted on the strength of a file it never saw, and `present` then quarantines
-the planner from itself, leaving it unable to see what it just did. Never move this back to the
-observation.
-
-This is **not** an upgrade path. It is the first label such text ever receives, assigned from
-provenance the kernel tracked. If you find yourself relabelling a value that already has a
-label, stop: see the section below.
-
-## The user's own directory
-
-`~/.bravebot` holds history, sessions, standing instructions (`AGENTS.md`), and skills
-(`skills/<name>/SKILL.md`). Its contents are read as **trusted**, labelled by
-`Policy::label_user_configuration` from provenance rather than from the trust map, which is
-keyed by workspace-relative paths and has nothing to say about a path outside the workspace.
-
-The justification is that the directory is the user's own configuration surface, on the same
-footing as the endpoint and the model. It is not trust assumed from silence: an empty directory
-yields nothing, and placing a file there is the grant. The honest cost, which docs/skills.md
-states plainly, is that a downloaded skill is trusted as far as a pasted config file is.
-
-Never point `label_user_configuration` at a workspace path. A project's `AGENTS.md` and
-`.bravebot/skills` are labelled by `Workspace::read`, so the trust map decides, and asking the other
-function instead would be laundering.
-
-Both then pass `Policy::read_trusted_content` on the way into the system prompt. A source that
-refuses is **dropped entirely**, never quarantined: a reference to an instruction is no use to
-anyone, and a skill's name and description are content that would otherwise go into the prompt
-verbatim. `.bravebot/skills` is checked for trust before it is enumerated at all, because a
-directory name is content too.
-
-## Labels only ever degrade
-
-Integrity may go trusted → untrusted. It may **never** go the other way. `Label::degrades_to`
-is the check; `Labelled::relabel` returns `None` rather than upgrading.
-
-Never construct a `Labelled` by hand to give a value a better label than its inputs had. That
-is laundering, whichever crate it happens in and however well-audited the event looks. If a
-value derived from untrusted input needs to be trusted for something to work, the design is
-wrong, not the label.
-
-## Routing vs content
-
-Every effect splits into a **routing** part that decides where it lands and a **content**
-part that is merely carried:
-
-- Routing must be `(T,pub)`. Untrusted routing is an injection attempt.
-- Content may be untrusted, but must not be private at release time.
-
-Reads are the one relaxation: `Policy::promote_confined_read` lets the model choose which
-file to read next, because a read cannot change anything and is confined to the workspace. It
-must never be used for an effect. Effects need `before_granted_action` and a human
-endorsement.
-
-## A reference may be an address
-
-A filename is content, so a listing of a directory the planner may not read is quarantined like
-anything else. Quarantined as one document it is useless: a reference can only go to a processor,
-whose answer is a reference in its turn, and a reference is not a path. An agent that holds the
-names of the files it is working among and can do nothing with any of them is not confined, it is
-paralysed, and what came of it in practice was a planner guessing globs to see which came back
-empty.
-
-So `Policy::defer_entries` hands out one reference per entry, and the planner names the reference
-where it would have typed a path. The name never leaves the kernel: `Policy::path_of_reference`
-is the only way out of it, and it authorises nothing by itself. What happens next decides what
-the name may be:
-
-- For a **read**, it is promoted exactly as the model's own choice of file is, on the same
-  grounds: confined to the workspace, and it changes nothing in it.
-- For a **write**, promotion is not enough and is not used. The name goes to a person, who is the
-  only party in the system that ever sees it, and the grant is issued for the path they saw. A
-  write whose destination came from a reference **always** asks, whatever the trust table would
-  say, because otherwise nobody at all would see where it landed. Never relax this to reduce
-  prompting.
-- A reference that names no file is refused as a destination. Everything a processor produces is
-  such a reference, and that refusal is what stops untrusted text choosing where an effect lands.
-
-What an attacker who controls the filenames gains is that one entry may look more inviting than
-another when nothing about any of them is shown. What they cannot gain is a destination.
-
-## Layering
-
-- `bravebot-core` is the kernel. No I/O, nothing prints. Owns the lattice, the gates, and every
-  decision derived from content.
-- `bravebot-agent` holds the tools and the turn loop. Carries labelled values; must not inspect
-  them.
-- `bravebot-tui` and `bravebot-cli` are presentation. May display released content.
-- `bravebot-net` is the single egress chokepoint. All network traffic passes the policy gate here.
-- `bravebot-mcp`, `bravebot-sandbox`, `bravebot-signing`, `bravebot-config` cover extension,
-  confinement, and auth.
-
-Primitives stay native rather than moving behind MCP when the kernel needs to label parts of
-a call separately, such as a path as routing and its contents as content. An opaque MCP call erases
-that distinction.
-
-## Trust map
-
-`TrustStore` records which paths the user vouched for, keyed by path prefix, longest match
-wins. Both polarities are expressible, so trusted-inside-untrusted works as well as the
-reverse. Empty means nothing is trusted: trust is granted, never assumed from silence.
-
-A prompt asks one thing: may this path stop being trusted? So the only case that asks is
-untrusted data into a trusted path, plus the first write to a path nobody has mentioned, which
-is why `integrity_of` returns an `Option`. Writing trusted data never asks, since trusted data
-contains nothing an attacker influenced and the destination only gains trust. See the table in
-docs/trust.md, which is the specification.
-
-`Policy::reconcile_after_write` keeps the invariant that a path's recorded trust equals the
-integrity of the data in it. Untrusted data landing in a trusted tree *must* mark that path
-untrusted, or reading it back would launder it. Always the exact path, never the parent.
-
-The map belongs to a **session**, not to a directory. It is written into the session record, and a
-fresh session always asks, whatever any earlier session in that directory answered. Never make the
-startup answer sticky per directory: the question grants standing permission, and skipping it
-because someone said yes last week grants that permission on behalf of a user who was never asked.
-Resuming does not ask, and that is not an exception, since the map it restores is the one the
-resumed session's own user gave.
-
-So `reconcile_after_write`'s rules survive a resume but not a fresh start, and a file one session
-poisoned is read as trusted by the next session that vouches for the directory. That is a
-deliberate trade, made because the alternative was a directory that trusted itself. Do not
-"fix" it by reintroducing a per-directory map.
-
-## Absent by design
-
-A **shell** is excluded **from the planner**: a shell string is destination and payload at once, so
-there is no separable routing field a person could endorse, and a parser that tried to recover one
-would be racing a shell it does not control. `apply_patch` is excluded for the same reason. Before
-adding a tool, ask what its routing field is and whether a human could approve that field alone.
-
-Read that qualification precisely, because it is the sort of sentence that gets softened by accident.
-The exclusion is not "shell strings are dangerous bytes". It is that a person cannot endorse a
-routing field a shell string does not have, and the reason one must be endorsed is that the string
-came from the **planner**, which an attacker may have steered. Provenance is what the rule is about.
-
-So a line the **user** typed is outside it, and `bravebot-agent::shell` runs one through `$SHELL -c`
-with globs, redirection and `&&` intact. Nothing is asked, because the prompt exists to get a human
-to endorse argv the planner chose and here the human wrote it: asking would be asking them to
-confirm their own keystroke. What it prints is `(T,priv)` via
-`Policy::label_user_command_output` and goes into the planner's context in full.
-
-That gate is the whole feature and the whole risk. It is a first label from provenance, exactly like
-`label_command_output` and `label_user_configuration`, and it is admissible for the reason a
-`TrustedPrograms` entry is: a person took responsibility, and nothing inspected anything. The honest
-cost is the same one, which docs/tools.md states plainly: `! cat something-hostile.md` puts a
-stranger's words in the context as though they were the user's.
-
-The rules it lives under, none of which may be relaxed:
-
-- **Only a line a human typed.** Never argv the planner proposed, never text read from a file, never
-  anything a processor produced, never a line reconstructed from a transcript. The justification
-  cannot be checked from the bytes, so it lives at the call site: today that is the TUI's shell mode
-  and nothing else.
-- **`bravebot-agent::exec` stays argv-only.** It is the planner's path and must never build a command
-  line. The two modules are separate so that a change to one cannot quietly become a shell for the
-  other.
-- **The planner gets no shell tool, ever.** Not behind a capability, not behind an approval prompt,
-  not via MCP. If it could ask for one, everything above is void.
-
-Running a **program** is not excluded, because it passes that test. `run` takes a list of argv
-stages, never a command string, so an argument containing a metacharacter is one argument and stays
-one: there is no parser to defeat and what a person approves is what executes. This is the
-distinction to hold onto. It is not that command execution turned out to be acceptable after all,
-it is that the exclusion was about shell strings and an argv vector is not one.
-
-The rules `run` lives under, none of which may be relaxed to make something work:
-
-- argv is routing, so it must be `(T,pub)` and endorsed by a person before anything runs. Untrusted
-  text never becomes an argument.
-- stdin is content, so it may be untrusted. This is what lets untrusted data reach a command line
-  without the planner or the driver reading it.
-- stdout and stderr are `(U,priv)` unless the user has vouched for **every** stage, argv and all,
-  in which case they are `(T,priv)`. The pessimistic label is the default and the only one that
-  holds without knowing what ran. Nothing a caller, a stage, or the model can declare changes it.
-  Only a person can, in one of two ways, and both are assertions rather than inferences: vouching
-  for the command in advance, or reading one result on screen and letting it through with
-  `Policy::read_output`. Never widen either to anything the system infers.
-- `Policy::read_output` is the stronger of the two, and the only assertion anywhere here made about
-  bytes rather than about a prediction. It is **not** a relabel: the slot keeps the label it was
-  quarantined at, and what the planner receives is a new value whose first label comes from the
-  provenance the kernel tracked, which is a person having read it. It covers one result, needs a
-  single-use endorsement naming that slot, and refuses for anything but command output, since a
-  file's worth is the trust map's answer and a second route to it would be a way to disagree.
-- Private input asks, even though the labels would permit it, because handing the user's data to a
-  program releases it somewhere this policy stops governing.
-- Every run asks, unless the user has already vouched for every command in it. There is no
-  read-only category: nothing here can tell whether `foo --bar` writes, and a stage declaring
-  itself harmless only helps if the declaration is honest. A person having answered the question
-  before, in this session, for this exact command is the **only** thing that may answer it: never
-  a property of the argv, never a declaration by a stage, and never anything derived from what a
-  program printed. An unprompted write is worse than an unwanted prompt.
-
-Programs are **not** confined and **not** enumerated. They run with the access the user's shell
-would give them, because `git push` needs `~/.ssh` and the set of programs someone might ask for
-cannot be listed in advance. Do not add an allowlist and treat it as the safety property: what holds
-is the label on the output, not a belief about the binary. Whether to confine children is issue #4;
-whether output can ever be trusted is issue #3. Neither may be resolved by weakening the labels.
-
-`TrustedPrograms` is **not** that allowlist and must never become one. It never decides what may
-run: a command nobody has vouched for still runs after a prompt, nothing is refused for being
-absent from it, and the set is empty at the start of every session.
-
-What it does decide is two things, and an entry grants both together because that is what the
-person was asked for:
-
-1. the command runs again without being asked, side effects and all;
-2. what it prints is `(T,priv)`, so the planner reads it instead of a reference.
-
-The second is a **human assertion, not an inference**. Nothing establishes that a vouched command
-is side-effect-free or that its output is free of influence, and nothing tries: `git log` prints
-commit messages that whoever contributed to the repository wrote. It is trusted for exactly the
-reason a directory in the trust map is trusted, which is that the user said so and not that
-anything inspected it. That equivalence is the whole justification, so do not reach for a stronger
-one and do not let anything else mint an entry. The prompt must keep asking for both halves in
-those terms, and `/status` must keep showing what was granted.
-
-Entries are keyed by **resolved path and exact arguments**, both. `$PATH` and shell aliases decide
-what a name means, so an assertion must not follow a name onto a different binary; and `git log`
-says nothing about `git push`, which do different things and print different things. Never widen an
-entry to a program alone. **Every** stage of a pipeline must be vouched for or the whole output is
-untrusted: an unvouched stage in the middle is a transformation nobody answered for, and its output
-is what the next stage read.
-
-Like the trust map it belongs to the session, is written into the session record, and is restored
-on resume but never inherited by a fresh session in the same directory. Private input asks every
-time whatever is vouched for, since trusting a command is not consenting to hand it the user's data.
-
-[`crate::pure`] reaches the same label by the other road, proving from `(program, argv)` that a
-stage can read nothing the label does not account for. It is a proof about a program where this is
-a person taking responsibility for one, and the two must not be merged. It remains unwired: issue
-#3 is still open.
-
-## What the user pastes
-
-A **picture** reaches the planner as a picture, because there is nothing else it could reach it as:
-a processor takes text slots and returns text, and a reference to an image is of no use to anyone.
-So a pasted image goes into the user's own message, next to the words, on exactly the footing of the
-prompt it arrives with. `Policy::admit_pasted_image` records that and asserts nothing else.
-
-It is the same provenance `label_user_command_output` rests on, and it carries the same honest cost,
-which docs/tools.md states plainly: a screenshot of a hostile page puts a stranger's words in the
-context as though the user had typed them. Nothing inspects the pixels and nothing could. What
-justifies it is that the user chose what to copy, can see on their own screen what they pasted, and
-is the party this serves.
-
-The rules it lives under, none of which may be relaxed:
-
-- **Only a picture a human pasted.** Never bytes a tool read, never anything a processor produced,
-  never an image a path in model output named. Each of those is content, and routing it here would
-  launder it. The justification cannot be checked from the bytes, so it lives at the call site:
-  today that is the TUI's Ctrl-V and nothing else.
-- **The media type is the driver's, never the content's.** It ends up in the data URL, where it is
-  routing, so it comes from a fixed set `bravebot-tui::clipboard` owns and never from a filename or
-  from what a tool printed.
-- **The picture is inlined, never linked.** A URL would have the endpoint fetch it over a connection
-  this process never makes, which is an egress `bravebot-net` could not gate.
-- **A paste does not lower context integrity.** It says nothing about content the planner has met.
-  Lowering it here would have a screenshot mark everything the planner then wrote as untrusted, on
-  the strength of the user's own input.
-
-Reading the clipboard at all is the TUI going around the terminal, and the reason is mechanical
-rather than a preference: Command-V never reaches this process, and the terminal's own paste can
-carry only text. That is presentation-layer plumbing and holds no labels. See the module
-documentation in `bravebot-tui::clipboard`.
+**A witness is not permission to inspect.** Minting one records that bytes moved somewhere they
+were already allowed to go: a filesystem write, an HTTP body, or a human's screen. Those three
+destinations have gates of their own, `Policy::present`, `Policy::render_in_place` and
+`Policy::read_trusted_content`. A `declassify` call outside them is almost certainly a violation.
+
+Never construct a `Labelled` by hand to give a value a better label than its inputs had. That is
+laundering, whichever crate it happens in. If a value derived from untrusted input has to be
+trusted for something to work, the design is wrong, not the label.
+
+Two places in the kernel do branch on untrusted bytes, deliberately. Both are named under Known
+costs in [docs/specs/labels.md](docs/specs/labels.md). An unlisted exception is indistinguishable
+from a violation.
+
+## Everything else is in the specs
+
+[docs/specs/](docs/specs/README.md) is the source of truth for behaviour, clause by clause, with
+the tests that pin each one. Read the spec before changing what it governs. Do not restate its
+rules here.
+
+| If the question is about | Read |
+|---|---|
+| what a label is, who may read what, how one is assigned | [labels.md](docs/specs/labels.md) |
+| where an effect may land and what may decide it | [routing.md](docs/specs/routing.md) |
+| which paths a person vouched for, and what a write records | [trust-map.md](docs/specs/trust-map.md) |
+| the one component that reads untrusted content | [processors.md](docs/specs/processors.md) |
+| a tool's arguments, refusals, or results | [tools/](docs/specs/tools/tool-surface.md) |
+| why the planner has no shell, and what `run` may do | [shell-mode.md](docs/specs/shell-mode.md), [run.md](docs/specs/tools/run.md) |
+| `@`, pasting, dropping a file | [naming-files.md](docs/specs/naming-files.md), [pasting.md](docs/specs/pasting.md), [dropping.md](docs/specs/dropping.md) |
+| when a person is asked, and what an answer grants | [prompting.md](docs/specs/prompting.md) |
+| `AGENTS.md` and skills | [skills.md](docs/specs/skills.md) |
+| which crate may do what | [layering.md](docs/specs/layering.md) |
+| shortening a long conversation | [compaction.md](docs/specs/compaction.md) |
+| what is recorded about every decision | [trace.md](docs/specs/trace.md) |
+
+Before adding a tool, ask what its routing field is and whether a person could approve that field
+alone. If they could not, it does not get built.
 
 ## Committing
+
+No co-attribution markers for Claude Code.
 
 **`make check` must pass before every commit.** Not after it, not in the next one, and not
 "probably fine". It runs fmt, clippy with `-D warnings`, and the tests, and a commit made without
@@ -489,6 +99,11 @@ Keep them small. If the message needs an "and" to describe what the commit does,
 two commits. Every commit must leave the tree building and passing, since that is the whole of
 what makes a history worth bisecting.
 
+
+## Pull requests
+
+No co-attribution markers for Claude Code or other tools.
+
 ## Conventions
 
 - **Never use an em-dash.** Not in documentation, commit messages, the README, code comments,
@@ -499,6 +114,10 @@ what makes a history worth bisecting.
   matters, not what the test does.
 - Test refusals and denials, not just happy paths. A test that would pass against the buggy
   code is worthless: verify a new test fails before the fix.
+- Specs live in docs/specs and are the source of truth for behaviour. Before writing or changing
+  one, read docs/specs/README.md: it is the specification for specs, covering clause ids, the
+  front matter, coverage, and how a spec is allowed to refer to anything outside itself. Follow it
+  rather than the shape of whatever spec you happen to be editing.
 - No new dependencies without a reason that survives scrutiny. Patterns that arrive through a
   turn are attack surface: prefer literal matching and hand-written, non-backtracking
   matchers to a regex engine.
