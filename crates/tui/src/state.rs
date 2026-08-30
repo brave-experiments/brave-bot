@@ -685,18 +685,6 @@ impl Session {
         self.transcript.push(Entry::tool(activity));
     }
 
-    /// Replace the call in flight with how it turned out.
-    ///
-    /// Matched by position, not by name: only one call runs at a time, so the running entry at
-    /// the end of the transcript is necessarily the one that just finished. A finish with no
-    /// start before it is appended rather than dropped, since losing the record of a call that
-    /// happened is worse than an unpaired line.
-    /// Show the person quarantined content the planner was not shown.
-    ///
-    /// Attached to the call that produced it, so it reads as part of that line rather than as
-    /// something the session said. Where there is no such line, which should not happen, it goes
-    /// on its own rather than being dropped: content released for a screen and then not drawn is
-    /// the worst of both.
     /// Record where the last call's result went.
     pub fn landed(&mut self, landing: Landing) {
         if let Some(entry) = self.transcript.last_mut()
@@ -706,6 +694,12 @@ impl Session {
         }
     }
 
+    /// Show the person quarantined content the planner was not shown.
+    ///
+    /// Attached to the call that produced it, so it reads as part of that line rather than as
+    /// something the session said. Where there is no such line, which should not happen, it goes
+    /// on its own rather than being dropped: content released for a screen and then not drawn is
+    /// the worst of both.
     pub fn show(&mut self, shown: Shown) {
         self.scroll = 0;
         match self.transcript.last_mut() {
@@ -720,6 +714,12 @@ impl Session {
         }
     }
 
+    /// Replace the call in flight with how it turned out.
+    ///
+    /// Matched by position, not by name: only one call runs at a time, so the running entry at
+    /// the end of the transcript is necessarily the one that just finished. A finish with no
+    /// start before it is appended rather than dropped, since losing the record of a call that
+    /// happened is worse than an unpaired line.
     pub fn finish_activity(&mut self, activity: Activity) {
         self.running = None;
         match self.transcript.last_mut() {

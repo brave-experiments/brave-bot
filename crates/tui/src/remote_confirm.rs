@@ -39,9 +39,9 @@ pub enum ToMain {
     ReadOutput(OutputRequest),
     /// A quarantined file the model would like to read. The main thread must reply.
     Vouch(VouchRequest),
-    /// The task list changed. No reply.
     /// The planner is asking the user something. The main thread must reply.
     Ask(Asking),
+    /// The task list changed. No reply.
     Todos(Vec<Row>),
     /// The model has written this many output tokens so far. No reply.
     Written(u64),
