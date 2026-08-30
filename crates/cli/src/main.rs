@@ -216,9 +216,9 @@ fn run_task(args: &[String]) -> ExitCode {
             println!("{}", outcome.reply_for_display());
             if trace {
                 let mut stderr = std::io::stderr().lock();
-                writeln!(stderr).expect("write trace separator");
+                let _ = writeln!(stderr);
                 print_trace(&mut stderr, &sink);
-                writeln!(stderr, "model: {}", outcome.model).expect("write model name");
+                let _ = writeln!(stderr, "model: {}", outcome.model);
             }
             if outcome.clean {
                 ExitCode::SUCCESS
@@ -280,10 +280,14 @@ fn piped_input(source: impl Read, is_tty: bool) -> Result<Option<String>, String
 }
 
 /// Print the audit trail: what was checked, allowed, and refused.
+///
+/// A failed write is dropped, as it is for progress. The trail describes a turn that has already
+/// happened, so a closed stderr means nobody is reading it, not that the run should die holding a
+/// reply it has already produced.
 fn print_trace(output: &mut impl Write, sink: &RecordingSink) {
     macro_rules! trace {
         ($($arg:tt)*) => {
-            writeln!(output, $($arg)*).expect("write audit trail")
+            { let _ = writeln!(output, $($arg)*); }
         };
     }
 
@@ -610,5 +614,29 @@ mod tests {
         let mut output = Vec::new();
         print_trace(&mut output, &RecordingSink::new());
         assert_eq!(String::from_utf8(output).unwrap(), "audit trail\n");
+    }
+
+    /// The trail is written after the reply is already on stdout, so a stderr nobody is reading
+    /// must not take the run down with it: the exit code still has a turn to report on.
+    #[test]
+    fn a_closed_stream_does_not_stop_the_trail() {
+        use bravebot_core::event::Sink;
+
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+        }
+
+        let mut sink = RecordingSink::new();
+        sink.emit(Event::GatePassed {
+            gate: "display",
+            detail: "assistant reply shown to the user".into(),
+        });
+        print_trace(&mut Closed, &sink);
     }
 }
