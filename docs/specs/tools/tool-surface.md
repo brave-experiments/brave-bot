@@ -20,12 +20,12 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 
 | Tool | Routing arguments | Content arguments | Result |
 |---|---|---|---|
-| [`read_file`](read-file.md) | `path`, `offset`, `limit` | none | the lines, or a reference |
+| [`read_file`](read-file.md) | `path`, `path_ref`, `offset`, `limit` | none | the lines, or a reference |
 | [`list_files`](list-files.md) | `directory`, `pattern` | none | the paths, or a reference per entry |
 | [`search`](search.md) | `pattern`, `directory`, `include` | none | matching lines, or a reference |
-| [`write_file`](write-file.md) | `path`, `contents_ref` | `contents` | confirmation |
-| [`edit_file`](edit-file.md) | `path`, `replace_all` | `old_text`, `new_text` | confirmation |
-| [`spawn_processor`](spawn-processor.md) | `reads` | `instruction` | a reference |
+| [`write_file`](write-file.md) | `path`, `path_ref`, `contents_ref` | `contents` | confirmation |
+| [`edit_file`](edit-file.md) | `path`, `path_ref`, `replace_all` | `old_text`, `new_text` | confirmation |
+| [`spawn_processor`](spawn-processor.md) | `reads`, `about` | `instruction` | a reference |
 | [`run`](run.md) | every stage's program and arguments | standard input | a reference |
 | [`read_output`](read-output.md) | the reference naming the result | none | the bytes, if a person allows it |
 | [`load_skill`](load-skill.md) | `name` | none | the skill's text |
