@@ -65,6 +65,7 @@ among what is offered.
 
 `verified-by: bravebot_tui::references::an_at_sign_offers_the_workspace`
 `verified-by: bravebot_tui::references::tab_completes_a_reference_without_disturbing_the_sentence`
+`verified-by: bravebot_tui::references::a_name_holding_an_at_sign_completes_to_itself`
 `verified-by: bravebot_tui::references::a_directory_completes_so_typing_can_continue_into_it`
 `verified-by: bravebot_tui::references::the_arrows_and_enter_choose_among_the_offered_files`
 `verified-by: bravebot_tui::references::a_finished_reference_closes_the_list`

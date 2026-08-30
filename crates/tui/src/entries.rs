@@ -156,6 +156,8 @@ mod tests {
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(path.join("crates/tui")).expect("create");
             std::fs::create_dir_all(path.join("target")).expect("create");
+            std::fs::create_dir_all(path.join(".git")).expect("create");
+            std::fs::create_dir_all(path.join("node_modules")).expect("create");
             std::fs::write(path.join("Cargo.toml"), "").expect("write");
             std::fs::write(path.join("Makefile"), "").expect("write");
             std::fs::write(path.join("crates/tui/lib.rs"), "").expect("write");
@@ -209,9 +211,13 @@ mod tests {
     #[test]
     fn noise_directories_are_not_offered() {
         let scratch = Scratch::new("noise");
+        let offered = matching(&scratch.path, "");
+        let root = paths(&offered);
+        assert!(!root.contains(&"target/"), "build output was offered");
+        assert!(!root.contains(&".git/"), "version control was offered");
         assert!(
-            !paths(&matching(&scratch.path, "")).contains(&"target/"),
-            "build output was offered"
+            !root.contains(&"node_modules/"),
+            "dependencies were offered"
         );
     }
 

@@ -81,6 +81,19 @@ fn tab_completes_a_reference_without_disturbing_the_sentence() {
     assert_eq!(session.input(), "please read @README.md ");
 }
 
+/// A name may hold an `@` of its own, and taking the offered entry has to produce exactly that
+/// entry: a line rewritten into a path nobody chose is a file nobody vouched for.
+#[test]
+fn a_name_holding_an_at_sign_completes_to_itself() {
+    let scratch = Scratch::new("at-in-name");
+    std::fs::write(scratch.path.join("logo@2x.png"), "x").expect("write");
+    let mut session = session(&scratch);
+    typing(&mut session, "look at @logo@2");
+
+    assert_eq!(handle_key(&mut session, key(KeyCode::Tab)), Action::Redraw);
+    assert_eq!(session.input(), "look at @logo@2x.png ");
+}
+
 /// A directory completes without a trailing space, so the path can be typed onwards into it. A file
 /// gets one, since the reference is finished.
 #[test]

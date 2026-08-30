@@ -1106,10 +1106,20 @@ impl Session {
                 let Some(entry) = self.highlighted_entry() else {
                     return;
                 };
-                let kept = match self.input.rfind('@') {
-                    Some(at) => self.input[..at].to_string(),
-                    None => return,
-                };
+                // The `@` that opened the reference is the one at the head of the last word,
+                // not the last `@` in the line. A file may have one in its name, and cutting
+                // there rebuilds the line around a path nobody chose: `@logo@2` plus the
+                // offered `logo@2x.png` becomes `@logo@logo@2x.png`.
+                let start = self
+                    .input
+                    .char_indices()
+                    .rev()
+                    .find(|(_, c)| c.is_whitespace())
+                    .map_or(0, |(at, c)| at + c.len_utf8());
+                if !self.input[start..].starts_with('@') {
+                    return;
+                }
+                let kept = self.input[..start].to_string();
                 let trailing = if entry.is_directory { "" } else { " " };
                 self.set_input(format!("{kept}@{}{trailing}", entry.path));
             }
