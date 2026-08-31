@@ -137,3 +137,14 @@ went is still in the audit trail, which is what the record is for.
 
 `verified-by: bravebot_tui::render::the_ordinary_landing_is_not_given_a_line_of_its_own`
 `verified-by: bravebot_tui::render::a_result_the_planner_may_not_read_still_says_so`
+
+<a id="VIEW-8"></a>
+### VIEW-8: a note from the session is not drawn as untrusted content
+
+What the session says in its own voice, the trust answer, an unavailable confinement, a status
+report, is never drawn in the ink that marks untrusted content.
+
+**Why.** That ink is spoken for twice over: a call still running, and the margin down every block
+of content the planner may not read. Drawing a note in it said the trust answer was quarantined.
+
+`verified-by: bravebot_tui::render::a_system_note_is_not_drawn_in_the_ink_that_marks_untrusted_content`
