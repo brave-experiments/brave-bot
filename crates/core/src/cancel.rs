@@ -6,8 +6,13 @@
 //!
 //! Cooperative rather than pre-emptive, and deliberately so. Killing a turn mid-effect could
 //! leave a file half written, so cancellation happens only at points where nothing is in
-//! progress: between rounds, and before each tool call. A request already on the wire runs to
-//! completion, and its result is discarded.
+//! progress: between rounds, before each tool call, and between the chunks of a streamed reply.
+//!
+//! A streamed reply is the exception that proves the rule rather than a hole in it. Reading a
+//! response body applies nothing and writes nothing, so stopping part way leaves nothing part
+//! done, and the reply was going to be discarded whatever happened. Read to the end regardless,
+//! stopping a turn took exactly as long as not stopping it, which is the case a person reaches
+//! for the key in. A request that is not streamed still runs to completion.
 //!
 //! The flag only ever goes from unset to set. Reusing a token for a second turn would risk
 //! cancelling it before it began, so each turn gets a fresh one.

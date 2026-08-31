@@ -235,7 +235,13 @@ impl From<WorkspaceError> for TurnError {
 
 impl From<bravebot_aichat::ChatError> for TurnError {
     fn from(value: bravebot_aichat::ChatError) -> Self {
-        Self::Chat(value)
+        match value {
+            // A reply stopped part way through is the person's own stop arriving back, not a
+            // failure of the call. Reported as one, it would be written into the transcript as
+            // something that went wrong with the model.
+            bravebot_aichat::ChatError::Cancelled => Self::Cancelled,
+            other => Self::Chat(other),
+        }
     }
 }
 
@@ -996,7 +1002,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let as_written = policy.authorise_display_release("the reply as the model writes it");
 
         let completion = {
-            let mut client = AichatClient::new(config, egress);
+            let mut client = AichatClient::new(config, egress).with_cancel(cancel.clone());
             if let Some(subscription) = subscription.as_mut() {
                 client = client.with_subscription(subscription);
             }

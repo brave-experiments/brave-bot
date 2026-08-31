@@ -4,9 +4,10 @@
 //! headers the server verifies, that it reaches the right path, and that the reply
 //! arrives labelled untrusted.
 
-use bravebot_aichat::AichatClient;
 use bravebot_aichat::protocol::{ChatRequest, Message};
+use bravebot_aichat::{AichatClient, ChatError};
 use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
 use bravebot_core::capability::{Capability, CapabilitySet};
 use bravebot_core::event::RecordingSink;
 use bravebot_core::label::Label;
@@ -16,6 +17,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 /// What the server received, so tests can assert on the request rather than only the
 /// response.
@@ -152,6 +154,57 @@ fn serve_stream(frames: Vec<String>) -> (String, mpsc::Receiver<Captured>) {
     });
 
     (format!("http://127.0.0.1:{port}"), receiver)
+}
+
+/// The same, with a pause between frames so each one arrives as a read of its own.
+///
+/// Needed where a test is about what happens *between* chunks. Written and flushed back to back,
+/// frames reach the client in whatever grouping the network chose, and a test that assumed one
+/// read per frame would pass or fail on that.
+fn serve_stream_paced(frames: Vec<String>, pause: std::time::Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+
+    thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("request line");
+
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).expect("body");
+
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            let _ = stream.flush();
+
+            for frame in &frames {
+                let _ = stream.write_all(frame.as_bytes());
+                let _ = stream.flush();
+                thread::sleep(pause);
+            }
+        }
+    });
+
+    format!("http://127.0.0.1:{port}")
 }
 
 /// What the server does with one connection.
@@ -423,6 +476,87 @@ fn a_response_without_content_is_an_error() {
         .complete(&mut policy, &request)
         .expect_err("no content is an error");
     assert!(error.to_string().contains("no message content"));
+}
+
+/// A person who stops a turn is asking for the answer to stop, and the answer is the stream. Read
+/// to the end regardless, stopping took exactly as long as not stopping, and the longer the reply
+/// the longer they waited for the thing they had already cancelled.
+#[test]
+fn a_stopped_stream_stops_before_the_reply_is_over() {
+    let endpoint = serve_stream_paced(
+        vec![
+            frame(r#"{"model":"served-model","choices":[{"delta":{"role":"assistant"}}]}"#),
+            frame(r#"{"choices":[{"delta":{"content":"hello"}}]}"#),
+            frame(r#"{"choices":[{"delta":{"content":" from"}}]}"#),
+            frame(r#"{"choices":[{"delta":{"content":" the model"}}]}"#),
+            frame(
+                r#"{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3}}"#,
+            ),
+            frame("[DONE]"),
+        ],
+        Duration::from_millis(20),
+    );
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let cancel = Cancel::new();
+    let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+
+    let mut reports = 0;
+    let error = client
+        .complete_streaming(&mut policy, &request, |_| {
+            reports += 1;
+            cancel.cancel();
+        })
+        .expect_err("a stopped stream produced a completion");
+
+    assert!(matches!(error, ChatError::Cancelled), "{error}");
+    assert_eq!(reports, 1, "it went on reading after the stop");
+}
+
+/// And one stopped before it began reads nothing at all, rather than the first chunk of an answer
+/// nobody is waiting for.
+#[test]
+fn a_stream_stopped_before_it_starts_reports_nothing() {
+    let endpoint = serve_stream_paced(
+        vec![
+            frame(r#"{"choices":[{"delta":{"content":"hello"}}]}"#),
+            frame("[DONE]"),
+        ],
+        Duration::from_millis(5),
+    );
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let mut client = AichatClient::new(&config, &egress).with_cancel(cancel);
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+
+    let mut reports = 0;
+    let error = client
+        .complete_streaming(&mut policy, &request, |_| reports += 1)
+        .expect_err("a stopped stream produced a completion");
+
+    assert!(matches!(error, ChatError::Cancelled), "{error}");
+    assert_eq!(reports, 0, "the reply was read anyway");
 }
 
 /// A streamed reply must arrive as the same completion a buffered one would have produced, and

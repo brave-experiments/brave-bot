@@ -100,6 +100,16 @@ offer lives for exactly one press, since it answers the press just made and the 
 answer to it. Nothing is said where the box was already empty: that press leaves, and a press that
 leaves is not one to explain.
 
+**Stopping is silent, and the prompt comes back.** Neither key says that it is stopping. A reply
+still arriving stops arriving, the prompt that was sent returns to the box for editing, and that
+is the whole of the answer. There is nothing to wait through and so nothing to report waiting on.
+
+**Why.** It used to say "cancelling…" and go on streaming the reply to the end, because a stop was
+only noticed between rounds. So the key that was supposed to stop the answer left the answer
+running and put a progress report on the screen about a key press, and the longer the reply the
+longer somebody waited for the thing they had already stopped. A tool call already running still
+finishes, since stopping one part way could leave a file half written, but nothing new starts.
+
 **Why.** The press somebody makes while an answer is going wrong in front of them is asking for
 the answer to stop, not for the session to end, and answering it by leaving takes the transcript
 and everything else with it. Ctrl-C is also how a person leaves a terminal program, which is the
@@ -129,6 +139,9 @@ runs.
 `verified-by: bravebot_tui::app::the_way_out_stops_being_offered_at_the_next_press`
 `verified-by: bravebot_tui::render::the_way_out_is_offered_where_the_line_went`
 `verified-by: bravebot_tui::app::escape_only_stops_and_ctrl_c_is_read_against_what_is_happening`
+`verified-by: bravebot_aichat::client::a_stopped_stream_stops_before_the_reply_is_over`
+`verified-by: bravebot_aichat::client::a_stream_stopped_before_it_starts_reports_nothing`
+`verified-by: bravebot_tui::state::cancelling_before_anything_happens_still_un_sends_the_prompt`
 `verified-by: bravebot_tui::app::a_key_that_would_stop_a_turn_is_answered_during_a_summary`
 `verified-by: bravebot_tui::app::escape_stops_the_turn_without_ending_the_session`
 `verified-by: bravebot_tui::app::ctrl_g_asks_for_the_editor`

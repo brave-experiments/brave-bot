@@ -13,6 +13,7 @@ pub mod models;
 pub mod protocol;
 
 use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
 use bravebot_core::event::Sink;
 use bravebot_core::label::Label;
 use bravebot_core::policy::Policy;
@@ -42,6 +43,10 @@ pub enum ChatError {
     ///
     /// Fails the request rather than falling back: see [`AichatClient::route`].
     Subscription(String),
+    /// The caller asked for the reply to stop arriving, part way through reading it.
+    ///
+    /// Never retried: it is the one error that says the answer is no longer wanted.
+    Cancelled,
 }
 
 impl fmt::Display for ChatError {
@@ -54,6 +59,7 @@ impl fmt::Display for ChatError {
             Self::Incomplete => {
                 f.write_str("the reply stopped before the server said it was finished")
             }
+            Self::Cancelled => f.write_str("the reply was stopped while it was arriving"),
             Self::Subscription(detail) => write!(
                 f,
                 "the Leo subscription could not be used: {detail}. Run `bravebot import-leo-creds` to \
@@ -124,6 +130,7 @@ pub struct AichatClient<'a> {
     config: &'a Config,
     egress: &'a Egress,
     subscription: Option<&'a mut dyn Subscription>,
+    cancel: Option<Cancel>,
 }
 
 impl<'a> AichatClient<'a> {
@@ -132,12 +139,24 @@ impl<'a> AichatClient<'a> {
             config,
             egress,
             subscription: None,
+            cancel: None,
         }
     }
 
     /// Send requests on the premium tier, spending a credential on each.
     pub fn with_subscription(mut self, subscription: &'a mut dyn Subscription) -> Self {
         self.subscription = Some(subscription);
+        self
+    }
+
+    /// Stop reading a streamed reply as soon as this says to.
+    ///
+    /// A stream only ever reads, so there is nothing part done to leave behind and no reason to
+    /// go on reading a reply nobody is waiting for. Without it, a person who has stopped the turn
+    /// watches the rest of the answer arrive first, which is the whole of what they asked to
+    /// stop. A caller that offers no way to say so is never stopped.
+    pub fn with_cancel(mut self, cancel: Cancel) -> Self {
+        self.cancel = Some(cancel);
         self
     }
 
@@ -324,6 +343,16 @@ impl<'a> AichatClient<'a> {
         let mut accumulated = StreamAccumulator::new();
 
         while let Some(piece) = stream.next_chunk()? {
+            // Per chunk, which is as near to at once as this gets. A stream is read and nothing
+            // else, so there is nothing part written to leave behind by stopping here, and the
+            // caller is throwing the reply away regardless.
+            // Per chunk, which is as near to at once as this gets. A stream is read and nothing
+            // else, so there is nothing part written to leave behind by stopping here, and the
+            // caller is throwing the reply away regardless.
+            if self.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ChatError::Cancelled);
+            }
+
             // The SSE envelope is transport structure, like the JSON envelope in `complete`: the
             // bytes are taken out to find where events begin and end, and the reply that comes out
             // is relabelled with exactly the label it arrived under.

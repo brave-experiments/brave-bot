@@ -1313,7 +1313,6 @@ fn run_command(
                 // reason it stops a turn: the way out is the press after that, at the box.
                 TermEvent::Key(key) if is_ctrl_c(key) || wants_cancel(key) => {
                     cancel.cancel();
-                    session.note("stopping…");
                 }
                 TermEvent::Mouse(mouse) => {
                     let action = handle_mouse(session, mouse);
@@ -1617,9 +1616,12 @@ fn run_turn_animated(
                     // program, but there is a turn to stop first, and a person watching an answer
                     // go wrong is asking for the answer to stop rather than for the session to
                     // end. The next press, at the box, is the one that leaves.
+                    //
+                    // Nothing is said about stopping. The stop is the prompt coming back to the
+                    // box a moment later, which is both the answer and what the person wanted;
+                    // a line saying "cancelling…" is a progress report on a key press.
                     TermEvent::Key(key) if is_ctrl_c(key) || wants_cancel(key) => {
                         cancel.cancel();
-                        session.note("cancelling…");
                     }
                     TermEvent::Key(key) => {
                         handle_key_while_working(session, key);
@@ -1645,7 +1647,6 @@ fn run_turn_animated(
                 // Set before the answer goes back, so the worker sees it as soon as it wakes.
                 if answer == crate::confirm::Answer::Interrupt {
                     cancel.cancel();
-                    session.note("cancelling…");
                 }
                 // A closed channel means the worker is already gone, so there is nothing to
                 // answer and the loop below will collect its result.
@@ -1657,7 +1658,6 @@ fn run_turn_animated(
                 // Set before the answer goes back, so the worker sees it as soon as it wakes.
                 if answer == crate::confirm::RunAnswer::Interrupt {
                     cancel.cancel();
-                    session.note("cancelling…");
                 }
                 // What was vouched for travels back with the turn's outcome, exactly as the
                 // trust map does: the tool records it on the policy, and the policy carries it
@@ -1669,7 +1669,6 @@ fn run_turn_animated(
                 let answer = crate::confirm::ask_output(terminal, &request);
                 if answer == crate::confirm::Answer::Interrupt {
                     cancel.cancel();
-                    session.note("cancelling…");
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
             }
@@ -1677,7 +1676,6 @@ fn run_turn_animated(
                 let answer = crate::confirm::ask_vouch(terminal, &request);
                 if answer == crate::confirm::Answer::Interrupt {
                     cancel.cancel();
-                    session.note("cancelling…");
                 }
                 if answer == crate::confirm::Answer::Approve {
                     // Said on the transcript because it is a standing decision the user will not
