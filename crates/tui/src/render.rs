@@ -401,9 +401,11 @@ pub fn draw(frame: &mut Frame, session: &Session) {
         frame.area().height.saturating_sub(status_height),
     );
 
-    // Beneath the box while something is being typed towards, and gone otherwise. Measured rather
-    // than reserved, so a session offering nothing gives the whole height to the transcript, and
-    // bounded so a directory of many files cannot push the transcript off the screen.
+    // Beneath the box while something is being typed towards, and gone otherwise. Built rather
+    // than counted, so a session offering nothing gives the whole height to the transcript and the
+    // rows reserved are the rows drawn: the shortcut list folds into as many columns as the width
+    // holds, so its height is not something a count of the entries can know. Bounded, so neither a
+    // directory of many files nor a narrow terminal can push the transcript off the screen.
     let offered = session.offered();
     let room = frame
         .area()
@@ -411,7 +413,8 @@ pub fn draw(frame: &mut Frame, session: &Session) {
         .saturating_sub(status_height)
         .saturating_sub(input_height + 1)
         .saturating_sub(1);
-    let offered_height = (session.rows_beneath_the_box() as u16).min(room);
+    let beneath = lines_beneath_the_box(session, frame.area().width, &offered);
+    let offered_height = (beneath.len() as u16).min(room);
 
     let areas = Layout::default()
         .direction(Direction::Vertical)
@@ -427,7 +430,7 @@ pub fn draw(frame: &mut Frame, session: &Session) {
     draw_transcript(frame, areas[0], session);
     draw_status(frame, areas[1], session);
     draw_input(frame, areas[2], session);
-    draw_offered(frame, areas[3], session, &offered);
+    frame.render_widget(Paragraph::new(beneath), areas[3]);
     draw_hint(frame, areas[4], session);
 
     // Last, over everything: the selection is of the screen rather than of any one widget, and
@@ -990,30 +993,36 @@ fn tail_of(path: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
-/// What the half-typed line could still become, one per row.
+/// Everything drawn between the box and the hint line, one per row.
 ///
-/// Commands or files, never a mixture, because the line can only be being typed towards one of
-/// them. Nothing labelled is involved either way: the commands are this program's own words, and the
-/// filenames are read out of the directory to show a person which files are in it, never to decide
-/// anything and never reaching a model from here.
-fn draw_offered(frame: &mut Frame, area: Rect, session: &Session, offered: &crate::state::Offered) {
+/// Returned rather than rendered, because the height the layout reserves has to be the height this
+/// comes to: the shortcut list folds into as many columns as the width holds, so counting the
+/// entries would not answer it.
+///
+/// What is offered is commands or files, never a mixture, because the line can only be being typed
+/// towards one of them. Nothing labelled is involved either way: the commands are this program's own
+/// words, and the filenames are read out of the directory to show a person which files are in it,
+/// never to decide anything and never reaching a model from here.
+fn lines_beneath_the_box(
+    session: &Session,
+    width: u16,
+    offered: &crate::state::Offered,
+) -> Vec<Line<'static>> {
     // Attachments first, nearest the box, because they belong to the line still in it: they are
     // what the next Enter will carry, and a file staged mid-turn appeared below the queue, which
     // reads as belonging to a prompt already gone.
-    let mut lines = attached_lines(session, area.width);
+    let mut lines = attached_lines(session, width);
     // Then waiting prompts, which describe something already done. Below the line they are no
     // part of, and still above what is offered, since a line the person believes they have sent
     // has to be visible without hunting for it.
-    lines.extend(queued_lines(session, area.width));
+    lines.extend(queued_lines(session, width));
     lines.extend(match offered {
         crate::state::Offered::Nothing => Vec::new(),
         crate::state::Offered::Commands(commands) => command_lines(session, commands),
         crate::state::Offered::Files(entries) => entry_lines(session, entries),
+        crate::state::Offered::Shortcuts => shortcut_lines(width),
     });
-    if lines.is_empty() {
-        return;
-    }
-    frame.render_widget(Paragraph::new(lines), area);
+    lines
 }
 
 /// One row per command, with what it does.
@@ -1050,6 +1059,110 @@ fn command_lines(session: &Session, offered: &[crate::app::Command]) -> Vec<Line
                 Span::raw(" ".repeat(padding)),
                 Span::styled(command.description, dim()),
             ])
+        })
+        .collect()
+}
+
+/// How the hint line says where the rest of the bindings went.
+const SHORTCUTS_HINT: &str = "? for shortcuts";
+
+/// Every key and marker, and what it does, in the order they are listed.
+///
+/// The one place they are written down, so a binding that changes cannot leave the list advertising
+/// something that no longer works. Only what a person reaches for: the readline chords that move
+/// the caret are there for the terminals that send nothing else, not because anybody looks them up.
+///
+/// The meanings are kept short deliberately. The longest of them sets the column, so a word saved
+/// here is what lets two columns fit a terminal eighty wide, and that halves the rows the list takes
+/// out of the transcript.
+const SHORTCUTS: [(&str, &str); 16] = [
+    ("!", "run a shell command"),
+    ("/", "commands"),
+    ("@", "name a file"),
+    ("?", "this list"),
+    ("enter", "send"),
+    ("shift-enter", "new line, or ctrl-j"),
+    ("tab", "take what is offered"),
+    ("esc", "clear the line"),
+    ("up / down", "earlier prompts"),
+    ("pgup / pgdn", "scroll the transcript"),
+    ("ctrl-c", "stop, clear, then exit"),
+    ("ctrl-d", "exit"),
+    ("ctrl-g", "write prompt in $EDITOR"),
+    ("ctrl-t", "show what a turn did"),
+    ("ctrl-v", "paste, pictures too"),
+    ("drag", "select, copy on release"),
+];
+
+/// The shortcuts in as many columns as the width will hold.
+///
+/// Filled down each column rather than across each row, so the markers stay together at the top of
+/// the first one: read across and `!`, `/` and `@` would be split up by whatever the width happened
+/// to be. One column when nothing else fits, and the meanings are cut to the width there rather
+/// than drawn past the edge, where the terminal would wrap them under the keys and put the list one
+/// row over the height the layout reserved for it.
+fn shortcut_lines(width: u16) -> Vec<Line<'static>> {
+    /// Blank columns between one column of the list and the next.
+    const GUTTER: usize = 3;
+    /// Where the list starts, matching the other rows drawn beneath the box.
+    const INDENT: usize = 4;
+
+    let room = (width as usize).saturating_sub(INDENT);
+    // Nothing legible fits, so nothing is drawn. Every column below is measured against this, and a
+    // width of nothing would leave them all at zero and every entry cut down to its ellipsis.
+    if room == 0 {
+        return Vec::new();
+    }
+
+    let key_column = SHORTCUTS
+        .iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(room);
+    let widest = SHORTCUTS
+        .iter()
+        .map(|(_, meaning)| meaning.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let columns = ((room + GUTTER) / (key_column + 2 + widest + GUTTER)).max(1);
+    let rows = SHORTCUTS.len().div_ceil(columns);
+    // What a meaning has to itself once the keys, the padding and the gutters are taken out. As wide
+    // as the longest wherever there is room for it, which is every width but the narrowest; zero
+    // where the keys alone fill the row, and then they are listed without their meanings rather than
+    // with the meanings running past the edge.
+    let meaning_column = widest.min(
+        (room.saturating_sub(GUTTER * (columns - 1)) / columns).saturating_sub(key_column + 2),
+    );
+
+    (0..rows)
+        .map(|row| {
+            let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+            for column in 0..columns {
+                let Some((key, meaning)) = SHORTCUTS.get(row + column * rows) else {
+                    break;
+                };
+                // Only between columns, so no row carries trailing blanks a selection would pick up.
+                if column > 0 {
+                    spans.push(Span::raw(" ".repeat(GUTTER)));
+                }
+                let key = head_of(key, key_column);
+                let gap = key_column - key.chars().count();
+                spans.push(Span::styled(key, Style::default().fg(Color::Cyan)));
+                if meaning_column == 0 {
+                    continue;
+                }
+                spans.push(Span::raw(" ".repeat(gap + 2)));
+                let shown = head_of(meaning, meaning_column);
+                let padding = meaning_column - shown.chars().count();
+                spans.push(Span::styled(shown, dim()));
+                // Padded only where another column follows, for the same reason as the gutter.
+                if row + (column + 1) * rows < SHORTCUTS.len() {
+                    spans.push(Span::raw(" ".repeat(padding)));
+                }
+            }
+            Line::from(spans)
         })
         .collect()
 }
@@ -1115,22 +1228,17 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         None => String::new(),
     };
 
-    // The commands are no longer listed here. Typing a slash lists every one of them with what it
-    // does, which is both more than this line could hold and the moment a user wants to know.
+    // Not a list of bindings any more. Every one of them, with what it does, is a `?` away, which
+    // is both more than this line could hold and the moment a person wants to know; what stays here
+    // is what the session is doing, which is the part they cannot ask for.
     //
-    // What the session is doing comes before the bindings, because the line is wider than a
-    // terminal at eighty or a hundred and twenty columns and the end of it is cut. A binding cut
-    // off is one a user learns once and remembers; a figure cut off is the one thing here they
-    // cannot know any other way.
-    //
-    // Shell mode leads the bindings for the same reason, and it is the one exception. The others
-    // change how a line is edited; this one changes where the line goes, so a user who never
-    // learns it never learns that the mode is there at all.
+    // The state comes first because the line is cut by a terminal narrower than it, and the end is
+    // what goes. A binding cut off is one somebody learns once; a figure cut off is the only thing
+    // here they have no other way to see.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  confinement {}{context}  ·  ! for shell  ·  ctrl-g editor  ·  \
-                 / for commands  ·  @ for files",
+                "  {trail}  ·  confinement {}{context}  ·  {SHORTCUTS_HINT}",
                 session.confinement
             ),
             dim(),
@@ -1777,18 +1885,99 @@ mod tests {
         assert_ne!(buffer.cell((6, 0)).expect("cell").bg, Color::Blue);
     }
 
-    /// The bindings sit after the confinement, so they are the first thing a narrow terminal cuts
-    /// off. Asserted at a width an ordinary terminal actually has, and against that row alone: the
-    /// heading names the confinement too, so matching it anywhere on the screen says nothing about
-    /// whether the hint line still carries it. Widening this to make it pass would be hiding the
-    /// truncation, and so would asserting against the whole screen again.
+    /// The way to the bindings sits after the confinement, so it is the first thing a narrow
+    /// terminal cuts off. Asserted at a width an ordinary terminal actually has, and against that
+    /// row alone: the heading names the confinement too, so matching it anywhere on the screen says
+    /// nothing about whether the hint line still carries it. Widening this to make it pass would be
+    /// hiding the truncation, and so would asserting against the whole screen again.
     #[test]
-    fn the_hint_line_says_how_to_find_the_commands_and_reports_confinement() {
+    fn the_hint_line_says_how_to_find_the_bindings_and_reports_confinement() {
         let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
-        assert!(hint.contains("ctrl-g editor"), "{hint}");
-        assert!(hint.contains("/ for commands"), "{hint}");
-        assert!(hint.contains("@ for files"), "{hint}");
+        assert!(hint.contains(SHORTCUTS_HINT), "{hint}");
         assert!(hint.contains("confinement kernel-enforced"), "{hint}");
+    }
+
+    /// The point of moving the bindings off the hint line: it has to fit where it used to be cut,
+    /// which is the narrow terminal somebody is actually working in.
+    #[test]
+    fn the_hint_line_fits_a_narrow_terminal_whole() {
+        let hint = hint_row_at(&Session::new("kernel-enforced"), 80, 24);
+        assert!(
+            hint.contains(SHORTCUTS_HINT),
+            "the line is still cut: {hint}"
+        );
+    }
+
+    /// A `?` answers what the keys are, which is what the hint line stopped listing.
+    #[test]
+    fn a_question_mark_lists_every_shortcut() {
+        let mut session = Session::new("none");
+        session.type_char('?');
+        let output = rendered_at(&session, 120, 40);
+
+        for (key, meaning) in SHORTCUTS {
+            assert!(output.contains(key), "{key} missing");
+            assert!(output.contains(meaning), "{key} has no meaning on screen");
+        }
+    }
+
+    /// The list folds into columns, so it does not push the transcript off a short terminal the way
+    /// one row per binding would.
+    #[test]
+    fn the_shortcuts_use_fewer_rows_where_the_width_allows() {
+        let wide = shortcut_lines(200).len();
+        let narrow = shortcut_lines(40).len();
+        assert!(wide < narrow, "{wide} rows wide, {narrow} narrow");
+        assert_eq!(narrow, SHORTCUTS.len(), "a narrow terminal cut a binding");
+    }
+
+    /// No row may be wider than the terminal. A row that is wraps, which puts the list a row over
+    /// the height the layout reserved for it and pushes the hint line off the screen. Swept across
+    /// every width down to nothing, since the arithmetic that fits the columns is where this would
+    /// go wrong.
+    #[test]
+    fn no_shortcut_row_runs_past_the_edge() {
+        for width in 0..=200u16 {
+            for line in shortcut_lines(width) {
+                let drawn = line.to_string();
+                assert!(
+                    drawn.chars().count() <= width as usize,
+                    "a row ran past {width}: {drawn}"
+                );
+            }
+        }
+    }
+
+    /// Nothing to choose among them, so the keys that walk a list keep their usual meanings: Tab
+    /// completing here would rewrite the line, and Up would stop reaching the history.
+    #[test]
+    fn the_shortcuts_are_not_something_to_complete() {
+        let mut session = Session::new("none");
+        session.type_char('?');
+        assert!(!session.is_completing());
+        assert!(!session.completion_would_change_the_line());
+    }
+
+    /// The hint line names the key that opens the list, and the list names it too. They are separate
+    /// strings, so this is what keeps them from disagreeing about which key to press.
+    #[test]
+    fn the_hint_and_the_list_name_the_same_key() {
+        let key = SHORTCUTS
+            .iter()
+            .find(|(_, meaning)| *meaning == "this list")
+            .map(|(key, _)| *key)
+            .expect("the list lists itself");
+        assert!(
+            SHORTCUTS_HINT.starts_with(key),
+            "the hint says {SHORTCUTS_HINT:?} and the list says {key:?}"
+        );
+
+        // And it is the key that actually opens it, rather than one the list merely claims.
+        let mut session = Session::new("none");
+        for c in key.chars() {
+            session.type_char(c);
+        }
+        assert!(session.shortcuts, "{key:?} did not open the list");
     }
 
     /// Typing a slash offers every command with what it does, which is the thing the hint line

@@ -2559,6 +2559,66 @@ mod tests {
         );
     }
 
+    /// The same for `?`: it puts the list of keys up rather than typing a character, so nothing is
+    /// left in the box to delete and pressing it again takes the list down.
+    #[test]
+    fn a_question_mark_on_an_empty_line_toggles_the_list_without_being_typed() {
+        let mut session = Session::new("none");
+
+        type_line(&mut session, "?");
+        assert!(session.shortcuts, "the list did not come up");
+        assert!(session.input().is_empty(), "the marker was typed");
+
+        type_line(&mut session, "?");
+        assert!(!session.shortcuts, "the list did not go down again");
+        assert!(session.input().is_empty(), "the marker was typed");
+    }
+
+    /// Punctuation everywhere but the head of the line. Somebody writing "what is this?" is asking
+    /// the model a question, not asking for the keys.
+    #[test]
+    fn a_question_mark_inside_a_sentence_is_punctuation() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "what is this?");
+
+        assert!(!session.shortcuts, "the list came up mid-sentence");
+        assert_eq!(session.input(), "what is this?");
+    }
+
+    /// Typing again means the reading is over, so the list goes rather than sitting under a line it
+    /// says nothing about.
+    #[test]
+    fn typing_takes_the_list_down() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "?");
+        type_line(&mut session, "a");
+
+        assert!(!session.shortcuts, "the list stayed up");
+        assert_eq!(session.input(), "a", "the character was not typed");
+    }
+
+    /// Escape takes down whatever is up, and with an empty box the list is the only thing there is.
+    #[test]
+    fn escape_takes_the_list_down() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "?");
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
+        assert!(!session.shortcuts, "the list stayed up");
+    }
+
+    /// In shell mode a `?` is a glob for the shell to expand, so it is typed like any other
+    /// character rather than putting the list up.
+    #[test]
+    fn a_question_mark_in_shell_mode_is_a_glob() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "!");
+        type_line(&mut session, "?");
+
+        assert!(!session.shortcuts, "the list came up over a command");
+        assert_eq!(session.input(), "?");
+    }
+
     #[test]
     fn enter_in_shell_mode_runs_the_line_rather_than_prompting() {
         let mut session = Session::new("none");

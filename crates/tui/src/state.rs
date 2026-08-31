@@ -235,6 +235,9 @@ pub enum Offered {
     Nothing,
     Commands(Vec<crate::app::Command>),
     Files(Vec<crate::entries::Entry>),
+    /// Every key and marker, listed under the box. Not a completion: there is nothing to choose,
+    /// which is why the keys that walk a list leave this one alone.
+    Shortcuts,
 }
 
 /// A file dropped on the box, and the marker standing for it in the line.
@@ -306,6 +309,12 @@ pub struct Session {
     /// mode rather than a character: it is never part of `input`, and the command that runs is
     /// exactly what the user sees after the marker.
     pub shell: bool,
+    /// Whether the list of keys is up.
+    ///
+    /// Like `shell`, the `?` that opens it is a mode rather than a character: it is never part of
+    /// `input`, so putting the list up and taking it down again leaves nothing behind to delete.
+    /// Opened only on an empty line, so it is never standing over a line it says nothing about.
+    pub shortcuts: bool,
     pub status: Status,
     /// Whether the audit trail is shown alongside replies.
     pub show_trail: bool,
@@ -468,6 +477,7 @@ impl Session {
             input: String::new(),
             caret: 0,
             shell: false,
+            shortcuts: false,
             status: Status::Idle,
             show_trail: false,
             scroll: 0,
@@ -768,6 +778,20 @@ impl Session {
     /// refuses. Dropping the keys instead, which is what this used to do, meant a user typing
     /// during a slow turn watched their words go nowhere with nothing to say why.
     pub fn type_char(&mut self, c: char) {
+        // `?` on an empty line puts the list of keys up rather than typing a character, and a second
+        // press takes it down again. Only on an empty line, since a `?` in a sentence is the
+        // punctuation somebody is asking a question with, and not in shell mode, where it is a glob
+        // for the shell to expand.
+        //
+        // First, so the press that closes the list is not also the press that clears it below.
+        if c == '?' && self.input.is_empty() && !self.shell {
+            self.shortcuts = !self.shortcuts;
+            return;
+        }
+        // Any other key takes it down. The question has been asked and moved on from, and somebody
+        // typing again has finished reading.
+        self.shortcuts = false;
+
         // `!` on an empty line is the mode rather than a character, which is what makes the rest of
         // the line the command verbatim. Only on an empty line: a `!` inside a sentence is
         // punctuation, and inside a command it is history expansion for the shell to deal with.
@@ -1052,6 +1076,11 @@ impl Session {
         if self.shell {
             return Offered::Nothing;
         }
+        // The list of keys takes the place of what is offered, since the two answer the same space
+        // and only one of them was asked for.
+        if self.shortcuts {
+            return Offered::Shortcuts;
+        }
         let commands = crate::app::completions(&self.input);
         if !commands.is_empty() {
             return Offered::Commands(commands);
@@ -1101,8 +1130,11 @@ impl Session {
     }
 
     /// Whether something is being offered, so the keys that walk the list belong to it.
+    ///
+    /// The shortcuts are not: there is nothing to choose among them, so Tab and the arrows keep
+    /// meaning what they mean everywhere else while the list is up.
     pub fn is_completing(&self) -> bool {
-        !matches!(self.offered(), Offered::Nothing)
+        matches!(self.offered(), Offered::Commands(_) | Offered::Files(_))
     }
 
     /// Whether taking what is offered would change the line.
@@ -1113,7 +1145,7 @@ impl Session {
     /// a user pressing Enter twice to say something perfectly well formed.
     pub fn completion_would_change_the_line(&self) -> bool {
         match self.offered() {
-            Offered::Nothing => false,
+            Offered::Nothing | Offered::Shortcuts => false,
             Offered::Commands(_) => self
                 .highlighted_completion()
                 .is_some_and(|command| command.name != self.input.trim()),
@@ -1138,23 +1170,13 @@ impl Session {
         }
     }
 
-    /// How many things are offered, for walking and for measuring the space they need.
+    /// How many things are offered, which is what bounds the cursor that walks them.
     pub fn offered_count(&self) -> usize {
         match self.offered() {
             Offered::Commands(commands) => commands.len(),
             Offered::Files(entries) => entries.len(),
-            Offered::Nothing => 0,
+            Offered::Nothing | Offered::Shortcuts => 0,
         }
-    }
-
-    /// Rows drawn beneath the box: what is attached, then what is offered.
-    ///
-    /// Separate from [`Session::offered_count`], which bounds the completion cursor and must stay
-    /// a count of the offered list alone. Folding attachments into that would let the cursor walk
-    /// off the end of what it is choosing between.
-    pub fn rows_beneath_the_box(&self) -> usize {
-        // Two rows a piece: the prompt, and the word saying it has not gone yet.
-        self.queued.len() * 2 + self.attached_to_the_line().count() + self.offered_count()
     }
 
     /// Move down what is offered, stopping at the end.
@@ -1210,7 +1232,7 @@ impl Session {
                 let trailing = if entry.is_directory { "" } else { " " };
                 self.set_input(format!("{kept}@{}{trailing}", entry.path));
             }
-            Offered::Nothing => return,
+            Offered::Nothing | Offered::Shortcuts => return,
         }
         self.completion = 0;
     }
@@ -1630,6 +1652,9 @@ impl Session {
             // The mode goes with the line. Escape means "never mind this", and leaving the marker
             // behind would arm the next thing typed as a command.
             self.shell = false;
+            // And so does the list of keys: Escape takes down whatever is up, and on an empty line
+            // the list is the only thing there is to take down.
+            self.shortcuts = false;
         }
     }
 

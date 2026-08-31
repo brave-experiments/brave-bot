@@ -27,13 +27,17 @@ fn screen(session: &Session) -> String {
     rows(session, 80, 24).join("\n")
 }
 
+/// The mode has to be discoverable, or a user who never learns it never learns it is there. The
+/// hint line no longer lists any binding, so the shortcuts are where this is answered, and the `!`
+/// has to be among them.
 #[test]
-fn the_hint_offers_shell_mode() {
-    let session = Session::new("kernel-enforced");
+fn the_shortcuts_offer_shell_mode() {
+    let mut session = Session::new("kernel-enforced");
+    session.type_char('?');
+    let drawn = rows(&session, 100, 40).join("\n");
     assert!(
-        screen(&session).contains("! for shell"),
-        "a user has no way to discover the mode:\n{}",
-        screen(&session)
+        drawn.contains("run a shell command"),
+        "a user has no way to discover the mode:\n{drawn}"
     );
 }
 

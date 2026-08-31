@@ -329,6 +329,46 @@ for the first time needs to know is that they may simply ask.
 `verified-by: bravebot_tui::render::the_invitation_comes_back_when_the_line_does_not`
 `verified-by: bravebot_tui::render::the_invitation_is_not_offered_where_the_line_is_a_command`
 
+<a id="INPUT-13"></a>
+### INPUT-13: `?` on an empty line lists every key, and the hint line says only that
+
+The marker is a mode rather than a character, as `!` is (INPUT-2, [shell-mode.md](shell-mode.md)):
+nothing is typed into the box, the invitation stays where it was, and there is nothing to delete
+afterwards. A second `?` takes the list down, as does Escape or typing anything else. Only on an
+empty line, since a `?` in a sentence is the punctuation somebody is asking a question with, and in
+shell mode it is a glob for the shell to expand.
+
+The list is not a completion. There is nothing in it to choose, so Tab and the arrows go on meaning
+what they mean everywhere else while it is up.
+
+It is the one place the keys are written down, so a binding that changes cannot leave the list
+advertising something that no longer works. It folds into as many columns as the width holds, and no
+row runs past the edge: a row that wrapped would put the list a row over the height reserved for it
+and push the hint line off the screen.
+
+The hint line carries what the session is doing (the trail, the confinement, how full the context
+is) and then `? for shortcuts`. It lists no binding of its own.
+
+**Why.** The bindings and the state were on one line together, and the line was wider than the
+terminal, so the end of it was cut. Everything a person could look up was taking room from the two
+figures they had no other way to see. A binding cut off is one somebody learns once; a context
+reading cut off is gone. Moving the bindings behind a key they can press when they want them is what
+lets the line fit a terminal eighty wide whole.
+
+`verified-by: bravebot_tui::app::a_question_mark_on_an_empty_line_toggles_the_list_without_being_typed`
+`verified-by: bravebot_tui::app::a_question_mark_inside_a_sentence_is_punctuation`
+`verified-by: bravebot_tui::app::a_question_mark_in_shell_mode_is_a_glob`
+`verified-by: bravebot_tui::app::typing_takes_the_list_down`
+`verified-by: bravebot_tui::app::escape_takes_the_list_down`
+`verified-by: bravebot_tui::render::a_question_mark_lists_every_shortcut`
+`verified-by: bravebot_tui::render::the_shortcuts_are_not_something_to_complete`
+`verified-by: bravebot_tui::render::the_shortcuts_use_fewer_rows_where_the_width_allows`
+`verified-by: bravebot_tui::render::no_shortcut_row_runs_past_the_edge`
+`verified-by: bravebot_tui::render::the_hint_line_says_how_to_find_the_bindings_and_reports_confinement`
+`verified-by: bravebot_tui::render::the_hint_line_fits_a_narrow_terminal_whole`
+`verified-by: bravebot_tui::render::the_hint_and_the_list_name_the_same_key`
+`verified-by: bravebot_tui::shell_mode::the_shortcuts_offer_shell_mode`
+
 ## Known costs
 
 - **A stopped request leaves a thread and a socket behind.** The reply goes on being read by
