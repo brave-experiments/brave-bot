@@ -734,14 +734,70 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// An id that sorts by when it was made and cannot collide with another process's.
+/// A session's name: a version 4 UUID.
+///
+/// Opaque on purpose. It used to be the time and the process id, which sorted by age and read as
+/// two facts about the machine that made it, neither of which is anybody's business once the name
+/// is printed on a screen and pasted into a command. Nothing orders sessions by id: the list is
+/// sorted on what the record says it was last written.
+///
+/// Random rather than counted, so two of them cannot collide however many processes are running
+/// and whatever the clock does.
 fn new_id() -> String {
-    format!("{}-{}", now(), std::process::id())
+    use rand::RngCore;
+
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    // The version and variant bits, so what comes out is a well-formed UUID rather than thirty-two
+    // hex characters that merely look like one.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    let mut id = String::with_capacity(36);
+    for (at, byte) in bytes.iter().enumerate() {
+        if matches!(at, 4 | 6 | 8 | 10) {
+            id.push('-');
+        }
+        id.push_str(&format!("{byte:02x}"));
+    }
+    id
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The name is printed on the way out and pasted into a command, so it has to be the shape a
+    /// person recognises as an id and nothing else. It used to be the time and the process id.
+    #[test]
+    fn a_session_is_named_by_a_uuid() {
+        let id = new_id();
+
+        assert_eq!(id.len(), 36, "{id}");
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12],
+            "{id}"
+        );
+        assert!(
+            id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+            "{id} is not hexadecimal"
+        );
+        assert!(parts[2].starts_with('4'), "not version 4: {id}");
+        assert!(
+            parts[3].starts_with(['8', '9', 'a', 'b']),
+            "not the RFC 4122 variant: {id}"
+        );
+    }
+
+    /// Two sessions must never be one session. Counted or clocked ids collided when two processes
+    /// started in the same second, which is exactly what happens when somebody opens two windows.
+    #[test]
+    fn no_two_sessions_are_given_the_same_name() {
+        let names: std::collections::BTreeSet<String> = (0..64).map(|_| new_id()).collect();
+        assert_eq!(names.len(), 64, "an id came up twice");
+    }
 
     #[test]
     fn a_working_directory_becomes_one_readable_segment() {
@@ -805,19 +861,6 @@ mod tests {
         assert_eq!(size(512), "512B");
         assert_eq!(size(182_374), "178.1KB");
         assert_eq!(size(3_774_874), "3.6MB");
-    }
-
-    /// Two sessions started in the same second must not write to the same pair of files. They
-    /// are different processes, which is what the second half of the id says.
-    #[test]
-    fn an_id_names_the_process_as_well_as_the_time() {
-        let id = new_id();
-        let (time, process) = id.split_once('-').expect("an id has both halves");
-        assert!(
-            time.parse::<u64>().is_ok(),
-            "{id} does not start with a time"
-        );
-        assert_eq!(process, std::process::id().to_string());
     }
 
     /// A scratch checkout, so the test says what the code reads rather than what this machine

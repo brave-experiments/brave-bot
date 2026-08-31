@@ -26,7 +26,16 @@ Records live under one directory per working directory, so the list worth seeing
 one project is not the list from another. Each session is two files: the record, holding what the
 picker shows and what a resume needs, and the trail, appended a turn at a time.
 
+A session is named by a version 4 UUID, and the two files are named after it. Random rather than
+counted or clocked, so two sessions cannot collide however many are running, and opaque because the
+name is printed on a screen and pasted into a command: it used to be the time and the process id,
+which is two facts about the machine that are nobody's business by then. Nothing orders sessions by
+it; the list is sorted on what each record says it was last written.
+
 `verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
+`verified-by: bravebot_tui::sessions::a_session_is_named_by_a_uuid`
+`verified-by: bravebot_tui::sessions::no_two_sessions_are_given_the_same_name`
+`verified-by: bravebot_tui::sessions::a_list_puts_the_most_recently_written_session_first`
 `verified-by: bravebot_tui::sessions::a_working_directory_becomes_one_readable_segment`
 `verified-by: bravebot_tui::sessions::a_path_with_nothing_in_it_still_names_a_directory`
 

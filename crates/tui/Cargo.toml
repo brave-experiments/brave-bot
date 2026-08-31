@@ -19,6 +19,9 @@ bravebot-config = { path = "../config" }
 bravebot-core = { path = "../core" }
 bravebot-net = { path = "../net" }
 bravebot-sandbox = { path = "../sandbox" }
+# Already in the tree for the credential protocol; here it names a session, which has to be
+# opaque and collide with nothing, and OsRng is the source that gives both.
+rand = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
