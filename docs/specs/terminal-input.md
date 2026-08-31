@@ -104,6 +104,10 @@ leaves is not one to explain.
 still arriving stops arriving, the prompt that was sent returns to the box for editing, and that
 is the whole of the answer. There is nothing to wait through and so nothing to report waiting on.
 
+The prompt stays sent, marked stopped, where either of two things is true: the turn had already
+done something that is on the screen, or there are prompts waiting behind it. Both mean there is
+an order to keep, and a line put back in the box would be out of it.
+
 **Why.** It used to say "cancelling…" and go on streaming the reply to the end, because a stop was
 only noticed between rounds. So the key that was supposed to stop the answer left the answer
 running and put a progress report on the screen about a key press, and the longer the reply the
@@ -245,13 +249,21 @@ is queued, not when it is sent, because a file the person took off the line afte
 part of that prompt. It is in the prompt history from the moment it is queued, since from the
 person's side that is when they sent it.
 
-Stopping a turn leaves the queue alone. The stopped prompt comes back to the box, the next
-waiting prompt begins its turn as it would after any turn, and the rest go on waiting in order.
+Stopping a turn leaves the queue alone. The next waiting prompt begins its turn as it would after
+any turn, and the rest go on waiting in order.
+
+The stopped prompt does **not** come back to the box when something is waiting. It stays in the
+transcript as sent, marked stopped, and the box stays empty for whatever the person types next.
 
 **Why.** A stop is aimed at the turn in flight, and nothing else. The prompts behind it are ones
 the person typed and has not taken back, so throwing them away made stopping a turn that had gone
 wrong cost every prompt they had queued while it went wrong, which is a reason not to press the
 key at all.
+
+Un-sending it in front of them would be worse than losing it. The conversation has to read in the
+order it happened, and a prompt lifted back out of it while the two typed after it are still
+running is in neither place: gone from the transcript, and sitting in a box that is about to be
+wanted for the next thing.
 
 Shift-Enter still starts a line rather than sending it, so a paragraph can be written mid-turn and
 is not sent half-finished.
@@ -267,6 +279,8 @@ while the first is in flight, and the queue is what makes that refusal visible i
 `verified-by: bravebot_tui::state::a_waiting_prompt_goes_when_the_turn_ends`
 `verified-by: bravebot_tui::state::waiting_prompts_go_in_the_order_they_were_typed`
 `verified-by: bravebot_tui::state::stopping_a_turn_keeps_what_was_waiting_behind_it`
+`verified-by: bravebot_tui::state::a_stopped_prompt_stays_sent_where_others_are_waiting`
+`verified-by: bravebot_tui::state::a_stopped_prompt_comes_back_where_nothing_is_waiting`
 `verified-by: bravebot_tui::state::a_waiting_prompt_is_in_the_history_already`
 `verified-by: bravebot_tui::state::there_is_nothing_to_queue_when_the_line_is_blank_or_nothing_is_running`
 `verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`

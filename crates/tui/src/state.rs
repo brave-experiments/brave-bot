@@ -1561,10 +1561,12 @@ impl Session {
         self.completion = 0;
     }
 
-    /// Put a submitted prompt back for editing after its turn was cancelled.
+    /// Settle a turn that was stopped: either un-sent whole, or recorded as having stopped.
     ///
     /// The text returns to the box so a user who changed their mind can adjust it rather than
-    /// retype it, which is the whole point of cancelling rather than waiting.
+    /// retype it, which is the whole point of cancelling rather than waiting. Two things stop
+    /// that, and both mean the prompt stays sent: work that is already on the screen, and prompts
+    /// waiting behind this one.
     pub fn restore(&mut self, prompt: impl Into<String>) {
         self.status = Status::Idle;
         self.started = None;
@@ -1577,12 +1579,19 @@ impl Session {
         // safe whatever left the mode armed.
         self.shell = false;
 
-        // Nothing was recorded after the prompt, so there is nothing to have second thoughts
-        // about: the turn can be un-sent whole.
-        if !matches!(self.transcript.last(), Some(entry) if entry.speaker == Speaker::User) {
-            // Otherwise the turn visibly did things, some of which touched the workspace.
-            // Putting the prompt back would offer to redo work that is on the screen, and
-            // removing what happened would hide it, so both stay and the stop is recorded.
+        // Un-sent whole only where nothing was recorded after the prompt and nothing is waiting
+        // behind it. Either one means there is something to have second thoughts about.
+        let waiting = !self.queued.is_empty();
+        if waiting
+            || !matches!(self.transcript.last(), Some(entry) if entry.speaker == Speaker::User)
+        {
+            // The turn visibly did things, some of which touched the workspace. Putting the
+            // prompt back would offer to redo work that is on the screen, and removing what
+            // happened would hide it, so both stay and the stop is recorded.
+            //
+            // Or the person has queued more prompts, and the next of them is about to go. The
+            // box belongs to what they type next, not to a line they sent before the two that
+            // are still to run, and the conversation has to read in the order it happened.
             let todos = std::mem::take(&mut self.todos);
             self.transcript
                 .push(Entry::system("stopped").with_todos(todos));
@@ -3108,6 +3117,53 @@ mod tests {
         assert_eq!(s.send_queued().as_deref(), Some("second"));
         s.complete("another", Vec::new(), 0);
         assert_eq!(s.send_queued().as_deref(), Some("third"));
+    }
+
+    /// A prompt with others waiting behind it stays sent. The box is about to be needed for the
+    /// next of them, and un-sending this one would put a line back there while the turns it was
+    /// sent before go on running, out of the order the person typed them in.
+    #[test]
+    fn a_stopped_prompt_stays_sent_where_others_are_waiting() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        s.queue();
+
+        s.restore("first");
+
+        assert_eq!(s.input(), "", "the stopped prompt went back into the box");
+        assert!(
+            s.transcript
+                .iter()
+                .any(|entry| entry.speaker == Speaker::User && entry.text == "first"),
+            "the stopped prompt was un-sent"
+        );
+        assert!(
+            s.transcript
+                .last()
+                .is_some_and(|entry| entry.text == "stopped"),
+            "nothing recorded that it stopped"
+        );
+    }
+
+    /// And with nothing behind it there is nothing to keep the order of, so it is un-sent whole
+    /// and comes back for editing, which is the point of stopping rather than waiting.
+    #[test]
+    fn a_stopped_prompt_comes_back_where_nothing_is_waiting() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+
+        s.restore("first");
+
+        assert_eq!(s.input(), "first");
     }
 
     /// A stop is aimed at the turn in flight. The prompts behind it are ones the person typed and
