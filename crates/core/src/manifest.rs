@@ -12,13 +12,13 @@
 //!
 //! # What validation is for
 //!
-//! Not defence against a hostile planner. A [`Draft`] only ever reaches [`validate`] after
-//! the adopting gate has established that it came from a context holding nothing untrusted,
-//! so it is trusted content and examining it decides nothing an attacker steers. Validation
-//! is what makes the frozen program *well formed*: every slot read was written by an earlier
-//! step, no slot is written twice, no path leaves the workspace, and nothing reads anything
-//! after the first action. Those are the properties the driver relies on to run without
-//! asking questions, and a manifest that fails one of them is refused whole.
+//! Not defence against a hostile planner. [`validate`] is crate-private: the only
+//! caller is [`crate::policy::Policy::adopt_manifest`], which has already established
+//! that the draft came from a context holding nothing untrusted. Validation is what
+//! makes the frozen program *well formed*: every slot read was written by an earlier
+//! step, no slot is written twice, no path leaves the workspace, and nothing reads
+//! anything after the first action. Those are the properties the driver relies on to
+//! run without asking questions, and a manifest that fails one of them is refused whole.
 //!
 //! # Tiers
 //!
@@ -617,7 +617,7 @@ pub fn tools() -> Vec<(&'static str, Tier)> {
 /// The order of the checks is not arbitrary. Slot bookkeeping happens as the walk proceeds, so
 /// "read before written" is decided by position rather than by a second pass: a plan whose
 /// steps are in the wrong order fails for that reason, not for a missing slot.
-pub fn validate(draft: &Draft) -> Result<Manifest, ManifestError> {
+pub(crate) fn validate(draft: &Draft) -> Result<Manifest, ManifestError> {
     if draft.steps.is_empty() {
         return Err(ManifestError::Empty);
     }
