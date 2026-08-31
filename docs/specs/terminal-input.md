@@ -336,3 +336,9 @@ for the first time needs to know is that they may simply ask.
   connection that has died. It costs a thread and a socket for that long, and it is the price of
   answering the person at once: the alternative is waiting for a read that cannot be interrupted.
   Nothing that thread does is visible, since it holds no policy, no workspace and no tool.
+- **Asking the terminal about itself at startup can eat what was typed into that moment.** The
+  question about the background is asked once, before the first frame, and the answer is read off
+  the tty directly. Anything typed or pasted in the window before the answer arrives is read by
+  that same call and discarded, and a terminal that answers with nothing keeps the window open for
+  its full 80 ms. It is bounded, it is once per session, and it is before there is a box to type
+  into, which is why it is a cost and not a clause.
