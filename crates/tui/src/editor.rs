@@ -22,13 +22,13 @@ use std::process::Command;
 /// What to open when nothing is configured, in the order they are tried.
 ///
 /// A guess, and kept to editors that open in the terminal the key was pressed in, so finishing
-/// puts the user back where they were. `nano` first because someone who never set `$EDITOR` is
-/// the person this list is for, and it is the one they can leave without being told how.
+/// puts the user back where they were. The full editors come first: someone with `vim` or `emacs`
+/// installed almost certainly reaches for it, and `nano` is the last resort rather than the first.
 ///
 /// Only reached when the user has said nothing. A configured editor that will not start is an
 /// answer, not a reason to run something they did not choose.
 #[cfg(not(windows))]
-const FALLBACKS: &[&str] = &["nano", "vim", "vi"];
+const FALLBACKS: &[&str] = &["vim", "vi", "emacs", "nano"];
 
 #[cfg(windows)]
 const FALLBACKS: &[&str] = &["notepad"];
@@ -151,21 +151,24 @@ fn tidy(text: &mut String) {
 
 /// Run an editor on `path` and wait for it.
 fn open_in_an_editor(path: &Path) -> Result<(), Failure> {
-    let Some(command) = configured() else {
-        for fallback in FALLBACKS {
-            if let Some((program, arguments)) = command_line(fallback) {
-                return start(&program, &arguments, path);
-            }
-        }
-        return Err(Failure::NoEditor);
+    let (program, arguments) = which_editor(configured())?;
+    start(&program, &arguments, path)
+}
+
+/// The editor to run, given whatever the user configured.
+fn which_editor(command: Option<String>) -> Result<(PathBuf, Vec<String>), Failure> {
+    let Some(command) = command else {
+        return FALLBACKS
+            .iter()
+            .find_map(|fallback| command_line(fallback))
+            .ok_or(Failure::NoEditor);
     };
 
-    match command_line(&command) {
-        Some((program, arguments)) => start(&program, &arguments, path),
-        None => Err(Failure::Editor(format!(
+    command_line(&command).ok_or_else(|| {
+        Failure::Editor(format!(
             "'{command}' was not found, and $VISUAL or $EDITOR names it, so nothing else was tried"
-        ))),
-    }
+        ))
+    })
 }
 
 /// The editor the user configured, if they configured one.
@@ -201,11 +204,19 @@ fn command_line(command: &str) -> Option<(PathBuf, Vec<String>)> {
     // directory is what such a name means to whoever exported it.
     let working = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    let (program, mut arguments) = match bravebot_agent::programs::resolve(command, &working) {
+    split(command, |name| lookup(name, &working))
+}
+
+/// Split a command into a program and its arguments, with finding the program left to the caller.
+///
+/// Separated so the splitting and the flag can be tested against an installation laid out like a
+/// real one, without a machine that has that editor on its `$PATH`.
+fn split(command: &str, find: impl Fn(&str) -> Option<PathBuf>) -> Option<(PathBuf, Vec<String>)> {
+    let (program, mut arguments) = match find(command) {
         Some(program) => (program, Vec::new()),
         None => {
             let mut words = command.split_whitespace();
-            let program = bravebot_agent::programs::resolve(words.next()?, &working)?;
+            let program = find(words.next()?)?;
             (program, words.map(str::to_string).collect())
         }
     };
@@ -214,6 +225,68 @@ fn command_line(command: &str) -> Option<(PathBuf, Vec<String>)> {
         arguments.extend(waiting_flag(&program));
     }
     Some((program, arguments))
+}
+
+/// Find the editor `command` names, keeping the name it was found under.
+///
+/// The shared lookup canonicalises, because an approval recorded against a program has to name the
+/// file that actually ran and not a symlink that may be repointed. An editor is started rather than
+/// approved, and here the name is part of what was asked for: MacVim installs `vim`, `vi` and
+/// `gvim` as links to one shim that reads its own `argv[0]` and opens a detached window for the
+/// `m*` and `g*` spellings. Resolved through the link it becomes `mvim`, so asking for `vim` got a
+/// GUI window and a prompt that came straight back. Started the way the shell would start it, under
+/// the name on the `$PATH`, it stays in the terminal.
+///
+/// So the file is located with the shared lookup, which decides whether the name is a program at
+/// all, and then the path that was not canonicalised is what runs.
+///
+/// The name has to be looked for where the shell would look for it, not in the directory the
+/// canonicalised file turned out to live in. MacVim's bundle holds a `vim` link but no `vi` one:
+/// `vi` is a link in the Homebrew directory on the `$PATH`, and joining the name onto the bundle
+/// found nothing.
+fn lookup(command: &str, working: &Path) -> Option<PathBuf> {
+    let resolved = bravebot_agent::programs::resolve(command, working)?;
+
+    let named = if Path::new(command).is_absolute() {
+        PathBuf::from(command)
+    } else if command.contains('/') || (cfg!(windows) && command.contains('\\')) {
+        working.join(command)
+    } else {
+        let path = std::env::var_os("PATH")?;
+        by_name(command, &resolved, std::env::split_paths(&path))?
+    };
+
+    // Only where it is still the same program by another name. A link pointing somewhere else, or
+    // a name that no longer resolves, is not something to run on a guess.
+    if same_file(&named, &resolved) {
+        Some(named)
+    } else {
+        Some(resolved)
+    }
+}
+
+/// Where on the `$PATH` `command` names the same file the lookup settled on.
+///
+/// The first entry holding it, exactly as the shell would find it. An empty entry means the current
+/// directory and is skipped for the reason the shared lookup skips it: a file in the workspace has
+/// no business shadowing a program.
+fn by_name(
+    command: &str,
+    resolved: &Path,
+    directories: impl Iterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    directories
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .map(|directory| directory.join(command))
+        .find(|candidate| same_file(candidate, resolved))
+}
+
+/// Whether two paths reach one file, links and all.
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// The flag that makes `program` wait, if it is one of the ones that needs telling.
@@ -273,6 +346,194 @@ mod tests {
             Some("vi".into())
         );
         assert_eq!(chosen(Some("   ".into()), None), None);
+    }
+
+    /// A scratch directory, removed with the test.
+    struct Scratch {
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("bravebot-editor-{name}"));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create");
+            Self { path }
+        }
+
+        #[cfg(unix)]
+        fn program(&self, name: &str) -> PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.path.join(name);
+            std::fs::write(&path, "#!/bin/sh\n").expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// MacVim installs `vim`, `vi` and `gvim` as links to one shim that reads its own `argv[0]` and
+    /// opens a detached GUI window for the `m*` and `g*` spellings. Resolved through the link, a
+    /// request for `vim` became `mvim`: a window opened, the process forked, and the prompt came
+    /// straight back unedited. The name is part of what was asked for, so it survives the lookup.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_reached_through_a_link_keeps_the_name_it_was_asked_for() {
+        let scratch = Scratch::new("named");
+        scratch.program("mvim");
+        let asked = scratch.path.join("vim");
+        std::os::unix::fs::symlink("mvim", &asked).expect("link");
+
+        let found = lookup(asked.to_str().unwrap(), &scratch.path).expect("the editor is found");
+
+        assert_eq!(
+            found.file_name().unwrap(),
+            "vim",
+            "the editor was started under the name the link points at, not the one asked for"
+        );
+    }
+
+    /// The real path from a configured editor to what runs, which is where the fix has to be wired
+    /// in. An absolute path needs no `$PATH`, so the whole of `command_line` can be checked here: a
+    /// link to the shim is started as the link, not as what it points at.
+    #[cfg(unix)]
+    #[test]
+    fn a_configured_link_to_a_gui_shim_runs_as_the_link() {
+        let scratch = Scratch::new("configured");
+        scratch.program("mvim");
+        let asked = scratch.path.join("vim");
+        std::os::unix::fs::symlink("mvim", &asked).expect("link");
+
+        let (program, arguments) =
+            command_line(asked.to_str().unwrap()).expect("the editor is found");
+
+        assert_eq!(
+            program, asked,
+            "the configured editor ran under the shim's own name, which forks a GUI window"
+        );
+        assert!(arguments.is_empty());
+    }
+
+    /// The whole choice, against an installation laid out the way MacVim's is: `vim` and `vi` on
+    /// the `$PATH` are links into a bundle holding one shim, which reads its own `argv[0]` and
+    /// forks a GUI window for the `m*` spellings. What runs has to be the name that was asked for,
+    /// and no waiting flag belongs on a terminal editor.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_editor_behind_a_gui_shim_is_started_under_its_own_name() {
+        let scratch = Scratch::new("macvim");
+        let bundle = scratch.path.join("MacVim.app/Contents/bin");
+        std::fs::create_dir_all(&bundle).expect("create");
+        let shim = bundle.join("mvim");
+        std::fs::write(&shim, "#!/bin/sh\n").expect("write");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        std::os::unix::fs::symlink("mvim", bundle.join("vim")).expect("link");
+        for name in ["vim", "vi"] {
+            std::os::unix::fs::symlink(bundle.join("vim"), scratch.path.join(name)).expect("link");
+        }
+
+        for name in ["vim", "vi"] {
+            let (program, arguments) = split(name, |command| {
+                by_name(command, &shim, [scratch.path.clone()].into_iter())
+            })
+            .expect("the editor is found");
+
+            assert_eq!(
+                program,
+                scratch.path.join(name),
+                "{name} was started under the shim's own name, which forks a GUI window"
+            );
+            assert!(
+                arguments.is_empty(),
+                "a terminal editor was given {arguments:?}"
+            );
+        }
+    }
+
+    /// The name is looked for where the shell would look for it. MacVim's bundle holds a `vim` link
+    /// but no `vi` one: `vi` lives in the directory that is actually on the `$PATH`, so searching
+    /// the directory the canonicalised file turned out to be in found nothing and `vi` went on
+    /// opening a GUI window after `vim` had been fixed.
+    #[cfg(unix)]
+    #[test]
+    fn the_name_is_looked_for_on_the_path_not_beside_the_resolved_file() {
+        let scratch = Scratch::new("bundle");
+        let bundle = scratch.path.join("bundle");
+        std::fs::create_dir_all(&bundle).expect("create");
+        let shim = bundle.join("mvim");
+        std::fs::write(&shim, "#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        // On the `$PATH`, and the only place this spelling exists.
+        let on_path = scratch.path.join("vi");
+        std::os::unix::fs::symlink(&shim, &on_path).expect("link");
+
+        let found = by_name("vi", &shim, [scratch.path.clone()].into_iter())
+            .expect("the name is found on the path");
+
+        assert_eq!(found, on_path);
+    }
+
+    /// An empty `$PATH` entry means the current directory, and a file in the workspace has no
+    /// business shadowing the editor.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_path_entry_is_not_searched() {
+        let scratch = Scratch::new("empty-entry");
+        let real = scratch.program("vim");
+
+        let found = by_name("vim", &real, [PathBuf::new()].into_iter());
+
+        assert!(found.is_none());
+    }
+
+    /// The name only survives while it is the same program. A link repointed at something else is
+    /// not an editor to start on a guess.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_no_longer_the_same_program_falls_back_to_the_resolved_path() {
+        let scratch = Scratch::new("elsewhere");
+        let real = scratch.program("emacs");
+
+        let found = lookup(real.to_str().unwrap(), &scratch.path).expect("the editor is found");
+
+        assert_eq!(found.canonicalize().unwrap(), real.canonicalize().unwrap());
+    }
+
+    /// Someone with `vim` or `emacs` installed chose to install it, and opening `nano` at them
+    /// instead is a guess overriding an answer they already gave. `nano` stays on the list for the
+    /// person who has neither, and stays last.
+    #[test]
+    fn a_full_editor_is_preferred_to_the_last_resort() {
+        let order = |name: &str| FALLBACKS.iter().position(|entry| *entry == name);
+
+        assert!(order("vim") < order("nano"));
+        assert!(order("vi") < order("nano"));
+        assert!(order("emacs") < order("nano"));
+        assert_eq!(order("nano"), Some(FALLBACKS.len() - 1));
+    }
+
+    /// A name the user exported is an answer. Trying the list after it would open an editor they
+    /// did not choose and leave them thinking their configuration had worked.
+    #[test]
+    fn a_configured_editor_that_will_not_start_ends_the_search() {
+        let outcome = which_editor(Some("definitely-not-an-editor-on-this-machine".to_string()));
+
+        assert!(
+            matches!(outcome, Err(Failure::Editor(_))),
+            "the fallback list was tried behind a configured editor"
+        );
     }
 
     /// The whole point of the round trip: what was saved is what comes back.

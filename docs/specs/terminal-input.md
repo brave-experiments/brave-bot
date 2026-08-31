@@ -137,9 +137,6 @@ was in the box: the key for abandoning a thought ended the session as soon as th
 short enough, and pressing it twice in a row meant two different things, the second of which was
 the exit. One way out, and it is the one people already reach for.
 
-Ctrl-G opens `$VISUAL` or `$EDITOR` and takes back what was saved, and does nothing while a turn
-runs.
-
 `verified-by: bravebot_tui::app::escape_clears_a_typed_line_without_quitting`
 `verified-by: bravebot_tui::app::escape_on_an_empty_line_does_not_quit`
 `verified-by: bravebot_tui::app::escape_twice_clears_and_stays`
@@ -159,7 +156,6 @@ runs.
 `verified-by: bravebot_tui::app::a_key_that_would_stop_a_turn_is_answered_during_a_summary`
 `verified-by: bravebot_tui::app::escape_stops_the_turn_without_ending_the_session`
 `verified-by: bravebot_tui::app::ctrl_g_asks_for_the_editor`
-`verified-by: bravebot_tui::app::the_editor_key_does_nothing_while_a_turn_runs`
 
 
 <a id="INPUT-5"></a>
@@ -368,6 +364,78 @@ lets the line fit a terminal eighty wide whole.
 `verified-by: bravebot_tui::render::the_hint_line_fits_a_narrow_terminal_whole`
 `verified-by: bravebot_tui::render::the_hint_and_the_list_name_the_same_key`
 `verified-by: bravebot_tui::shell_mode::the_shortcuts_offer_shell_mode`
+
+<a id="INPUT-14"></a>
+### INPUT-14: Ctrl-G edits the line in the user's own editor, and only what was saved comes back
+
+The editor opens on what has been typed so far, so the key continues a prompt rather than starting
+it again, and what was saved replaces the line. Quitting without saving leaves the line exactly as
+it was, and so does an editor that failed or was killed: neither says anything about what the user
+wanted. The trailing newline an editor leaves is dropped, one only, and line endings come back the
+way a paste's do. The file the editor opened is the user's own words, is readable by nobody else,
+and does not outlive the edit down any path. The key does nothing while a turn runs.
+
+**Why.** A prompt worth thinking about outgrows a box ten rows tall with nothing to search or
+reflow with. The failure that matters is the one that blanks a paragraph somebody just wrote, so
+every path that does not end in a save ends in the line untouched. Handing the terminal to an
+editor mid-turn would take the screen from the turn drawing on it.
+
+`verified-by: bravebot_tui::app::ctrl_g_asks_for_the_editor`
+`verified-by: bravebot_tui::app::the_editor_key_does_nothing_while_a_turn_runs`
+`verified-by: bravebot_tui::state::a_line_from_the_editor_replaces_what_was_typed`
+`verified-by: bravebot_tui::editor::the_editor_opens_on_what_was_already_typed`
+`verified-by: bravebot_tui::editor::what_the_editor_saved_becomes_the_line`
+`verified-by: bravebot_tui::editor::quitting_without_saving_leaves_the_line_as_it_was`
+`verified-by: bravebot_tui::editor::an_editor_that_failed_does_not_produce_a_line`
+`verified-by: bravebot_tui::editor::the_newline_an_editor_leaves_at_the_end_is_dropped`
+`verified-by: bravebot_tui::editor::only_the_last_newline_goes`
+`verified-by: bravebot_tui::editor::line_endings_come_back_the_way_a_paste_does`
+`verified-by: bravebot_tui::editor::the_file_does_not_outlive_the_edit`
+
+<a id="INPUT-15"></a>
+### INPUT-15: `$VISUAL`, then `$EDITOR`, then a list that prefers a full editor to a last resort
+
+An empty value is not an answer, since exporting a variable to nothing is how a profile takes one
+back. With neither set, what opens is the first of `vim`, `vi`, `emacs`, `nano` that is installed,
+in that order. A configured editor that will not start is reported as such and nothing else is
+tried. An editor that returns before the file has been edited is told to wait, but only where the
+user wrote no arguments of their own.
+
+**Why.** Someone with `vim` or `emacs` on their machine chose to install it and will not thank a
+guess for opening something else; `nano` is the last resort, for the person who has none of them.
+Falling back past a name the user exported would run an editor they did not ask for and blame their
+configuration for it. A GUI editor that exits the moment its window opens returns the line
+unchanged with nothing anywhere saying why, which is neither a failure nor an edit.
+
+`verified-by: bravebot_tui::editor::visual_answers_before_editor`
+`verified-by: bravebot_tui::editor::an_empty_variable_is_not_a_configured_editor`
+`verified-by: bravebot_tui::editor::a_full_editor_is_preferred_to_the_last_resort`
+`verified-by: bravebot_tui::editor::a_configured_editor_that_will_not_start_ends_the_search`
+`verified-by: bravebot_tui::editor::a_gui_editor_is_told_to_wait`
+`verified-by: bravebot_tui::editor::the_flag_follows_the_program_through_a_path`
+`verified-by: bravebot_tui::editor::a_terminal_editor_is_given_no_extra_flag`
+
+<a id="INPUT-16"></a>
+### INPUT-16: an editor is started under the name it was asked for
+
+A name is looked for where a shell would look for it, and what runs is that name and not the file a
+symlink behind it points at. The name is only kept while it still reaches the same program: a link
+that now points elsewhere, or one that no longer resolves, is started by resolved path instead. This
+is the editor alone. Everywhere a program is approved before it runs, the approval names the file
+that ran, because a name can be repointed afterwards.
+
+**Why.** MacVim installs `vim`, `vi` and `gvim` as links to a single shim that reads its own
+`argv[0]`, stays in the terminal for the `vi*` spellings and forks a detached GUI window for the
+`m*` and `g*` ones. Started through the resolved path it is always `mvim`, so asking for `vim` opened
+a window, returned at once, and put the prompt back unedited with nothing saying why. An editor is
+started rather than approved, and for it the name is part of what the user asked for.
+
+`verified-by: bravebot_tui::editor::a_configured_link_to_a_gui_shim_runs_as_the_link`
+`verified-by: bravebot_tui::editor::a_terminal_editor_behind_a_gui_shim_is_started_under_its_own_name`
+`verified-by: bravebot_tui::editor::a_program_reached_through_a_link_keeps_the_name_it_was_asked_for`
+`verified-by: bravebot_tui::editor::the_name_is_looked_for_on_the_path_not_beside_the_resolved_file`
+`verified-by: bravebot_tui::editor::an_empty_path_entry_is_not_searched`
+`verified-by: bravebot_tui::editor::a_name_that_is_no_longer_the_same_program_falls_back_to_the_resolved_path`
 
 ## Known costs
 
