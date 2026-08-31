@@ -44,6 +44,15 @@ pub const NOTE: Color = Color::Rgb(BRAND.0, BRAND.1, BRAND.2);
 /// The name of the default theme: follow the terminal, mix only the inks that have to be a shade.
 pub const BRAVE: &str = "brave";
 
+/// What a theme does that its name does not say, drawn under the list in `/theme`.
+///
+/// Only `brave` has one, because it is the only theme whose inks depend on the terminal: the named
+/// slots are left to it, and brand primary is picked for the background sensed at startup. Every
+/// other theme is the same table of shades wherever it is opened, which its name already implies.
+pub fn hint(name: &str) -> Option<&'static str> {
+    (name == BRAVE || name == "system").then_some("follows your terminal, light or dark")
+}
+
 /// Every semantic ink the interface draws itself in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {

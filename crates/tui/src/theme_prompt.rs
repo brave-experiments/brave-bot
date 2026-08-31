@@ -197,18 +197,33 @@ fn draw(frame: &mut Frame, picker: &Picker) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // list
+            Constraint::Length(1), // hint for the theme under the cursor
             Constraint::Length(1), // keys
         ])
         .split(inside);
 
     frame.render_widget(Paragraph::new(list_lines(picker, layout[0])), layout[0]);
 
+    // Drawn empty rather than skipped when the cursor is on a theme with nothing to add, so the
+    // list does not shift under the cursor as it moves. Indented like the key line rather than like
+    // a name, so a sentence under the list does not read as another theme to pick.
+    let hint = picker.chosen().and_then(|theme| theme::hint(&theme.name));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint.map(|hint| format!(" {hint}")).unwrap_or_default(),
+            Style::default()
+                .fg(theme::muted())
+                .add_modifier(Modifier::ITALIC),
+        ))),
+        layout[1],
+    );
+
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             " ↑↓ choose  ·  Enter select  ·  Esc keep current",
             Style::default().fg(theme::muted()),
         ))),
-        layout[1],
+        layout[2],
     );
 }
 
@@ -219,11 +234,11 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 fn centred(area: Rect, theme_count: usize) -> Rect {
     let available = area.width.saturating_sub(2);
     let width = available.min(42).max(24.min(available));
-    // Borders, key line, and one row per theme that fits.
+    // Borders, hint line, key line, and one row per theme that fits.
     let list = (theme_count as u16)
-        .saturating_add(3)
+        .saturating_add(4)
         .min(area.height.saturating_sub(2));
-    let height = list.max(5).min(area.height.saturating_sub(2));
+    let height = list.max(6).min(area.height.saturating_sub(2));
 
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
@@ -362,6 +377,19 @@ mod tests {
         assert!(output.contains(&themes[0].name), "{output}");
         // The panel on 80x24 shows the start of the list; names near the end sit below the fold.
         assert!(output.contains(&themes[1].name), "{output}");
+    }
+
+    /// `brave` is the only theme whose inks depend on the terminal, and its name does not say so.
+    #[test]
+    fn the_terminal_following_theme_says_so_under_the_list() {
+        let output = rendered(&Picker::new(offered(), theme::BRAVE));
+        assert!(output.contains("follows your terminal"), "{output}");
+    }
+
+    #[test]
+    fn a_theme_that_paints_every_ink_itself_has_nothing_to_add() {
+        let output = rendered(&Picker::new(offered(), "nord"));
+        assert!(!output.contains("follows your terminal"), "{output}");
     }
 
     /// The picker is a panel over the session, not a full-screen takeover: the title sits in a

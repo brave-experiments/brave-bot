@@ -225,10 +225,19 @@ and is redrawn each time the cursor moves so the live preview is of the person's
 rather than of an empty page. The panel is sized to the list and stays inside the frame on a tiny
 terminal. It is not a full-screen takeover.
 
+Under the list is a row for what the theme on the cursor does that its name does not say. Only
+`brave` has anything there, because it is the only theme whose inks depend on the terminal, and its
+name is the one that does not say so. The row is drawn empty rather than dropped for the themes with
+nothing to add, so the list does not shift under the cursor as it moves.
+
 **Why.** A full-screen list hides the thing a theme is for. The same centred-panel shape the write
 and trust prompts already use keeps the person oriented, and putting the session behind the panel
-is what makes previewing honest.
+is what makes previewing honest. A name is where a person looks first for what a theme will do, and
+`brave` names who it is from rather than that it follows their terminal, which is the one thing on
+this list that is not read off the name.
 
+`verified-by: bravebot_tui::theme_prompt::the_terminal_following_theme_says_so_under_the_list`
+`verified-by: bravebot_tui::theme_prompt::a_theme_that_paints_every_ink_itself_has_nothing_to_add`
 `verified-by: bravebot_tui::theme_prompt::the_picker_is_drawn_as_a_centred_panel`
 `verified-by: bravebot_tui::theme_prompt::the_panel_stays_inside_a_tiny_terminal`
 `verified-by: bravebot_tui::theme_prompt::the_list_shows_names_a_person_reads`
