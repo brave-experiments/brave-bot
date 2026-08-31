@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn user_themes_come_from_a_directory_of_json_files() {
-        let root = std::env::temp_dir().join(format!("bravebot-themes-{}", std::process::id()));
+        let root = PathBuf::from(env!("OUT_DIR")).join("bravebot-themes-user-json");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("dir");
         std::fs::write(root.join("mine.json"), "{\"primary\": \"#123456\"}").expect("write");
