@@ -33,7 +33,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [mcp.md](mcp.md) | `MCP` | 7 | tools that come from outside this repository, and what they are allowed to do |
 | [network-egress.md](network-egress.md) | `NET` | 6 | every request that leaves this process, and what comes back |
 | [compaction.md](compaction.md) | `COMPACT` | 8 | shortening a long conversation into a summary of itself, in the request only |
-| [sessions.md](sessions.md) | `SESSION` | 7 | what is kept between runs: the record of a session, and the prompts a person typed |
+| [sessions.md](sessions.md) | `SESSION` | 8 | what is kept between runs: the record of a session, and the prompts a person typed |
 | [trace.md](trace.md) | `TRACE` | 5 | what is recorded about every decision the system makes, and what that record may contain |
 | [layering.md](layering.md) | `LAYER` | 3 | which crate is allowed to do what |
 

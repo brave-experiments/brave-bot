@@ -702,12 +702,13 @@ pub enum Start {
 }
 
 /// Run the interface until the user leaves.
+/// Returns the id of the session left behind, where there is one to pick up again.
 pub fn run(
     config: &Config,
     workspace: &Workspace,
     confinement: String,
     start: Start,
-) -> io::Result<()> {
+) -> io::Result<Option<String>> {
     let mut stdout = io::stdout();
     take_over_terminal(&mut stdout)?;
 
@@ -727,7 +728,9 @@ pub fn run(
 
     let result = match start {
         Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
-        None => Ok(()),
+        // Leaving at the picker resumed nothing and started nothing, so there is nothing to say
+        // about picking anything up.
+        None => Ok(None),
     };
 
     // Restore the terminal even if the loop failed: leaving a user in raw mode on an
@@ -845,13 +848,22 @@ fn edit_prompt(
 
 /// Concrete in the backend rather than generic: the loop is only ever driven by a real
 /// terminal, and a generic backend's error type carries no bounds to convert from.
+/// The session's own name, for telling somebody how to pick it up again.
+///
+/// Nothing for a session that was opened and left without sending anything: there is no record to
+/// resume, and naming one would be offering a command that answers "no session by that name".
+fn left_behind(stored: &crate::sessions::Handle) -> Option<String> {
+    stored.resumable().map(str::to_string)
+}
+
+/// Returns the id of the session left behind, where there is one to pick up again.
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: &Config,
     workspace: &Workspace,
     confinement: String,
     start: Start,
-) -> io::Result<()> {
+) -> io::Result<Option<String>> {
     // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
     // the turns after it must see one. The primary root never changes, so nothing keyed on it
     // (the session record, where AGENTS.md is looked for) moves underneath.
@@ -918,7 +930,7 @@ fn event_loop(
     // they never agreed to have must not begin behind it.
     let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), inherited_trust)
     else {
-        return Ok(());
+        return Ok(left_behind(&stored));
     };
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
@@ -941,7 +953,7 @@ fn event_loop(
         }
 
         if session.is_quitting() {
-            return Ok(());
+            return Ok(left_behind(&stored));
         }
 
         if !event::poll(POLL)? {
@@ -968,7 +980,7 @@ fn event_loop(
         needs_draw |= !matches!(action, Action::None);
 
         match action {
-            Action::Quit => return Ok(()),
+            Action::Quit => return Ok(left_behind(&stored)),
             Action::Copy => copy_selection(terminal, &mut session)?,
             Action::Paste => take_from_clipboard(&mut session, crate::clipboard::paste()),
             Action::Edit => {
@@ -1046,7 +1058,7 @@ fn event_loop(
                 workspace.close_added_directories();
                 let Some(fresh) = opening_trust(terminal, &mut session, workspace.root(), None)
                 else {
-                    return Ok(());
+                    return Ok(left_behind(&stored));
                 };
                 trust = fresh;
                 // A new session vouches for no program, on the same reasoning as the map: the

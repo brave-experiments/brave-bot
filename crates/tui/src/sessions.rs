@@ -269,6 +269,12 @@ pub struct Handle {
     started: u64,
     branch: Option<String>,
     title: String,
+    /// Whether a record for this id is on disk yet.
+    ///
+    /// An id exists from the first moment, but a session that was opened and abandoned leaves
+    /// nothing to pick up again, and offering to resume one is offering something that does not
+    /// work.
+    wrote: bool,
 }
 
 impl Handle {
@@ -283,6 +289,7 @@ impl Handle {
             started: now(),
             branch: branch_of(project),
             title: String::new(),
+            wrote: false,
         }
     }
 
@@ -294,11 +301,21 @@ impl Handle {
             started: record.started,
             branch: branch_of(project),
             title: record.title.clone(),
+            // The record it came from is the one being written back to.
+            wrote: true,
         }
     }
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The id to hand somebody wanting this session back, or `None` if there is nothing to hand.
+    ///
+    /// A session with no record on disk cannot be resumed, so its id is not worth printing: a
+    /// command that would answer "no session by that name" is worse than saying nothing.
+    pub fn resumable(&self) -> Option<&str> {
+        self.wrote.then_some(self.id.as_str())
     }
 
     pub fn title(&self) -> &str {
@@ -416,8 +433,10 @@ impl Handle {
         // Written beside and renamed, so a session killed mid-write leaves the last good record
         // rather than half of a new one.
         let temporary = directory.join(format!("{}.tmp", self.id));
-        if std::fs::write(&temporary, body).is_ok() {
-            let _ = std::fs::rename(&temporary, directory.join(format!("{}.json", self.id)));
+        if std::fs::write(&temporary, body).is_ok()
+            && std::fs::rename(&temporary, directory.join(format!("{}.json", self.id))).is_ok()
+        {
+            self.wrote = true;
         }
     }
 

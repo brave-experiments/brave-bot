@@ -6,13 +6,16 @@ governs:
   - crates/tui/src/sessions.rs
   - crates/tui/src/history.rs
   - crates/tui/src/store.rs
+  - crates/cli/src/main.rs
 ---
 
 ## Scope
 
-What is kept between runs: the record of a session so it can be picked up again, and the prompts a
-person typed so they can be recalled. What a resume does to standing permissions is
-[prompting.md](prompting.md); what the trail contains is [trace.md](trace.md).
+What is kept between runs: the record of a session so it can be picked up again, the prompts a
+person typed so they can be recalled, and what a session says on its way out about being picked up.
+What a resume does to standing permissions is [prompting.md](prompting.md); what the trail contains
+is [trace.md](trace.md). Everything else the command line does is [cli.md](cli.md), which governs
+the same file for its own topic.
 
 ## Clauses
 
@@ -117,6 +120,20 @@ writing.
 `verified-by: bravebot_tui::history::the_position_counts_from_the_oldest`
 `verified-by: bravebot_tui::history::popping_removes_the_newest_entry`
 `verified-by: bravebot_tui::history::popping_an_empty_history_is_harmless`
+
+<a id="SESSION-8"></a>
+### SESSION-8: a session says how to pick it up again as it ends
+
+Leaving prints the command that resumes this session, and the id is the one that fetches it. It is
+printed after the terminal is handed back, so it stays on the screen the person is left looking at
+rather than going with the interface. A session that never wrote a record prints nothing.
+
+**Why.** A session is worth resuming far more often than anybody thinks to write its name down
+beforehand, and the picker is no use to someone who has already closed the window. Naming a
+session with no record behind it would be worse than saying nothing: the command would answer "no
+session by that name".
+
+`verified-by: bravebot_tui::sessions::a_session_is_named_once_there_is_a_record_to_name`
 
 ## Known costs
 

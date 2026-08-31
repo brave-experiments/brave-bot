@@ -398,7 +398,16 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
     };
 
     match bravebot_tui::app::run(&config, &workspace, confinement, start) {
-        Ok(()) => ExitCode::SUCCESS,
+        // Printed after the terminal is handed back, so it survives on the screen the person is
+        // left looking at rather than going onto the alternate screen with everything else. A
+        // session is worth resuming far more often than anybody thinks to write its name down
+        // beforehand, and the picker is no help to someone who has already closed the window.
+        Ok(Some(id)) => {
+            println!("Resume this session with:");
+            println!("bravebot --resume {id}");
+            ExitCode::SUCCESS
+        }
+        Ok(None) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("interface error: {err}");
             ExitCode::FAILURE

@@ -112,6 +112,45 @@ fn stamped(events: Vec<Event>) -> Vec<bravebot_tui::audit::Stamped> {
         .collect()
 }
 
+/// The name to hand somebody who wants this session back. A session opened and left has no record
+/// behind it, so naming it would be offering a command that answers "no session by that name".
+#[test]
+fn a_session_is_named_once_there_is_a_record_to_name() {
+    let scratch = Scratch::new("resumable");
+
+    let mut handle = Handle::begin(&scratch.project);
+    assert_eq!(
+        handle.resumable(),
+        None,
+        "a session that was never written offered itself for resuming"
+    );
+
+    let conversation = a_conversation();
+    handle.save(
+        "make a space invaders game",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 1_200,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+            programs: &a_program_list(),
+            directories: &[],
+        },
+    );
+
+    let named = handle.resumable().expect("a written session has a name");
+    assert_eq!(named, handle.id());
+
+    // And the name is the one that fetches it, which is the whole of what it is for.
+    let record = sessions::load(&scratch.project, named).expect("the named session loads");
+    assert_eq!(record.title, "make a space invaders game");
+
+    // A resumed session writes back to the record it came from, so it can be named from the start.
+    let resumed = Handle::resuming(&scratch.project, &record);
+    assert_eq!(resumed.resumable(), Some(named));
+}
+
 #[test]
 fn sessions_are_written_read_back_and_kept_per_directory() {
     let scratch = Scratch::new("round-trip");
