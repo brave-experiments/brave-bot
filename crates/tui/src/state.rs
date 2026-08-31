@@ -303,6 +303,13 @@ pub struct Session {
     /// and it is kept on a character boundary by everything that moves it. Anything that replaces
     /// the line puts it at the end, which is where the line was left off.
     caret: usize,
+    /// A line set aside to be typed again later, if there is one.
+    ///
+    /// Text alone, with no caret and no mode: what was put away is the words, and where the caret
+    /// was in them is a fact about an edit that has finished. One slot rather than a stack, so the
+    /// key that fills it and the key that empties it are the same key and neither has a depth to
+    /// remember.
+    stashed: Option<String>,
     /// Whether the line being typed is a command for the shell rather than a prompt for the model.
     ///
     /// Entered by typing `!` on an empty line and left by deleting back past it, so the `!` is a
@@ -476,6 +483,7 @@ impl Session {
             transcript: Vec::new(),
             input: String::new(),
             caret: 0,
+            stashed: None,
             shell: false,
             shortcuts: false,
             status: Status::Idle,
@@ -1656,6 +1664,56 @@ impl Session {
             // the list is the only thing there is to take down.
             self.shortcuts = false;
         }
+    }
+
+    /// Put the line away, or bring back the one that was put away.
+    ///
+    /// Which of the two it does is read off the line rather than chosen: a line to put away is put
+    /// away, and an empty box is where a line put away earlier is wanted. Returns whether anything
+    /// happened, so a press that had nothing to do either way can be told from one that acted.
+    ///
+    /// The words alone travel. The mode stays where the user left it, so a prompt put away as a
+    /// prompt comes back into an armed shell as the command they meant to write, and a caret is not
+    /// carried because it belongs to an edit that has finished. Bringing one back empties the slot:
+    /// the line is in the box now, and a second press would put a copy of it beside the first.
+    ///
+    /// Markers are not touched on the way out. What is staged stays staged, and the row beneath the
+    /// box goes on saying so because it is drawn from what the line names: a marker put away names
+    /// nothing until the words holding it come back, and then it names what it always did.
+    ///
+    /// Allowed while a turn runs, exactly as typing and recall are: this writes a line and sends
+    /// nothing, and sending is the whole of what a running turn refuses. A turn in flight is when a
+    /// person most wants a half-written thought out of the way, since it is when a better one has
+    /// just occurred to them.
+    pub fn stash(&mut self) -> bool {
+        self.history.leave();
+        // The list of keys is not part of the line and cannot be put away, but it is standing over
+        // a box that is about to change, and everything else that rewrites the box takes it down.
+        self.shortcuts = false;
+        self.completion = 0;
+
+        if self.input.is_empty() {
+            // Taken rather than read, so the slot empties as the line fills: what was put away is
+            // back in front of the user, and the only copy of it is the one they can see.
+            match self.stashed.take() {
+                Some(line) => {
+                    self.set_input(line);
+                    true
+                }
+                None => false,
+            }
+        } else {
+            // Overwriting rather than stacking. One slot is what the key promises, and a press that
+            // silently pushed a second line would leave the first reachable only by pressing again.
+            self.stashed = Some(std::mem::take(&mut self.input));
+            self.caret = 0;
+            true
+        }
+    }
+
+    /// The line put away, for saying that there is one.
+    pub fn stashed(&self) -> Option<&str> {
+        self.stashed.as_deref()
     }
 
     /// Take the line back from an external editor.
@@ -4041,5 +4099,170 @@ mod tests {
         // In memory for recall, but nothing was written: `persist` is off.
         assert_eq!(s.history.len(), 1);
         assert!(!s.persist, "a plain session was persisting");
+    }
+
+    /// The whole of the key: a line goes away and comes back the same. Nothing about it is sent,
+    /// so the words have to survive the round trip exactly as they were written.
+    #[test]
+    fn a_stashed_line_comes_back_as_it_was() {
+        let mut s = session();
+        for c in "half a thought".chars() {
+            s.type_char(c);
+        }
+
+        assert!(s.stash(), "nothing was put away");
+        assert_eq!(s.input, "", "the line stayed in the box");
+
+        assert!(s.stash(), "nothing came back");
+        assert_eq!(s.input, "half a thought");
+    }
+
+    /// The caret goes to the end of the line coming back, which is where somebody carries on
+    /// typing. It is not where they left it, because the edit it belonged to is over.
+    #[test]
+    fn the_caret_lands_at_the_end_of_a_line_brought_back() {
+        let mut s = session();
+        for c in "a thought".chars() {
+            s.type_char(c);
+        }
+        s.move_to_line_start();
+        s.stash();
+        s.stash();
+
+        assert_eq!(s.caret, s.input.len(), "the caret was not at the end");
+    }
+
+    /// One slot, so the second line put away is the one that comes back. A press that quietly
+    /// stacked would leave the first line reachable only by pressing again, which is a depth the
+    /// key does not advertise and nothing on the screen could report.
+    #[test]
+    fn stashing_again_replaces_what_was_put_away() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.stash();
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        s.stash();
+
+        s.stash();
+        assert_eq!(s.input, "second");
+    }
+
+    /// Bringing a line back empties the slot: it is in the box now, and the only copy of it is the
+    /// one in front of the user. Left behind, the next press would put a second copy beside a line
+    /// they had started editing.
+    #[test]
+    fn a_line_brought_back_cannot_be_brought_back_again() {
+        let mut s = session();
+        s.type_char('x');
+        s.stash();
+        s.stash();
+        assert_eq!(s.stashed(), None, "the slot kept a copy");
+
+        // Cleared rather than sent, so the box is empty and a press means "bring one back". There
+        // is nothing to bring, and the line the user has since typed is not re-created.
+        s.clear_input();
+        assert!(!s.stash(), "a line came back twice");
+        assert_eq!(s.input, "");
+    }
+
+    /// An empty box with nothing put away has nothing to do either way, and says so, so the press
+    /// can be told from one that acted.
+    #[test]
+    fn stashing_an_empty_line_with_nothing_put_away_does_nothing() {
+        let mut s = session();
+        assert!(!s.stash());
+        assert_eq!(s.input, "");
+        assert_eq!(s.stashed(), None);
+    }
+
+    /// The words travel and the mode does not. Shell mode is a mode of the box rather than part of
+    /// the line, so a prompt put away as a prompt comes back into an armed shell as the command the
+    /// person is now writing, which is what they asked for by arming it.
+    #[test]
+    fn the_mode_is_not_stashed_with_the_line() {
+        let mut s = session();
+        for c in "cargo test".chars() {
+            s.type_char(c);
+        }
+        s.stash();
+        assert!(!s.shell, "putting a line away armed shell mode");
+
+        s.type_char('!');
+        assert!(s.shell, "shell mode was not armed");
+        s.stash();
+
+        assert_eq!(s.input, "cargo test");
+        assert!(s.shell, "the line coming back disarmed the mode");
+    }
+
+    /// A command put away is text like any other, and the `!` was never part of it. So the mode
+    /// stays behind when the line goes, and the words come back as a prompt unless the person has
+    /// armed it again themselves.
+    #[test]
+    fn a_command_comes_back_as_words_and_not_as_a_command() {
+        let mut s = session();
+        s.type_char('!');
+        for c in "rm -rf build".chars() {
+            s.type_char(c);
+        }
+        assert!(s.shell);
+
+        s.stash();
+        s.shell = false;
+        s.stash();
+
+        assert_eq!(s.input, "rm -rf build");
+        assert!(!s.shell, "the line brought the mode back with it");
+    }
+
+    /// Allowed mid-turn, like typing and recall: it writes a line and sends nothing, and sending is
+    /// the whole of what a running turn refuses. It is also when a person most wants a half-written
+    /// thought out of the way, since it is when a better one has just occurred to them.
+    #[test]
+    fn a_line_can_be_stashed_while_a_turn_runs() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit();
+        assert_eq!(s.status, Status::Working);
+
+        for c in "the next thing".chars() {
+            s.type_char(c);
+        }
+        assert!(s.stash(), "nothing was put away mid-turn");
+        assert_eq!(s.input, "");
+
+        assert!(s.stash(), "nothing came back mid-turn");
+        assert_eq!(s.input, "the next thing");
+    }
+
+    /// A marker is text in the line, and what it stands for stays staged while the words are away.
+    /// Cleared instead, a line would come back naming a picture that was no longer there, and the
+    /// prompt would go with a marker standing over nothing.
+    #[test]
+    fn what_a_stashed_line_named_is_still_named_when_it_comes_back() {
+        let mut s = session();
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        let line = s.input.clone();
+
+        s.stash();
+        assert!(
+            s.pasted_named(&s.input).is_empty(),
+            "a line that is not in the box still named a picture"
+        );
+
+        s.stash();
+        assert_eq!(s.input, line);
+        assert_eq!(
+            s.pasted_named(&s.input).len(),
+            1,
+            "the picture did not survive the round trip"
+        );
     }
 }

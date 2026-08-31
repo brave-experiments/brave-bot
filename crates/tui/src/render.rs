@@ -934,6 +934,57 @@ fn attached_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The line put away, on one row, with the key that brings it back.
+///
+/// Drawn because the key took a line off the screen. Without a row saying where it went, a press
+/// that emptied the box is indistinguishable from one that threw the words away, and the only way
+/// to find out which it was is to press the key again and hope.
+///
+/// One row however long the line was: this is a reminder that something is waiting, not the line
+/// itself, and a paragraph put away would push the transcript off the screen to say so.
+///
+/// The words come before the key where the two cannot both fit. Which line is waiting is the part
+/// only this row can say; the key is also in the list `?` puts up, and cut to `ctrl-s to bring i` it
+/// is worse than absent. Below the width that holds a legible few words of the line, the reminder
+/// goes and the line keeps the row.
+///
+/// No row may run past the edge, for the reason the shortcut list may not: a row that wraps takes a
+/// row the layout did not reserve and pushes the hint line off the screen.
+///
+/// The text is the user's own words on their way back to them, so nothing here is a decision and
+/// nothing is labelled. `printable` all the same, since a line can be pasted and a paste can carry
+/// anything.
+fn stashed_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
+    /// Enough of the line to recognise it by. Below this the reminder is dropped to make room.
+    const LEGIBLE: usize = 12;
+
+    let Some(stashed) = session.stashed() else {
+        return Vec::new();
+    };
+
+    let lead = "  stashed ";
+    let trail = "  ctrl-s to bring it back";
+    let after_lead = (width as usize).saturating_sub(lead.chars().count());
+    // Nothing of the line itself would fit, so the row would say only that something is stashed
+    // without saying what. A terminal this narrow has no room to spare for that.
+    if after_lead == 0 {
+        return Vec::new();
+    }
+
+    let with_trail = after_lead.saturating_sub(trail.chars().count());
+    let (room, trail) = if with_trail >= LEGIBLE {
+        (with_trail, trail)
+    } else {
+        (after_lead, "")
+    };
+
+    vec![Line::from(vec![
+        Span::styled(lead, Style::default().fg(theme::brand_primary())),
+        Span::styled(printable(&head_of(stashed, room)), dim()),
+        Span::styled(trail, dim()),
+    ])]
+}
+
 /// Prompts that have been sent and are waiting for the turn in flight to end.
 ///
 /// The line as it was typed, and under it the word saying what has happened to it. Marked rather
@@ -1024,6 +1075,10 @@ fn lines_beneath_the_box(
     // what the next Enter will carry, and a file staged mid-turn appeared below the queue, which
     // reads as belonging to a prompt already gone.
     let mut lines = attached_lines(session, width);
+    // Then the line put away, which is about the box and nothing else: it is what the next press of
+    // one key puts back into it. Above the queue because those prompts have gone and this one has
+    // not, and below the attachments because they belong to the line in the box now.
+    lines.extend(stashed_lines(session, width));
     // Then waiting prompts, which describe something already done. Below the line they are no
     // part of, and still above what is offered, since a line the person believes they have sent
     // has to be visible without hunting for it.
@@ -1087,7 +1142,7 @@ const SHORTCUTS_HINT: &str = "? for shortcuts";
 /// The meanings are kept short deliberately. The longest of them sets the column, so a word saved
 /// here is what lets two columns fit a terminal eighty wide, and that halves the rows the list takes
 /// out of the transcript.
-const SHORTCUTS: [(&str, &str); 16] = [
+const SHORTCUTS: [(&str, &str); 17] = [
     ("!", "run a shell command"),
     ("/", "commands"),
     ("@", "name a file"),
@@ -1101,6 +1156,7 @@ const SHORTCUTS: [(&str, &str); 16] = [
     ("ctrl-c", "stop, clear, then exit"),
     ("ctrl-d", "exit"),
     ("ctrl-g", "write prompt in $EDITOR"),
+    ("ctrl-s", "stash, or bring it back"),
     ("ctrl-t", "show what a turn did"),
     ("ctrl-v", "paste, pictures too"),
     ("drag", "select, copy on release"),
@@ -1798,6 +1854,145 @@ mod tests {
         assert!(
             attached < waiting,
             "the attachment was drawn under the queue: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// The key took a line off the screen, so something has to say where it went. Without the row,
+    /// a press that emptied the box is indistinguishable from one that threw the words away, and the
+    /// only way to find out which it was is to press again and hope.
+    #[test]
+    fn a_stashed_line_is_named_under_the_box() {
+        let mut session = Session::new("none");
+        for c in "the thought I put away".chars() {
+            session.type_char(c);
+        }
+        session.stash();
+
+        let output = rendered(&session);
+        assert!(
+            output.contains("the thought I put away"),
+            "the line went nowhere anybody could see: {output}"
+        );
+        assert!(
+            output.contains("ctrl-s"),
+            "nothing said which key brings it back: {output}"
+        );
+    }
+
+    /// The row goes when the line comes back, because the line is in the box and the row would be
+    /// saying a second copy is waiting somewhere.
+    #[test]
+    fn the_row_goes_when_the_stashed_line_comes_back() {
+        let mut session = Session::new("none");
+        for c in "a thought".chars() {
+            session.type_char(c);
+        }
+        session.stash();
+        session.stash();
+
+        let output = rendered(&session);
+        assert!(
+            !output.contains("stashed"),
+            "the row outlived the stash: {output}"
+        );
+    }
+
+    /// A paragraph put away is one row here. It is a reminder that something is waiting rather than
+    /// the line itself, and drawn whole it would push the transcript off the screen to say so.
+    #[test]
+    fn a_stashed_paragraph_is_one_row() {
+        let mut session = Session::new("none");
+        session.paste_text("first line\nsecond line\nthird line");
+        session.stash();
+
+        assert_eq!(
+            stashed_lines(&session, 90).len(),
+            1,
+            "a paragraph took more than its row"
+        );
+    }
+
+    /// No row may be wider than the terminal. One that is wraps, which takes a row the layout did not
+    /// reserve and pushes the hint line off the screen. Swept across every width down to nothing,
+    /// since the arithmetic that drops the reminder to keep the words is where this would go wrong.
+    #[test]
+    fn no_stashed_row_runs_past_the_edge() {
+        let mut session = Session::new("none");
+        for c in "rewrite the parser to use the new lexer entirely".chars() {
+            session.type_char(c);
+        }
+        session.stash();
+
+        for width in 0..=200u16 {
+            for line in stashed_lines(&session, width) {
+                let drawn = line.to_string();
+                assert!(
+                    drawn.chars().count() <= width as usize,
+                    "a row ran past {width}: {drawn}"
+                );
+            }
+        }
+    }
+
+    /// Which line is waiting is the part only this row can say, and the key is in the list `?` puts
+    /// up as well. So where the two cannot both fit the words stay: cut to `ctrl-s to bring i`, the
+    /// reminder is worse than absent.
+    #[test]
+    fn a_narrow_terminal_keeps_the_words_and_drops_the_reminder() {
+        let mut session = Session::new("none");
+        for c in "rewrite the parser".chars() {
+            session.type_char(c);
+        }
+        session.stash();
+
+        let narrow = stashed_lines(&session, 30)
+            .first()
+            .expect("no row was drawn")
+            .to_string();
+        assert!(
+            narrow.contains("rewrite"),
+            "the line was crushed out of its own row: {narrow}"
+        );
+        assert!(
+            !narrow.contains("ctrl-s to bring i"),
+            "the reminder was drawn cut off: {narrow}"
+        );
+    }
+
+    /// The row belongs to the box: it is what the next press of one key puts back into it. Above the
+    /// queue, whose prompts have gone, and below the attachments, which belong to the line in the
+    /// box now.
+    #[test]
+    fn what_is_stashed_is_drawn_between_the_attachments_and_the_queue() {
+        let directory = std::env::temp_dir().join("bravebot-render-stash-order");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch");
+        std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
+
+        let mut session = Session::new("none").in_workspace(&directory);
+        session.type_char('a');
+        session.submit();
+        for c in "the waiting prompt".chars() {
+            session.type_char(c);
+        }
+        assert!(session.queue(), "nothing was queued");
+        for c in "the stashed thought".chars() {
+            session.type_char(c);
+        }
+        session.stash();
+        session.drop_files(&directory.join("shot.png").to_string_lossy());
+
+        let output = rendered(&session);
+        let attached = output.find("shot.png").expect("the file was not named");
+        let stashed = output
+            .find("the stashed thought")
+            .expect("the stashed line was not named");
+        let waiting = output.find("QUEUED").expect("nothing said it was waiting");
+        assert!(
+            attached < stashed && stashed < waiting,
+            "the rows beneath the box were out of order: {output}"
         );
 
         let _ = std::fs::remove_dir_all(&directory);

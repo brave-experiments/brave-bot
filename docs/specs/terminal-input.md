@@ -437,6 +437,61 @@ started rather than approved, and for it the name is part of what the user asked
 `verified-by: bravebot_tui::editor::an_empty_path_entry_is_not_searched`
 `verified-by: bravebot_tui::editor::a_name_that_is_no_longer_the_same_program_falls_back_to_the_resolved_path`
 
+<a id="INPUT-17"></a>
+### INPUT-17: Ctrl-S puts the line away, and puts it back
+
+One key, read against the line rather than remembered. A line in the box is put away and the box is
+emptied; an empty box is where a line put away earlier comes back, with the caret at its end, where
+somebody carries on typing. There is one place to put a line, so a second line put away replaces the
+first, and a line that comes back is no longer there to come back again: the next press on the empty
+box it left has nothing to do, and says nothing.
+
+**The words travel and the mode does not.** What is put away is what the user typed, and `!` is a
+mode rather than a character (INPUT-2, [shell-mode.md](shell-mode.md)), so it stays where they left
+it. A prompt comes back into an armed shell as the command they are writing now, and a command comes
+back onto an ordinary prompt as words. The list of keys goes, as it does for anything else that
+rewrites the box.
+
+**Nothing is sent, so a turn in flight refuses none of it** (INPUT-9). What a line names is settled
+when it is sent and not when it is put away, so a marker in a stashed line stands for something still
+staged, and names it again when the words holding it come back.
+
+**A line put away says so, on one row beneath the box, and says which key returns it.** One row
+however long the line was, above the prompts that are waiting and below what the line in the box
+carries (INPUT-11). No row runs past the edge, and where the width will not hold both, the words stay
+and the reminder goes: which line is waiting is the part only this row can say, and the key is in the
+list `?` puts up as well.
+
+**Why.** A better thought arrives while a worse one is half written, most often during a turn, and
+the two ways out were sending the first or losing it. Escape is not a third: it discards, and a
+person who wanted the words back has nowhere to have got them from.
+
+The row is the whole of what makes the key safe to press. A press that emptied the box and said
+nothing is indistinguishable from one that threw a paragraph away, and the only way to find out
+which it had been was to press again and hope. Naming the line is what turns the key from a guess
+into a place a thought is being kept.
+
+The caret is not carried. It belongs to an edit that has finished, and restoring it would put a
+person back in the middle of a sentence they have not looked at since.
+
+`verified-by: bravebot_tui::app::ctrl_s_puts_the_line_away_and_brings_it_back`
+`verified-by: bravebot_tui::app::the_stash_key_works_while_a_turn_runs`
+`verified-by: bravebot_tui::state::a_stashed_line_comes_back_as_it_was`
+`verified-by: bravebot_tui::state::the_caret_lands_at_the_end_of_a_line_brought_back`
+`verified-by: bravebot_tui::state::stashing_again_replaces_what_was_put_away`
+`verified-by: bravebot_tui::state::a_line_brought_back_cannot_be_brought_back_again`
+`verified-by: bravebot_tui::state::stashing_an_empty_line_with_nothing_put_away_does_nothing`
+`verified-by: bravebot_tui::state::the_mode_is_not_stashed_with_the_line`
+`verified-by: bravebot_tui::state::a_command_comes_back_as_words_and_not_as_a_command`
+`verified-by: bravebot_tui::state::a_line_can_be_stashed_while_a_turn_runs`
+`verified-by: bravebot_tui::state::what_a_stashed_line_named_is_still_named_when_it_comes_back`
+`verified-by: bravebot_tui::render::a_stashed_line_is_named_under_the_box`
+`verified-by: bravebot_tui::render::the_row_goes_when_the_stashed_line_comes_back`
+`verified-by: bravebot_tui::render::a_stashed_paragraph_is_one_row`
+`verified-by: bravebot_tui::render::what_is_stashed_is_drawn_between_the_attachments_and_the_queue`
+`verified-by: bravebot_tui::render::no_stashed_row_runs_past_the_edge`
+`verified-by: bravebot_tui::render::a_narrow_terminal_keeps_the_words_and_drops_the_reminder`
+
 ## Known costs
 
 - **A stopped request leaves a thread and a socket behind.** The reply goes on being read by
@@ -450,3 +505,9 @@ started rather than approved, and for it the name is part of what the user asked
   that same call and discarded, and a terminal that answers with nothing keeps the window open for
   its full 80 ms. It is bounded, it is once per session, and it is before there is a box to type
   into, which is why it is a cost and not a clause.
+- **Ctrl-S is the byte a terminal traditionally freezes its output with.** It reaches this process
+  because raw mode turns that flow control off for as long as the session holds the terminal, which
+  is what makes the chord bindable at all (INPUT-17). The cost is a person's muscle memory: somewhere
+  behind a `tmux` or `screen` configured to keep flow control, or an ssh session that does, the key
+  can be taken before it arrives, and then it does nothing here. Nothing is lost when that happens,
+  since the line stays in the box.

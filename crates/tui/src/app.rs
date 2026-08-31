@@ -436,6 +436,21 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
             session.backspace();
             Action::Redraw
         }
+        // A thought to come back to, set aside without being sent and without being lost. One key
+        // both ways, because what it does is read off the line: there is nothing for a person to
+        // remember about which press was which.
+        //
+        // In the shared ladder, so it works while a turn runs like everything else that writes the
+        // box: it sends nothing, and sending is the whole of what a running turn refuses. Putting a
+        // half-written thought away is most wanted exactly when a turn is in flight and a better
+        // one has just occurred to somebody.
+        //
+        // It reaches this process at all because raw mode turns off the terminal's flow control,
+        // where this chord is the byte that freezes the screen.
+        KeyCode::Char('s') if ctrl => {
+            session.stash();
+            Action::Redraw
+        }
         // Tab completes, which is what it does everywhere else. Only while a command is being
         // typed: with nothing offered it inserts nothing, rather than a stray character.
         KeyCode::Tab if session.is_completing() => {
@@ -2537,6 +2552,46 @@ mod tests {
             handle_key_while_working(&mut session, ctrl('g')),
             Action::None
         );
+    }
+
+    /// One key both ways, read against the line rather than remembered: a line to put away is put
+    /// away, and an empty box is where the one put away earlier is wanted. A control combination
+    /// falling through to the catch-all would type a stray 's' into the prompt instead.
+    #[test]
+    fn ctrl_s_puts_the_line_away_and_brings_it_back() {
+        let mut session = Session::new("none");
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, ctrl('s')), Action::Redraw);
+        assert_eq!(session.input(), "", "the line stayed in the box");
+
+        assert_eq!(handle_key(&mut session, ctrl('s')), Action::Redraw);
+        assert_eq!(session.input(), "half a thought");
+    }
+
+    /// The key writes a line and sends nothing, and sending is the whole of what a running turn
+    /// refuses. Mid-turn is also when it is most wanted: a person watching a turn go wrong has
+    /// somewhere to put the half-written thought a better one just replaced.
+    #[test]
+    fn the_stash_key_works_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('x')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        for c in "the next thing".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            handle_key_while_working(&mut session, ctrl('s')),
+            Action::Redraw
+        );
+        assert_eq!(session.input(), "");
+
+        handle_key_while_working(&mut session, ctrl('s'));
+        assert_eq!(session.input(), "the next thing");
     }
 
     /// Escape means "stop this" before it means anything else, so a turn in flight is cancelled
