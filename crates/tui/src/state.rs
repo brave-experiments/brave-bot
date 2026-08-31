@@ -1786,21 +1786,6 @@ impl Session {
         Some(self.begin_turn(next.prompt, (next.attached, next.pasted)))
     }
 
-    /// Forget everything waiting, and say how much that was.
-    ///
-    /// `None` when there was nothing, so a caller has nothing to say either.
-    pub fn drop_queued(&mut self) -> Option<String> {
-        let dropped = self.queued.len();
-        if dropped == 0 {
-            return None;
-        }
-        self.queued.clear();
-        Some(match dropped {
-            1 => "the prompt waiting behind that turn was dropped too".to_string(),
-            n => format!("the {n} prompts waiting behind that turn were dropped too"),
-        })
-    }
-
     /// Clear the line and settle what it named.
     ///
     /// Everything still named goes; a marker the user deleted is an attachment they took off, and
@@ -3125,10 +3110,11 @@ mod tests {
         assert_eq!(s.send_queued().as_deref(), Some("third"));
     }
 
-    /// A person reaching for Escape is taking the session back. Firing off what they lined up
-    /// behind the turn they just stopped is the opposite of what they asked for.
+    /// A stop is aimed at the turn in flight. The prompts behind it are ones the person typed and
+    /// has not taken back, and throwing them away made stopping a turn that had gone wrong cost
+    /// every prompt they had queued while it did.
     #[test]
-    fn stopping_a_turn_drops_what_was_waiting_behind_it() {
+    fn stopping_a_turn_keeps_what_was_waiting_behind_it() {
         let mut s = session();
         s.type_char('a');
         s.submit().expect("submitted");
@@ -3136,11 +3122,19 @@ mod tests {
             s.type_char(c);
         }
         s.queue();
+        for c in "third".chars() {
+            s.type_char(c);
+        }
+        s.queue();
 
-        let said = s.drop_queued().expect("something was waiting");
-        assert!(said.contains("dropped"), "said: {said}");
-        assert!(s.queued.is_empty());
-        assert!(s.drop_queued().is_none(), "said so twice");
+        s.restore("a");
+
+        assert_eq!(s.queued.len(), 2, "the stop took the queue with it");
+        assert_eq!(
+            s.send_queued().as_deref(),
+            Some("second"),
+            "it did not go on"
+        );
     }
 
     /// A line waiting to go is a line that was sent, so it is in the history like any other.

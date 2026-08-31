@@ -1762,12 +1762,10 @@ fn run_turn_animated(
             return Ok((conversation, fallback, fallback_programs, events));
         }
         session.restore(prompt);
-        // Stopping the turn stops what was lined up behind it. A person reaching for Escape is
-        // taking the session back, and firing off the next prompt on their behalf is the opposite
-        // of what they asked for. Said rather than done quietly, because they typed those.
-        if let Some(dropped) = session.drop_queued() {
-            session.note(dropped);
-        }
+        // What was lined up behind it stays lined up, and the loop sends the next one as it does
+        // after any turn. A stop is aimed at the turn in flight: the prompts behind it are ones
+        // the person typed and has not taken back, and throwing them away made stopping a turn
+        // that had gone wrong cost every prompt they had queued while it did.
         return Ok((conversation, fallback, fallback_programs, events));
     }
 

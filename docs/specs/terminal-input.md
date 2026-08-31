@@ -245,9 +245,13 @@ is queued, not when it is sent, because a file the person took off the line afte
 part of that prompt. It is in the prompt history from the moment it is queued, since from the
 person's side that is when they sent it.
 
-Stopping a turn drops what was lined up behind it, and says how much that was. A person reaching
-for Escape is taking the session back, and sending the next prompt on their behalf is the opposite
-of what they asked for.
+Stopping a turn leaves the queue alone. The stopped prompt comes back to the box, the next
+waiting prompt begins its turn as it would after any turn, and the rest go on waiting in order.
+
+**Why.** A stop is aimed at the turn in flight, and nothing else. The prompts behind it are ones
+the person typed and has not taken back, so throwing them away made stopping a turn that had gone
+wrong cost every prompt they had queued while it went wrong, which is a reason not to press the
+key at all.
 
 Shift-Enter still starts a line rather than sending it, so a paragraph can be written mid-turn and
 is not sent half-finished.
@@ -262,7 +266,7 @@ while the first is in flight, and the queue is what makes that refusal visible i
 `verified-by: bravebot_tui::state::a_prompt_sent_while_a_turn_runs_waits_for_it`
 `verified-by: bravebot_tui::state::a_waiting_prompt_goes_when_the_turn_ends`
 `verified-by: bravebot_tui::state::waiting_prompts_go_in_the_order_they_were_typed`
-`verified-by: bravebot_tui::state::stopping_a_turn_drops_what_was_waiting_behind_it`
+`verified-by: bravebot_tui::state::stopping_a_turn_keeps_what_was_waiting_behind_it`
 `verified-by: bravebot_tui::state::a_waiting_prompt_is_in_the_history_already`
 `verified-by: bravebot_tui::state::there_is_nothing_to_queue_when_the_line_is_blank_or_nothing_is_running`
 `verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`
