@@ -89,6 +89,12 @@ const MAX_DIFF_LINES: usize = 12;
 /// it. A caption could be imitated; a margin cannot.
 const QUARANTINE_BAR: &str = "\u{2503}";
 
+/// What the box says when there is nothing in it.
+///
+/// Drawn rather than typed, so it is never part of a prompt and never has to be deleted: the
+/// first character typed takes its place, because the line it was standing in for now exists.
+const PLACEHOLDER: &str = "Ask Brave Bot to do anything";
+
 /// Replace control characters, so drawn text cannot move the cursor or recolour the screen.
 ///
 /// The interface's structure is drawn by this module: the margin down a quarantine block, the `!`
@@ -701,6 +707,21 @@ fn caret_spans(row: &str, at: usize, through: usize, colour: Color) -> Vec<Span<
     spans
 }
 
+/// The invitation, with the caret sitting on its first character.
+///
+/// The caret keeps its place rather than being drawn past the words, because the box is empty and
+/// that is where the first character will land. Dimmed so it reads as an absence of text rather
+/// than as text somebody has to clear.
+fn placeholder_spans(colour: Color) -> Vec<Span<'static>> {
+    let block = Style::default().fg(colour).add_modifier(Modifier::REVERSED);
+    let mut characters = PLACEHOLDER.chars();
+    let first: String = characters.by_ref().take(1).collect();
+    vec![
+        Span::styled(first, block),
+        Span::styled(characters.as_str().to_string(), dim()),
+    ]
+}
+
 /// How much of the row starting at `start` a span of the line covers, in the row's own offsets.
 ///
 /// `None` when the two do not meet, which is every row a covered marker does not reach.
@@ -814,6 +835,15 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
             Line::from(spans)
         })
         .collect();
+
+    // An empty box says what it is for. Shell mode says something different with its own colour
+    // and its own prompt character, so it is left to say it: what a person needs there is which
+    // shell and how to get back out, not an invitation to ask a question.
+    let lines = if session.input().is_empty() && !session.shell {
+        vec![Line::from(placeholder_spans(colour))]
+    } else {
+        lines
+    };
 
     // The position sits in the border while browsing, labelling the box without taking a row
     // away from the text.
@@ -1446,6 +1476,57 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// An empty box says nothing about what it takes, and the one thing a person opening this for
+    /// the first time needs to know is that they may simply ask.
+    #[test]
+    fn an_empty_box_says_what_it_is_for() {
+        let session = Session::new("none");
+        assert!(
+            rendered(&session).contains("Ask Brave Bot to do anything"),
+            "the box said nothing"
+        );
+    }
+
+    /// It stands in for the line rather than being part of it, so the first character typed takes
+    /// its place. Left drawn, it would read as text the person now has to delete.
+    #[test]
+    fn the_invitation_goes_the_moment_anything_is_typed() {
+        let mut session = Session::new("none");
+        session.type_char('h');
+
+        let output = rendered(&session);
+        assert!(
+            !output.contains("Ask Brave Bot"),
+            "the invitation outstayed the empty line: {output}"
+        );
+        assert!(output.contains('h'), "the character was not drawn");
+    }
+
+    /// And it comes back when the line goes, since the box is empty again and says so again.
+    #[test]
+    fn the_invitation_comes_back_when_the_line_does_not() {
+        let mut session = Session::new("none");
+        session.type_char('h');
+        session.clear_input();
+
+        assert!(rendered(&session).contains("Ask Brave Bot to do anything"));
+    }
+
+    /// Shell mode has its own prompt, its own colour and its own hint line, all saying the line
+    /// goes to a shell. An invitation to ask a question would contradict every one of them.
+    #[test]
+    fn the_invitation_is_not_offered_where_the_line_is_a_command() {
+        let mut session = Session::new("none");
+        session.type_char('!');
+        assert!(session.shell, "shell mode was not armed");
+
+        let output = rendered(&session);
+        assert!(
+            !output.contains("Ask Brave Bot"),
+            "offered in shell mode: {output}"
+        );
     }
 
     /// A key pressed to stop something emptied the box and said nothing, and the same key pressed

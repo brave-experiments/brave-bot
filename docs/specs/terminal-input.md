@@ -282,3 +282,19 @@ person had just dropped moved further from the box with every prompt they queued
 `verified-by: bravebot_tui::render::what_is_attached_is_drawn_above_what_is_waiting`
 `verified-by: bravebot_tui::render::an_attached_file_is_named_under_the_box`
 `verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`
+
+<a id="INPUT-12"></a>
+### INPUT-12: an empty box says what it is for
+
+An invitation stands in the empty box, with the caret on its first character, and the first thing
+typed takes its place. It is drawn rather than typed, so it is never part of a prompt and never
+has to be deleted. Shell mode has none: the line there is a command, and its own prompt character,
+colour and hint line all say so.
+
+**Why.** An empty box says nothing about what it takes, and the one thing somebody opening this
+for the first time needs to know is that they may simply ask.
+
+`verified-by: bravebot_tui::render::an_empty_box_says_what_it_is_for`
+`verified-by: bravebot_tui::render::the_invitation_goes_the_moment_anything_is_typed`
+`verified-by: bravebot_tui::render::the_invitation_comes_back_when_the_line_does_not`
+`verified-by: bravebot_tui::render::the_invitation_is_not_offered_where_the_line_is_a_command`

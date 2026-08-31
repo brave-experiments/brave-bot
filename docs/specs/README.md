@@ -25,7 +25,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [skills.md](skills.md) | `SKILL` | 9 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
 | [instructions.md](instructions.md) | `INSTR` | 7 | which instruction files are looked for, where, in what order, and where what they say ends up |
 | [cli.md](cli.md) | `CLI` | 7 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
-| [terminal-input.md](terminal-input.md) | `INPUT` | 11 | what the user types into: the box, the keys, and where a terminal's own limits show through |
+| [terminal-input.md](terminal-input.md) | `INPUT` | 12 | what the user types into: the box, the keys, and where a terminal's own limits show through |
 | [commands.md](commands.md) | `CMD` | 7 | a line beginning with `/`: where one may come from, when a line is one, and what it does to the line |
 | [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 7 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
 | [premium-credentials.md](premium-credentials.md) | `PREM` | 7 | importing a Leo Premium subscription and spending its credentials |
