@@ -2,12 +2,12 @@
 
 mod progress;
 
-use bua_agent::turn::{self, Task};
-use bua_agent::{Mode, Workspace};
-use bua_config::Config;
-use bua_core::cancel::Cancel;
-use bua_core::event::{Event, RecordingSink, Role};
-use bua_core::trust::TrustStore;
+use bravebot_agent::turn::{self, Task};
+use bravebot_agent::{Mode, Workspace};
+use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
+use bravebot_core::event::{Event, RecordingSink, Role};
+use bravebot_core::trust::TrustStore;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -19,7 +19,7 @@ fn main() -> ExitCode {
         Some("--version" | "-V") => {
             // The same words a session record writes down, so the two can be compared without
             // anyone having to work out what "the current build" means.
-            println!("bua {}", bua_tui::BUILD);
+            println!("bravebot {}", bravebot_tui::BUILD);
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") => {
@@ -27,13 +27,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // With no arguments the interactive session is the natural default.
-        None => interactive(bua_tui::app::Start::Fresh),
+        None => interactive(bravebot_tui::app::Start::Fresh),
         // Picking up where a session left off, chosen from a list or named outright.
         Some("--resume" | "-r") => match args.get(1) {
             Some(id) => resume_named(id),
-            None => interactive(bua_tui::app::Start::Choose),
+            None => interactive(bravebot_tui::app::Start::Choose),
         },
-        // The task flags may lead, since "bua --mode manifest 'task'" is how people type it.
+        // The task flags may lead, since "bravebot --mode manifest 'task'" is how people type it.
         Some("--mode" | "--file" | "--trace") => run_task(&args),
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
@@ -48,14 +48,14 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    println!("bua {VERSION}: a coding agent resistant to prompt injection");
+    println!("bravebot {VERSION}: a coding agent resistant to prompt injection");
     println!();
     println!("Usage:");
-    println!("  bua                               Start an interactive session");
-    println!("  bua \"<task>\" [--file <path>]...   Run a single task");
-    println!("  bua --resume [id]                 Pick up a session in this directory");
-    println!("  bua doctor                        Check configuration and confinement");
-    println!("  bua import-leo-creds [channel]    Import a Leo Premium subscription");
+    println!("  bravebot                               Start an interactive session");
+    println!("  bravebot \"<task>\" [--file <path>]...   Run a single task");
+    println!("  bravebot --resume [id]                 Pick up a session in this directory");
+    println!("  bravebot doctor                        Check configuration and confinement");
+    println!("  bravebot import-leo-creds [channel]    Import a Leo Premium subscription");
     println!();
     println!("Interactive keys:");
     println!("  Enter                 Send");
@@ -145,7 +145,7 @@ fn run_task(args: &[String]) -> ExitCode {
         }
     };
 
-    let egress = bua_net::Egress::new();
+    let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
     let mut task = Task::new(prompt);
@@ -155,7 +155,7 @@ fn run_task(args: &[String]) -> ExitCode {
 
     // A one-shot run has nobody to ask about a write, so writes are refused rather than
     // silently applied.
-    let mut confirmer = bua_agent::RefuseWrites;
+    let mut confirmer = bravebot_agent::RefuseWrites;
 
     // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes
     // the command pipeable. Without it a long turn prints nothing until it is over.
@@ -176,7 +176,7 @@ fn run_task(args: &[String]) -> ExitCode {
             TrustStore::new(),
             &Cancel::new(),
         ),
-        Mode::Manifest => bua_agent::manifest::run(
+        Mode::Manifest => bravebot_agent::manifest::run(
             &config,
             &egress,
             &workspace,
@@ -224,7 +224,7 @@ fn run_task(args: &[String]) -> ExitCode {
         // A run that stopped is the one worth looking at, so what it produced is printed
         // whether or not --trace was asked for. Without it a failed plan is a one-line
         // complaint about a document nobody can see.
-        Err(bua_agent::TurnError::Manifest { attempt, detail }) => {
+        Err(bravebot_agent::TurnError::Manifest { attempt, detail }) => {
             eprintln!("{detail}");
             let report = attempt.describe();
             if !report.is_empty() {
@@ -246,15 +246,15 @@ fn run_task(args: &[String]) -> ExitCode {
 
 /// Write a manifest run into the session store, finished or not.
 ///
-/// Best-effort, like everything else under `~/.bua`: a run that cannot be written down still
+/// Best-effort, like everything else under `~/.bravebot`: a run that cannot be written down still
 /// ran, and failing the command because the record did not save would be the wrong trade.
 fn record_manifest_run(
-    workspace: &bua_agent::Workspace,
+    workspace: &bravebot_agent::Workspace,
     prompt: &str,
-    outcome: &Result<bua_agent::Outcome, bua_agent::TurnError>,
+    outcome: &Result<bravebot_agent::Outcome, bravebot_agent::TurnError>,
     sink: &RecordingSink,
 ) {
-    use bua_tui::sessions::{Handle, Standing, StoredManifest};
+    use bravebot_tui::sessions::{Handle, Standing, StoredManifest};
 
     let (stored, trust) = match outcome {
         Ok(finished) => (
@@ -264,7 +264,7 @@ fn record_manifest_run(
                 .map(|attempt| StoredManifest::of(attempt, None)),
             finished.trust.clone(),
         ),
-        Err(bua_agent::TurnError::Manifest { attempt, detail }) => (
+        Err(bravebot_agent::TurnError::Manifest { attempt, detail }) => (
             Some(StoredManifest::of(attempt, Some(detail.clone()))),
             TrustStore::new(),
         ),
@@ -283,7 +283,7 @@ fn record_manifest_run(
             // Empty, and it has to be: a manifest run has no conversation, which is the same
             // fact that makes it unresumable. Filling this with something conversation-shaped
             // would make the picker offer to continue a run that cannot be continued.
-            conversation: &bua_agent::Conversation::new().snapshot(),
+            conversation: &bravebot_agent::Conversation::new().snapshot(),
             turns: 1,
             tokens: outcome.as_ref().map(|o| o.tokens).unwrap_or(0),
             todos: &std::collections::BTreeMap::new(),
@@ -338,14 +338,14 @@ fn resume_named(id: &str) -> ExitCode {
         eprintln!("cannot tell which directory this is");
         return ExitCode::FAILURE;
     };
-    match bua_tui::sessions::load(&directory, id) {
+    match bravebot_tui::sessions::load(&directory, id) {
         // Refused by name as well as in the picker, since `--resume <id>` skips the picker
         // entirely and would otherwise resume a manifest run into an empty conversation.
         Some(record) if record.manifest.is_some() => {
-            eprintln!("{}", bua_tui::resume::MANIFEST_NOTE);
+            eprintln!("{}", bravebot_tui::resume::MANIFEST_NOTE);
             ExitCode::FAILURE
         }
-        Some(record) => interactive(bua_tui::app::Start::Resuming(Box::new(record))),
+        Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
         None => {
             eprintln!("no session {id} in this directory");
             ExitCode::FAILURE
@@ -353,7 +353,7 @@ fn resume_named(id: &str) -> ExitCode {
     }
 }
 
-fn interactive(start: bua_tui::app::Start) -> ExitCode {
+fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
@@ -372,12 +372,12 @@ fn interactive(start: bua_tui::app::Start) -> ExitCode {
 
     // Reported in the status bar so the guarantee in force is visible for the whole
     // session rather than assumed.
-    let confinement = match bua_sandbox::for_current_platform() {
+    let confinement = match bravebot_sandbox::for_current_platform() {
         Ok(sandbox) => sandbox.capabilities().level.to_string(),
         Err(_) => "none".to_string(),
     };
 
-    match bua_tui::app::run(&config, &workspace, confinement, start) {
+    match bravebot_tui::app::run(&config, &workspace, confinement, start) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("interface error: {err}");
@@ -410,7 +410,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
                 eprintln!("unknown option: {other}");
                 return ExitCode::FAILURE;
             }
-            other => match bua_skus::Channel::parse(other) {
+            other => match bravebot_skus::Channel::parse(other) {
                 Some(parsed) => channel = Some(parsed),
                 None => {
                     eprintln!("unknown channel: {other}");
@@ -422,10 +422,10 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     }
 
     // Stable is what someone importing without saying which install means.
-    let channel = channel.unwrap_or(bua_skus::Channel::Stable);
+    let channel = channel.unwrap_or(bravebot_skus::Channel::Stable);
 
     if forget {
-        return match bua_skus::store::clear(channel) {
+        return match bravebot_skus::store::clear(channel) {
             Ok(()) => {
                 println!("forgot the {} subscription", channel.as_str());
                 ExitCode::SUCCESS
@@ -446,7 +446,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
             );
             eprintln!(
                 "         set {} and rebuild",
-                bua_config::env_var::PREMIUM_ENDPOINT
+                bravebot_config::env_var::PREMIUM_ENDPOINT
             );
         }
         _ => {}
@@ -457,7 +457,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         channel.as_str()
     );
 
-    let order = match bua_skus::find_leo_order(channel) {
+    let order = match bravebot_skus::find_leo_order(channel) {
         Ok(order) => order,
         Err(err) => {
             eprintln!("{err}");
@@ -474,10 +474,10 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
 
     // A fresh request id is what makes this a new device rather than a claim on an existing
     // device's batch.
-    let request_id = bua_skus::new_request_id();
+    let request_id = bravebot_skus::new_request_id();
 
     let registration =
-        match bua_skus::device::register(order.environment, &order.order_id, &request_id) {
+        match bravebot_skus::device::register(order.environment, &order.order_id, &request_id) {
             Ok(registration) => registration,
             Err(err) => {
                 eprintln!("{err}");
@@ -485,7 +485,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
             }
         };
 
-    let credentials: bua_skus::StoredCredentials = registration.into();
+    let credentials: bravebot_skus::StoredCredentials = registration.into();
     let count = credentials.credentials.len();
     let last = credentials
         .credentials
@@ -495,7 +495,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         .unwrap_or("unknown")
         .to_string();
 
-    if let Err(err) = bua_skus::store::save(channel, &credentials) {
+    if let Err(err) = bravebot_skus::store::save(channel, &credentials) {
         eprintln!("{err}");
         return ExitCode::FAILURE;
     }
@@ -542,8 +542,8 @@ fn doctor() -> ExitCode {
 ///
 /// Counts only: a credential is a bearer secret, so none of it is printed.
 fn report_subscription() {
-    for channel in bua_skus::Channel::ALL {
-        if let Ok(stored) = bua_skus::store::load(channel) {
+    for channel in bravebot_skus::Channel::ALL {
+        if let Ok(stored) = bravebot_skus::store::load(channel) {
             println!(
                 "  leo       {} subscription imported, {} of {} credentials unspent",
                 channel.as_str(),
@@ -559,7 +559,7 @@ fn report_subscription() {
 /// Printed rather than assumed: the guarantee differs by platform and kernel, and a
 /// user is entitled to know which one they have before trusting the sandbox.
 fn report_confinement(ok: &mut bool) {
-    match bua_sandbox::for_current_platform() {
+    match bravebot_sandbox::for_current_platform() {
         Ok(sandbox) => {
             let caps = sandbox.capabilities();
             println!("confinement {}", caps.level);

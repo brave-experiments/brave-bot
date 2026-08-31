@@ -177,7 +177,7 @@ mod tests {
     /// Landlock is absent on older kernels and in some container runtimes, notably
     /// Docker Desktop's linuxkit kernel, which does not enable the LSM at all.
     ///
-    /// Tests needing real enforcement skip there, but set `BUA_REQUIRE_LANDLOCK=1` to
+    /// Tests needing real enforcement skip there, but set `BRAVEBOT_REQUIRE_LANDLOCK=1` to
     /// turn a skip into a failure. Without that switch a CI run on a kernel lacking
     /// Landlock would report green while never having exercised the sandbox, which is
     /// exactly the false confidence this crate exists to avoid.
@@ -185,8 +185,8 @@ mod tests {
         match LandlockSandbox::new() {
             Ok(s) => Some(s),
             Err(e) => {
-                if std::env::var("BUA_REQUIRE_LANDLOCK").as_deref() == Ok("1") {
-                    panic!("BUA_REQUIRE_LANDLOCK=1 but landlock is unavailable: {e}");
+                if std::env::var("BRAVEBOT_REQUIRE_LANDLOCK").as_deref() == Ok("1") {
+                    panic!("BRAVEBOT_REQUIRE_LANDLOCK=1 but landlock is unavailable: {e}");
                 }
                 eprintln!("SKIPPED (landlock unavailable on this kernel): {e}");
                 None
@@ -264,7 +264,7 @@ mod tests {
             .allow_read("/lib64")
             .allow_read("/bin");
 
-        let target = std::path::Path::new("/tmp/bua-landlock-must-not-exist");
+        let target = std::path::Path::new("/tmp/bravebot-landlock-must-not-exist");
         let _ = std::fs::remove_file(target);
 
         let mut child = sandbox

@@ -4,19 +4,19 @@
 //! API: the server infers the version from the path, so there is no `/v2/` route to
 //! construct. `/v1/conversation` is the older, deprecated surface.
 //!
-//! Requests are signed rather than bearer-authenticated; see [`bua_signing`]. All
-//! traffic goes through [`bua_net::Egress`] so the policy gate sees it, and the model
+//! Requests are signed rather than bearer-authenticated; see [`bravebot_signing`]. All
+//! traffic goes through [`bravebot_net::Egress`] so the policy gate sees it, and the model
 //! reported in the response is preserved because the server may substitute a different
 //! one than was requested.
 
 pub mod protocol;
 
-use bua_config::Config;
-use bua_core::event::Sink;
-use bua_core::label::Label;
-use bua_core::policy::Policy;
-use bua_core::value::Labelled;
-use bua_net::{Egress, EgressError, Request};
+use bravebot_config::Config;
+use bravebot_core::event::Sink;
+use bravebot_core::label::Label;
+use bravebot_core::policy::Policy;
+use bravebot_core::value::Labelled;
+use bravebot_net::{Egress, EgressError, Request};
 use protocol::{ChatChunk, ChatRequest, ChatResponse, STREAM_DONE, SseDecoder, StreamAccumulator};
 use std::fmt;
 use std::time::Duration;
@@ -46,7 +46,7 @@ impl fmt::Display for ChatError {
             Self::NoContent => f.write_str("the response contained no message content"),
             Self::Subscription(detail) => write!(
                 f,
-                "the Leo subscription could not be used: {detail}. Run `bua import-leo-creds` to \
+                "the Leo subscription could not be used: {detail}. Run `bravebot import-leo-creds` to \
                  refresh it, or unset the premium endpoint to use the free tier"
             ),
         }
@@ -188,7 +188,7 @@ impl<'a> AichatClient<'a> {
         let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
 
         let headers =
-            bua_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
+            bravebot_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
 
         let (url, credential) = self.route()?;
 
@@ -285,7 +285,7 @@ impl<'a> AichatClient<'a> {
         let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
 
         let headers =
-            bua_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
+            bravebot_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
 
         let (url, credential) = self.route()?;
 

@@ -4,11 +4,11 @@
 //! only appears when bytes actually move: that the policy gate runs before the request,
 //! that every redirect hop is revalidated, and that a response body arrives labelled.
 
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::{Event, RecordingSink};
-use bua_core::label::Label;
-use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_net::{Egress, EgressError, Request, Timeouts};
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::{Event, RecordingSink};
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_net::{Egress, EgressError, Request, Timeouts};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;

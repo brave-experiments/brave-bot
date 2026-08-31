@@ -12,11 +12,11 @@ use crate::protocol::{
     RpcRequest, RpcResponse, ToolDescriptor, ToolList, ToolResult, call_params, initialize_params,
 };
 use crate::{McpError, McpResult};
-use bua_core::capability::Capability;
-use bua_core::event::Sink;
-use bua_core::policy::Policy;
-use bua_core::value::Labelled;
-use bua_net::{Egress, Request};
+use bravebot_core::capability::Capability;
+use bravebot_core::event::Sink;
+use bravebot_core::policy::Policy;
+use bravebot_core::value::Labelled;
+use bravebot_net::{Egress, Request};
 use serde_json::Value;
 
 /// A server reached over HTTP.
@@ -74,9 +74,13 @@ impl HttpServer {
 
         // Untrusted-public: a remote server's reply is third-party content.
         let response = egress
-            .fetch(policy, request, bua_core::label::Label::untrusted_public())
+            .fetch(
+                policy,
+                request,
+                bravebot_core::label::Label::untrusted_public(),
+            )
             .map_err(|e| match e {
-                bua_net::EgressError::Denied(d) => McpError::Denied(d),
+                bravebot_net::EgressError::Denied(d) => McpError::Denied(d),
                 other => McpError::Transport(other.to_string()),
             })?;
 

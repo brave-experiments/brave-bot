@@ -1,17 +1,17 @@
 //! Sessions written to disk and read back.
 //!
-//! These run against a real `~/.bua`, redirected by `HOME`, because the point of the feature is
+//! These run against a real `~/.bravebot`, redirected by `HOME`, because the point of the feature is
 //! what is on the filesystem afterwards: a record that a later process can find, and an audit a
 //! person can read.
 
-use bua_agent::Conversation;
-use bua_aichat::protocol::Message;
-use bua_core::capability::Capability;
-use bua_core::event::Event;
-use bua_core::label::Label;
-use bua_core::todo::{Item, List, Row, Status, rows};
-use bua_core::trust::TrustStore;
-use bua_tui::sessions::{self, Handle, Standing, StoredManifest};
+use bravebot_agent::Conversation;
+use bravebot_aichat::protocol::Message;
+use bravebot_core::capability::Capability;
+use bravebot_core::event::Event;
+use bravebot_core::label::Label;
+use bravebot_core::todo::{Item, List, Row, Status, rows};
+use bravebot_core::trust::TrustStore;
+use bravebot_tui::sessions::{self, Handle, Standing, StoredManifest};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -39,7 +39,7 @@ impl Scratch {
         // A test that panicked while holding this poisoned nothing worth protecting: the guard
         // covers an environment variable, and the next test overwrites it anyway.
         let lock = HOME.lock().unwrap_or_else(|held| held.into_inner());
-        let root = std::env::temp_dir().join(format!("bua-sessions-test-{name}"));
+        let root = std::env::temp_dir().join(format!("bravebot-sessions-test-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let project = root.join("project");
@@ -302,7 +302,7 @@ fn a_manifest_run_is_written_down_and_marked() {
     let scratch = Scratch::new("manifest-record");
     let mut handle = Handle::begin(&scratch.project);
 
-    let attempt = bua_agent::manifest::Attempt {
+    let attempt = bravebot_agent::manifest::Attempt {
         shape: Some("1. Read the readme. 2. Summarise it.".to_string()),
         proposed: Some("Sure, first I will read it".to_string()),
         plan: None,
@@ -313,7 +313,7 @@ fn a_manifest_run_is_written_down_and_marked() {
     handle.save(
         "summarise the readme",
         Standing {
-            conversation: &bua_agent::Conversation::new().snapshot(),
+            conversation: &bravebot_agent::Conversation::new().snapshot(),
             turns: 1,
             tokens: 0,
             todos: &BTreeMap::new(),

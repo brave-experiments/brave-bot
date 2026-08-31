@@ -2,7 +2,7 @@
 //!
 //! Uses a temporary HOME so the developer's own history is never read or written.
 
-use bua_tui::store;
+use bravebot_tui::store;
 
 /// Point HOME at a scratch directory for the duration of the closure.
 ///
@@ -13,7 +13,7 @@ fn with_temp_home<T>(name: &str, body: impl FnOnce() -> T) -> T {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let dir = std::env::temp_dir().join(format!("bua-home-{name}"));
+    let dir = std::env::temp_dir().join(format!("bravebot-home-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch home");
 
@@ -145,7 +145,7 @@ fn a_session_recalls_a_prompt_stored_by_an_earlier_session() {
         // An earlier session left this behind.
         store::append_history("a question from before");
 
-        let mut session = bua_tui::state::Session::new("test").with_stored_history();
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         session.recall_older();
 
         assert_eq!(session.input, "a question from before");
@@ -157,7 +157,7 @@ fn a_session_recalls_a_prompt_stored_by_an_earlier_session() {
 #[test]
 fn a_prompt_sent_now_is_stored_for_next_time() {
     with_temp_home("session-write", || {
-        let mut session = bua_tui::state::Session::new("test").with_stored_history();
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         for c in "asked now".chars() {
             session.type_char(c);
         }
@@ -171,7 +171,7 @@ fn a_prompt_sent_now_is_stored_for_next_time() {
 #[test]
 fn a_cancelled_prompt_is_removed_from_the_stored_history() {
     with_temp_home("session-cancel", || {
-        let mut session = bua_tui::state::Session::new("test").with_stored_history();
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         for c in "abandoned".chars() {
             session.type_char(c);
         }

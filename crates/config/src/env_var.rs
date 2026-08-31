@@ -25,4 +25,4 @@ pub const REQUIRED: [&str; 3] = [SIGNING_KEY, KEY_ID, ENDPOINT];
 
 /// Set to `1` to build without configuration, producing a binary that must be given
 /// the variables at run time.
-pub const ALLOW_UNCONFIGURED_BUILD: &str = "BUA_ALLOW_UNCONFIGURED_BUILD";
+pub const ALLOW_UNCONFIGURED_BUILD: &str = "BRAVEBOT_ALLOW_UNCONFIGURED_BUILD";

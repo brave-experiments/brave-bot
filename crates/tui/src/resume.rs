@@ -1,6 +1,6 @@
 //! Choosing a session to pick up again.
 //!
-//! Shown by `bua --resume`, before anything else happens. The list is this working directory's
+//! Shown by `bravebot --resume`, before anything else happens. The list is this working directory's
 //! sessions, newest first, because the one being looked for is nearly always the last one.
 //!
 //! Typing filters rather than jumping, since a title is remembered as a few words out of the
@@ -370,7 +370,7 @@ mod tests {
                 summary("2", "User experience progress updates", 200),
                 summary("3", "Launch the TUI", 100),
             ],
-            "/work/bua",
+            "/work/bravebot",
         )
     }
 

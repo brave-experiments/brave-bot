@@ -1,4 +1,4 @@
-# brave-user-agent
+# brave-bot
 
 A coding agent whose defining property is **structural resistance to indirect prompt
 injection**.
@@ -15,7 +15,7 @@ attacker to phrase their way past.
 ## Install
 
 ```sh
-npm install -g @brave/user-agent
+npm install -g @brave/bravebot
 ```
 
 This downloads the release binary for your platform and verifies its checksum. macOS, Linux,
@@ -25,12 +25,12 @@ and Windows on both x86_64 and arm64 are supported. To build from source instead
 ## Using it
 
 ```sh
-bua                                  # interactive session
-bua "what does src/main.rs do?"      # one-shot
-bua "explain this" --file notes.md   # with named context
-bua "summarise the docs" --mode manifest   # plan the whole run first, then execute it
-bua doctor                           # check configuration and confinement
-bua import-leo-creds                 # use a Leo Premium subscription
+bravebot                                  # interactive session
+bravebot "what does src/main.rs do?"      # one-shot
+bravebot "explain this" --file notes.md   # with named context
+bravebot "summarise the docs" --mode manifest   # plan the whole run first, then execute it
+bravebot doctor                           # check configuration and confinement
+bravebot import-leo-creds                 # use a Leo Premium subscription
 ```
 
 In a session: the mouse wheel or Up/Down scrolls, Home/End jumps to either end, Ctrl-T
@@ -49,7 +49,7 @@ advance. See [manifest mode](docs/manifest.md).
 change anything and it is confined to your working directory.
 
 **It never writes without you.** Every write is your decision, not the model's. Your approval
-covers that one exact path and cannot be reused for another. In a one-shot `bua "..."` run
+covers that one exact path and cannot be reused for another. In a one-shot `bravebot "..."` run
 there is nobody to ask, so writes are refused rather than applied unseen.
 
 **Edits are shown as a diff.** An edit names the exact passage to replace, so you review a few
@@ -107,7 +107,7 @@ rules are in [docs/trust.md](docs/trust.md).
 
 ## Configuration
 
-Configuration is built into the released binary, so there is nothing to set up. `bua doctor`
+Configuration is built into the released binary, so there is nothing to set up. `bravebot doctor`
 reports what it will use. To point it at a different backend, see
 [docs/development.md](docs/development.md#configuration).
 
@@ -116,11 +116,11 @@ reports what it will use. To point it at a different backend, see
 If you subscribe to Leo Premium in Brave, you can use it here:
 
 ```
-bua import-leo-creds            # from Brave (stable)
-bua import-leo-creds nightly    # or beta, or development
+bravebot import-leo-creds            # from Brave (stable)
+bravebot import-leo-creds nightly    # or beta, or development
 ```
 
-Premium requests are then used automatically, and `bua doctor` reports how much is left.
+Premium requests are then used automatically, and `bravebot doctor` reports how much is left.
 `--forget` discards what was imported.
 
 This **registers as an additional device** rather than borrowing the browser's credentials. Only

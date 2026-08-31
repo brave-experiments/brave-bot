@@ -9,14 +9,14 @@
 //! the reply arrives. That is honest about what is happening, and it keeps two turns from
 //! ever being in flight together.
 
-use bua_agent::Workspace;
-use bua_agent::conversation::Conversation;
-use bua_agent::turn::{self, Task};
-use bua_config::Config;
-use bua_core::cancel::Cancel;
-use bua_core::event::RecordingSink;
-use bua_core::trust::TrustStore;
-use bua_net::Egress;
+use bravebot_agent::Workspace;
+use bravebot_agent::conversation::Conversation;
+use bravebot_agent::turn::{self, Task};
+use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
+use bravebot_core::event::RecordingSink;
+use bravebot_core::trust::TrustStore;
+use bravebot_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
@@ -319,7 +319,7 @@ fn event_loop(
     confinement: String,
     start: Start,
 ) -> io::Result<()> {
-    // The one place persistence is turned on: history in ~/.bua outlives the session.
+    // The one place persistence is turned on: history in ~/.bravebot outlives the session.
     let mut session = Session::new(confinement).with_stored_history();
 
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
@@ -425,7 +425,7 @@ fn event_loop(
 
                 // Written after each turn rather than at the end, because the end may never
                 // come: the session worth resuming is the one whose machine slept and never
-                // woke. Best-effort, like everything else under ~/.bua.
+                // woke. Best-effort, like everything else under ~/.bravebot.
                 stored.save(
                     &prompt,
                     crate::sessions::Standing {
@@ -495,11 +495,11 @@ fn run_turn_animated(
     prompt: &str,
     conversation: Conversation,
     trust: TrustStore,
-) -> io::Result<(Conversation, TrustStore, Vec<bua_core::event::Event>)> {
+) -> io::Result<(Conversation, TrustStore, Vec<bravebot_core::event::Event>)> {
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
-    let (answer_tx, answer_rx) = mpsc::channel::<bua_agent::Decision>();
+    let (answer_tx, answer_rx) = mpsc::channel::<bravebot_agent::Decision>();
 
     // A fresh token per turn: reusing one could cancel a turn before it started.
     let cancel = Cancel::new();

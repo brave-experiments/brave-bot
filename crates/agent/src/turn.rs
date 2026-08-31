@@ -12,17 +12,17 @@
 //! quarantine the references in it name, and the integrity that exchange has met. A new policy
 //! each turn, resuming a conversation that outlives it.
 
-use bua_aichat::AichatClient;
-use bua_aichat::protocol::{ChatRequest, Message, ToolCall};
-use bua_config::Config;
-use bua_core::cancel::Cancel;
-use bua_core::capability::{Capability, CapabilitySet};
-use bua_core::event::Sink;
-use bua_core::policy::{Policy, ReleasePlan, Routing};
-use bua_core::reference::Presentation;
-use bua_core::trust::TrustStore;
-use bua_core::value::Labelled;
-use bua_net::Egress;
+use bravebot_aichat::AichatClient;
+use bravebot_aichat::protocol::{ChatRequest, Message, ToolCall};
+use bravebot_config::Config;
+use bravebot_core::cancel::Cancel;
+use bravebot_core::capability::{Capability, CapabilitySet};
+use bravebot_core::event::Sink;
+use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_core::reference::Presentation;
+use bravebot_core::trust::TrustStore;
+use bravebot_core::value::Labelled;
+use bravebot_net::Egress;
 use std::fmt;
 
 use crate::confirm::Confirmer;
@@ -127,7 +127,7 @@ pub enum TurnError {
     /// A file operation failed or was refused.
     Workspace(WorkspaceError),
     /// The model call failed or was refused.
-    Chat(bua_aichat::ChatError),
+    Chat(bravebot_aichat::ChatError),
     /// A manifest run stopped before finishing.
     ///
     /// Carries everything the run produced before it stopped, because a run that failed is the
@@ -159,8 +159,8 @@ impl From<WorkspaceError> for TurnError {
     }
 }
 
-impl From<bua_aichat::ChatError> for TurnError {
-    fn from(value: bua_aichat::ChatError) -> Self {
+impl From<bravebot_aichat::ChatError> for TurnError {
+    fn from(value: bravebot_aichat::ChatError) -> Self {
         Self::Chat(value)
     }
 }
@@ -619,7 +619,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         egress,
                         subscription: subscription
                             .as_mut()
-                            .map(|s| s as &mut dyn bua_aichat::Subscription),
+                            .map(|s| s as &mut dyn bravebot_aichat::Subscription),
                     },
                 },
                 confirmer,
@@ -666,7 +666,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     .map_err(|d| TurnError::Precommit(d.to_string()))?;
                 let described: Vec<String> = references
                     .iter()
-                    .map(bua_core::reference::Reference::describe)
+                    .map(bravebot_core::reference::Reference::describe)
                     .collect();
                 format!(
                     "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are \

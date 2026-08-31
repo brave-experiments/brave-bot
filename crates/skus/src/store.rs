@@ -17,7 +17,7 @@
 use crate::device::Registration;
 
 /// The keychain service every entry is filed under.
-const SERVICE: &str = "bua";
+const SERVICE: &str = "bravebot";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -47,12 +47,12 @@ impl std::fmt::Display for StoreError {
                 write!(f, "the stored credentials are unusable: {detail}")
             }
             Self::Exhausted => f.write_str(
-                "every credential valid today has been spent; run `bua import-leo-creds` again",
+                "every credential valid today has been spent; run `bravebot import-leo-creds` again",
             ),
             Self::Expired { until, unspent } => write!(
                 f,
                 "the imported credentials expired at {until} with {unspent} never used; \
-                 run `bua import-leo-creds` again"
+                 run `bravebot import-leo-creds` again"
             ),
         }
     }

@@ -23,7 +23,7 @@ pub use http::HttpServer;
 pub use protocol::{ToolDescriptor, ToolResult};
 pub use stdio::StdioServer;
 
-use bua_core::policy::Denial;
+use bravebot_core::policy::Denial;
 use std::fmt;
 
 pub type McpResult<T> = Result<T, McpError>;

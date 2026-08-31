@@ -12,11 +12,11 @@
 //! the routing label stops content from *supplying* a path, while confinement stops a
 //! trusted-but-wrong path from escaping the project.
 
-use bua_core::capability::Capability;
-use bua_core::event::{Role, Sink};
-use bua_core::label::Label;
-use bua_core::policy::{Denial, Policy};
-use bua_core::value::Labelled;
+use bravebot_core::capability::Capability;
+use bravebot_core::event::{Role, Sink};
+use bravebot_core::label::Label;
+use bravebot_core::policy::{Denial, Policy};
+use bravebot_core::value::Labelled;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -216,7 +216,7 @@ impl Workspace {
     ///
     /// Split out of [`Workspace::read_page`] for the deferred case, where the gates ran when the
     /// slot was reserved and the reading happens later, under
-    /// [`bua_core::policy::Policy::materialise`], which observes the path again itself. What
+    /// [`bravebot_core::policy::Policy::materialise`], which observes the path again itself. What
     /// comes back is therefore unlabelled, and the kernel labels it: this returns the shape of a
     /// file and never decides what it means.
     pub fn page(

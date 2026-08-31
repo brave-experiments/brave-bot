@@ -18,7 +18,7 @@
 //! gone when the call returns.
 //!
 //! What a processor is **not** is a sandbox in the operating-system sense. There is no untrusted
-//! code here to confine: the code making the call is the driver's own, and `bua-sandbox` exists
+//! code here to confine: the code making the call is the driver's own, and `bravebot-sandbox` exists
 //! for processes that run someone else's. The confinement is the capability set, which is empty,
 //! and the label on the output, which no part of the processor chooses.
 

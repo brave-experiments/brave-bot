@@ -1,6 +1,6 @@
 //! Where global state lives on disk.
 //!
-//! `~/.bua` holds anything that should outlive a session. Only prompt history so far, but the
+//! `~/.bravebot` holds anything that should outlive a session. Only prompt history so far, but the
 //! directory is the place for it rather than a per-project file: a question worth asking again is
 //! usually worth asking in another checkout too.
 //!
@@ -18,7 +18,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The directory holding global state.
-const DIRECTORY: &str = ".bua";
+const DIRECTORY: &str = ".bravebot";
 
 /// The history file inside it.
 const HISTORY_FILE: &str = "history";

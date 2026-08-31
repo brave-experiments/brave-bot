@@ -1,6 +1,6 @@
 //! Proves the copy path reads what was drawn rather than a reset buffer.
-use bua_tui::select::Selection;
-use bua_tui::{Session, render};
+use bravebot_tui::select::Selection;
+use bravebot_tui::{Session, render};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -22,7 +22,7 @@ fn copying_reads_what_the_screen_shows() {
             .expect("second draw");
         let mut selection = Selection::started_at(0, 0);
         selection.extend_to(11, 60);
-        bua_tui::select::text(completed.buffer, &selection)
+        bravebot_tui::select::text(completed.buffer, &selection)
     };
 
     assert!(

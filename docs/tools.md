@@ -171,7 +171,7 @@ separates the model's decisions from yours.
 A write is different: the wrong file destroys work rather than wasting a step. So the model
 never gets to decide one. Your approval is what mints a single-use endorsement bound to that
 exact path, so an approval cannot be replayed or redirected. Where nobody can be asked, such
-as a one-shot `bua "..."` run, writes are refused rather than applied unseen.
+as a one-shot `bravebot "..."` run, writes are refused rather than applied unseen.
 
 ## Reviewable writes
 
@@ -214,7 +214,7 @@ pipeline rather than a single program: narrowing output is a stage, not a pipe c
 
 There is no allowlist and nothing to configure. `sed`, `awk`, `jq`, `rg`, `gh`, `npm`, anything
 installed, all work without being named anywhere. They also run with whatever access your own shell
-would give them: `bua` does not sandbox them.
+would give them: `bravebot` does not sandbox them.
 
 That is deliberate. `git push` needs `~/.ssh`, `npm install` reads `~/.npmrc` and writes
 `node_modules`, and the set of programs you might reasonably ask for cannot be listed in advance. A
@@ -233,8 +233,8 @@ argv so it cannot be reused for a different one.
 
 Standard input is **content**: carried into the process, never consulted. So untrusted data *can* be
 fed to a command line. The model names a quarantined reference and the kernel supplies the bytes,
-meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bua` itself ever
-reading it. That is the point of the split: both trusted and untrusted data reach real tools, and
+meaning `sed` and `awk` work on a file nobody vouched for without the planner or `bravebot`
+itself ever reading it. That is the point of the split: both trusted and untrusted data reach real tools, and
 only the routing part has to be trustworthy.
 
 Output is **always** untrusted and private. Every stage, no exceptions, nothing that changes it. A

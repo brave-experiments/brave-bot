@@ -7,12 +7,12 @@ const path = require("node:path");
 const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 
-const binaryName = process.platform === "win32" ? "bua-bin.exe" : "bua-bin";
+const binaryName = process.platform === "win32" ? "bravebot-bin.exe" : "bravebot-bin";
 const binaryPath = path.join(__dirname, binaryName);
 
 if (!fs.existsSync(binaryPath)) {
   console.error(
-    "The bua binary is missing. Reinstall the package to download the binary for this platform."
+    "The bravebot binary is missing. Reinstall the package to download the binary for this platform."
   );
   process.exit(1);
 }
@@ -20,7 +20,7 @@ if (!fs.existsSync(binaryPath)) {
 const result = spawnSync(binaryPath, process.argv.slice(2), { stdio: "inherit" });
 
 if (result.error) {
-  console.error(`Failed to run bua: ${result.error.message}`);
+  console.error(`Failed to run bravebot: ${result.error.message}`);
   process.exit(1);
 }
 
@@ -28,7 +28,7 @@ if (result.status !== null) {
   process.exit(result.status);
 }
 
-// Killed by a signal: report it the way a shell would, so `bua` behaves like the
+// Killed by a signal: report it the way a shell would, so `bravebot` behaves like the
 // binary it wraps rather than collapsing every signal into a generic failure.
 if (result.signal) {
   const signalNumber = os.constants.signals[result.signal];

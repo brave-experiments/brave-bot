@@ -1,6 +1,6 @@
 # Manifest mode
 
-`bua "<task>" --mode manifest` plans the whole run before it reads anything, then executes the
+`bravebot "<task>" --mode manifest` plans the whole run before it reads anything, then executes the
 plan with no model in the control path. The default, `--mode turn`, is the loop everything else
 in this repository describes: read, decide, act, repeat.
 
@@ -90,8 +90,8 @@ through a registry the model has never seen.
 
 **Phase 3, structural validation.** Deterministic, no model, in the kernel.
 `Policy::adopt_manifest` refuses a plan whose label is not trusted, then
-`bua_core::manifest::validate` refuses one that is not well formed. Any violation fails the run.
-A manifest is never half adopted and a plan is never repaired.
+`bravebot_core::manifest::validate` refuses one that is not well formed. Any violation fails the
+run. A manifest is never half adopted and a plan is never repaired.
 
 Phase 2 is thinner here than in the specification, and the reason is worth stating rather than
 papering over. There it injects provider URLs, MCP tool names and API bases from an
@@ -161,7 +161,7 @@ is read as untrusted, because a label may fall and may not rise.
 
 ## What the schema enforces
 
-`bua_core::manifest` holds a static contract per tool, the specification's `TOOL_SCHEMA`,
+`bravebot_core::manifest` holds a static contract per tool, the specification's `TOOL_SCHEMA`,
 consulted by a pure function. A plan is refused unless:
 
 - every tool is one the schema knows, and every argument is one that tool takes;
@@ -213,8 +213,8 @@ planner's context; here the planner is told the paths and plans a `FILE_READ` fo
 the whole premise is that it decides before it has seen anything.
 
 A manifest run **is** written into the session store, with its audit beside it, whether it
-finished or stopped. It appears in `bua --resume` marked `manifest`, and selecting one is refused
-with a reason rather than resumed: there is no conversation to continue. The record is for
+finished or stopped. It appears in `bravebot --resume` marked `manifest`, and selecting one is
+refused with a reason rather than resumed: there is no conversation to continue. The record is for
 reading, not for carrying on from, and those are different things.
 
 The conversation in such a record is empty, and has to be. Filling it with something
