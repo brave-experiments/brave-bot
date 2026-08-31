@@ -11,6 +11,12 @@
 # half of it that is cheap enough to check here, and it reads the working tree rather than
 # what is staged, so a partial `git add` can still commit something these did not see.
 
+# Git hooks do not inherit direnv. Without this, `cargo clippy` rebuilds `bravebot-config`
+# with no SERVICES_KEY_* and the build script refuses, which looks like a clippy failure.
+if command -v direnv >/dev/null 2>&1; then
+    eval "$(direnv export bash)"
+fi
+
 if ! cargo fmt --all -- --check; then
     echo >&2
     echo "pre-commit: formatting. Run 'make fmt' and stage the result." >&2

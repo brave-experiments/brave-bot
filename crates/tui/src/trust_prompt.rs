@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use std::path::Path;
@@ -135,33 +135,35 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
         Line::raw(""),
         Line::from(Span::styled(
             "Either way, anything derived from the web or from an untrusted",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )),
         Line::from(Span::styled(
             "file is still shown before it is written.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )),
         Line::raw(""),
         Line::from(vec![
             Span::styled(
                 "  y",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(theme::ok())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" trust it    "),
             Span::styled(
                 "n",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::fail())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" ask me about every write    "),
             Span::styled(
                 "ctrl-c",
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(theme::muted())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" quit", Style::default().fg(Color::DarkGray)),
+            Span::styled(" quit", Style::default().fg(theme::muted())),
         ]),
     ];
 

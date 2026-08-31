@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
@@ -375,7 +375,7 @@ impl<'a> Picker<'a> {
             if let Some(detail) = &row.detail {
                 lines.push(Line::from(vec![
                     Span::raw(" ".repeat(MARKER_WIDTH)),
-                    Span::styled(detail.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(detail.clone(), Style::default().fg(theme::muted())),
                 ]));
             }
         }
@@ -386,7 +386,7 @@ impl<'a> Picker<'a> {
         if hidden > 0 {
             lines.push(Line::from(Span::styled(
                 format!("    … {hidden} more, use the arrow keys"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             )));
         }
 
@@ -405,7 +405,7 @@ impl<'a> Picker<'a> {
                     .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme::muted())
             };
             lines.push(Line::from(vec![
                 Span::styled(
@@ -489,7 +489,9 @@ impl<'a> Picker<'a> {
         // cannot afford to say twice what the person can already read.
         spans.push(Span::styled(
             "esc",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" skip"));
         spans
@@ -505,7 +507,9 @@ impl<'a> Picker<'a> {
             Span::raw(" answer   "),
             Span::styled(
                 "esc",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::fail())
+                    .add_modifier(Modifier::BOLD),
             ),
             // Escape goes back to the options where there are any, and out where there are none.
             Span::raw(if self.prompt().rows.is_empty() {
@@ -1424,7 +1428,7 @@ mod tests {
         let y = row_holding(&rows, "in front of the handler") as u16;
         let x = column_of(&rows[y as usize], "in front of the handler") as u16;
         assert_eq!(buffer[(x, y)].symbol(), "i", "not the start of the detail");
-        assert_eq!(buffer[(x, y)].fg, Color::DarkGray);
+        assert_eq!(buffer[(x, y)].fg, theme::muted());
     }
 
     /// A tall option list still has to leave room for the keys. If the height of the details were

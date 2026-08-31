@@ -15,11 +15,12 @@
 //! Nothing here decides anything in the sense the kernel means. The input is assistant output
 //! already released for the screen, and the only output is styled spans.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthChar;
 
 use crate::markdown;
+use crate::theme;
 use crate::wrap::display_width;
 
 /// Columns a table may declare before it is drawn as its source instead.
@@ -416,7 +417,7 @@ pub fn table(lines: &[&str], room: usize, base: Style) -> Option<Laid> {
                 }
                 out.push(Span::styled(
                     RULE.to_string().repeat(*width),
-                    base.fg(Color::DarkGray),
+                    base.fg(theme::muted()),
                 ));
                 out
             })

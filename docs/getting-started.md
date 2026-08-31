@@ -32,6 +32,16 @@ runs in `$SHELL` with globs and redirection intact. What it prints goes to the m
 is what lets you follow it with "fix the first failure". See
 [specs/shell-mode.md](specs/shell-mode.md) for what that means for trust.
 
+## Slash commands
+
+A line that is exactly a word beginning with `/` is acted on here rather than sent as a prompt.
+`/model` chooses which model to think with. `/theme` opens a centred panel over the session and
+live-previews as you move; Enter keeps the choice, Escape keeps what you had. `/theme nord`
+applies a named theme without opening the panel. The choice is stored in `~/.bravebot` and applies
+in every directory. Custom themes are JSON files under `~/.bravebot/themes/`. See
+[specs/commands.md](specs/commands.md) for what makes a line a command, and
+[specs/terminal-transcript.md](specs/terminal-transcript.md) for how themes paint the interface.
+
 Add `--trace` to a one-shot run for the audit trail: which gate checked what, the label every
 value carried, and what was released.
 

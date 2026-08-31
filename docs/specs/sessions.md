@@ -144,6 +144,23 @@ session by that name".
 
 `verified-by: bravebot_tui::sessions::a_session_is_named_once_there_is_a_record_to_name`
 
+<a id="SESSION-9"></a>
+### SESSION-9: the theme name is stored globally, like the model
+
+Which theme paints the interface is written under `~/.bravebot` and read back at the next start.
+It is not a property of a checkout: the same choice applies in every directory, and an empty or
+corrupt file is no choice at all, falling back to `brave`. Custom theme files live beside it, under
+`~/.bravebot/themes`, which [terminal-transcript.md](terminal-transcript.md) governs.
+
+**Why.** Asking again in every project for the same preference is answering it repeatedly, and
+nothing about a theme depends on which files are open.
+
+`verified-by: bravebot_tui::persist::a_chosen_theme_is_read_back_next_session`
+`verified-by: bravebot_tui::store::a_stored_theme_is_read_back_without_its_newline`
+`verified-by: bravebot_tui::store::an_empty_theme_file_is_not_a_choice`
+`verified-by: bravebot_tui::store::only_the_first_theme_line_is_read`
+`verified-by: bravebot_tui::store::an_over_long_theme_name_is_not_a_choice`
+
 ## Known costs
 
 - **Two working directories can share a session store.** The directory name is derived by mapping
