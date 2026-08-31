@@ -707,6 +707,21 @@ fn caret_spans(row: &str, at: usize, through: usize, colour: Color) -> Vec<Span<
     spans
 }
 
+/// What opens a row of the box: the prompt character, or the indent a continuation lines up under.
+///
+/// One place, because the invitation is drawn behind the same opening as the line it stands in
+/// for, and two copies of it are how the two came to sit in different columns.
+fn lead_for(index: usize, shell: bool) -> &'static str {
+    // Only the first row carries the prompt; continuations are indented to line up beneath it.
+    if index != 0 {
+        "  "
+    } else if shell {
+        "! "
+    } else {
+        "> "
+    }
+}
+
 /// The invitation, with the caret sitting on its first character.
 ///
 /// The caret keeps its place rather than being drawn past the words, because the box is empty and
@@ -810,16 +825,10 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
         .enumerate()
         .map(|(offset, row)| {
             let index = first + offset;
-            // Only the first row carries the prompt; continuations are indented to line up
-            // beneath it.
-            let lead = if index != 0 {
-                "  "
-            } else if session.shell {
-                "! "
-            } else {
-                "> "
-            };
-            let mut spans = vec![Span::styled(lead, Style::default().fg(colour))];
+            let mut spans = vec![Span::styled(
+                lead_for(index, session.shell),
+                Style::default().fg(colour),
+            )];
             // A marker is one thing to the caret, so the caret covers the whole of it rather than
             // the one character it happens to start with. The span is located in the line, not in
             // the row, because the wrap is free to put a long marker across two of them.
@@ -839,8 +848,16 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     // An empty box says what it is for. Shell mode says something different with its own colour
     // and its own prompt character, so it is left to say it: what a person needs there is which
     // shell and how to get back out, not an invitation to ask a question.
+    //
+    // Behind the same prompt character the typed line gets, so the words stand exactly where the
+    // first one typed will land and nothing on the row moves when it does.
     let lines = if session.input().is_empty() && !session.shell {
-        vec![Line::from(placeholder_spans(colour))]
+        let mut spans = vec![Span::styled(
+            lead_for(0, session.shell),
+            Style::default().fg(colour),
+        )];
+        spans.extend(placeholder_spans(colour));
+        vec![Line::from(spans)]
     } else {
         lines
     };
@@ -1486,6 +1503,32 @@ mod tests {
         assert!(
             rendered(&session).contains("Ask Brave Bot to do anything"),
             "the box said nothing"
+        );
+    }
+
+    /// The prompt character stays put and the invitation stands behind it, in the column the first
+    /// character typed lands in. Drawn over the prompt instead, the whole row shifted the moment
+    /// somebody typed, which reads as the box jumping under their hands.
+    #[test]
+    fn the_invitation_stands_where_the_first_character_will() {
+        const WIDTH: u16 = 90;
+
+        let empty = Session::new("none");
+        let invited = rendered_at(&empty, WIDTH, 24)
+            .find("Ask Brave Bot")
+            .expect("the invitation was not drawn");
+
+        let mut typed = Session::new("none");
+        typed.type_char('f');
+        let landed = rendered_at(&typed, WIDTH, 24)
+            .find("> f")
+            .expect("the typed line was not drawn")
+            + "> ".len();
+
+        assert_eq!(
+            invited % WIDTH as usize,
+            landed % WIDTH as usize,
+            "the row moved when the first character was typed"
         );
     }
 
