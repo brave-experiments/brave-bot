@@ -77,20 +77,38 @@ the marker out worked: left drawn, it says a file is going that is not.
 
 
 <a id="INPUT-4"></a>
-### INPUT-4: escape clears a line before it quits
+### INPUT-4: the keys that stop, and the one that also leaves
 
 Escape discards a half-typed prompt, and does nothing at all on a line with nothing on it. It
 never ends the session.
 
-**Escape stops a turn; Ctrl-C leaves.** They are different requests and the keys do not share.
-Ctrl-C ends the session wherever it is pressed, with a turn running, during a summary, while a
-command runs, or at rest, and a turn in flight is stopped on the way out because a reply nobody
-will be here to read is one there is no reason to wait for. Escape stops the turn and leaves the
-session where it was.
+**Ctrl-C stops the nearest thing there is to stop, and leaves when there is nothing left.** It is
+read against what is happening, in this order:
 
-**Why.** Ctrl-C is how a person leaves a terminal program. It used to cancel the turn instead, so
-somebody trying to get out pressed it and read "cancelling…", and while a turn ran there was no
-way out at all.
+| What is happening | What Ctrl-C does |
+|---|---|
+| a turn in flight, or a command running | stops it, and the session stays where it was |
+| nothing running, a line in the box | takes the line, and offers the way out |
+| nothing running, an empty box | ends the session |
+
+Escape only ever stops, and never leaves. A summary is the one exception to the table: it is a
+single request with no round for a stop to land between, so nothing there can stop it and Ctrl-C
+leaves once it comes back.
+
+Taking the line says so, on the line beneath the box, and says which key ends the session. The
+offer lives for exactly one press, since it answers the press just made and the next press is the
+answer to it. Nothing is said where the box was already empty: that press leaves, and a press that
+leaves is not one to explain.
+
+**Why.** The press somebody makes while an answer is going wrong in front of them is asking for
+the answer to stop, not for the session to end, and answering it by leaving takes the transcript
+and everything else with it. Ctrl-C is also how a person leaves a terminal program, which is the
+other half: it leaves from an empty box, so both requests have a key.
+
+This is not the arrangement where a key pressed twice means two different things by accident. Each
+press has something of its own to answer and the state says which, so no press is one that
+silently did another one's job. What makes the ladder safe to walk is that each rung is visible:
+the turn stopping is on the screen, and the line going says what the next press will do.
 
 Escape used to leave as well, once the line was empty. That made every press a question of what
 was in the box: the key for abandoning a thought ended the session as soon as the thought was
@@ -104,8 +122,14 @@ runs.
 `verified-by: bravebot_tui::app::escape_on_an_empty_line_does_not_quit`
 `verified-by: bravebot_tui::app::escape_twice_clears_and_stays`
 `verified-by: bravebot_tui::app::ctrl_c_quits`
-`verified-by: bravebot_tui::app::escape_stops_a_turn_and_ctrl_c_leaves`
-`verified-by: bravebot_tui::app::ctrl_c_leaves_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::ctrl_c_stops_a_turn_rather_than_leaving`
+`verified-by: bravebot_tui::app::ctrl_c_clears_the_line_before_it_leaves`
+`verified-by: bravebot_tui::app::ctrl_c_leaves_once_there_is_nothing_left_to_stop`
+`verified-by: bravebot_tui::app::the_way_out_is_offered_only_where_a_line_was_taken`
+`verified-by: bravebot_tui::app::the_way_out_stops_being_offered_at_the_next_press`
+`verified-by: bravebot_tui::render::the_way_out_is_offered_where_the_line_went`
+`verified-by: bravebot_tui::app::escape_only_stops_and_ctrl_c_is_read_against_what_is_happening`
+`verified-by: bravebot_tui::app::a_key_that_would_stop_a_turn_is_answered_during_a_summary`
 `verified-by: bravebot_tui::app::escape_stops_the_turn_without_ending_the_session`
 `verified-by: bravebot_tui::app::ctrl_g_asks_for_the_editor`
 `verified-by: bravebot_tui::app::the_editor_key_does_nothing_while_a_turn_runs`

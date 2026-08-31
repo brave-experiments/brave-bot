@@ -1091,6 +1091,21 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         area,
     );
 
+    // The line the person was writing has just gone, so the press that took it is the one thing
+    // worth explaining: without this, a key they pressed to stop something emptied the box and
+    // said nothing, and the next press of it ends the session.
+    if session.cleared_by_interrupt {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "ctrl-c again to exit  ",
+                Style::default().fg(Color::Cyan),
+            )))
+            .alignment(Alignment::Right),
+            area,
+        );
+        return;
+    }
+
     // A copy is silent otherwise, and a clipboard that may or may not have taken something is
     // worse than no clipboard: the user pastes to find out. Right-aligned, out of the way of the
     // hints, where the answer to "did that work" belongs.
@@ -1431,6 +1446,25 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// A key pressed to stop something emptied the box and said nothing, and the same key pressed
+    /// again ends the session. The line under the box is where that is said, because it is where a
+    /// person is already looking when the words they were writing vanish.
+    #[test]
+    fn the_way_out_is_offered_where_the_line_went() {
+        let mut session = Session::new("none");
+        session.type_char('x');
+        assert!(
+            !rendered(&session).contains("ctrl-c again"),
+            "offered before anything was cleared"
+        );
+
+        session.clear_input();
+        session.cleared_by_interrupt = true;
+
+        let hint = hint_row_at(&session, 90, 24);
+        assert!(hint.contains("ctrl-c again to exit"), "{hint}");
     }
 
     /// Rubbing the marker out is the only way a person has to change their mind about a file, and

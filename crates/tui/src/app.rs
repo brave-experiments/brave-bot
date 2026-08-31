@@ -268,6 +268,10 @@ fn starts_a_line(key: KeyEvent) -> bool {
 pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+    // The hint offering the way out lives for one press, and this is it. Cleared before the arms
+    // rather than after, so the Ctrl-C that puts it up survives its own press.
+    session.cleared_by_interrupt = false;
+
     // Before the match, since a key that moves the caret cannot also be one of the keys below:
     // the ones this answers are exactly the ones nothing else claims.
     if edit_line(session, key) {
@@ -275,6 +279,17 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     }
 
     match key.code {
+        // Ctrl-C is read against what there is to stop, nearest first: the turn in flight, then
+        // the line in the box, then the session. A person who wants the answer to stop gets that
+        // from the first press, and nothing they were part way through writing is taken with it.
+        KeyCode::Char('c') if ctrl && session.status == Status::Working => Action::Cancel,
+        KeyCode::Char('c') if ctrl && !session.input().is_empty() => {
+            session.clear_input();
+            // Said only here. A press that leaves is not one to explain, and the hint is the
+            // answer to what a person has just done rather than standing advice.
+            session.cleared_by_interrupt = true;
+            Action::Redraw
+        }
         KeyCode::Char('c') if ctrl => {
             session.quit();
             Action::Quit
@@ -1294,11 +1309,9 @@ fn run_command(
         while event::poll(Duration::ZERO)? {
             match event::read()? {
                 TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
-                TermEvent::Key(key) if wants_quit(key) => {
-                    session.quit();
-                    cancel.cancel();
-                }
-                TermEvent::Key(key) if wants_cancel(key) => {
+                // A running command is something to stop, so Ctrl-C stops it and stays, for the
+                // reason it stops a turn: the way out is the press after that, at the box.
+                TermEvent::Key(key) if is_ctrl_c(key) || wants_cancel(key) => {
                     cancel.cancel();
                     session.note("stopping…");
                 }
@@ -1405,9 +1418,10 @@ fn compact_animated(
                     // nothing here can stop it. Said once, because the alternative is a key that does
                     // nothing and says nothing, which reads as the interface having hung at the one
                     // moment it is working hardest.
-                    TermEvent::Key(key) if wants_quit(key) => {
-                        // Nothing here can stop the request, so the session leaves once it comes
-                        // back rather than pretending the key did more than it did.
+                    TermEvent::Key(key) if is_ctrl_c(key) => {
+                        // The one place Ctrl-C still leaves with something in flight: a summary is
+                        // one request with no round for a stop to land between, so there is
+                        // nothing here for the press to stop and leaving is all it can mean.
                         session.quit();
                     }
                     TermEvent::Key(key) if wants_cancel(key) => {
@@ -1599,13 +1613,11 @@ fn run_turn_animated(
                     // for a press would type every character twice, and cancel the turn on the way up
                     // from the Escape that already cancelled it.
                     TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
-                    TermEvent::Key(key) if wants_quit(key) => {
-                        // The turn stops on the way out: a request nobody will be here to read is
-                        // one there is no reason to finish.
-                        session.quit();
-                        cancel.cancel();
-                    }
-                    TermEvent::Key(key) if wants_cancel(key) => {
+                    // Both keys stop the turn and neither leaves. Ctrl-C is the way out of the
+                    // program, but there is a turn to stop first, and a person watching an answer
+                    // go wrong is asking for the answer to stop rather than for the session to
+                    // end. The next press, at the box, is the one that leaves.
+                    TermEvent::Key(key) if is_ctrl_c(key) || wants_cancel(key) => {
                         cancel.cancel();
                         session.note("cancelling…");
                     }
@@ -1807,18 +1819,24 @@ fn drain_worker(
     }
 }
 
-/// Whether a key press asks for the turn in flight to stop.
+/// Whether a key press asks for whatever is in flight to stop, and nothing more.
 ///
-/// Escape, and only Escape. Ctrl-C used to be here too, on the reasoning that somebody reaching
-/// for the usual interrupt should not have to discover a different one. What they are reaching
-/// for is the usual way out of a terminal program, and answering it with a turn that stopped and
-/// a session that did not left no way out at all: Ctrl-C did nothing whatever at the prompt.
+/// Escape, and only Escape. Ctrl-C asks for it too, but Ctrl-C also leaves, so the loops take it
+/// separately: which of the two it means depends on whether there is anything to stop.
 fn wants_cancel(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Esc)
 }
 
-/// Whether a key press asks to leave.
-fn wants_quit(key: KeyEvent) -> bool {
+/// Whether a key press is Ctrl-C.
+///
+/// What it asks for depends on what is happening. With a turn in flight, or a command running, it
+/// stops that and stays; with nothing to stop it leaves. So this says which key was pressed and
+/// the loops say what it meant, since only they know which of the two they are.
+///
+/// It once always left, because stopping the turn and staying had left no way out at all: Ctrl-C
+/// did nothing whatever at the prompt. It leaves from the prompt now, so the press that stops a
+/// turn is followed by a press that leaves, and both requests have a key again.
+fn is_ctrl_c(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'))
 }
 
@@ -2465,19 +2483,22 @@ mod tests {
         assert!(!session.is_quitting(), "cancelling ended the session");
     }
 
-    /// Escape stops the turn and Ctrl-C leaves, and the two are not the same request. Ctrl-C
-    /// used to stop the turn too, which left it saying "cancelling…" to somebody trying to get
-    /// out of the program.
+    /// Escape only ever stops. Ctrl-C is the key the loops read against what is happening, so it
+    /// is told apart from a plain `c` and from every other press before either meaning is
+    /// reached.
     #[test]
-    fn escape_stops_a_turn_and_ctrl_c_leaves() {
+    fn escape_only_stops_and_ctrl_c_is_read_against_what_is_happening() {
         assert!(wants_cancel(key(KeyCode::Esc)));
-        assert!(!wants_cancel(ctrl('c')), "ctrl-c is not a request to stop");
+        assert!(
+            !wants_cancel(ctrl('c')),
+            "ctrl-c is more than a request to stop"
+        );
 
-        assert!(wants_quit(ctrl('c')));
-        assert!(!wants_quit(key(KeyCode::Esc)), "escape is not a way out");
-        assert!(!wants_quit(key(KeyCode::Char('c'))));
-        assert!(!wants_quit(key(KeyCode::Enter)));
-        assert!(!wants_quit(key(KeyCode::Up)));
+        assert!(is_ctrl_c(ctrl('c')));
+        assert!(!is_ctrl_c(key(KeyCode::Esc)));
+        assert!(!is_ctrl_c(key(KeyCode::Char('c'))));
+        assert!(!is_ctrl_c(key(KeyCode::Enter)));
+        assert!(!is_ctrl_c(key(KeyCode::Up)));
     }
 
     /// And a second press does the same thing again rather than leaving. A key pressed twice in
@@ -2920,7 +2941,7 @@ mod tests {
     #[test]
     fn a_key_that_would_stop_a_turn_is_answered_during_a_summary() {
         assert!(wants_cancel(key(KeyCode::Esc)));
-        assert!(wants_quit(ctrl('c')));
+        assert!(is_ctrl_c(ctrl('c')));
     }
 
     /// COMMANDS is the one place the set is written down, so a command missing from it is a
@@ -3293,22 +3314,89 @@ mod tests {
         assert!(session.input().is_empty(), "Down did not walk back out");
     }
 
-    /// Ctrl-C is how a person leaves a terminal program. Answering it with a turn that stopped
-    /// and a session that carried on left them pressing it and reading "cancelling…", with no way
-    /// out at all while a turn ran.
+    /// The press a person makes when an answer is going wrong in front of them is asking for the
+    /// answer to stop, not for the session to end. It left instead, taking the transcript and
+    /// everything else with it.
     #[test]
-    fn ctrl_c_leaves_while_a_turn_is_running() {
+    fn ctrl_c_stops_a_turn_rather_than_leaving() {
         let mut session = Session::new("none");
         session.type_char('a');
         session.submit();
         assert_eq!(session.status, Status::Working);
 
-        // What the working loops do with it, which is not something handle_key_while_working
-        // decides: leaving is the loop's business, and the key never reaches the ladder.
-        assert!(wants_quit(ctrl('c')));
-        assert!(!wants_cancel(ctrl('c')));
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Cancel);
+        assert!(
+            !session.is_quitting(),
+            "stopping the turn ended the session"
+        );
+    }
 
-        session.quit();
+    /// The line in the box is the next thing there is to stop, and a person half way through a
+    /// sentence is not asking to leave. Leaving over it would take the words with the session.
+    #[test]
+    fn ctrl_c_clears_the_line_before_it_leaves() {
+        let mut session = Session::new("none");
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Redraw);
+        assert_eq!(session.input(), "");
+        assert!(
+            !session.is_quitting(),
+            "clearing the line ended the session"
+        );
+        assert!(
+            session.cleared_by_interrupt,
+            "nothing said what the next press would do"
+        );
+    }
+
+    /// A press that ends the session is not one to explain, and the hint is the answer to a line
+    /// having just gone. On an empty line nothing went, so there is nothing to answer.
+    #[test]
+    fn the_way_out_is_offered_only_where_a_line_was_taken() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, ctrl('c'));
+        assert!(
+            !session.cleared_by_interrupt,
+            "offered where nothing was cleared"
+        );
+    }
+
+    /// It lives for one press. Standing there afterwards, it would go on offering an exit to
+    /// somebody who has started writing the next line and is no longer being asked anything.
+    #[test]
+    fn the_way_out_stops_being_offered_at_the_next_press() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('x')));
+        handle_key(&mut session, ctrl('c'));
+        assert!(session.cleared_by_interrupt);
+
+        handle_key(&mut session, key(KeyCode::Char('y')));
+        assert!(
+            !session.cleared_by_interrupt,
+            "the hint outstayed its press"
+        );
+    }
+
+    /// The whole ladder, nearest first: the turn, then the line the stop put back, then the
+    /// session. Each press has something of its own to answer, so none of them is a press that
+    /// silently did another one's job.
+    #[test]
+    fn ctrl_c_leaves_once_there_is_nothing_left_to_stop() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Cancel);
+        session.restore("a");
+        assert_eq!(session.input(), "a", "the stopped prompt came back");
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Redraw);
+        assert!(!session.is_quitting());
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Quit);
         assert!(session.is_quitting());
     }
 

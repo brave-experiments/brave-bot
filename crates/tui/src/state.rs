@@ -334,6 +334,11 @@ pub struct Session {
     pub selection: Option<crate::select::Selection>,
     /// How much the last copy took, until the next thing happens.
     pub copied: Option<usize>,
+    /// Whether the last press took a line out of the box rather than ending the session.
+    ///
+    /// The hint saying which key ends it hangs on this. It lives for exactly one press, because it
+    /// answers the press just made and the next press is the answer to it.
+    pub cleared_by_interrupt: bool,
     /// Whether there was a picture on the clipboard when it was last looked at.
     ///
     /// Only ever a hint on screen, so a stale answer costs a line that is briefly wrong and nothing
@@ -473,6 +478,7 @@ impl Session {
             history: crate::history::History::new(),
             selection: None,
             copied: None,
+            cleared_by_interrupt: false,
             image_on_clipboard: false,
             written: 0,
             todos: Vec::new(),
