@@ -65,6 +65,7 @@ pub struct Facts<'a> {
     pub directory: &'a Path,
     pub added_directories: &'a [std::path::PathBuf],
     pub model: Option<&'a str>,
+    pub theme: &'a str,
     pub config: &'a Config,
     pub confinement: &'a str,
     pub turns: usize,
@@ -104,6 +105,8 @@ pub fn report(facts: &Facts<'_>) -> Report {
         Some(model) => Line::new("Model", model).with_note("chosen with /model"),
         None => Line::new("Model", &facts.config.default_model).with_note("the configured default"),
     });
+
+    lines.push(Line::new("Theme", facts.theme).with_note("chosen with /theme"));
 
     // The environment rather than the host. See the note at the top of this file.
     lines.push(
@@ -249,6 +252,7 @@ mod tests {
             directory: Path::new("/tmp/project"),
             added_directories: &[],
             model: None,
+            theme: "brave",
             config,
             confinement: "kernel-enforced",
             turns: 4,

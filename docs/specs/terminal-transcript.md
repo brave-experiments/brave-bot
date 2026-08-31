@@ -6,14 +6,15 @@ governs:
   - crates/tui/src/render.rs
   - crates/tui/src/state.rs
   - crates/tui/src/theme.rs
+  - crates/tui/src/theme_prompt.rs
 ---
 
 ## Scope
 
-What is drawn back to the user: the transcript, a resumed session, and how content is shaped on
-its way to the screen. Presentation holds no labels, and the rules here are about a person being
-able to see what the agent did. What the user types into is
-[terminal-input.md](terminal-input.md).
+What is drawn back to the user: the transcript, a resumed session, how content is shaped on its
+way to the screen, and which palette paints the interface. Presentation holds no labels, and the
+rules here are about a person being able to see what the agent did. What the user types into is
+[terminal-input.md](terminal-input.md). A line beginning with `/` is [commands.md](commands.md).
 
 ## Clauses
 
@@ -159,14 +160,15 @@ outside a block.
 `verified-by: bravebot_tui::render::a_system_note_is_not_drawn_in_the_ink_that_marks_untrusted_content`
 
 <a id="VIEW-9"></a>
-### VIEW-9: an ink that carries meaning is mixed, not chosen by the terminal
+### VIEW-9: under `brave`, an ink that carries meaning is mixed, not chosen by the terminal
 
-Where a colour is what tells one thing on the screen from another, it is a shade this interface
-mixes. The sixteen named colours are slots a terminal repaints, so they are used only where the
-meaning is the terminal's own, green for finished, red for failed, dim grey for an aside, which are
-read against whatever palette the user chose rather than against each other. A mixed shade that has
-to stay legible against the background is picked for the background sensed at startup, and a
-terminal that will not say gets the shade for a dark one.
+Where a colour is what tells one thing on the screen from another, and the theme in force is
+`brave`, it is a shade this interface mixes. The sixteen named colours are slots a terminal
+repaints, so they are used only where the meaning is the terminal's own, green for finished, red
+for failed, dim grey for an aside, which are read against whatever palette the user chose rather
+than against each other. A mixed shade that has to stay legible against the background is picked
+for the background sensed at startup, and a terminal that will not say gets the shade for a dark
+one.
 
 **Why.** A named slot is a request, not a colour. The same code drew a different colour in every
 profile, which is how one slot came to carry two meanings at once without anybody choosing that.
@@ -177,3 +179,56 @@ profile, which is how one slot came to carry two meanings at once without anybod
 `verified-by: bravebot_tui::theme::a_light_background_takes_the_deeper_brand_primary`
 `verified-by: bravebot_tui::theme::colorfgbg_with_a_white_background_is_light`
 `verified-by: bravebot_tui::theme::an_osc_reply_with_a_pale_background_is_light`
+`verified-by: bravebot_tui::theme::brave_keeps_named_slots_for_the_terminals_own_meanings`
+
+<a id="VIEW-10"></a>
+### VIEW-10: a palette a person chose paints every role from that table
+
+A theme chosen with `/theme` mixes every semantic ink from the palette that name names, including
+the background and the default text. Named ANSI slots are not used there, so two roles cannot
+collapse because the terminal remapped green. The choice is a keystroke on this surface, the same
+endorsement `/model` takes for a request field. Moving the cursor live-previews: the theme under
+the cursor is put in force for as long as it is selected, and Escape restores the theme that was
+in force when the picker opened.
+
+**Why.** Leaving finished and failed as named slots under a named theme would put the person's
+chosen palette and the terminal's remapping in a fight over the same meaning. Previewing on the
+cursor rather than only on Enter is what lets a person compare themes against their own transcript
+before committing.
+
+`verified-by: bravebot_tui::theme::a_named_theme_paints_its_own_background_and_inks`
+`verified-by: bravebot_tui::theme_prompt::preview_puts_the_cursor_theme_in_force_and_cancel_restores`
+`verified-by: bravebot_tui::app::typing_the_theme_command_opens_the_picker`
+`verified-by: bravebot_tui::app::the_theme_command_carries_its_name`
+
+<a id="VIEW-11"></a>
+### VIEW-11: user theme files are read only from `~/.bravebot/themes`
+
+A JSON file whose stem is the theme name is loaded from the user's own themes directory and from
+nowhere else. A workspace `.bravebot/themes` is not consulted: that directory is workspace content,
+and a palette file must not become a decision taken from untrusted bytes. An unknown or unreadable
+stored name is `brave`. A broken file is omitted from the list rather than crashing. The earlier
+name `system` still finds `brave`, so a choice saved under that name is not silently lost.
+
+`verified-by: bravebot_tui::theme::user_themes_come_from_a_directory_of_json_files`
+`verified-by: bravebot_tui::theme::a_broken_json_file_is_not_a_theme`
+`verified-by: bravebot_tui::theme::none_in_json_inherits_the_terminal_default`
+`verified-by: bravebot_tui::theme::the_old_system_name_still_finds_brave`
+`verified-by: bravebot_tui::store::an_empty_theme_file_is_not_a_choice`
+`verified-by: bravebot_tui::store::an_over_long_theme_name_is_not_a_choice`
+
+<a id="VIEW-12"></a>
+### VIEW-12: the theme picker is a centred panel over the session
+
+`/theme` draws a bordered panel in the middle of the screen. The session stays visible behind it,
+and is redrawn each time the cursor moves so the live preview is of the person's own transcript
+rather than of an empty page. The panel is sized to the list and stays inside the frame on a tiny
+terminal. It is not a full-screen takeover.
+
+**Why.** A full-screen list hides the thing a theme is for. The same centred-panel shape the write
+and trust prompts already use keeps the person oriented, and putting the session behind the panel
+is what makes previewing honest.
+
+`verified-by: bravebot_tui::theme_prompt::the_picker_is_drawn_as_a_centred_panel`
+`verified-by: bravebot_tui::theme_prompt::the_panel_stays_inside_a_tiny_terminal`
+`verified-by: bravebot_tui::theme_prompt::the_list_shows_names_a_person_reads`

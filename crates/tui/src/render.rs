@@ -40,7 +40,7 @@ const DETAIL_MARKER: &str = "⎿";
 const BRANCH_MARKER: &str = "└";
 
 fn dim() -> Style {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(theme::muted())
 }
 
 /// Draw a task list beneath whatever it belongs to.
@@ -60,12 +60,12 @@ fn todo_lines(todos: &[bravebot_core::todo::Row]) -> Vec<Line<'static>> {
             };
             let (marker, text) = if row.struck() {
                 (
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(theme::ok()),
                     dim().add_modifier(Modifier::CROSSED_OUT),
                 )
             } else {
                 (
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme::running()),
                     Style::default().add_modifier(Modifier::BOLD),
                 )
             };
@@ -232,11 +232,11 @@ fn activity_lines(
 ) -> Vec<Line<'static>> {
     let head = if activity.is_running() {
         // Hollow while it runs, filled when it is over, so the eye finds the live one.
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(theme::running())
     } else if activity.failed {
-        Style::default().fg(Color::Red)
+        Style::default().fg(theme::fail())
     } else {
-        Style::default().fg(Color::Green)
+        Style::default().fg(theme::ok())
     };
 
     let mut lines = vec![Line::from(vec![
@@ -251,7 +251,7 @@ fn activity_lines(
         lines.push(Line::from(Span::styled(
             format!("  {DETAIL_MARKER} {note}"),
             if activity.failed {
-                Style::default().fg(Color::Red)
+                Style::default().fg(theme::fail())
             } else {
                 dim()
             },
@@ -270,7 +270,7 @@ fn activity_lines(
         // carries the meaning: cyan for what the model has, yellow for what is kept from it, and
         // the dim grey the rest of the detail lines already use for what has not happened.
         let colour = match landing {
-            Landing::Quarantined => Style::default().fg(Color::Yellow),
+            Landing::Quarantined => Style::default().fg(theme::running()),
             Landing::Reserved => dim(),
             // Filtered out above: the ordinary landing is drawn by not being drawn.
             Landing::Context => dim(),
@@ -296,7 +296,7 @@ fn activity_lines(
 /// hole in it. They own the directory. What must never happen is these bytes reaching a model's
 /// context, and a terminal is not a context.
 fn quarantined_lines(shown: &Shown, width: usize) -> Vec<Line<'static>> {
-    let marked = Style::default().fg(Color::Yellow);
+    let marked = Style::default().fg(theme::running());
     let margin = Span::styled(format!("  {QUARANTINE_BAR} "), marked);
 
     // The heading goes through [`marked_rows`] like the content does, because the origin is not
@@ -345,7 +345,7 @@ fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'st
     let margin = if untrusted {
         Span::styled(
             format!("  {QUARANTINE_BAR}  "),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::running()),
         )
     } else {
         Span::raw("     ")
@@ -359,10 +359,10 @@ fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'st
             // that means something.
             let body = match change {
                 Change::Added(text) => {
-                    Span::styled(format!("+ {text}"), Style::default().fg(Color::Green))
+                    Span::styled(format!("+ {text}"), Style::default().fg(theme::ok()))
                 }
                 Change::Removed(text) => {
-                    Span::styled(format!("- {text}"), Style::default().fg(Color::Red))
+                    Span::styled(format!("- {text}"), Style::default().fg(theme::fail()))
                 }
                 Change::Kept(text) => Span::styled(format!("  {text}"), dim()),
                 Change::Elided(count) => Span::styled(format!("… {count} unchanged lines"), dim()),
@@ -390,6 +390,15 @@ fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'st
 
 /// Draw the whole interface.
 pub fn draw(frame: &mut Frame, session: &Session) {
+    // A named theme paints the frame so chrome and text share one background. `brave` leaves the
+    // terminal's own colours alone.
+    if theme::paints_background() {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::background()).fg(theme::text())),
+            frame.area(),
+        );
+    }
+
     // What is running sits above the box rather than in place of it, so the two are measured
     // together: whatever the indicator takes is height the input no longer has.
     let status_height = status_height(session, frame.area().height);
@@ -456,7 +465,7 @@ fn assistant_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(LEAD);
     let lead = |at: usize| {
         if at == 0 {
-            Span::styled(format!("{TURN_MARKER} "), Style::default().fg(Color::Green))
+            Span::styled(format!("{TURN_MARKER} "), Style::default().fg(theme::ok()))
         } else {
             Span::raw("  ")
         }
@@ -524,7 +533,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
                 for text in entry.text.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("{DETAIL_MARKER} {text}"),
-                        Style::default().fg(theme::NOTE),
+                        Style::default().fg(theme::note()),
                     )));
                 }
             }
@@ -535,7 +544,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
                     let prefix = if index == 0 { "! " } else { "  " };
                     lines.push(Line::from(Span::styled(
                         format!("{prefix}{}", printable(text)),
-                        Style::default().fg(Color::Magenta),
+                        Style::default().fg(theme::accent()),
                     )));
                 }
             }
@@ -630,7 +639,9 @@ fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
 /// that happened in this session and one read back off disk are drawn the same way.
 fn trail_line(recorded: &TrailLine) -> Line<'static> {
     let style = if recorded.blocked {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::fail())
+            .add_modifier(Modifier::BOLD)
     } else {
         dim()
     };
@@ -767,9 +778,9 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
         Line::from(vec![
             Span::styled(
                 format!("  {} ", session.spinner()),
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(theme::accent()),
             ),
-            Span::styled("running… ", Style::default().fg(Color::Magenta)),
+            Span::styled("running… ", Style::default().fg(theme::accent())),
             Span::styled(format!("({})  esc to stop", session.elapsed_words()), dim()),
         ])
     } else if working {
@@ -777,11 +788,11 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
             Some(indicator) => Line::from(vec![
                 Span::styled(
                     format!("  {} ", indicator.glyph),
-                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(theme::accent()),
                 ),
                 Span::styled(
                     format!("{}… ", indicator.verb),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(theme::ok()),
                 ),
                 // Dim: the counters answer a question without competing for attention.
                 Span::styled(indicator.detail(), dim()),
@@ -817,7 +828,7 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     // means something different: it goes to a shell instead of the model, and that is worth more
     // than one character of distinction at the moment somebody presses Enter.
     let colour = if session.shell {
-        Color::Magenta
+        theme::accent()
     } else {
         theme::brand_primary()
     };
@@ -877,7 +888,7 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
         .border_style(if session.status != Status::Idle {
             dim()
         } else if session.shell {
-            Style::default().fg(Color::Magenta)
+            Style::default().fg(theme::accent())
         } else {
             Style::default().fg(theme::brand_primary())
         });
@@ -938,7 +949,7 @@ fn queued_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
     for waiting in &session.queued {
         let room = (width as usize).saturating_sub(4);
         lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().fg(Color::Blue)),
+            Span::styled("  ", Style::default().fg(theme::brand_primary())),
             Span::styled(
                 printable(&head_of(&waiting.prompt, room)),
                 Style::default().fg(theme::brand_primary()),
@@ -950,7 +961,7 @@ fn queued_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
                 " QUEUED ",
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Blue)
+                    .bg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -1150,7 +1161,10 @@ fn shortcut_lines(width: u16) -> Vec<Line<'static>> {
                 }
                 let key = head_of(key, key_column);
                 let gap = key_column - key.chars().count();
-                spans.push(Span::styled(key, Style::default().fg(Color::Cyan)));
+                spans.push(Span::styled(
+                    key,
+                    Style::default().fg(theme::brand_primary()),
+                ));
                 if meaning_column == 0 {
                     continue;
                 }
@@ -1180,7 +1194,7 @@ fn entry_lines(session: &Session, offered: &[crate::entries::Entry]) -> Vec<Line
         .map(|entry| {
             let chosen = Some(entry) == highlighted.as_ref();
             let colour = if entry.is_directory {
-                Style::default().fg(Color::Blue)
+                Style::default().fg(theme::accent())
             } else {
                 Style::default().fg(theme::brand_primary())
             };
@@ -1213,7 +1227,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!("  ! {}", bravebot_agent::shell::shell()),
-                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(theme::accent()),
                 ),
                 Span::styled("  ·  esc to cancel  ·  output goes to the model", dim()),
             ])),
@@ -1908,8 +1922,14 @@ mod tests {
             .expect("draw succeeds");
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((0, 0)).expect("cell").bg, Color::Blue);
-        assert_ne!(buffer.cell((6, 0)).expect("cell").bg, Color::Blue);
+        assert_eq!(
+            buffer.cell((0, 0)).expect("cell").bg,
+            theme::brand_primary()
+        );
+        assert_ne!(
+            buffer.cell((6, 0)).expect("cell").bg,
+            theme::brand_primary()
+        );
     }
 
     /// The way to the bindings sits after the confinement, so it is the first thing a narrow
@@ -2421,10 +2441,13 @@ mod tests {
 
         let inks = inks_on_row_containing(&session, "trusting");
         assert!(
-            inks.iter().all(|ink| *ink == theme::NOTE),
+            inks.iter().all(|ink| *ink == theme::note()),
             "the note was not drawn in one ink of its own: {inks:?}"
         );
-        assert!(!inks.contains(&Color::Yellow), "the note is still yellow");
+        assert!(
+            !inks.contains(&theme::running()),
+            "the note is still yellow"
+        );
     }
 
     /// Long replies must not panic the renderer.

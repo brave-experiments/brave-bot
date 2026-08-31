@@ -108,7 +108,7 @@ fn brand_at(column: usize) -> Color {
 /// The shadow keeps out of the gradient: it is depth rather than part of the mark's colour.
 fn ink(column: usize, character: char) -> Style {
     if character == SHADOW {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme::muted())
     } else if column < SEAM {
         Style::default().fg(brand_at(column))
     } else {
@@ -164,7 +164,7 @@ pub fn lines(confinement: &str, width: u16, available: u16) -> Vec<Line<'static>
         Span::styled("bravebot", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
             format!("  ·  confinement {confinement}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         ),
     ]));
 
@@ -180,7 +180,7 @@ pub fn invitation() -> Line<'static> {
         Span::raw(INDENT),
         Span::styled(
             "Ask a question about this workspace.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         ),
     ])
 }
@@ -279,7 +279,7 @@ mod tests {
     fn the_shadow_is_not_drawn_in_the_letterforms_ink() {
         let inks = inks(LOGO[2]);
         assert_eq!(inks[0], Some(brand_at(0)), "no letterform: {inks:?}");
-        assert!(inks.contains(&Some(Color::DarkGray)), "no shadow: {inks:?}");
+        assert!(inks.contains(&Some(theme::muted())), "no shadow: {inks:?}");
     }
 
     /// Only the half of the name that is a brand is drawn in the brand's colours.
@@ -287,10 +287,11 @@ mod tests {
     fn the_orange_stops_at_the_end_of_brave() {
         let inks = inks(LOGO[1]);
         assert_eq!(inks[0], Some(brand_at(0)), "brave lost its ink");
+        let muted = theme::muted();
         assert!(
             inks[SEAM..]
                 .iter()
-                .all(|ink| matches!(ink, None | Some(Color::DarkGray))),
+                .all(|ink| ink.is_none() || *ink == Some(muted)),
             "bot was branded too: {:?}",
             &inks[SEAM..]
         );

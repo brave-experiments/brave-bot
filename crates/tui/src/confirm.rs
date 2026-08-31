@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
@@ -175,8 +175,8 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     let inside = block.inner(area);
 
     let (verb, colour) = match request.intent {
-        Intent::Create => ("Create", Color::Green),
-        Intent::Overwrite => ("Overwrite", Color::Yellow),
+        Intent::Create => ("Create", theme::ok()),
+        Intent::Overwrite => ("Overwrite", theme::running()),
         Intent::Edit => ("Edit", theme::brand_primary()),
     };
 
@@ -194,7 +194,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
             ),
             Span::styled(
                 format!("  +{} -{}", diff.added(), diff.removed()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             ),
         ]),
         Line::raw(""),
@@ -209,14 +209,14 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
                 diff.added(),
                 diff.removed()
             ),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::running()),
         )));
     }
 
     // The same margin the transcript draws down everything the model was not allowed to read.
     // A body out of a quarantined file is that, and the person about to approve it is the only
     // one who will ever see it: they should be able to tell which kind of review this is.
-    let marked = Style::default().fg(Color::Yellow);
+    let marked = Style::default().fg(theme::running());
     let margin = Span::styled(if request.untrusted { "┃ " } else { "  " }, marked);
     if request.untrusted {
         lines.extend(marked_rows(
@@ -238,17 +238,17 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     for change in changes.iter() {
         let body = match change {
             Change::Added(text) => {
-                Span::styled(format!("+{text}"), Style::default().fg(Color::Green))
+                Span::styled(format!("+{text}"), Style::default().fg(theme::ok()))
             }
             Change::Removed(text) => {
-                Span::styled(format!("-{text}"), Style::default().fg(Color::Red))
+                Span::styled(format!("-{text}"), Style::default().fg(theme::fail()))
             }
             Change::Kept(text) => {
-                Span::styled(format!(" {text}"), Style::default().fg(Color::DarkGray))
+                Span::styled(format!(" {text}"), Style::default().fg(theme::muted()))
             }
             Change::Elided(count) => Span::styled(
                 format!(" … {count} unchanged lines"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             ),
         };
         lines.extend(marked_rows(&margin, &[body], inside.width as usize));
@@ -258,22 +258,24 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
         Span::styled(
             "  y",
             Style::default()
-                .fg(Color::Green)
+                .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" write it    "),
         Span::styled(
             "n",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" leave it alone    "),
         Span::styled(
             "ctrl-c",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
     ]);
 
     frame.render_widget(block, area);
@@ -434,7 +436,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
             Span::styled(
                 "Run ",
                 Style::default()
-                    .fg(Color::Magenta)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -443,7 +445,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
             ),
             Span::styled(
                 format!("  in {}", request.directory),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             ),
         ]),
         Line::raw(""),
@@ -453,12 +455,12 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {}  ", index + 1),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             ),
             Span::styled(
                 stage.display(),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(theme::text())
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -467,7 +469,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         if let Some(path) = request.resolved.get(index) {
             lines.push(Line::from(Span::styled(
                 format!("       {path}"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             )));
         }
     }
@@ -479,7 +481,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     // shell would give it.
     lines.push(Line::from(Span::styled(
         "  this is not sandboxed: it runs with the access your own shell has",
-        Style::default().fg(Color::Yellow),
+        Style::default().fg(theme::running()),
     )));
 
     // The second and independent reason to be careful, on confidentiality rather than integrity.
@@ -487,7 +489,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     if request.releases_private() {
         lines.push(Line::from(Span::styled(
             "  it is also being fed your own data, which leaves here with it",
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::fail()),
         )));
     }
 
@@ -500,7 +502,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "  a: trust this exact command for the rest of this session",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )));
         // The command first, then what trusting it means. The claims are about this, so a reader
         // should have it in front of them before reading them.
@@ -512,21 +514,21 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         }
         lines.push(Line::from(Span::styled(
             "     which means both:",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )));
         lines.push(Line::from(Span::styled(
             "       it runs again unasked, side effects and all",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )));
         // The half nothing else in the interface would reveal, so it is the half that is coloured.
         lines.push(Line::from(Span::styled(
             "       what it prints is trusted, and the model reads it",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::running()),
         )));
         // Exact arguments, so the narrowness is visible rather than assumed the other way.
         lines.push(Line::from(Span::styled(
             "     these arguments only: git log would not cover git push",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )));
     } else {
         // Private input asks every time whatever is remembered, so offering to stop asking would
@@ -534,7 +536,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "  private input is asked about every time, so this one cannot be remembered",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )));
     }
 
@@ -542,7 +544,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         Span::styled(
             "  y",
             Style::default()
-                .fg(Color::Green)
+                .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" run it    "),
@@ -553,7 +555,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         key_spans.push(Span::styled(
             "a",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::running())
                 .add_modifier(Modifier::BOLD),
         ));
         key_spans.push(Span::raw(" always    "));
@@ -561,23 +563,25 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     key_spans.extend([
         Span::styled(
             "n",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" don't    "),
         Span::styled(
             "ctrl-c",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
     ]);
     let keys = Line::from(key_spans);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Magenta))
+        .border_style(Style::default().fg(theme::accent()))
         .title(" run this? ");
     let inside = block.inner(area);
     frame.render_widget(block, area);
@@ -604,7 +608,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
             } else {
                 "   ↑↓ back".to_string()
             },
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(theme::accent()),
         ));
     }
     frame.render_widget(Paragraph::new(keys), rows[1]);
@@ -676,7 +680,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
     // command's output is untrimmed, so reaching the wrap point takes nothing unusual.
     let inside = block.inner(area);
 
-    let marked = Style::default().fg(Color::Yellow);
+    let marked = Style::default().fg(theme::running());
     let margin = Span::styled("┃ ", marked);
     let mut lines = vec![
         Line::from(vec![
@@ -692,14 +696,14 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
             ),
             Span::styled(
                 format!("  printed by {}", request.command),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             ),
         ]),
         Line::raw(""),
         Line::from(Span::styled(
             "  the model has not seen this. Approving puts it in its context, and it will act \
              on it.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )),
         Line::raw(""),
     ];
@@ -711,7 +715,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
             &margin,
             &[Span::styled(
                 "(it printed nothing)",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::muted()),
             )],
             inside.width as usize,
         ));
@@ -728,22 +732,24 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
         Span::styled(
             "  y",
             Style::default()
-                .fg(Color::Green)
+                .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" let it read this    "),
         Span::styled(
             "n",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" keep it back    "),
         Span::styled(
             "ctrl-c",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
     ]);
 
     frame.render_widget(block, area);
@@ -825,19 +831,19 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Green))
+        .border_style(Style::default().fg(theme::ok()))
         .title(" let the model read this file? ");
     // Before the body, because the preview is laid out against the width it will be drawn at.
     let inside = block.inner(area);
 
-    let marked = Style::default().fg(Color::Yellow);
+    let marked = Style::default().fg(theme::running());
     let margin = Span::styled("┃ ", marked);
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
                 "Trust ",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(theme::ok())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -848,11 +854,11 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
         Line::raw(""),
         Line::from(Span::styled(
             "  the model cannot read this file, so it is working blind on it. Vouching lets it",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )),
         Line::from(Span::styled(
             "  read this file for the rest of this session, here and in every later read.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )),
         Line::raw(""),
     ];
@@ -867,7 +873,7 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     if request.truncated {
         lines.extend(marked_rows(
             &margin,
-            &[Span::styled("…", Style::default().fg(Color::DarkGray))],
+            &[Span::styled("…", Style::default().fg(theme::muted()))],
             inside.width as usize,
         ));
     }
@@ -876,22 +882,24 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
         Span::styled(
             "  y",
             Style::default()
-                .fg(Color::Green)
+                .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" trust it    "),
         Span::styled(
             "n",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" leave it quarantined    "),
         Span::styled(
             "ctrl-c",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(Color::DarkGray)),
+        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
     ]);
 
     frame.render_widget(block, area);
@@ -916,7 +924,7 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
             } else {
                 "   ↑↓ back".to_string()
             },
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme::ok()),
         ));
     }
     frame.render_widget(Paragraph::new(keys), rows[1]);

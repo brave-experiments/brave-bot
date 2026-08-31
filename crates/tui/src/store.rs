@@ -1,9 +1,10 @@
 //! Where global state lives on disk.
 //!
-//! `~/.bravebot` holds anything that should outlive a session: prompt history, and the model the user
-//! chose. The directory rather than a per-project file, for the same reason in both cases: a
-//! question worth asking again is usually worth asking in another checkout too, and which model to
-//! think with is not a property of a checkout.
+//! `~/.bravebot` holds anything that should outlive a session: prompt history, the model the user
+//! chose, and the theme they paint the interface in. The directory rather than a per-project file,
+//! for the same reason in each case: a question worth asking again is usually worth asking in
+//! another checkout too, and which model to think with or which theme to draw in is not a property
+//! of a checkout.
 //!
 //! Every operation here degrades to doing nothing. A missing home directory, a read-only disk, a
 //! corrupt file: none of that is worth refusing to start over, because the session works without
@@ -29,11 +30,20 @@ const HISTORY_FILE: &str = "history";
 /// The chosen model, one line, inside the global state directory.
 const MODEL_FILE: &str = "model";
 
+/// The chosen theme, one line, inside the global state directory.
+const THEME_FILE: &str = "theme";
+
 /// The longest model name worth reading back.
 ///
 /// A name goes into a request field, and one this long is not a name the endpoint listed. Bounded
 /// so a corrupt or overwritten file cannot turn into an absurd request.
 const MAX_MODEL_BYTES: usize = 128;
+
+/// The longest theme name worth reading back.
+///
+/// A name is only looked up in the built-in set and in `~/.bravebot/themes`. Bounded so a corrupt
+/// file cannot turn into an absurd lookup.
+const MAX_THEME_BYTES: usize = 128;
 
 /// Prompts kept on disk.
 ///
@@ -176,6 +186,45 @@ pub fn save_model(model: &str) {
     let temporary = dir.join("model.tmp");
     if std::fs::write(&temporary, format!("{model}\n")).is_ok() {
         let _ = std::fs::rename(&temporary, dir.join(MODEL_FILE));
+    }
+}
+
+/// The theme the user chose, or `None` if they never have.
+///
+/// Global rather than per-directory: which inks the interface draws in is not a property of a
+/// checkout.
+pub fn load_theme() -> Option<String> {
+    let path = directory()?.join(THEME_FILE);
+    parse_theme(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Read the theme out of the file's contents.
+///
+/// Separate from the I/O so the rules are testable. A blank or over-long file is no choice at all
+/// rather than a choice of nothing: the caller then falls back to `brave`.
+pub fn parse_theme(contents: &str) -> Option<String> {
+    let name = contents.lines().next()?.trim();
+    if name.is_empty() || name.len() > MAX_THEME_BYTES {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Record the theme the user chose.
+///
+/// Written to a temporary file and renamed, so an interrupted write leaves the previous choice
+/// rather than a half-written name. Best-effort like everything else here.
+pub fn save_theme(theme: &str) {
+    let Some(dir) = directory() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    let temporary = dir.join("theme.tmp");
+    if std::fs::write(&temporary, format!("{theme}\n")).is_ok() {
+        let _ = std::fs::rename(&temporary, dir.join(THEME_FILE));
     }
 }
 
@@ -324,5 +373,30 @@ mod tests {
         assert_eq!(parse_model(&huge), None);
         let exact = "x".repeat(MAX_MODEL_BYTES);
         assert_eq!(parse_model(&exact).as_deref(), Some(exact.as_str()));
+    }
+
+    #[test]
+    fn a_stored_theme_is_read_back_without_its_newline() {
+        assert_eq!(parse_theme("nord\n").as_deref(), Some("nord"));
+    }
+
+    #[test]
+    fn an_empty_theme_file_is_not_a_choice() {
+        for contents in ["", "\n", "   \n"] {
+            assert_eq!(parse_theme(contents), None, "{contents:?} became a choice");
+        }
+    }
+
+    #[test]
+    fn only_the_first_theme_line_is_read() {
+        assert_eq!(parse_theme("nord\ndracula\n").as_deref(), Some("nord"));
+    }
+
+    #[test]
+    fn an_over_long_theme_name_is_not_a_choice() {
+        let huge = "x".repeat(MAX_THEME_BYTES + 1);
+        assert_eq!(parse_theme(&huge), None);
+        let exact = "x".repeat(MAX_THEME_BYTES);
+        assert_eq!(parse_theme(&exact).as_deref(), Some(exact.as_str()));
     }
 }

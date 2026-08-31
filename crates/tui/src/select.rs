@@ -12,8 +12,8 @@
 //! Nothing labelled is involved. Everything on the screen was released for display before it was
 //! drawn, and this reads the screen.
 
+use crate::theme;
 use ratatui::buffer::Buffer;
-use ratatui::style::Color;
 
 /// A sweep across the screen, from where the button went down to where the pointer is now.
 ///
@@ -102,7 +102,7 @@ pub fn highlight(buffer: &mut Buffer, selection: &Selection) {
             if selection.covers(row, column)
                 && let Some(cell) = buffer.cell_mut((column, row))
             {
-                cell.set_bg(Color::Blue);
+                cell.set_bg(theme::brand_primary());
             }
         }
     }
@@ -176,8 +176,17 @@ mod tests {
         selection.extend_to(0, 11);
         highlight(&mut buffer, &selection);
 
-        assert_eq!(buffer.cell((6, 0)).expect("cell").bg, Color::Blue);
-        assert_ne!(buffer.cell((5, 0)).expect("cell").bg, Color::Blue);
-        assert_ne!(buffer.cell((11, 0)).expect("cell").bg, Color::Blue);
+        assert_eq!(
+            buffer.cell((6, 0)).expect("cell").bg,
+            theme::brand_primary()
+        );
+        assert_ne!(
+            buffer.cell((5, 0)).expect("cell").bg,
+            theme::brand_primary()
+        );
+        assert_ne!(
+            buffer.cell((11, 0)).expect("cell").bg,
+            theme::brand_primary()
+        );
     }
 }

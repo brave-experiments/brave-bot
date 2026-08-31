@@ -62,6 +62,9 @@ const FRAME: Duration = Duration::from_millis(120);
 /// The line that opens the model picker instead of starting a turn.
 const MODEL_COMMAND: &str = "/model";
 
+/// The line that opens the theme picker, or applies a theme named after the word.
+const THEME_COMMAND: &str = "/theme";
+
 /// The line that opens another directory, taking the path to open as its argument.
 const ADD_DIR_COMMAND: &str = "/add-dir";
 
@@ -96,7 +99,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub const COMMANDS: [Command; 7] = [
+pub const COMMANDS: [Command; 8] = [
     Command {
         name: STATUS_COMMAND,
         argument: "",
@@ -106,6 +109,11 @@ pub const COMMANDS: [Command; 7] = [
         name: MODEL_COMMAND,
         argument: "",
         description: "Choose which model to think with",
+    },
+    Command {
+        name: THEME_COMMAND,
+        argument: "[name]",
+        description: "Choose which theme paints the interface",
     },
     Command {
         name: ADD_DIR_COMMAND,
@@ -183,6 +191,10 @@ pub enum Action {
     Edit,
     /// Ask which model to use. Needs the network and the terminal, so the loop runs it.
     ChooseModel,
+    /// Ask which theme to paint in. Needs the terminal, so the loop runs it.
+    ChooseTheme,
+    /// Apply a theme by name without opening the picker.
+    SetTheme(String),
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
     AddDirectory(String),
     /// Summarise the conversation so far. Needs the conversation and the network, which the loop
@@ -347,6 +359,17 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input().trim() == MODEL_COMMAND => {
             session.clear_input();
             Action::ChooseModel
+        }
+        KeyCode::Enter if argument_to(session.input(), THEME_COMMAND).is_some() => {
+            let name = argument_to(session.input(), THEME_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            if name.is_empty() {
+                Action::ChooseTheme
+            } else {
+                Action::SetTheme(name)
+            }
         }
         KeyCode::Enter if session.input().trim() == STATUS_COMMAND => {
             session.clear_input();
@@ -765,6 +788,7 @@ fn take_over_terminal<W: Write>(out: &mut W) -> io::Result<()> {
     // After raw mode, so the reply arrives as bytes rather than a line, and before the
     // alternate screen, so the query is not painted into the session.
     crate::theme::sense(out);
+    crate::theme::restore_saved();
     execute!(
         out,
         EnterAlternateScreen,
@@ -994,6 +1018,14 @@ fn event_loop(
                 choose_model(terminal, &mut session, config);
                 needs_draw = true;
             }
+            Action::ChooseTheme => {
+                choose_theme(terminal, &mut session);
+                needs_draw = true;
+            }
+            Action::SetTheme(name) => {
+                set_theme(&mut session, &name);
+                needs_draw = true;
+            }
             Action::AddDirectory(directory) => {
                 add_directory(&mut session, &mut workspace, &mut trust, &directory);
             }
@@ -1007,12 +1039,14 @@ fn event_loop(
                 }
             }
             Action::Status => {
+                let theme = crate::theme::name();
                 let report = crate::status::report(&crate::status::Facts {
                     session_name: stored.title(),
                     session_id: stored.id(),
                     directory: workspace.root(),
                     added_directories: workspace.added_directories(),
                     model: session.model(),
+                    theme: &theme,
                     config,
                     confinement: &session.confinement,
                     turns: session.turns,
@@ -1246,6 +1280,30 @@ fn choose_model(
             }
         }
         Err(detail) => session.note(format!("could not list models: {detail}")),
+    }
+}
+
+/// Open the theme picker and persist what the person chose.
+fn choose_theme(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: &mut Session) {
+    let themes = crate::theme::offered();
+    let current = crate::theme::name();
+    if let Some(chosen) = crate::theme_prompt::choose(terminal, themes, &current, |frame| {
+        render::draw(frame, session)
+    }) {
+        crate::store::save_theme(&chosen.name);
+        session.note(format!("theme {name}", name = chosen.name));
+    }
+}
+
+/// Apply a theme by name without opening the picker.
+fn set_theme(session: &mut Session, name: &str) {
+    match crate::theme::find(name) {
+        Some(theme) => {
+            crate::theme::apply(&theme);
+            crate::store::save_theme(&theme.name);
+            session.note(format!("theme {}", theme.name));
+        }
+        None => session.note(format!("no theme named {name}; try /theme for the list")),
     }
 }
 
@@ -2892,6 +2950,68 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("why is /model slow".to_string())
         );
+    }
+
+    /// A command, not a prompt: asking for the picker must not also ask the planner about themes.
+    #[test]
+    fn typing_the_theme_command_opens_the_picker() {
+        let mut session = Session::new("none");
+        for c in THEME_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::ChooseTheme
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// A longer word that only starts with the command is a prompt, not the command.
+    #[test]
+    fn a_prompt_containing_the_theme_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /theme do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /theme do".to_string())
+        );
+    }
+
+    /// `/themes` is not `/theme`: the whole word must match.
+    #[test]
+    fn a_longer_word_starting_with_theme_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/themes".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/themes".to_string())
+        );
+    }
+
+    /// Naming a theme on the line applies it without opening the picker.
+    #[test]
+    fn the_theme_command_carries_its_name() {
+        let mut session = Session::new("none");
+        for c in "/theme nord".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::SetTheme("nord".to_string())
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
     }
 
     /// The argument is the point of this one, so it must arrive with the action.

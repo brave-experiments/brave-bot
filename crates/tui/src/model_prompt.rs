@@ -15,7 +15,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
@@ -173,7 +173,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "  ↑↓ to choose  ·  Enter to select  ·  Esc to keep the current one",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         ))),
         layout[3],
     );
@@ -207,11 +207,11 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
         if model.premium {
             spans.push(Span::styled(
                 "  premium",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme::running()),
             ));
         }
         if picker.is_current(model) {
-            spans.push(Span::styled("  current", Style::default().fg(Color::Green)));
+            spans.push(Span::styled("  current", Style::default().fg(theme::ok())));
         }
 
         lines.push(Line::from(spans));

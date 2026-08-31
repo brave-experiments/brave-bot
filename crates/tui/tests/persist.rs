@@ -197,3 +197,13 @@ fn the_interface_and_the_agent_agree_on_where_home_is() {
         assert!(store::directory().is_some(), "no home was found at all");
     });
 }
+
+/// The theme choice outlives the session that made it, the same way the model choice does.
+#[test]
+fn a_chosen_theme_is_read_back_next_session() {
+    with_temp_home("theme", || {
+        assert_eq!(store::load_theme(), None, "started with a theme");
+        store::save_theme("nord");
+        assert_eq!(store::load_theme().as_deref(), Some("nord"));
+    });
+}

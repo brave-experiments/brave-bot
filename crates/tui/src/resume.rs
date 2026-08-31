@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use std::path::Path;
@@ -220,7 +220,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
     );
 
     let search = if picker.search.is_empty() {
-        Span::styled("Search…", Style::default().fg(Color::DarkGray))
+        Span::styled("Search…", Style::default().fg(theme::muted()))
     } else {
         Span::raw(picker.search.clone())
     };
@@ -229,7 +229,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(theme::muted())),
         ),
         layout[1],
     );
@@ -237,7 +237,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("  {}", picker.project),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         ))),
         layout[2],
     );
@@ -247,7 +247,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "  ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         ))),
         layout[4],
     );
@@ -259,7 +259,7 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
     if matching.is_empty() {
         return vec![Line::from(Span::styled(
             "  nothing matches that",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         ))];
     }
 
@@ -285,7 +285,7 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
         ]));
         lines.push(Line::from(Span::styled(
             format!("  {}", describe(session)),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::muted()),
         )));
         lines.push(Line::raw(""));
     }
