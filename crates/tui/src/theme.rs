@@ -232,6 +232,8 @@ pub fn restore_saved() {
 }
 
 /// Every theme on offer: built-ins first, then user JSON from `~/.bravebot/themes`.
+///
+/// `brave` stays at the top; every other name is alphabetical so a growing list stays scannable.
 pub fn offered() -> Vec<Theme> {
     let mut themes = builtins();
     for theme in load_user_themes() {
@@ -241,6 +243,7 @@ pub fn offered() -> Vec<Theme> {
             themes.push(theme);
         }
     }
+    sort_brave_first(&mut themes);
     themes
 }
 
@@ -252,10 +255,10 @@ pub fn find(name: &str) -> Option<Theme> {
 
 /// Built-in themes. Hex values are from each scheme's published terminal / palette ports
 /// (Catppuccin, Tokyo Night, Gruvbox, Dracula, Nord, Rosé Pine, Kanagawa, Everforest, Ayu,
-/// One Dark, Solarized, GitHub Primer, Monokai, Flexoki, Oxocarbon).
+/// One Dark, Solarized, GitHub Primer, Monokai, Flexoki, Oxocarbon, Cobalt2).
 pub fn builtins() -> Vec<Theme> {
     let light = LIGHT.load(Ordering::Relaxed);
-    vec![
+    let mut themes = vec![
         Theme::builtin(BRAVE, brave_palette(light)),
         named(
             "catppuccin-mocha",
@@ -497,7 +500,34 @@ pub fn builtins() -> Vec<Theme> {
             (0x3d, 0xdb, 0xd9),
             (0x78, 0xa9, 0xff),
         ),
-    ]
+        // Wes Bos Cobalt2: https://github.com/wesbos/cobalt2-vscode
+        named(
+            "cobalt2",
+            (0x19, 0x35, 0x49),
+            (0xff, 0xff, 0xff),
+            (0x5a, 0x7b, 0x92),
+            (0x3a, 0xd9, 0x00),
+            (0xff, 0x62, 0x8c),
+            (0xff, 0xc6, 0x00),
+            (0xff, 0x00, 0x88),
+            (0xff, 0x9d, 0x00),
+            (0x00, 0x88, 0xff),
+        ),
+    ];
+    sort_brave_first(&mut themes);
+    themes
+}
+
+/// `brave` first, every other name alphabetical. Used for both the compiled-in set and the list
+/// after user JSON is merged in.
+fn sort_brave_first(themes: &mut [Theme]) {
+    themes.sort_by(
+        |a, b| match (a.name.as_str() == BRAVE, b.name.as_str() == BRAVE) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        },
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -927,13 +957,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Twenty named schemes plus `brave`.
+    /// Twenty-one named schemes plus `brave`, with `brave` first and the rest alphabetical.
     #[test]
-    fn the_built_in_set_is_brave_and_twenty_named() {
+    fn the_built_in_set_is_brave_and_twenty_one_named() {
         let names: Vec<_> = builtins().into_iter().map(|t| t.name).collect();
         assert_eq!(names[0], BRAVE);
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 22);
         assert!(names.contains(&"nord".to_string()));
         assert!(names.contains(&"catppuccin-mocha".to_string()));
+        assert!(names.contains(&"cobalt2".to_string()));
+        let rest = &names[1..];
+        let mut sorted = rest.to_vec();
+        sorted.sort();
+        assert_eq!(rest, sorted.as_slice(), "named themes are not alphabetical");
     }
 }
