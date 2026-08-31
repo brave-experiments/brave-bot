@@ -166,6 +166,9 @@ resume-keys =
     ↑↓ pour choisir  ·  Entrée pour reprendre  ·  tapez pour rechercher  ·  Échap pour une
     nouvelle session
 resume-nothing-matches = aucune correspondance
+resume-manifest-run =
+    c'était une exécution manifest, qui ne peut pas être reprise ; lisez-la avec --trace ou
+    repartez de zéro
 
 
 ## Commun à toutes les questions que l'interface s'arrête pour poser

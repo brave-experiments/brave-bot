@@ -1379,6 +1379,7 @@ fn event_loop(
                         trust: &trust,
                         programs: &programs,
                         directories: workspace.added_directories(),
+                        manifest: None,
                     },
                 );
                 stored.append_audit(session.turns, &events);
@@ -1442,6 +1443,7 @@ fn event_loop(
                             trust: &trust,
                             programs: &programs,
                             directories: workspace.added_directories(),
+                            manifest: None,
                         },
                     );
                     stored.append_audit(session.turns, &events);
@@ -1470,6 +1472,7 @@ fn event_loop(
                         trust: &trust,
                         programs: &programs,
                         directories: workspace.added_directories(),
+                        manifest: None,
                     },
                 );
                 stored.append_audit(session.turns, &events);

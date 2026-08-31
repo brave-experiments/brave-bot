@@ -13,7 +13,7 @@ use bravebot_core::label::Label;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::todo::{Item, List, Row, Status, rows};
 use bravebot_core::trust::TrustStore;
-use bravebot_tui::sessions::{self, Handle, Standing};
+use bravebot_tui::sessions::{self, Handle, Standing, StoredManifest};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -136,6 +136,7 @@ fn a_session_is_named_once_there_is_a_record_to_name() {
             trust: &a_trust_map(),
             programs: &a_program_list(),
             directories: &[],
+            manifest: None,
         },
     );
 
@@ -170,6 +171,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             trust: &a_trust_map(),
             programs: &a_program_list(),
             directories: &[],
+            manifest: None,
         },
     );
     handle.append_audit(
@@ -243,6 +245,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             // the list surviving a re-save and a resume rather than about one write.
             programs: &a_program_list(),
             directories: &[],
+            manifest: None,
         },
     );
     assert_eq!(sessions::list(&scratch.project).len(), 1);
@@ -270,6 +273,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             trust: &TrustStore::new(),
             programs: &TrustedPrograms::new(),
             directories: &[],
+            manifest: None,
         },
     );
     assert_eq!(sessions::list(&elsewhere).len(), 1);
@@ -290,6 +294,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             // the list surviving a re-save and a resume rather than about one write.
             programs: &a_program_list(),
             directories: &[],
+            manifest: None,
         },
     );
     let listed = sessions::list(&scratch.project);
@@ -396,6 +401,7 @@ fn the_audit_keeps_the_time_each_event_happened() {
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
             directories: &[],
+            manifest: None,
         },
     );
 
@@ -454,6 +460,7 @@ fn renaming_a_session_rewrites_the_record_immediately() {
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
             directories: &[],
+            manifest: None,
         },
     );
     let derived = sessions::list(&scratch.project)[0].title.clone();
@@ -494,6 +501,7 @@ fn a_chosen_name_survives_the_next_turn() {
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
             directories: &[],
+            manifest: None,
         },
     );
 
@@ -560,6 +568,7 @@ fn a_resumed_session_can_still_open_the_directory_it_added() {
             trust: &trust,
             programs: &TrustedPrograms::new(),
             directories: workspace.added_directories(),
+            manifest: None,
         },
     );
 
@@ -621,6 +630,7 @@ fn a_directory_that_has_gone_since_is_reported_on_resume() {
             trust: &TrustStore::new(),
             programs: &TrustedPrograms::new(),
             directories: workspace.added_directories(),
+            manifest: None,
         },
     );
     std::fs::remove_dir_all(&notes).expect("the directory goes away between sessions");
@@ -638,4 +648,46 @@ fn a_directory_that_has_gone_since_is_reported_on_resume() {
         resumed.added_directories().is_empty(),
         "a directory that could not be opened was counted as open"
     );
+}
+
+/// A manifest run is written down so it can be read, and marked so it cannot be continued. The
+/// conversation is empty on purpose: filling it would make the picker offer a session that has
+/// nothing to resume.
+#[test]
+fn a_manifest_run_is_recorded_and_cannot_be_resumed() {
+    let scratch = Scratch::new("manifest-record");
+    let conversation = Conversation::new();
+    let stored = StoredManifest::of(
+        &bravebot_agent::manifest::Attempt {
+            shape: Some("1. Read it.".into()),
+            proposed: Some("{\"steps\":[]}".into()),
+            plan: None,
+            steps: Vec::new(),
+        },
+        Some("the plan is not well formed".into()),
+    );
+
+    let mut handle = Handle::begin(&scratch.project);
+    handle.save(
+        "summarise the docs",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 0,
+            todos: &BTreeMap::new(),
+            trust: &TrustStore::new(),
+            programs: &TrustedPrograms::new(),
+            directories: &[],
+            manifest: Some(&stored),
+        },
+    );
+
+    let listed = sessions::list(&scratch.project);
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].manifest, "the list did not mark it");
+
+    let record = sessions::load(&scratch.project, handle.id()).expect("the record loads");
+    let kept = record.manifest.expect("the attempt was dropped");
+    assert_eq!(kept.shape.as_deref(), Some("1. Read it."));
+    assert_eq!(kept.failure.as_deref(), Some("the plan is not well formed"));
 }

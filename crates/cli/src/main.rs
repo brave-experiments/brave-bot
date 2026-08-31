@@ -287,6 +287,13 @@ fn run_task(args: &[String]) -> ExitCode {
         ),
     };
 
+    // A manifest run is written down like any other session. It cannot be resumed, and the
+    // picker says so, but "cannot be continued" is a different thing from "leaves no trace":
+    // the run somebody needs to read is the one that stopped, and until now it left nothing.
+    if mode == Mode::Manifest {
+        record_manifest_run(&workspace, &task.prompt, &outcome);
+    }
+
     match outcome {
         Ok(outcome) => {
             // The reply is untrusted model output. Printing it is safe, since the
@@ -471,14 +478,70 @@ fn print_trace(output: &mut impl Write, sink: &RecordingSink) {
     }
 }
 
-/// Start an interactive session.
-/// Resume a session by the id the picker shows, without showing the picker.
+/// Write a manifest run into the session store, finished or not.
+///
+/// Best-effort, like everything else under `~/.bravebot`: a run that cannot be written down still
+/// ran, and failing the command because the record did not save would be the wrong trade.
+fn record_manifest_run(
+    workspace: &bravebot_agent::Workspace,
+    prompt: &str,
+    outcome: &Result<bravebot_agent::Outcome, bravebot_agent::TurnError>,
+) {
+    use bravebot_core::programs::TrustedPrograms;
+    use bravebot_tui::sessions::{Handle, Standing, StoredManifest};
+
+    let (stored, trust) = match outcome {
+        Ok(finished) => (
+            finished
+                .attempt
+                .as_ref()
+                .map(|attempt| StoredManifest::of(attempt, None)),
+            finished.trust.clone(),
+        ),
+        Err(bravebot_agent::TurnError::Manifest { attempt, detail }) => (
+            Some(StoredManifest::of(attempt, Some(detail.clone()))),
+            TrustStore::new(),
+        ),
+        // Cancelled, or a failure with nothing to show. Nothing worth a record.
+        Err(_) => (None, TrustStore::new()),
+    };
+
+    let Some(stored) = stored else {
+        return;
+    };
+
+    let conversation = bravebot_agent::Conversation::new();
+    let snapshot = conversation.snapshot();
+    let todos = std::collections::BTreeMap::new();
+    let programs = TrustedPrograms::new();
+    let mut handle = Handle::begin(workspace.root());
+    handle.save(
+        prompt,
+        Standing {
+            // Empty, and it has to be: a manifest run has no conversation, which is the same
+            // fact that makes it unresumable. Filling this with something conversation-shaped
+            // would make the picker offer to continue a run that cannot be continued.
+            conversation: &snapshot,
+            turns: 1,
+            tokens: outcome.as_ref().map(|o| o.tokens).unwrap_or(0),
+            todos: &todos,
+            trust: &trust,
+            programs: &programs,
+            directories: &[],
+            manifest: Some(&stored),
+        },
+    );
+}
 fn resume_named(id: &str) -> ExitCode {
     let Ok(directory) = std::env::current_dir() else {
         eprintln!("{}", t!(cli_directory_unknown));
         return ExitCode::FAILURE;
     };
     match bravebot_tui::sessions::load(&directory, id) {
+        Some(record) if record.manifest.is_some() => {
+            eprintln!("{}", bravebot_tui::resume::manifest_note());
+            ExitCode::FAILURE
+        }
         Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
         None => {
             eprintln!("{}", t!(cli_no_such_session, id = id));

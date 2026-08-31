@@ -146,6 +146,8 @@ resume-heading = Resume session
 resume-search-placeholder = Search…
 resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session
 resume-nothing-matches = nothing matches that
+resume-manifest-run =
+    that was a manifest run, which cannot be continued; read it with --trace or start fresh
 
 
 ## Shared by every question the interface stops to ask
