@@ -19,6 +19,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
+use crate::theme;
+
 /// What the picker is showing and where the cursor is.
 #[derive(Debug)]
 pub struct Picker {
@@ -160,7 +162,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
         Paragraph::new(Line::from(Span::styled(
             "  Select model",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD),
         ))),
         layout[0],
@@ -189,14 +191,14 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
         let marker = if chosen { "❯ " } else { "  " };
         let name = if chosen {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
 
         let mut spans = vec![
-            Span::styled(marker, Style::default().fg(Color::Cyan)),
+            Span::styled(marker, Style::default().fg(theme::brand_primary())),
             Span::styled(model.display_name.clone(), name),
         ];
 

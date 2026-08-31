@@ -383,6 +383,7 @@ dependencies = [
  "bravebot-core",
  "bravebot-net",
  "bravebot-sandbox",
+ "libc",
  "rand",
  "ratatui",
  "serde",

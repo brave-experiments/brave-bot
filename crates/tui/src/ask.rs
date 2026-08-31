@@ -20,6 +20,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
+use crate::theme;
+
 /// Longest answer the user can type.
 ///
 /// Generous for a sentence and far short of anything that would take the field off screen. The
@@ -358,7 +360,7 @@ impl<'a> Picker<'a> {
             };
             let style = if here {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -400,7 +402,7 @@ impl<'a> Picker<'a> {
             }
             let style = if self.on_own_words() {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -425,11 +427,11 @@ impl<'a> Picker<'a> {
                     Span::styled(
                         "  > ",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme::brand_primary())
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(text.clone()),
-                    Span::styled("▏", Style::default().fg(Color::Cyan)),
+                    Span::styled("▏", Style::default().fg(theme::brand_primary())),
                 ]));
                 // The field needs its own keys. Drawing none, as this did, leaves a person who
                 // opened it with no way out that they can see, and the way out is the hint they
@@ -445,7 +447,7 @@ impl<'a> Picker<'a> {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(Color::Cyan))
+                        .border_style(Style::default().fg(theme::brand_primary()))
                         .title(self.title()),
                 )
                 .wrap(Wrap { trim: false }),
@@ -470,7 +472,7 @@ impl<'a> Picker<'a> {
 
     fn keys(&self) -> Vec<Span<'static>> {
         let bold = Style::default()
-            .fg(Color::Cyan)
+            .fg(theme::brand_primary())
             .add_modifier(Modifier::BOLD);
         // Short enough to stay on one line in a narrow terminal. A key hint that wraps is a key
         // hint the person skims past, and the way out is the one they must not miss.
@@ -496,7 +498,7 @@ impl<'a> Picker<'a> {
     /// Keys for the free-text field, which are not the keys for the list.
     fn field_keys(&self) -> Vec<Span<'static>> {
         let bold = Style::default()
-            .fg(Color::Cyan)
+            .fg(theme::brand_primary())
             .add_modifier(Modifier::BOLD);
         vec![
             Span::styled("  enter", bold),
@@ -580,7 +582,7 @@ fn chip(header: &str) -> Option<Span<'static>> {
     Some(Span::styled(
         format!(" {text} "),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme::brand_primary())
             .add_modifier(Modifier::REVERSED),
     ))
 }

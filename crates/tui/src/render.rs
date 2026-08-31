@@ -23,6 +23,7 @@ use crate::logo;
 use crate::markdown;
 use crate::state::{Session, Speaker, Status};
 use crate::table;
+use crate::theme;
 use crate::wrap;
 
 /// Marks a turn boundary in the transcript.
@@ -509,7 +510,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
                     let prefix = if index == 0 { "> " } else { "  " };
                     lines.push(Line::from(Span::styled(
                         format!("{prefix}{text}"),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme::brand_primary()),
                     )));
                 }
             }
@@ -520,7 +521,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
                 for text in entry.text.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("{DETAIL_MARKER} {text}"),
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(theme::NOTE),
                     )));
                 }
             }
@@ -815,7 +816,7 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     let colour = if session.shell {
         Color::Magenta
     } else {
-        Color::Cyan
+        theme::brand_primary()
     };
 
     // Wrapping is computed above rather than left to `Paragraph`, because the cursor has to be
@@ -875,7 +876,7 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
         } else if session.shell {
             Style::default().fg(Color::Magenta)
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(theme::brand_primary())
         });
 
     if let Some((index, total)) = session.history.position() {
@@ -912,7 +913,7 @@ fn attached_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
             let lead = format!("  {} ", attached.marker);
             let room = (width as usize).saturating_sub(lead.chars().count());
             Line::from(vec![
-                Span::styled(lead, Style::default().fg(Color::Cyan)),
+                Span::styled(lead, Style::default().fg(theme::brand_primary())),
                 Span::styled(printable(&tail_of(&attached.shown, room)), dim()),
             ])
         })
@@ -937,7 +938,7 @@ fn queued_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
             Span::styled("  ", Style::default().fg(Color::Blue)),
             Span::styled(
                 printable(&head_of(&waiting.prompt, room)),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::brand_primary()),
             ),
         ]));
         lines.push(Line::from(vec![
@@ -1035,10 +1036,10 @@ fn command_lines(session: &Session, offered: &[crate::app::Command]) -> Vec<Line
             let chosen = Some(*command) == highlighted;
             let name = if chosen {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme::brand_primary())
             };
 
             let word = command_word(command);
@@ -1068,7 +1069,7 @@ fn entry_lines(session: &Session, offered: &[crate::entries::Entry]) -> Vec<Line
             let colour = if entry.is_directory {
                 Style::default().fg(Color::Blue)
             } else {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme::brand_primary())
             };
             let style = if chosen {
                 colour.add_modifier(Modifier::BOLD)
@@ -1145,7 +1146,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "ctrl-c again to exit  ",
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::brand_primary()),
             )))
             .alignment(Alignment::Right),
             area,
@@ -1160,7 +1161,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("{} to clipboard  ", tally(characters, "char", "chars")),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::brand_primary()),
             )))
             .alignment(Alignment::Right),
             area,
@@ -1176,7 +1177,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "image on clipboard  ·  ctrl-v to paste  ",
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::brand_primary()),
             )))
             .alignment(Alignment::Right),
             area,
@@ -1215,6 +1216,32 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    /// Foreground inks of the non-space cells on every row that contains `needle`.
+    fn inks_on_row_containing(session: &Session, needle: &str) -> Vec<Color> {
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, session))
+            .expect("draw succeeds");
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area();
+
+        let mut inks = Vec::new();
+        for row in 0..area.height {
+            let text: String = (0..area.width)
+                .map(|column| buffer.cell((column, row)).expect("cell").symbol())
+                .collect();
+            if !text.contains(needle) {
+                continue;
+            }
+            inks.extend((0..area.width).filter_map(|column| {
+                let cell = buffer.cell((column, row)).expect("cell");
+                (cell.symbol() != " ").then_some(cell.fg)
+            }));
+        }
+        assert!(!inks.is_empty(), "nothing containing {needle:?} was drawn");
+        inks
     }
 
     mod progress {
@@ -2193,6 +2220,22 @@ mod tests {
         let mut session = Session::new("none");
         session.note("confinement unavailable");
         assert!(rendered(&session).contains("confinement unavailable"));
+    }
+
+    /// Yellow is spoken for: a call still running, and the margin down every block of content the
+    /// planner may not read. A note the interface makes about the session is neither, and drawing
+    /// it in the same ink said that the trust answer was quarantined content.
+    #[test]
+    fn a_system_note_is_not_drawn_in_the_ink_that_marks_untrusted_content() {
+        let mut session = Session::new("none");
+        session.note("trusting /tmp/x");
+
+        let inks = inks_on_row_containing(&session, "trusting");
+        assert!(
+            inks.iter().all(|ink| *ink == theme::NOTE),
+            "the note was not drawn in one ink of its own: {inks:?}"
+        );
+        assert!(!inks.contains(&Color::Yellow), "the note is still yellow");
     }
 
     /// Long replies must not panic the renderer.

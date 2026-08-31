@@ -26,3 +26,9 @@ ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# poll(2) on the tty, so an OSC 11 reply can be waited for without hanging when the
+# terminal never sends one. Crossterm drops those replies, and a blocking read would
+# stall startup on a terminal that does not answer.
+libc = { workspace = true }
