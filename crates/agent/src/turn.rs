@@ -212,6 +212,14 @@ pub enum TurnError {
     Workspace(WorkspaceError),
     /// The model call failed or was refused.
     Chat(bravebot_aichat::ChatError),
+    /// A manifest run stopped before it had a frozen plan, or a step failed.
+    ///
+    /// Carries what the run produced so a caller can still look at it. A plan that would not
+    /// parse has no rendered form, so the model's own words are the only thing left.
+    Manifest {
+        attempt: Box<crate::manifest::Attempt>,
+        detail: String,
+    },
 }
 
 impl fmt::Display for TurnError {
@@ -221,6 +229,7 @@ impl fmt::Display for TurnError {
             Self::Precommit(detail) => write!(f, "{detail}"),
             Self::Workspace(e) => write!(f, "{e}"),
             Self::Chat(e) => write!(f, "{e}"),
+            Self::Manifest { detail, .. } => write!(f, "{detail}"),
         }
     }
 }
@@ -466,12 +475,16 @@ pub struct Outcome {
     /// [`bravebot_config::Config::context_budget`].
     pub context_tokens: u64,
     /// The reply, released for display while the policy was still open.
-    display: String,
+    pub(crate) display: String,
     /// What to tell the person watching about standing instructions and skills.
     ///
     /// The driver's own words about what loaded and what did not, never anything read out of a
     /// file, so they may go straight to a screen.
     pub notices: Vec<String>,
+    /// What a manifest run produced, when this outcome came from one.
+    ///
+    /// Absent for a turn. On failure the same value is on [`TurnError::Manifest`].
+    pub attempt: Option<crate::manifest::Attempt>,
 }
 
 impl Outcome {
@@ -1437,5 +1450,6 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         clean: policy.finish(),
         display,
         notices: notices.into_iter().map(|n| n.message).collect(),
+        attempt: None,
     })
 }

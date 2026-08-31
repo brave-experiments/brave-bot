@@ -11,6 +11,8 @@ pub mod diff;
 pub mod exec;
 pub mod glob;
 pub mod home;
+pub mod manifest;
+pub mod mode;
 pub mod preamble;
 pub mod processor;
 pub mod programs;
@@ -25,6 +27,7 @@ pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, Unattended, WriteRequest};
 pub use conversation::Conversation;
+pub use mode::Mode;
 pub use processor::ProcessorError;
 pub use report::{Activity, IgnoreReports, Reporter};
 pub use subscription::ImportedSubscription;
