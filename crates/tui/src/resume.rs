@@ -8,6 +8,7 @@
 //! starts an ordinary session: nothing here can strand a user who opened it by mistake.
 
 use crate::sessions::{self, Summary};
+use crate::theme;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -212,7 +213,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
         Paragraph::new(Line::from(Span::styled(
             "  Resume session",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD),
         ))),
         layout[0],
@@ -272,14 +273,14 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
         let marker = if chosen { "❯ " } else { "  " };
         let title = if chosen {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
 
         lines.push(Line::from(vec![
-            Span::styled(marker, Style::default().fg(Color::Cyan)),
+            Span::styled(marker, Style::default().fg(theme::brand_primary())),
             Span::styled(session.title.clone(), title),
         ]));
         lines.push(Line::from(Span::styled(

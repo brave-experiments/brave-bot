@@ -762,6 +762,9 @@ pub fn run(
 /// setups would show as a mode that only survives until the first edit.
 fn take_over_terminal<W: Write>(out: &mut W) -> io::Result<()> {
     enable_raw_mode()?;
+    // After raw mode, so the reply arrives as bytes rather than a line, and before the
+    // alternate screen, so the query is not painted into the session.
+    crate::theme::sense(out);
     execute!(
         out,
         EnterAlternateScreen,

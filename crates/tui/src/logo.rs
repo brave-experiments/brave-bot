@@ -8,6 +8,9 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::theme;
+use crate::theme::Rgb;
+
 /// The wordmark, one string per row, padded to a rectangle.
 ///
 /// Padded because the rows are otherwise three different lengths, and a row that ends early is a
@@ -37,12 +40,10 @@ const SEAM: usize = 35;
 
 /// The two oranges the branded half fades between, left to right, as the Brave mark does.
 ///
-/// Given as literals because the sixteen named colours have nothing near either of them, and this
-/// is the one place in the interface that draws a brand mark rather than an interface part.
-const GRADIENT: (Rgb, Rgb) = ((255, 86, 1), (255, 64, 0));
-
-/// A colour as the three channels it is mixed from.
-type Rgb = (u8, u8, u8);
+/// Taken from [`crate::theme`] rather than written again here, because the same orange opens the
+/// mark and draws every note the session makes in its own voice: two literals of it are how the
+/// two would come to disagree.
+const GRADIENT: (Rgb, Rgb) = (theme::BRAND, theme::BRAND_DEEP);
 
 /// The left margin, wider than the transcript's lead so the mark sits clear of the edge.
 const INDENT: &str = "   ";

@@ -21,6 +21,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use crate::render::marked_rows;
+use crate::theme;
 
 /// Unchanged lines shown either side of a change, for orientation.
 const CONTEXT_LINES: usize = 2;
@@ -166,7 +167,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme::brand_primary()))
         .title(" approve this write? ");
     // Before the body rather than after it, because the hunks are laid out against the width they
     // will be drawn at: a margin decided without knowing the width is a margin the first wrapped
@@ -176,7 +177,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     let (verb, colour) = match request.intent {
         Intent::Create => ("Create", Color::Green),
         Intent::Overwrite => ("Overwrite", Color::Yellow),
-        Intent::Edit => ("Edit", Color::Cyan),
+        Intent::Edit => ("Edit", theme::brand_primary()),
     };
 
     let diff = request.diff();
@@ -303,7 +304,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
             } else {
                 "   ↑↓ back".to_string()
             },
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(theme::brand_primary()),
         ));
     }
     frame.render_widget(Paragraph::new(keys), rows[1]);
@@ -669,7 +670,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme::brand_primary()))
         .title(" let the model read this? ");
     // Before the body, because the output is laid out against the width it will be drawn at. A
     // command's output is untrimmed, so reaching the wrap point takes nothing unusual.
@@ -682,7 +683,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
             Span::styled(
                 "Read ",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -767,7 +768,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
             } else {
                 "   ↑↓ back".to_string()
             },
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(theme::brand_primary()),
         ));
     }
     frame.render_widget(Paragraph::new(keys), rows[1]);

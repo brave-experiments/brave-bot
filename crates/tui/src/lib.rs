@@ -26,6 +26,7 @@ pub mod state;
 pub mod status;
 pub mod store;
 pub mod table;
+pub mod theme;
 pub mod trust_prompt;
 
 /// What this build is: the version, the commit it was built from, and whether the tree had

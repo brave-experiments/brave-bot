@@ -18,8 +18,12 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
+use crate::theme;
+
 /// Inline code, coloured rather than emboldened so it reads as a quotation of the workspace.
-const CODE: Color = Color::Cyan;
+fn code() -> Color {
+    theme::brand_primary()
+}
 
 /// How deep styling may nest before markers are shown as themselves.
 ///
@@ -68,7 +72,7 @@ fn inline(text: &str, base: Style, depth: usize, out: &mut Vec<Span<'static>>) {
                 if let Some(end) = closing(text, at + 1, "`") {
                     flush(&mut plain, base, out);
                     // Code is verbatim: markers inside it are the text, not formatting.
-                    out.push(Span::styled(text[at + 1..end].to_string(), base.fg(CODE)));
+                    out.push(Span::styled(text[at + 1..end].to_string(), base.fg(code())));
                     at = end + 1;
                     continue;
                 }
@@ -205,7 +209,7 @@ mod tests {
         assert_eq!(shown("run `make check` first"), "run make check first");
         assert_eq!(
             styles_of("run `make check` first", "make check").fg,
-            Some(CODE)
+            Some(code())
         );
     }
 
@@ -214,7 +218,7 @@ mod tests {
     fn code_inside_bold_keeps_both() {
         let style = styles_of("**edit `main.rs` now**", "main.rs");
         assert!(is_bold(style));
-        assert_eq!(style.fg, Some(CODE));
+        assert_eq!(style.fg, Some(code()));
     }
 
     /// Markers inside code are text, since that is usually the point of quoting them.

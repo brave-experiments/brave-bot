@@ -5,6 +5,7 @@ status: normative
 governs:
   - crates/tui/src/render.rs
   - crates/tui/src/state.rs
+  - crates/tui/src/theme.rs
 ---
 
 ## Scope
@@ -137,3 +138,42 @@ went is still in the audit trail, which is what the record is for.
 
 `verified-by: bravebot_tui::render::the_ordinary_landing_is_not_given_a_line_of_its_own`
 `verified-by: bravebot_tui::render::a_result_the_planner_may_not_read_still_says_so`
+
+<a id="VIEW-8"></a>
+### VIEW-8: a note from the session is drawn in one ink of its own
+
+What the session says in its own voice, the trust answer, an unavailable confinement, a status
+report, is drawn in a single ink belonging to nothing else, and never in the ink that marks
+untrusted content.
+
+**Why.** That ink is spoken for twice over: a call still running, and the margin down every block
+of content the planner may not read. Drawing a note in it said the trust answer was quarantined.
+An ink of its own rather than merely a different one, because a note sharing with any third meaning
+puts the question back where it started.
+
+This is about which ink, and it is never what makes the marking hold. VIEW-3 stands on the margin
+because a colour can be imitated by the content beside it, and nothing here weakens that: no ink
+tells a reader whether something is quarantined, and a note drawn in the wrong one would still be
+outside a block.
+
+`verified-by: bravebot_tui::render::a_system_note_is_not_drawn_in_the_ink_that_marks_untrusted_content`
+
+<a id="VIEW-9"></a>
+### VIEW-9: an ink that carries meaning is mixed, not chosen by the terminal
+
+Where a colour is what tells one thing on the screen from another, it is a shade this interface
+mixes. The sixteen named colours are slots a terminal repaints, so they are used only where the
+meaning is the terminal's own, green for finished, red for failed, dim grey for an aside, which are
+read against whatever palette the user chose rather than against each other. A mixed shade that has
+to stay legible against the background is picked for the background sensed at startup, and a
+terminal that will not say gets the shade for a dark one.
+
+**Why.** A named slot is a request, not a colour. The same code drew a different colour in every
+profile, which is how one slot came to carry two meanings at once without anybody choosing that.
+
+`verified-by: bravebot_tui::theme::a_note_is_a_shade_and_not_a_slot_a_terminal_repaints`
+`verified-by: bravebot_tui::theme::brand_primary_is_a_shade_and_not_a_slot_a_terminal_repaints`
+`verified-by: bravebot_tui::theme::a_dark_background_takes_the_brighter_brand_primary`
+`verified-by: bravebot_tui::theme::a_light_background_takes_the_deeper_brand_primary`
+`verified-by: bravebot_tui::theme::colorfgbg_with_a_white_background_is_light`
+`verified-by: bravebot_tui::theme::an_osc_reply_with_a_pale_background_is_light`

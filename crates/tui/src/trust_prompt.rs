@@ -19,6 +19,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use std::path::Path;
 
+use crate::theme;
+
 /// What the user decided about the working directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
@@ -114,7 +116,7 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
             Span::styled(
                 "Trust ",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -169,7 +171,7 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Cyan))
+                    .border_style(Style::default().fg(theme::brand_primary()))
                     .title(" trust this directory? "),
             )
             .wrap(Wrap { trim: false }),

@@ -385,6 +385,7 @@ dependencies = [
  "bravebot-sandbox",
  "rand",
  "ratatui",
+ "rustix",
  "serde",
  "serde_json",
  "unicode-width",

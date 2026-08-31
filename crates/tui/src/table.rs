@@ -435,6 +435,7 @@ pub fn table(lines: &[&str], room: usize, base: Style) -> Option<Laid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme;
 
     fn parsed(text: &str) -> Option<Parsed> {
         let lines: Vec<&str> = text.lines().collect();
@@ -634,7 +635,7 @@ mod tests {
         assert!(
             rows[2]
                 .iter()
-                .any(|span| span.style.fg == Some(Color::Cyan)),
+                .any(|span| span.style.fg == Some(theme::brand_primary())),
             "inline code lost its colour"
         );
     }
