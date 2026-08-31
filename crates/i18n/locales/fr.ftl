@@ -167,8 +167,8 @@ resume-keys =
     nouvelle session
 resume-nothing-matches = aucune correspondance
 resume-manifest-run =
-    c'était une exécution manifest, qui ne peut pas être reprise ; lisez-la avec --trace ou
-    repartez de zéro
+    c'était une exécution manifest, qui ne peut pas être reprise ; démarrez une nouvelle
+    session
 
 
 ## Commun à toutes les questions que l'interface s'arrête pour poser

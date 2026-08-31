@@ -540,6 +540,13 @@ fn resume_named(id: &str) -> ExitCode {
     match bravebot_tui::sessions::load(&directory, id) {
         Some(record) if record.manifest.is_some() => {
             eprintln!("{}", bravebot_tui::resume::manifest_note());
+            if let Some(stored) = &record.manifest {
+                let report = stored.describe();
+                if !report.is_empty() {
+                    eprintln!();
+                    eprint!("{report}");
+                }
+            }
             ExitCode::FAILURE
         }
         Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),

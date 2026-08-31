@@ -1026,6 +1026,10 @@ pub fn run(
     };
 
     let result = match start {
+        // The picker refuses Enter on one of these, and `--resume` refuses it too. If a record
+        // still arrives here, loading its empty conversation as a turn would continue a run
+        // that cannot be continued.
+        Some(Start::Resuming(record)) if record.manifest.is_some() => Ok(None),
         Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
         // Leaving at the picker resumed nothing and started nothing, so there is nothing to say
         // about picking anything up.

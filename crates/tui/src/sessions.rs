@@ -166,6 +166,29 @@ impl StoredManifest {
             failure,
         }
     }
+
+    /// How the record reads, for `--resume` of a run that cannot be continued.
+    ///
+    /// The picker only has a footer. Naming the session on the command line is the way to see
+    /// what it produced, so this is the same report a failed live run printed, plus why it
+    /// stopped where that was kept.
+    pub fn describe(&self) -> String {
+        let mut out = bravebot_agent::manifest::Attempt {
+            shape: self.shape.clone(),
+            proposed: self.proposed.clone(),
+            plan: self.plan.clone(),
+            steps: self.steps.clone(),
+        }
+        .describe();
+        if let Some(failure) = &self.failure {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(failure);
+            out.push('\n');
+        }
+        out
+    }
 }
 
 /// One trust rule as it is written down.

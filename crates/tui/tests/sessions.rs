@@ -690,4 +690,7 @@ fn a_manifest_run_is_recorded_and_cannot_be_resumed() {
     let kept = record.manifest.expect("the attempt was dropped");
     assert_eq!(kept.shape.as_deref(), Some("1. Read it."));
     assert_eq!(kept.failure.as_deref(), Some("the plan is not well formed"));
+    let report = kept.describe();
+    assert!(report.contains("not usable"), "{report}");
+    assert!(report.contains("the plan is not well formed"), "{report}");
 }
