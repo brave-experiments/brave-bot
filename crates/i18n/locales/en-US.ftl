@@ -43,6 +43,7 @@ cli-name-a-file = Include a workspace file as trusted context
 
 cli-options-heading = Options:
 cli-option-file = Include a workspace file as context (repeatable)
+cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
 cli-option-help = Show this message
@@ -53,6 +54,7 @@ cli-option-version = Show the version
 
 cli-unknown-option = unknown option: { $flag }
 cli-file-needs-a-path = --file requires a path
+cli-mode-needs-a-name = --mode requires one of { $names }
 cli-unexpected-argument = unexpected argument: { $argument }
 cli-task-required = a task is required
 cli-configuration-problem = configuration error: { $problem }

@@ -2,8 +2,8 @@
 
 mod progress;
 
-use bravebot_agent::Workspace;
 use bravebot_agent::turn::{self, Task};
+use bravebot_agent::{Mode, Workspace};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::event::{Event, RecordingSink, Role};
@@ -39,9 +39,9 @@ fn main() -> ExitCode {
             Some(id) => resume_named(id),
             None => interactive(bravebot_tui::app::Start::Choose),
         },
-        // The flag may lead, as it does for every other agent: `bravebot -p "task"`. Without this arm
-        // it would be caught below as an unknown option.
-        Some("-p" | "--print") => run_task(&args),
+        // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
+        // would otherwise be caught below as unknown options.
+        Some("-p" | "--print" | "--mode" | "--file" | "--trace") => run_task(&args),
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
@@ -109,6 +109,7 @@ fn print_help() {
     println!("{}", t!(cli_options_heading));
     for (flags, description) in [
         ("--file <path>", t!(cli_option_file)),
+        ("--mode <mode>", t!(cli_option_mode)),
         ("-p, --print", t!(cli_option_print)),
         ("--trace", t!(cli_option_trace)),
         ("-h, --help", t!(cli_option_help)),
@@ -118,25 +119,43 @@ fn print_help() {
     }
 }
 
-/// Parse `<prompt> [--file path]... [--trace] [-p]`.
-fn run_task(args: &[String]) -> ExitCode {
+/// What a one-shot invocation asked for, before anything runs.
+#[derive(Debug)]
+struct Invocation {
+    prompt: String,
+    files: Vec<String>,
+    mode: Mode,
+    trace: bool,
+    print: bool,
+}
+
+/// Parse `<prompt> [--file path]... [--mode name] [--trace] [-p]`.
+fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     let mut prompt = String::new();
     let mut files = Vec::new();
+    let mut mode = Mode::default();
     let mut trace = false;
     let mut print = false;
     let mut index = 0;
 
     while index < args.len() {
         match args[index].as_str() {
+            "--mode" => match args.get(index + 1).map(|name| name.parse::<Mode>()) {
+                Some(Ok(chosen)) => {
+                    mode = chosen;
+                    index += 2;
+                }
+                Some(Err(complaint)) => return Err(complaint),
+                None => {
+                    return Err(t!(cli_mode_needs_a_name, names = Mode::NAMES.join(", ")));
+                }
+            },
             "--file" => match args.get(index + 1) {
                 Some(path) => {
                     files.push(path.clone());
                     index += 2;
                 }
-                None => {
-                    eprintln!("{}", t!(cli_file_needs_a_path));
-                    return ExitCode::FAILURE;
-                }
+                None => return Err(t!(cli_file_needs_a_path).to_string()),
             },
             "--trace" => {
                 trace = true;
@@ -150,12 +169,34 @@ fn run_task(args: &[String]) -> ExitCode {
                 prompt = other.to_string();
                 index += 1;
             }
-            other => {
-                eprintln!("{}", t!(cli_unexpected_argument, argument = other));
-                return ExitCode::FAILURE;
-            }
+            other => return Err(t!(cli_unexpected_argument, argument = other)),
         }
     }
+
+    Ok(Invocation {
+        prompt,
+        files,
+        mode,
+        trace,
+        print,
+    })
+}
+
+fn run_task(args: &[String]) -> ExitCode {
+    let invocation = match parse_invocation(args) {
+        Ok(invocation) => invocation,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Invocation {
+        prompt,
+        files,
+        mode,
+        trace,
+        print,
+    } = invocation;
 
     // Read before the emptiness check below, since `cat notes.md | bravebot -p` is a complete
     // invocation: the pipe is the input and the prompt may be left off.
@@ -211,33 +252,62 @@ fn run_task(args: &[String]) -> ExitCode {
     }
 
     // A one-shot run has nobody to ask about a write, so writes are refused rather than
-    // silently applied.
+    // silently applied. Manifest is the same: unattended, empty map, no y/n.
     let mut confirmer = bravebot_agent::Unattended;
 
     // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes
     // the command pipeable. Without it a long turn prints nothing until it is over.
     let mut reporter = progress::Progress::new(std::io::stderr());
 
-    match turn::run_cancellable(
-        &config,
-        &egress,
-        &workspace,
-        &task,
-        &mut confirmer,
-        &mut reporter,
-        &mut sink,
-        TrustStore::new(),
-        &Cancel::new(),
-    ) {
+    // Both modes take the same arguments and return the same outcome. The whole of the
+    // difference is inside: one asks the model what to do next after every result, the other
+    // asked once, before there were any.
+    let outcome = match mode {
+        Mode::Turn => turn::run_cancellable(
+            &config,
+            &egress,
+            &workspace,
+            &task,
+            &mut confirmer,
+            &mut reporter,
+            &mut sink,
+            TrustStore::new(),
+            &Cancel::new(),
+        ),
+        Mode::Manifest => bravebot_agent::manifest::run(
+            &config,
+            &egress,
+            &workspace,
+            &task,
+            &mut confirmer,
+            &mut reporter,
+            &mut sink,
+            TrustStore::new(),
+            &Cancel::new(),
+        ),
+    };
+
+    match outcome {
         Ok(outcome) => {
             // The reply is untrusted model output. Printing it is safe, since the
             // terminal is not a decision, so it is released explicitly for display.
+            // A traced manifest run puts the plan on stderr with the trail, never on
+            // stdout: stdout stays the reply so a pipe is still a pipe.
+            let attempt = if trace {
+                outcome
+                    .attempt
+                    .as_ref()
+                    .map(bravebot_agent::manifest::Attempt::describe)
+            } else {
+                None
+            };
             report(
                 &mut std::io::stdout().lock(),
                 &mut std::io::stderr().lock(),
                 &Finished {
                     reply: outcome.reply_for_display(),
                     notices: &outcome.notices,
+                    attempt: attempt.as_deref(),
                     trail: trace.then_some((&sink, outcome.model.as_str())),
                     clean: outcome.clean,
                 },
@@ -247,6 +317,22 @@ fn run_task(args: &[String]) -> ExitCode {
             } else {
                 ExitCode::FAILURE
             }
+        }
+        // A run that stopped is the one worth looking at, so what it produced is printed
+        // whether or not --trace was asked for. Without it a failed plan is a one-line
+        // complaint about a document nobody can see.
+        Err(bravebot_agent::TurnError::Manifest { attempt, detail }) => {
+            eprintln!("{detail}");
+            let report = attempt.describe();
+            if !report.is_empty() {
+                eprintln!();
+                eprint!("{report}");
+            }
+            if trace {
+                eprintln!();
+                print_trace(&mut std::io::stderr().lock(), &sink);
+            }
+            ExitCode::FAILURE
         }
         Err(err) => {
             eprintln!("{err}");
@@ -305,6 +391,9 @@ struct Finished<'a> {
     /// The driver's own words about what loaded and what did not, never anything read out of a
     /// file.
     notices: &'a [String],
+    /// What a traced manifest run planned, when there was one. On stderr with the trail,
+    /// never on stdout: a pipe of the reply must not pick up the plan.
+    attempt: Option<&'a str>,
     /// The trail and the model behind it, when `--trace` asked for them.
     trail: Option<(&'a RecordingSink, &'a str)>,
     /// Whether no gate refused anything during the turn.
@@ -322,6 +411,10 @@ fn report(reply: &mut impl Write, beside: &mut impl Write, run: &Finished<'_>) {
         let _ = writeln!(beside, "{}", t!(cli_notice, notice = notice));
     }
     let _ = writeln!(reply, "{}", run.reply);
+    if let Some(attempt) = run.attempt {
+        let _ = writeln!(beside);
+        let _ = write!(beside, "{attempt}");
+    }
     if let Some((sink, model)) = run.trail {
         let _ = writeln!(beside);
         print_trace(beside, sink);
@@ -778,6 +871,7 @@ mod tests {
         let (reply, beside) = written(&Finished {
             reply: "ok",
             notices: &["a skill was loaded".to_string()],
+            attempt: None,
             trail: Some((&sink, "qwen-3-235b")),
             clean: false,
         });
@@ -795,6 +889,7 @@ mod tests {
         let (reply, beside) = written(&Finished {
             reply: "ok",
             notices: &[],
+            attempt: None,
             trail: None,
             clean: true,
         });
@@ -881,5 +976,50 @@ mod tests {
             detail: "assistant reply shown to the user".into(),
         });
         print_trace(&mut Closed, &sink);
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    /// Turn is what an unqualified run has always been, so an omitted `--mode` has to stay that.
+    #[test]
+    fn the_default_mode_is_the_turn_loop() {
+        let invocation = parse_invocation(&args(&["do a thing"])).expect("parses");
+        assert_eq!(invocation.mode, Mode::Turn);
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    #[test]
+    fn a_leading_mode_flag_is_a_task_not_an_unknown_option() {
+        let invocation =
+            parse_invocation(&args(&["--mode", "manifest", "do a thing"])).expect("parses");
+        assert_eq!(invocation.mode, Mode::Manifest);
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    #[test]
+    fn an_unknown_mode_is_refused_rather_than_guessed() {
+        let err =
+            parse_invocation(&args(&["--mode", "safe", "do a thing"])).expect_err("must refuse");
+        assert!(err.contains("safe"), "{err}");
+        assert!(err.contains("turn") && err.contains("manifest"), "{err}");
+    }
+
+    /// A failed plan is the document nobody would otherwise see. It belongs beside the reply,
+    /// never in it: a pipe of stdout would otherwise pick up the model's own words mixed into
+    /// whatever the run produced.
+    #[test]
+    fn a_failed_plan_is_printed_beside_the_reply() {
+        let (reply, beside) = written(&Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: Some("manifest proposed, which was not usable\n  not JSON\n"),
+            trail: None,
+            clean: true,
+        });
+        assert_eq!(reply, "ok\n");
+        assert!(beside.contains("not usable"), "got: {beside}");
+        assert!(!reply.contains("not usable"));
     }
 }
