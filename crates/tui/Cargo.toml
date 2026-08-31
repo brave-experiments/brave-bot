@@ -30,5 +30,6 @@ unicode-width = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 # poll(2) on the tty, so an OSC 11 reply can be waited for without hanging when the
 # terminal never sends one. Crossterm drops those replies, and a blocking read would
-# stall startup on a terminal that does not answer.
-libc = { workspace = true }
+# stall startup on a terminal that does not answer. rustix rather than libc so the
+# same syscalls do not need unsafe at this crate.
+rustix = { version = "1", features = ["event"] }

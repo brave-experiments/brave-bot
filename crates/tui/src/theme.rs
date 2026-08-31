@@ -108,35 +108,30 @@ fn light_from_rgb((r, g, b): Rgb) -> bool {
 
 #[cfg(unix)]
 fn query_osc11(out: &mut impl Write) -> Option<bool> {
-    use std::os::fd::AsRawFd;
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use std::time::{Duration, Instant};
 
     write!(out, "\x1b]11;?\x07").ok()?;
     out.flush().ok()?;
 
-    let fd = std::io::stdin().as_raw_fd();
+    let stdin = std::io::stdin();
     let deadline = Instant::now() + Duration::from_millis(80);
     let mut buf = Vec::new();
     let mut tmp = [0u8; 64];
 
     while Instant::now() < deadline {
         let remain = deadline.saturating_duration_since(Instant::now());
-        let ms = i32::try_from(remain.as_millis()).unwrap_or(0);
-        let mut fds = [libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
+        let timeout = Timespec::try_from(remain).unwrap_or(Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        });
+        let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
         // poll/read on the tty itself, because crossterm drops OSC replies and a blocking
         // read would hang on a terminal that never answers.
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, ms) };
-        if n <= 0 {
+        if poll(&mut fds, Some(&timeout)).ok()? == 0 {
             break;
         }
-        let got = unsafe { libc::read(fd, tmp.as_mut_ptr().cast(), tmp.len()) };
-        let Ok(n) = usize::try_from(got) else {
-            break;
-        };
+        let n = rustix::io::read(&stdin, tmp.as_mut_slice()).ok()?;
         if n == 0 {
             break;
         }
