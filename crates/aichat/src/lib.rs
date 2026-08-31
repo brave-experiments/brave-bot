@@ -295,10 +295,35 @@ impl<'a> AichatClient<'a> {
                         counted_by_server: false,
                         attempt,
                     });
-                    std::thread::sleep(backoff(attempt - 1));
+                    if !self.wait(backoff(attempt - 1)) {
+                        return Err(ChatError::Cancelled);
+                    }
                 }
                 result => return result,
             }
+        }
+    }
+
+    /// Wait out a backoff, or give up on it when the caller says to stop.
+    ///
+    /// Slept in slices rather than in one go, because the pause between attempts is seconds long
+    /// and a stop landing in the middle of one would otherwise wait the rest of it out, having
+    /// nothing to stop but a sleep.
+    ///
+    /// Returns whether the wait finished, so a stop is answered rather than swallowed.
+    fn wait(&self, how_long: Duration) -> bool {
+        const SLICE: Duration = Duration::from_millis(50);
+
+        let until = std::time::Instant::now() + how_long;
+        loop {
+            if self.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return false;
+            }
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return true;
+            }
+            std::thread::sleep(left.min(SLICE));
         }
     }
 
@@ -314,6 +339,13 @@ impl<'a> AichatClient<'a> {
         attempt: u32,
         progress: &mut impl FnMut(Progress),
     ) -> Result<Completion, ChatError> {
+        // Before the request is built, let alone sent. A stop that landed while the last attempt
+        // was failing is a stop, and spending a credential on a reply nobody wants is worse than
+        // slow.
+        if self.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+            return Err(ChatError::Cancelled);
+        }
+
         let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
 
         let headers =

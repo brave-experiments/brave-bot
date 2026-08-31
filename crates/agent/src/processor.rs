@@ -101,6 +101,12 @@ pub struct Chat<'a> {
     /// behalf, and quietly running it on something else would make the choice mean less than it
     /// appears to.
     pub model: Option<&'a str>,
+    /// The turn's stop, where this call is part of a turn that can be stopped.
+    ///
+    /// A processor is a model call like any other and takes as long as one. Without this a stop
+    /// landed while a processor was reading waited out the whole of its reply, which is the
+    /// longest a stop can be made to wait anywhere in a turn.
+    pub cancel: Option<&'a bravebot_core::cancel::Cancel>,
 }
 
 /// What one processor run produced.
@@ -195,6 +201,9 @@ pub fn run<S: Sink>(
     let request = ChatRequest::new(model, messages);
 
     let mut client = AichatClient::new(chat.config, chat.egress);
+    if let Some(cancel) = chat.cancel {
+        client = client.with_cancel(cancel.clone());
+    }
     if let Some(subscription) = chat.subscription.as_deref_mut() {
         client = client.with_subscription(subscription);
     }

@@ -146,6 +146,9 @@ pub fn compact<S: Sink>(
     let request = ChatRequest::new(model, messages);
 
     let mut client = AichatClient::new(chat.config, chat.egress);
+    if let Some(cancel) = chat.cancel {
+        client = client.with_cancel(cancel.clone());
+    }
     if let Some(subscription) = chat.subscription.as_deref_mut() {
         client = client.with_subscription(subscription);
     }

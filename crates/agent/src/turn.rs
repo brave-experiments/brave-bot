@@ -652,6 +652,9 @@ pub fn compact<S: Sink, R: Reporter>(
             .as_mut()
             .map(|s| s as &mut dyn bravebot_aichat::Subscription),
         model,
+        // `/compact` is one request with no round for a stop to land between, so there is nothing
+        // here that a stop could reach.
+        cancel: None,
     };
 
     let done = crate::compact::compact(&mut policy, &mut chat, conversation);
@@ -939,6 +942,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     .as_mut()
                     .map(|s| s as &mut dyn bravebot_aichat::Subscription),
                 model: task.model.as_deref(),
+                cancel: Some(cancel),
             };
             match crate::compact::compact(&mut policy, &mut chat, conversation) {
                 Ok(Some(done)) => {
@@ -1155,6 +1159,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                             .as_mut()
                             .map(|s| s as &mut dyn bravebot_aichat::Subscription),
                         model: task.model.as_deref(),
+                        cancel: Some(cancel),
                     },
                     cancel,
                 },

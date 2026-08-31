@@ -957,6 +957,52 @@ fn without_a_premium_host_no_credential_is_attached() {
     assert_eq!(subscription.remaining, 5);
 }
 
+/// A stop landing in the pause between attempts has nothing to stop but a sleep, and slept in one
+/// go it waited the rest of that pause out. The pause doubles each time, so the longer a request
+/// had been failing the longer stopping it took.
+#[test]
+fn a_stop_does_not_wait_out_the_pause_between_attempts() {
+    let (endpoint, _received) = serve_attempts(vec![
+        Attempt::Dropped,
+        Attempt::Frames(vec![
+            frame(r#"{"model":"served-model","choices":[{"delta":{"content":"hello"}}]}"#),
+            frame("[DONE]"),
+        ]),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let cancel = Cancel::new();
+    let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+
+    // The retry is announced before the pause, which is where a person watching would press the
+    // key: the interface has just told them it is trying again.
+    let started = std::time::Instant::now();
+    let error = client
+        .complete_streaming(&mut policy, &request, |progress| {
+            if progress.attempt > 1 {
+                cancel.cancel();
+            }
+        })
+        .expect_err("a stopped request produced a completion");
+
+    assert!(matches!(error, ChatError::Cancelled), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "it waited out the pause: {:?}",
+        started.elapsed()
+    );
+}
+
 /// The failure that started this: a machine sleeps, the connection it had is gone, and the reply
 /// that would have arrived never does. Nothing about the request has changed, so it is sent
 /// again rather than handed back to the user as an error they have to act on.
