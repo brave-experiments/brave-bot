@@ -357,9 +357,11 @@ mod tests {
 
     #[test]
     fn the_list_shows_names_a_person_reads() {
-        let output = rendered(&Picker::new(offered(), theme::BRAVE));
-        assert!(output.contains(theme::BRAVE), "{output}");
-        assert!(output.contains("tokyonight"), "{output}");
+        let themes = offered();
+        let output = rendered(&Picker::new(themes.clone(), theme::BRAVE));
+        assert!(output.contains(&themes[0].name), "{output}");
+        // The panel on 80x24 shows the start of the list; names near the end sit below the fold.
+        assert!(output.contains(&themes[1].name), "{output}");
     }
 
     /// The picker is a panel over the session, not a full-screen takeover: the title sits in a
