@@ -108,3 +108,4 @@ is all that remains of a document nobody can see. The plan never shares stdout w
 `verified-by: bravebot_cli::main::a_leading_mode_flag_is_a_task_not_an_unknown_option`
 `verified-by: bravebot_cli::main::an_unknown_mode_is_refused_rather_than_guessed`
 `verified-by: bravebot_cli::main::a_failed_plan_is_printed_beside_the_reply`
+`verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`

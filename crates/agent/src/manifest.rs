@@ -509,6 +509,18 @@ pub fn run<S: Sink, C: Confirmer, R: Reporter>(
     trust: TrustStore,
     cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
+    // A pipe is quarantined context in a turn. Here it would be dropped: the plan is frozen
+    // before anything is observed, and there is no slot for bytes the planner never named.
+    // Failing loudly is the alternative to `cat notes.md | bravebot --mode manifest -p`
+    // running against an empty prompt and a discarded pipe.
+    if task.piped.is_some() {
+        return Err(TurnError::Precommit(
+            "piped input cannot join a manifest run: the plan is fixed before anything is \
+             observed, so a pipe would be dropped. Name a workspace file instead."
+                .into(),
+        ));
+    }
+
     let mut subscription = config
         .premium_endpoint
         .as_deref()

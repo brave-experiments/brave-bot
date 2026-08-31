@@ -145,8 +145,12 @@ An unqualified run, and every session, is still observe-decide-act. Manifest is 
 command line. An unknown name is refused rather than guessed, because guessing wrong here would
 silently run the mode the user did not ask for.
 
+Piped stdin is refused rather than dropped. A pipe is observed context, and this mode does not
+observe before it plans. Name a workspace file instead.
+
 `verified-by: bravebot_agent::mode::the_default_is_the_turn_loop`
 `verified-by: bravebot_agent::mode::an_unknown_mode_is_refused`
 `verified-by: bravebot_cli::main::the_default_mode_is_the_turn_loop`
 `verified-by: bravebot_cli::main::an_unknown_mode_is_refused_rather_than_guessed`
 `verified-by: bravebot_cli::main::a_leading_mode_flag_is_a_task_not_an_unknown_option`
+`verified-by: bravebot_agent::manifest::piped_input_is_refused_rather_than_dropped`

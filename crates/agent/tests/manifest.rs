@@ -177,6 +177,35 @@ fn run(
     )
 }
 
+/// A pipe is observed context. This mode does not observe before it plans, so accepting one
+/// would drop it. `cat notes.md | bravebot --mode manifest -p` with no prompt would otherwise
+/// plan against an empty string and never see the notes.
+#[test]
+fn piped_input_is_refused_rather_than_dropped() {
+    let scratch = Scratch::new("piped");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let config = config_for("http://127.0.0.1:1");
+    let mut sink = RecordingSink::new();
+    let task = Task::new("summarise this").with_piped_input("notes from elsewhere");
+
+    let failure = manifest::run(
+        &config,
+        &bravebot_net::Egress::new(),
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
+        &mut sink,
+        TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect_err("must refuse");
+    assert!(
+        failure.to_string().contains("piped input"),
+        "got: {failure}"
+    );
+}
+
 /// A plan may name a file no later step reads, and that file is never opened.
 ///
 /// Planning happens before anything has been looked at, so a plan that covers the candidates it
@@ -437,6 +466,44 @@ fn a_plan_may_write_a_body_it_fixed_in_advance() {
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
         "# Notes\n"
+    );
+}
+
+/// The CLI confirmer is Unattended. A test harness that always approves would hide a regression
+/// where a one-shot write lands without anyone seeing it.
+#[test]
+fn an_unattended_manifest_run_does_not_write() {
+    let scratch = Scratch::new("unattended-write");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_WRITE", "args": {"path": "notes.md", "contents": "# Notes\n"}},
+        ])),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let failure = manifest::run(
+        &config,
+        &bravebot_net::Egress::new(),
+        &workspace,
+        &Task::new("start a notes file"),
+        &mut bravebot_agent::Unattended,
+        &mut bravebot_agent::IgnoreReports,
+        &mut sink,
+        TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect_err("must refuse");
+    assert!(
+        failure.to_string().contains("did not approve"),
+        "got: {failure}"
+    );
+    assert!(
+        !scratch.path.join("notes.md").exists(),
+        "the file was written without anyone seeing it"
     );
 }
 

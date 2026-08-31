@@ -571,8 +571,9 @@ fn contract_for(tool: &str) -> Option<&'static Contract> {
 /// The value locked when the plan left a routing field out.
 ///
 /// Optional routing still has to go through `Routing::insert`. Inventing the default in the
-/// driver would mean a destination that never passed that check. An empty string is a filter
-/// that matches everything, which is what omitting `pattern` or `include` already meant.
+/// driver would mean a destination that never passed that check. An omitted listing pattern or
+/// search include is locked as the empty string, which the driver then treats as no filter: an
+/// empty glob matches nothing, so handing the string through would list or search an empty set.
 fn routing_default(tool: &str, field: &str) -> Option<&'static str> {
     match (tool, field) {
         ("search", "directory") => Some("."),
