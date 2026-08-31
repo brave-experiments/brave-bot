@@ -366,21 +366,65 @@ impl<'a> AichatClient<'a> {
             );
         }
 
-        let mut stream = self
+        let stream = self
             .egress
             .fetch_streaming(policy, http, Label::untrusted_public())?;
         let label = stream.label();
 
+        // Read on a thread this one can walk away from.
+        //
+        // A read blocks for as long as the other end is quiet and cannot be interrupted, and the
+        // longest quiet in a turn is the one before the model's first word: a model thinking is a
+        // socket with nothing on it. Checked between chunks and no closer, a stop pressed then
+        // could not be noticed until the model started writing, which is the moment somebody is
+        // most likely to have pressed it.
+        //
+        // Nothing on this thread holds a policy, a workspace or a tool: it reads bytes and sends
+        // them on. So a request walked away from leaves a socket to be dropped when the server
+        // finishes or the connection times out, and nothing else.
+        let (chunks, arriving) = std::sync::mpsc::sync_channel(CHUNKS_AHEAD);
+        std::thread::spawn(move || {
+            let mut stream = stream;
+            loop {
+                match stream.next_chunk() {
+                    // A send that fails means the receiver is gone, which means the caller
+                    // stopped: there is nobody left to read for.
+                    Ok(Some(piece)) => {
+                        if chunks.send(Ok(Some(piece))).is_err() {
+                            return;
+                        }
+                    }
+                    end => {
+                        let _ = chunks.send(end);
+                        return;
+                    }
+                }
+            }
+        });
+
         let mut decoder = SseDecoder::new();
         let mut accumulated = StreamAccumulator::new();
 
-        while let Some(piece) = stream.next_chunk()? {
-            // Per chunk, which is as near to at once as this gets. A stream is read and nothing
-            // else, so there is nothing part written to leave behind by stopping here, and the
-            // caller is throwing the reply away regardless.
-            // Per chunk, which is as near to at once as this gets. A stream is read and nothing
-            // else, so there is nothing part written to leave behind by stopping here, and the
-            // caller is throwing the reply away regardless.
+        loop {
+            let piece = match arriving.recv_timeout(WAKE) {
+                Ok(Ok(Some(piece))) => piece,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => return Err(e.into()),
+                // Nothing has arrived yet, which is the whole point of waiting with a limit: it
+                // is the only chance to look at anything while a reply is still being waited for.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                        return Err(ChatError::Cancelled);
+                    }
+                    continue;
+                }
+                // The reader is gone without having said the body ended, which is the silence a
+                // connection that died leaves, and is answered as one below.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+
+            // A stream is read and nothing else, so there is nothing part written to leave behind
+            // by stopping here, and the caller is throwing the reply away regardless.
             if self.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
                 return Err(ChatError::Cancelled);
             }
@@ -478,6 +522,18 @@ const ATTEMPTS: u32 = 3;
 
 /// How long to wait after the first failure. Doubled for each attempt after that.
 const BACKOFF: Duration = Duration::from_secs(1);
+
+/// How often a reply that has not started arriving looks up to see whether it should stop.
+///
+/// The same interval the rest of the system waits on for the same question, and short enough that
+/// a person cannot tell it from at once.
+const WAKE: Duration = Duration::from_millis(50);
+
+/// How many chunks may sit between the thread reading them and the one taking them apart.
+///
+/// Bounded, so a server faster than the decoder cannot pile a whole reply into a channel. Small,
+/// because the decoder has never been the slow end.
+const CHUNKS_AHEAD: usize = 16;
 
 /// Whether a failed attempt should be repeated.
 ///

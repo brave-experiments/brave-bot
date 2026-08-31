@@ -169,7 +169,13 @@ pub struct Streamed<'r> {
     pub content_type: Option<String>,
     pub final_url: String,
     label: Label,
-    reader: Box<dyn std::io::Read + 'r>,
+    /// `Send`, so a caller can read the body on a thread it is able to walk away from.
+    ///
+    /// Reading is the one part of a request that blocks for as long as the other end is quiet,
+    /// and there is no way to interrupt a read in progress. A caller that has to answer a person
+    /// promptly moves the reading somewhere it can abandon; nothing about a read needs to happen
+    /// on any particular thread, since it applies nothing and decides nothing.
+    reader: Box<dyn std::io::Read + Send + 'r>,
     read: usize,
     truncated: bool,
 }
@@ -382,7 +388,7 @@ impl Egress {
         &self,
         policy: &mut Policy<'_, S>,
         request: &Request,
-    ) -> Result<(u16, Option<String>, String, Box<dyn std::io::Read>), EgressError> {
+    ) -> Result<(u16, Option<String>, String, Box<dyn std::io::Read + Send>), EgressError> {
         let mut url = request.url.clone();
         let mut hops = 0;
 
@@ -423,7 +429,15 @@ impl Egress {
         &self,
         request: &Request,
         url: &str,
-    ) -> Result<(u16, Option<String>, Option<String>, Box<dyn std::io::Read>), EgressError> {
+    ) -> Result<
+        (
+            u16,
+            Option<String>,
+            Option<String>,
+            Box<dyn std::io::Read + Send>,
+        ),
+        EgressError,
+    > {
         // GET and POST builders have different types in ureq, so the header loop is
         // repeated rather than abstracted over them.
         let result = match request.method {

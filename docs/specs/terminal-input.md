@@ -108,10 +108,14 @@ The prompt stays sent, marked stopped, where either of two things is true: the t
 done something that is on the screen, or there are prompts waiting behind it. Both mean there is
 an order to keep, and a line put back in the box would be out of it.
 
-**Nothing waits out work that is only being waited on.** A reply stops within a chunk of arriving,
-whether it is the planner's or a processor's; a running command is killed; a pause between retries
-is abandoned; and nothing new is sent once a stop has landed. What still finishes is a tool call
-already running, because stopping one part way could leave a file half written.
+**Nothing waits out work that is only being waited on.** A reply stops whether or not it has begun
+arriving, and whether it is the planner's or a processor's; a running command is killed; a pause
+between retries is abandoned; and nothing new is sent once a stop has landed. What still finishes
+is a tool call already running, because stopping one part way could leave a file half written.
+
+A request being waited on is walked away from rather than interrupted, since a read in progress
+cannot be interrupted. The socket is left to be closed when the far end finishes or the connection
+times out, which is sound because reading a reply applies nothing and decides nothing.
 
 **Why.** It used to say "cancelling…" and go on streaming the reply to the end, because a stop was
 only noticed between rounds. So the key that was supposed to stop the answer left the answer
@@ -150,6 +154,7 @@ runs.
 `verified-by: bravebot_aichat::client::a_stopped_stream_stops_before_the_reply_is_over`
 `verified-by: bravebot_aichat::client::a_stream_stopped_before_it_starts_reports_nothing`
 `verified-by: bravebot_aichat::client::a_stop_does_not_wait_out_the_pause_between_attempts`
+`verified-by: bravebot_aichat::client::a_stop_does_not_wait_for_the_model_to_start_writing`
 `verified-by: bravebot_tui::state::cancelling_before_anything_happens_still_un_sends_the_prompt`
 `verified-by: bravebot_tui::app::a_key_that_would_stop_a_turn_is_answered_during_a_summary`
 `verified-by: bravebot_tui::app::escape_stops_the_turn_without_ending_the_session`
@@ -326,10 +331,8 @@ for the first time needs to know is that they may simply ask.
 
 ## Known costs
 
-- **A request already sent is not interrupted before its first bytes arrive.** The stop is checked
-  between the pieces of a reply, so it lands within one of them, and a model that has begun writing
-  is stopped at once. A model that has not begun is still being waited on by a blocking read, and
-  nothing can be checked until that read returns. Stopping while the interface says it is waiting
-  for the model therefore takes as long as the model takes to say its first word. Removing that
-  would mean reading the response on a thread the turn can walk away from, leaving the socket to
-  be closed by whichever of the two finishes first.
+- **A stopped request leaves a thread and a socket behind.** The reply goes on being read by
+  nobody until the far end finishes or the connection times out, which can be minutes on a
+  connection that has died. It costs a thread and a socket for that long, and it is the price of
+  answering the person at once: the alternative is waiting for a read that cannot be interrupted.
+  Nothing that thread does is visible, since it holds no policy, no workspace and no tool.

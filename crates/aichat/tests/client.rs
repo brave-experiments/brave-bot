@@ -478,6 +478,53 @@ fn a_response_without_content_is_an_error() {
     assert!(error.to_string().contains("no message content"));
 }
 
+/// The case people actually press the key in: the request has gone, the interface says it is
+/// waiting, and the model has not said anything yet. A read cannot be interrupted, so a stop
+/// checked only between chunks could not be noticed until the first word arrived, and stopping
+/// took as long as the model took to start.
+#[test]
+fn a_stop_does_not_wait_for_the_model_to_start_writing() {
+    // Answers the request, then says nothing for far longer than anybody would wait.
+    let endpoint = serve_stream_paced(
+        vec![frame(r#"{"choices":[{"delta":{"content":"hello"}}]}"#)],
+        Duration::from_secs(30),
+    );
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let cancel = Cancel::new();
+    let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+
+    // Pressed while the reply is still being waited for, from a thread of its own because the
+    // call below is what a person would be pressing it at.
+    let stopping = cancel.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        stopping.cancel();
+    });
+
+    let started = std::time::Instant::now();
+    let error = client
+        .complete_streaming(&mut policy, &request, |_| {})
+        .expect_err("a stopped request produced a completion");
+
+    assert!(matches!(error, ChatError::Cancelled), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it waited for the model to start: {:?}",
+        started.elapsed()
+    );
+}
+
 /// A person who stops a turn is asking for the answer to stop, and the answer is the stream. Read
 /// to the end regardless, stopping took exactly as long as not stopping, and the longer the reply
 /// the longer they waited for the thing they had already cancelled.
