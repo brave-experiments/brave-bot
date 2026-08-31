@@ -24,7 +24,8 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [shell-mode.md](shell-mode.md) | `SHELL` | 5 | the `!` prompt: a line the user typed, and why the planner can never reach it |
 | [skills.md](skills.md) | `SKILL` | 9 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
 | [instructions.md](instructions.md) | `INSTR` | 7 | which instruction files are looked for, where, in what order, and where what they say ends up |
-| [cli.md](cli.md) | `CLI` | 7 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
+| [cli.md](cli.md) | `CLI` | 8 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
+| [manifest.md](manifest.md) | `MANIFEST` | 9 | plan the whole run first, then execute it with no model in the control path |
 | [terminal-input.md](terminal-input.md) | `INPUT` | 18 | what the user types into: the box, the keys, and where a terminal's own limits show through |
 | [commands.md](commands.md) | `CMD` | 7 | a line beginning with `/`: where one may come from, when a line is one, and what it does to the line |
 | [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 12 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
@@ -34,8 +35,8 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [mcp.md](mcp.md) | `MCP` | 7 | tools that come from outside this repository, and what they are allowed to do |
 | [network-egress.md](network-egress.md) | `NET` | 6 | every request that leaves this process, and what comes back |
 | [compaction.md](compaction.md) | `COMPACT` | 8 | shortening a long conversation into a summary of itself, in the request only |
-| [sessions.md](sessions.md) | `SESSION` | 9 | what is kept between runs: the record of a session, and the prompts a person typed |
-| [trace.md](trace.md) | `TRACE` | 5 | what is recorded about every decision the system makes, and what that record may contain |
+| [sessions.md](sessions.md) | `SESSION` | 10 | what is kept between runs: the record of a session, and the prompts a person typed |
+| [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |
 | [layering.md](layering.md) | `LAYER` | 3 | which crate is allowed to do what |
 
