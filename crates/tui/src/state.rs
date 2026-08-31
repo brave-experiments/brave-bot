@@ -1148,7 +1148,7 @@ impl Session {
     /// off the end of what it is choosing between.
     pub fn rows_beneath_the_box(&self) -> usize {
         // Two rows a piece: the prompt, and the word saying it has not gone yet.
-        self.queued.len() * 2 + self.attached.len() + self.offered_count()
+        self.queued.len() * 2 + self.attached_to_the_line().count() + self.offered_count()
     }
 
     /// Move down what is offered, stopping at the end.
@@ -1407,16 +1407,29 @@ impl Session {
     /// attachment off. That is the only way a user has to change their mind, since the marker is
     /// the only part of it they can see.
     pub fn attachments_named(&self, line: &str) -> Vec<Attached> {
-        self.attached
-            .iter()
-            .filter(|attached| line.contains(&attached.marker))
-            .cloned()
-            .collect()
+        self.named_in(line).cloned().collect()
     }
 
-    /// What is currently attached, for drawing under the box.
+    /// What the line being typed carries, for drawing under the box.
+    ///
+    /// The same question the turn is built from asks, so the row and the turn can never disagree
+    /// about which files a line is carrying. Drawn from what a drop staged instead, a file whose
+    /// marker the person had rubbed out kept its row, which is the one place they can see whether
+    /// rubbing it out worked.
+    pub fn attached_to_the_line(&self) -> impl Iterator<Item = &Attached> {
+        self.named_in(&self.input)
+    }
+
+    /// Everything a drop staged, whether or not the line still names it.
     pub fn attached(&self) -> &[Attached] {
         &self.attached
+    }
+
+    /// The attachments a line names, without cloning them.
+    fn named_in<'a>(&'a self, line: &'a str) -> impl Iterator<Item = &'a Attached> {
+        self.attached
+            .iter()
+            .filter(move |attached| line.contains(&attached.marker))
     }
 
     /// What the line carried when it was sent, for the task being built from it.

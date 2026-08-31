@@ -61,10 +61,19 @@ written this way. Enter on an empty line does nothing.
 This holds for a folded paste, a pasted picture and a dropped file alike. It
 is why a marker exists rather than a list the user cannot edit.
 
+The row beneath the box goes with the marker. What is drawn there is what the line in the box
+carries, so a file whose marker has been rubbed out is drawn nowhere, and one whose marker is still
+there is drawn whether or not a turn is running.
+
+**Why.** The turn was always built from the markers the line still held, so a deleted one already
+sent nothing. What lingered was the row, which is the only place a person can see whether rubbing
+the marker out worked: left drawn, it says a file is going that is not.
+
 `verified-by: bravebot_tui::drop::deleting_the_marker_takes_the_attachment_off`
 `verified-by: bravebot_tui::drop::several_files_dropped_together_each_get_a_marker`
 `verified-by: bravebot_tui::drop::sending_a_line_clears_what_was_attached_to_it`
 `verified-by: bravebot_tui::render::an_attached_file_is_named_under_the_box`
+`verified-by: bravebot_tui::render::deleting_the_marker_takes_the_row_out_from_under_the_box`
 
 
 <a id="INPUT-4"></a>

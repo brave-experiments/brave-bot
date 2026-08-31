@@ -860,8 +860,7 @@ fn command_word(command: &crate::app::Command) -> String {
 /// user's own drop being read back to them, so nothing here is a decision and nothing is labelled.
 fn attached_lines(session: &Session, width: u16) -> Vec<Line<'static>> {
     session
-        .attached()
-        .iter()
+        .attached_to_the_line()
         .map(|attached| {
             let lead = format!("  {} ", attached.marker);
             let room = (width as usize).saturating_sub(lead.chars().count());
@@ -1429,6 +1428,39 @@ mod tests {
         assert!(
             output.contains("shot.png"),
             "the file was not named: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Rubbing the marker out is the only way a person has to change their mind about a file, and
+    /// the row under the box is the only place they can see whether it worked. Left drawn, it says
+    /// a file is going that is not.
+    #[test]
+    fn deleting_the_marker_takes_the_row_out_from_under_the_box() {
+        let directory = std::env::temp_dir().join("bravebot-render-attached-deleted");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("scratch");
+        std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
+
+        let mut session = Session::new("none").in_workspace(&directory);
+        session.drop_files(&directory.join("shot.png").to_string_lossy());
+        assert!(
+            rendered(&session).contains("shot.png"),
+            "the file was never named"
+        );
+
+        while !session.input().is_empty() {
+            session.backspace();
+        }
+        for c in "what is in the directory?".chars() {
+            session.type_char(c);
+        }
+
+        let output = rendered(&session);
+        assert!(
+            !output.contains("shot.png"),
+            "the attachment was still drawn: {output}"
         );
 
         let _ = std::fs::remove_dir_all(&directory);
