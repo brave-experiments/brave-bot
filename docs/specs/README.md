@@ -36,6 +36,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [compaction.md](compaction.md) | `COMPACT` | 8 | shortening a long conversation into a summary of itself, in the request only |
 | [sessions.md](sessions.md) | `SESSION` | 9 | what is kept between runs: the record of a session, and the prompts a person typed |
 | [trace.md](trace.md) | `TRACE` | 5 | what is recorded about every decision the system makes, and what that record may contain |
+| [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |
 | [layering.md](layering.md) | `LAYER` | 3 | which crate is allowed to do what |
 
 ## The tools

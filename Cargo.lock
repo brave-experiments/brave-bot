@@ -324,6 +324,10 @@ name = "bravebot-core"
 version = "0.1.0"
 
 [[package]]
+name = "bravebot-i18n"
+version = "0.1.0"
+
+[[package]]
 name = "bravebot-mcp"
 version = "0.1.0"
 dependencies = [

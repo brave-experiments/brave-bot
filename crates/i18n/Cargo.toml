@@ -1,0 +1,10 @@
+[package]
+name = "bravebot-i18n"
+description = "Message catalogs for everything a person reads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
