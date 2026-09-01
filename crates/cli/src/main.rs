@@ -558,7 +558,7 @@ fn resume_named(id: &str) -> ExitCode {
 }
 
 fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
-    let config = match Config::from_env() {
+    let mut config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
             eprintln!("{}", t!(cli_configuration_problem, problem = err));
@@ -581,7 +581,7 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
         Err(_) => named(bravebot_sandbox::policy::ConfinementLevel::None),
     };
 
-    match bravebot_tui::app::run(&config, &workspace, confinement, start) {
+    match bravebot_tui::app::run(&mut config, &workspace, confinement, start) {
         // Printed after the terminal is handed back, so it survives on the screen the person is
         // left looking at rather than going onto the alternate screen with everything else. A
         // session is worth resuming far more often than anybody thinks to write its name down

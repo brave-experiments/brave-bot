@@ -25,6 +25,17 @@ pub struct Model {
     pub display_name: String,
     /// Whether a subscription is needed for it.
     pub premium: bool,
+    /// How large a request may get, in prompt tokens, as the endpoint advertises it.
+    ///
+    /// `None` for an entry that did not say, and for `automatic`, where the server picks the model
+    /// per request and so no one figure describes it.
+    ///
+    /// Tokens, despite arriving in a field called
+    /// `long_conversation_warning_character_limit`. The name is wrong at the source: the endpoint
+    /// computes it as `conversation_token_limit * 0.8`, so it is a token count already discounted
+    /// by a fifth, and reading it as characters would divide a budget that has already been made
+    /// safe. Usable as a budget with no conversion.
+    pub conversation_tokens: Option<u64>,
 }
 
 impl Model {
@@ -37,6 +48,8 @@ impl Model {
             key: bravebot_config::DEFAULT_MODEL.to_string(),
             display_name: "Automatic".to_string(),
             premium: false,
+            // The server chooses per request, so there is no one model whose limit this could be.
+            conversation_tokens: None,
         }
     }
 
@@ -47,8 +60,8 @@ impl Model {
 
 /// One entry as the server reports it.
 ///
-/// Only the fields that matter to a choice are named. The endpoint reports a description, a maker
-/// and context limits too, none of which decides anything here.
+/// Only the fields that matter to a choice, and the limit a budget is worked out from. The endpoint
+/// reports a description and a maker too, neither of which decides anything here.
 #[derive(Debug, Deserialize)]
 struct Listed {
     /// Absent for an entry the server has no name for, which cannot be requested and is dropped.
@@ -67,6 +80,17 @@ struct Listed {
 struct ListedOptions {
     /// `basic_and_premium` or `premium`.
     access: String,
+    /// The window the endpoint will work to, in **tokens**, whatever the name says.
+    ///
+    /// Computed at the source as `conversation_token_limit * 0.8`, so the fifth held back is
+    /// already in it. Nothing is measured in characters here, and a client that divided it into
+    /// tokens would compact five times sooner than it had to.
+    ///
+    /// The figure varies across the roster by a factor of thirty, which is why one constant cannot
+    /// stand in for it. Optional, so an entry that stops reporting it falls back rather than
+    /// failing to decode.
+    #[serde(default)]
+    long_conversation_warning_character_limit: Option<u64>,
 }
 
 /// The value of `access` that means a subscription is required.
@@ -116,6 +140,12 @@ fn usable(listed: Vec<Listed>) -> Vec<Model> {
                     key: entry.key?,
                     display_name: entry.display_name,
                     premium: entry.options.access == PREMIUM_ACCESS,
+                    conversation_tokens: entry
+                        .options
+                        .long_conversation_warning_character_limit
+                        // The endpoint sends 1 where a model reports no window at all, and zero is
+                        // not a budget either: both mean "it did not say" rather than "no room".
+                        .filter(|limit| *limit > 1),
                 })
             })
             // The endpoint has no reason to list one name twice, but the choice is a person's and
@@ -154,6 +184,47 @@ mod tests {
                  "capabilities":["chat","tools"],"options":{"access":"basic_and_premium"}}]"#,
         );
         assert!(!models[1].premium);
+    }
+
+    /// The window is the one thing here worth having that a person does not choose, and it arrives
+    /// under a name that says characters while holding tokens.
+    #[test]
+    fn the_advertised_window_is_kept_as_tokens() {
+        let models = decoded(
+            r#"[{"key":"claude-opus","display_name":"Claude Opus","capabilities":["chat","tools"],
+                 "options":{"access":"premium",
+                            "long_conversation_warning_character_limit":102400}}]"#,
+        );
+        assert_eq!(models[1].conversation_tokens, Some(102_400));
+    }
+
+    /// An entry that says nothing about its window is not saying it has none. The caller falls back
+    /// rather than compacting at whatever a missing field reads as.
+    #[test]
+    fn an_entry_that_advertises_no_window_reports_none() {
+        let models = decoded(
+            r#"[{"key":"mystery","display_name":"Mystery","capabilities":["chat","tools"],
+                 "options":{"access":"premium"}}]"#,
+        );
+        assert_eq!(models[1].conversation_tokens, None);
+    }
+
+    /// What the endpoint sends for a model whose window it does not know. Taken as "did not say"
+    /// rather than as a budget, which at one token would compact before a turn could start.
+    #[test]
+    fn the_placeholder_window_is_read_as_nothing_said() {
+        let models = decoded(
+            r#"[{"key":"mystery","display_name":"Mystery","capabilities":["chat","tools"],
+                 "options":{"access":"premium",
+                            "long_conversation_warning_character_limit":1}}]"#,
+        );
+        assert_eq!(models[1].conversation_tokens, None);
+    }
+
+    /// The server picks the model per request, so no one window describes it.
+    #[test]
+    fn automatic_advertises_no_window() {
+        assert_eq!(Model::automatic().conversation_tokens, None);
     }
 
     /// Every turn here works by calling tools, so a chat-only model would be an agent that can read

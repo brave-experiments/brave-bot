@@ -234,6 +234,7 @@ mod tests {
             key: key.to_string(),
             display_name: display.to_string(),
             premium,
+            conversation_tokens: None,
         }
     }
 

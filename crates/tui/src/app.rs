@@ -1003,7 +1003,7 @@ pub enum Start {
 /// Run the interface until the user leaves.
 /// Returns the id of the session left behind, where there is one to pick up again.
 pub fn run(
-    config: &Config,
+    config: &mut Config,
     workspace: &Workspace,
     confinement: String,
     start: Start,
@@ -1192,7 +1192,7 @@ fn left_behind(stored: &crate::sessions::Handle) -> Option<String> {
 /// Returns the id of the session left behind, where there is one to pick up again.
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    config: &Config,
+    config: &mut Config,
     workspace: &Workspace,
     confinement: String,
     start: Start,
@@ -1562,7 +1562,7 @@ fn expand_home(directory: &str) -> String {
 fn choose_model(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
-    config: &Config,
+    config: &mut Config,
 ) {
     let mut sink = Trail::new();
     let egress = Egress::new();
@@ -1590,6 +1590,12 @@ fn choose_model(
     match models {
         Ok(models) => {
             if let Some(chosen) = crate::model_prompt::choose(terminal, models, session.model()) {
+                // The listing is the only place a window is ever reported, so the budget is taken
+                // here, while the entry that named it is in hand. Said once when it changes, since
+                // a budget belongs to the model rather than to a turn.
+                if config.adopt_window(chosen.conversation_tokens) {
+                    session.note(t!(session_context_budget, budget = config.context_budget));
+                }
                 session.choose_model(chosen.key);
                 session.note(t!(session_using_model, model = &chosen.display_name));
             }

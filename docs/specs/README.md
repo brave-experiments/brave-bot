@@ -34,7 +34,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [sandboxing.md](sandboxing.md) | `SANDBOX` | 5 | operating-system confinement for processes running code we did not write |
 | [mcp.md](mcp.md) | `MCP` | 7 | tools that come from outside this repository, and what they are allowed to do |
 | [network-egress.md](network-egress.md) | `NET` | 6 | every request that leaves this process, and what comes back |
-| [compaction.md](compaction.md) | `COMPACT` | 8 | shortening a long conversation into a summary of itself, in the request only |
+| [compaction.md](compaction.md) | `COMPACT` | 9 | shortening a long conversation into a summary of itself, in the request only |
 | [sessions.md](sessions.md) | `SESSION` | 10 | what is kept between runs: the record of a session, and the prompts a person typed |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |

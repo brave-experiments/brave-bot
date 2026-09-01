@@ -403,6 +403,7 @@ session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/note
 session-directory-added = added { $directory }, and trusting it for this session
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }
+session-context-budget = compacting above { $budget } tokens, as this model advertises
 session-models-unavailable = could not list models: { $problem }
 session-theme-set = theme { $theme }
 session-no-such-theme = no theme named { $theme }; try /theme for the list

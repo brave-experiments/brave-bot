@@ -142,10 +142,43 @@ is not free to repeat.
 **Why the default sits well below any real window.** A budget above the window never fires, so
 being wrong upward does not make compaction late, it removes it. The default was once set above
 anything the backend serves and sessions ran to exhaustion having never been summarised. A default
-is therefore checked against the smallest window worth using rather than chosen to be generous,
-and anyone running a larger model raises it rather than discovering it was never doing anything.
+is therefore checked against the smallest window worth using rather than chosen to be generous.
+Where the endpoint advertises a window for the model in use, that is used instead, so the default is
+a fallback rather than the usual case: see COMPACT-9.
 
 `verified-by: bravebot_agent::turn::a_conversation_past_the_budget_is_summarised_before_the_next_request`
 `verified-by: bravebot_agent::turn::a_conversation_nobody_has_measured_is_not_compacted`
 `verified-by: bravebot_agent::conversation::a_long_turn_does_not_summarise_itself_once_per_round`
 `verified-by: by-construction (the default budget is asserted below the smallest useful window at compile time)`
+
+<a id="COMPACT-9"></a>
+### COMPACT-9: the budget is the window the endpoint advertises, where it advertises one
+
+`GET /v1/models` reports a figure per model, and it is used as the budget for whichever model the
+person chose. The default only stands in: for `automatic`, whose model is resolved per request so no
+one window describes it, and for an entry that reports nothing. A budget set by hand outranks both.
+A figure the endpoint advertises is believed even where it is small, and never raised toward
+something more comfortable.
+
+**Why.** The default was a single constant standing in for a figure that varies across the roster by
+a factor of thirty. Sessions compacted at 24,000 tokens against a model advertising 102,400, giving
+up three quarters of the conversation it could have held, while models advertising 6,400 had a budget
+their window could never reach, so compaction could not fire for them at all. One number cannot be
+right for both.
+
+**On the unit.** The field is named `long_conversation_warning_character_limit` and holds **tokens**.
+The endpoint computes it as `conversation_token_limit * 0.8`, so it is a token count with a fifth
+already held back for the reply, and it is usable as a budget with no conversion. Reading the name
+literally and dividing by a characters-per-token estimate would compact roughly four times sooner
+than necessary, which is a mistake this project made before measuring the endpoint.
+
+`verified-by: bravebot_aichat::models::the_advertised_window_is_kept_as_tokens`
+`verified-by: bravebot_aichat::models::an_entry_that_advertises_no_window_reports_none`
+`verified-by: bravebot_aichat::models::the_placeholder_window_is_read_as_nothing_said`
+`verified-by: bravebot_aichat::models::automatic_advertises_no_window`
+`verified-by: bravebot_config::lib::an_advertised_window_replaces_the_default`
+`verified-by: bravebot_config::lib::a_small_advertised_window_is_believed_rather_than_raised`
+`verified-by: bravebot_config::lib::the_placeholder_window_is_not_adopted`
+`verified-by: bravebot_config::lib::nothing_advertised_leaves_the_default_alone`
+`verified-by: bravebot_config::lib::a_budget_set_by_hand_is_not_replaced_by_an_advertised_one`
+`verified-by: bravebot_config::lib::adopting_the_budget_already_in_use_reports_no_change`

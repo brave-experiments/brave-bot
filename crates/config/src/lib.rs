@@ -32,14 +32,17 @@ pub const DEFAULT_MODEL: &str = "automatic";
 /// of being wrong downward is a summary sooner than it was needed; the cost of being wrong upward
 /// is the feature not existing. See [`Config::context_budget`].
 ///
-/// This was 100_000, which is not under any window the backend serves, so compaction could not
-/// fire: recorded sessions ended at 28,600, 34,751 and 34,800 prompt tokens having never once
-/// been summarised. The endpoint advertises a long-conversation limit per model, and the largest
-/// among the tool-capable models reachable without a subscription is 102,400 characters, which is
-/// something under thirty thousand tokens. So the ceiling this has to sit below is around there
-/// rather than around a hundred thousand, and it sits below it with room for the reply.
+/// Only a fallback now. Where the endpoint says what a model's window is, that is used instead:
+/// see [`budget_for_window`]. This stands in for `automatic`, whose model is chosen per request so
+/// no one window describes it, and for an entry that reports nothing.
 ///
-/// [`env_var::CONTEXT_BUDGET`] is the way out for anyone whose model is larger.
+/// This was 100_000, which is not under any window the backend serves, so compaction could not
+/// fire: recorded sessions ended at 28,600, 34,751 and 34,800 prompt tokens having never once been
+/// summarised. Chosen to sit under the smallest window on the roster rather than to suit the
+/// largest, because being wrong upward costs a summary sooner than it was needed and being wrong
+/// downward removes compaction altogether.
+///
+/// [`env_var::CONTEXT_BUDGET`] overrides both this and anything discovered.
 pub const DEFAULT_CONTEXT_BUDGET: u64 = 24_000;
 
 /// The smallest context window worth using, in prompt tokens.
@@ -47,6 +50,31 @@ pub const DEFAULT_CONTEXT_BUDGET: u64 = 24_000;
 /// Not a limit anything enforces. It exists so [`DEFAULT_CONTEXT_BUDGET`] can be checked against
 /// the claim its own documentation makes, which is the claim that quietly stopped being true.
 pub const SMALLEST_USEFUL_WINDOW: u64 = 32_000;
+
+/// What the endpoint sends for a model whose window it does not know.
+///
+/// Not a small window: a placeholder standing where a figure would be. Taken as nothing said, since
+/// a budget of one token would compact before a turn could start.
+const NO_WINDOW_ADVERTISED: u64 = 1;
+
+/// The budget to use for a model the endpoint described, or `None` to fall back.
+///
+/// `advertised` is what `/v1/models` reported, which is already a token count with a fifth held
+/// back for the reply. It is used as it stands: there is nothing to convert, and no reserve to take
+/// off a figure that arrives discounted.
+///
+/// A small figure is taken at its word rather than raised to something more comfortable. Some models
+/// on the roster really do have windows of a few thousand tokens, and a floor that lifted them to
+/// the default would put the budget above the window, which does not make compaction late but
+/// removes it: every round asks, no round qualifies, and the session runs to exhaustion looking
+/// exactly like one with nothing to summarise. That is the failure this budget exists to prevent, so
+/// a cramped budget is the better of the two wrongs.
+///
+/// `None` only where nothing was advertised, which is the caller's cue to use
+/// [`DEFAULT_CONTEXT_BUDGET`].
+pub fn budget_for_window(advertised: Option<u64>) -> Option<u64> {
+    advertised.filter(|window| *window > NO_WINDOW_ADVERTISED)
+}
 
 // Checked where it cannot be skipped. A budget above the window does not make compaction late, it
 // removes it, and the removal is silent: every round asks, no round qualifies, and the session
@@ -141,6 +169,12 @@ pub struct Config {
     /// smallest window worth using, and [`env_var::CONTEXT_BUDGET`] is the way out of it for
     /// anyone whose model is smaller or much larger.
     pub context_budget: u64,
+    /// Whether [`Config::context_budget`] was set by hand.
+    ///
+    /// A budget somebody typed outranks one the endpoint advertised: they may know something about
+    /// their model that the listing does not say, and silently replacing it would make the setting
+    /// look broken. Nothing reads this except [`Config::adopt_window`].
+    budget_was_chosen: bool,
 }
 
 /// A value captured when this binary was built, or `None` if the build had none.
@@ -211,10 +245,11 @@ impl Config {
         // Nonsense falls back to the default rather than disabling compaction, which is what a
         // zero or an unparseable value would otherwise quietly do. A mistyped budget should cost
         // someone the setting they wanted, not the thing that keeps their session alive.
-        let context_budget = lookup(env_var::CONTEXT_BUDGET)
+        let chosen_budget = lookup(env_var::CONTEXT_BUDGET)
             .and_then(|value| value.trim().parse::<u64>().ok())
-            .filter(|budget| *budget > 0)
-            .unwrap_or(DEFAULT_CONTEXT_BUDGET);
+            .filter(|budget| *budget > 0);
+        let context_budget = chosen_budget.unwrap_or(DEFAULT_CONTEXT_BUDGET);
+        let budget_was_chosen = chosen_budget.is_some();
 
         Ok(Self {
             signing_key,
@@ -223,7 +258,26 @@ impl Config {
             premium_endpoint,
             default_model,
             context_budget,
+            budget_was_chosen,
         })
+    }
+
+    /// Take the window the endpoint advertised for the model in use, where it is worth taking.
+    ///
+    /// Ignored when a budget was set by hand, and when the endpoint advertised nothing or something
+    /// too small to work in: in both cases what is already here stands. Returns whether the budget
+    /// changed, so a caller can say so once rather than every turn.
+    pub fn adopt_window(&mut self, advertised: Option<u64>) -> bool {
+        if self.budget_was_chosen {
+            return false;
+        }
+        match budget_for_window(advertised) {
+            Some(budget) if budget != self.context_budget => {
+                self.context_budget = budget;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Full URL for the OpenAI-compatible chat completions endpoint.
@@ -291,6 +345,63 @@ mod tests {
     fn the_context_budget_has_a_default() {
         let config = Config::from_lookup(complete_env).unwrap();
         assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
+    }
+
+    /// The point of the whole exercise: the endpoint says what the model's window is, so the
+    /// default stops standing in for it. Recorded sessions compacted at 24,000 against a model
+    /// advertising 102,400, which is four times the conversation it could have held.
+    #[test]
+    fn an_advertised_window_replaces_the_default() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(config.adopt_window(Some(102_400)));
+        assert_eq!(config.context_budget, 102_400);
+    }
+
+    /// A cramped window is taken at its word. Raising it to something more comfortable would put
+    /// the budget above the window, and a budget above the window does not delay compaction, it
+    /// removes it: the failure this whole figure exists to prevent.
+    #[test]
+    fn a_small_advertised_window_is_believed_rather_than_raised() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(config.adopt_window(Some(6_400)));
+        assert_eq!(config.context_budget, 6_400);
+    }
+
+    /// The placeholder the endpoint sends for a model whose window it does not know. A budget of one
+    /// token would compact before a turn could start, so it means "did not say".
+    #[test]
+    fn the_placeholder_window_is_not_adopted() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(!config.adopt_window(Some(1)));
+        assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
+    }
+
+    /// `automatic` resolves per request, so nothing was advertised and the default has to stand.
+    #[test]
+    fn nothing_advertised_leaves_the_default_alone() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(!config.adopt_window(None));
+        assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
+    }
+
+    /// A budget somebody typed outranks one the endpoint advertised: they may know something about
+    /// their model the listing does not say, and overriding it would make the setting look broken.
+    #[test]
+    fn a_budget_set_by_hand_is_not_replaced_by_an_advertised_one() {
+        let mut config = Config::from_lookup(|k| match k {
+            env_var::CONTEXT_BUDGET => Some("4096".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert!(!config.adopt_window(Some(102_400)));
+        assert_eq!(config.context_budget, 4096);
+    }
+
+    /// Adopting the budget already in force is not a change, so nothing is said about it twice.
+    #[test]
+    fn adopting_the_budget_already_in_use_reports_no_change() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(!config.adopt_window(Some(DEFAULT_CONTEXT_BUDGET)));
     }
 
     /// The default is a guess at a window nobody reports, so someone running a model it is wrong

@@ -426,6 +426,7 @@ session-add-dir-needs-a-path = /add-dir demande un répertoire, comme /add-dir ~
 session-directory-added = { $directory } ajouté, et approuvé pour cette session
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }
+session-context-budget = compactage au-delà de { $budget } jetons, selon ce que ce modèle annonce
 session-models-unavailable = impossible de lister les modèles : { $problem }
 session-theme-set = thème { $theme }
 session-no-such-theme = aucun thème nommé { $theme } ; essayez /theme pour la liste
