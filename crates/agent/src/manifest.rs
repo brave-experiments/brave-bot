@@ -904,12 +904,12 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
 
     // Shown before the first step, which is the last moment at which the whole of what is about
     // to happen is still a proposal.
-    reporter.narration(
-        attempt
-            .plan
-            .clone()
-            .expect("planning fills this before execution begins"),
-    );
+    let Some(narration) = attempt.plan.clone() else {
+        return Err(TurnError::Precommit(
+            "planning recorded no plan to show".to_string(),
+        ));
+    };
+    reporter.narration(narration);
 
     let mut slots = SlotStore::new();
     let mut filled = false;
@@ -928,7 +928,13 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
             return Err(TurnError::Cancelled);
         }
 
-        let entry = registered_tool(step.tool()).expect("a validated step names a registered tool");
+        let Some(entry) = registered_tool(step.tool()) else {
+            return Err(TurnError::Precommit(format!(
+                "step {}: no handler for '{}'",
+                index + 1,
+                step.tool()
+            )));
+        };
         let activity = Activity::running(entry.capability, step.describe());
         reporter.tool_started(activity.clone());
 
@@ -1065,6 +1071,18 @@ fn fill_before_acting<S: Sink>(
     Ok(())
 }
 
+/// The slot a step fills, or the reason the run stops here.
+///
+/// Validation put one on every step that produces something, so this is the driver declining to
+/// invent one rather than a case anybody expects to meet. It ends the run instead of panicking:
+/// a step that reached here without a slot is a validator bug, and the person running it is
+/// better served by the step that could not be carried out than by a stack trace.
+fn slot_to_fill(step: &Step) -> Result<SlotId, String> {
+    step.out_slot()
+        .cloned()
+        .ok_or_else(|| format!("'{}' names no slot to put what it produced in", step.tool()))
+}
+
 /// Run one step. Errors are fatal to the run and say why.
 #[allow(clippy::too_many_arguments)]
 fn run_step<S: Sink, C: Confirmer>(
@@ -1094,10 +1112,7 @@ fn run_step<S: Sink, C: Confirmer>(
             // page is a different request: it names a slice, and there is nothing to slice
             // until the file is read.
             if !paged {
-                let out_slot = step
-                    .out_slot()
-                    .expect("a validated read names a slot")
-                    .clone();
+                let out_slot = slot_to_fill(step)?;
                 let bytes = workspace.survey(&path).map_err(|e| e.to_string())?;
                 policy
                     .defer(
@@ -1175,10 +1190,7 @@ fn run_step<S: Sink, C: Confirmer>(
             Ok((rendered, note, pattern))
         }),
         "process" => {
-            let out_slot = step
-                .out_slot()
-                .expect("a validated transform names an output slot")
-                .clone();
+            let out_slot = slot_to_fill(step)?;
             // The instruction is the plan's, fixed before anything was read, so it is trusted
             // by the same provenance every other field of the plan is.
             let instruction = Labelled::trusted(step.text("instruction").to_string());
@@ -1239,11 +1251,9 @@ fn run_step<S: Sink, C: Confirmer>(
         }
         "write_file" => write(policy, workspace, slots, confirmer, index, step),
         manifest::ANSWER => {
-            let slot = step
-                .reads()
-                .first()
-                .expect("a validated answer names a slot")
-                .clone();
+            let Some(slot) = step.reads().first().cloned() else {
+                return Err("no slot to answer from".to_string());
+            };
             let content = policy
                 .resolve(manifest::ANSWER, &slot, slots)
                 .map_err(|d| d.to_string())?;
@@ -1278,10 +1288,7 @@ fn fetch<S: Sink>(
         &mut Policy<'_, S>,
     ) -> Result<(Labelled<String>, Labelled<String>, String), String>,
 ) -> Result<Done, String> {
-    let out_slot = step
-        .out_slot()
-        .expect("a validated fetch names an output slot")
-        .clone();
+    let out_slot = slot_to_fill(step)?;
     let (content, note, origin) = read(policy)?;
     let note = release_note(policy, note);
     policy
