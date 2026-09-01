@@ -2114,9 +2114,17 @@ fn run<S: Sink, C: Confirmer>(
                 text.push_str(&ran.stderr);
             }
 
-            // Said in the driver's own words, from the exit codes, which are structure rather than
-            // content: nothing here reads a byte of what the program printed.
-            let outcome = if ran.succeeded() {
+            // Said in the driver's own words, from the exit codes and the clock, which are
+            // structure rather than content: nothing here reads a byte of what the program
+            // printed. The stopped case is named first because it explains the missing codes
+            // that would otherwise be reported as stages killed for no stated reason.
+            let outcome = if let Some(after) = ran.stopped {
+                format!(
+                    "still running after {} seconds, so it was stopped; \
+                     what it printed first is here",
+                    after.as_secs()
+                )
+            } else if ran.succeeded() {
                 "succeeded".to_string()
             } else {
                 let failed: Vec<String> = ran

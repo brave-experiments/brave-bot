@@ -292,3 +292,95 @@ fn a_pipeline_with_missing_resolutions_does_not_run() {
         .expect_err("nothing runs without a resolution per stage");
     assert!(matches!(error, ExecError::Io(_)));
 }
+
+/// The case a server is: a program that prints, then keeps running. It is stopped at the limit,
+/// but what it printed first is the whole account of what happened, and returning nothing left a
+/// caller unable to tell a program that hung from one that was doing exactly what was asked.
+#[test]
+fn a_pipeline_stopped_at_the_limit_still_returns_what_it_printed() {
+    let scratch = Scratch::new("stopped");
+    // Prints a line, then outlasts the limit, which is the shape of `http.server` and every other
+    // thing asked to serve something.
+    let script = scratch.path.join("serve");
+    std::fs::write(&script, "#!/bin/sh\necho listening\nsleep 30\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
+    let started = std::time::Instant::now();
+    // Seconds rather than milliseconds, because the limit is wall clock and this asserts on what
+    // the stage managed to print before it ran out. A limit tight enough to feel quick is one a
+    // loaded machine can exhaust before `sh` reaches its first line, and the test then fails on
+    // load rather than on behaviour.
+    let ran = exec::run_within(
+        &pipeline,
+        &[script.canonicalize().unwrap()],
+        &scratch.path,
+        &Cancel::new(),
+        std::time::Duration::from_secs(3),
+    )
+    .expect("a pipeline that outstays the limit is stopped, not an error");
+
+    assert_eq!(
+        ran.stdout.trim(),
+        "listening",
+        "what it printed before it was killed was thrown away"
+    );
+    assert!(ran.stopped.is_some(), "the stop was not reported");
+    assert!(
+        !ran.succeeded(),
+        "a pipeline that had to be killed did not succeed"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the drain outlived the pipeline it was draining"
+    );
+}
+
+/// A pipeline that ends by itself is not marked stopped, so a caller can tell the two apart
+/// without reading a byte of what was printed.
+#[test]
+fn a_pipeline_that_ends_by_itself_is_not_marked_stopped() {
+    let scratch = Scratch::new("unstopped");
+    let ran = run(
+        Pipeline::new(vec![Stage::new("echo", vec!["done".into()])]),
+        &scratch.path,
+    )
+    .expect("echo runs");
+    assert!(ran.stopped.is_none());
+    assert!(ran.succeeded());
+}
+
+/// A backgrounded grandchild holds the write end of the pipe after its parent is killed, so the
+/// drain cannot be joined: it would wait on a process nobody is waiting for. The run must come
+/// back within the grace regardless.
+#[test]
+fn a_grandchild_holding_the_pipe_does_not_hang_the_run() {
+    let scratch = Scratch::new("grandchild");
+    let script = scratch.path.join("detach");
+    std::fs::write(&script, "#!/bin/sh\nsleep 30 &\necho started\nsleep 30\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let pipeline = Pipeline::new(vec![Stage::new("detach", Vec::new())]);
+    let started = std::time::Instant::now();
+    let ran = exec::run_within(
+        &pipeline,
+        &[script.canonicalize().unwrap()],
+        &scratch.path,
+        &Cancel::new(),
+        std::time::Duration::from_millis(400),
+    )
+    .expect("stopped rather than failed");
+    assert!(ran.stopped.is_some());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the run hung on a pipe a grandchild was holding open"
+    );
+}

@@ -181,6 +181,31 @@ output, not a belief about the binary.
 
 `verified-by: none`
 
+<a id="RUN-11"></a>
+### RUN-11: a run has a wall-clock limit, and reaching it ends the run rather than failing it
+
+A pipeline is given 300 seconds. When that runs out the stages are killed, and what they printed
+before that is collected and returned exactly as it is for a pipeline that ended by itself, under
+the label RUN-4 gives it. The stop is reported as structure, a duration on the result, so a
+caller says which of the two happened without reading a byte of what was printed. Collecting after
+a kill must be abandonable: a killed stage can leave a child holding the write end of the pipe, so
+the run may not wait on that pipe reaching its end, and keeps whatever had been read by then.
+
+**Why.** The limit is for the program that does not end, and the commonest such program is doing
+exactly what was asked: a server told to serve a page serves it, prints as it goes, and never
+exits. Returning the failure alone threw that account away and left a program that hung
+indistinguishable from one that was working.
+
+**Not a safety property.** A stage that finishes inside the limit is no safer than one that
+outstays it, and nothing may be inferred about what a program did from the fact that it stopped in
+time. This is a bound on futility: a program that never returns holds the turn open with nothing
+to show for it. Being cut short neither raises nor lowers the label on the output, which is
+RUN-4's to decide.
+
+`verified-by: bravebot_agent::exec::a_pipeline_stopped_at_the_limit_still_returns_what_it_printed`
+`verified-by: bravebot_agent::exec::a_pipeline_that_ends_by_itself_is_not_marked_stopped`
+`verified-by: bravebot_agent::exec::a_grandchild_holding_the_pipe_does_not_hang_the_run`
+
 ## Open questions
 
 - Whether to confine children is issue #4. Whether output can ever be trusted by proof rather than
