@@ -679,6 +679,15 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
         // the history below, the way they do in a shell.
         KeyCode::Up if session.is_multiline() && session.move_up_a_line() => Action::Redraw,
         KeyCode::Down if session.is_multiline() && session.move_down_a_line() => Action::Redraw,
+        // What is waiting comes back before anything older does. The queue holds the most recent
+        // thing the person said, and the history holds a copy of every line in it, so Up handed
+        // back a copy of a prompt that was still going to be sent: the person edited the copy,
+        // and the original went anyway. Taking the queue back is about sending, which is the one
+        // thing a running turn is allowed to differ about.
+        KeyCode::Up if !session.queued.is_empty() => {
+            session.unqueue();
+            Action::Redraw
+        }
         // Up and Down walk the prompt history, which is what they do in a shell and so what a
         // user expects at a prompt. Scrolling the transcript keeps the wheel and the page keys,
         // and Up still scrolls once there is no history left to walk.
@@ -4394,6 +4403,59 @@ mod tests {
         assert!(session.input().is_empty(), "the line stayed in the box");
         assert_eq!(session.queued.len(), 1);
         assert_eq!(session.queued[0].prompt, "second");
+    }
+
+    /// Up reaches for the last thing the person said, and while prompts are waiting that is the
+    /// queue. It walked the history instead, which holds a copy of every queued line: the copy
+    /// came back, the person rewrote it, and the prompt they meant to take back went anyway.
+    ///
+    /// One press for the whole queue, not one press each. A key that gave them back a line at a
+    /// time would leave the person pressing it until they guessed there were none left, with the
+    /// ones they had already taken back sitting in the box in front of them.
+    #[test]
+    fn up_takes_back_everything_waiting_rather_than_a_copy_of_it() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        for line in ["second", "third"] {
+            for c in line.chars() {
+                handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key_while_working(&mut session, key(KeyCode::Enter));
+        }
+        assert_eq!(session.queued.len(), 2);
+
+        assert_eq!(
+            handle_key_while_working(&mut session, key(KeyCode::Up)),
+            Action::Redraw
+        );
+        assert_eq!(session.input(), "second\nthird");
+        assert!(session.queued.is_empty(), "a prompt was left waiting");
+    }
+
+    /// With nothing waiting the key means what it has always meant. Taking the queue back is the
+    /// exception, and it lasts exactly as long as there is a queue.
+    #[test]
+    fn up_walks_the_history_again_once_nothing_is_waiting() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        for c in "second".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(&mut session, key(KeyCode::Enter));
+        handle_key_while_working(&mut session, key(KeyCode::Up));
+        for _ in 0.."second".len() {
+            handle_key_while_working(&mut session, key(KeyCode::Backspace));
+        }
+        assert_eq!(session.input(), "");
+
+        handle_key_while_working(&mut session, key(KeyCode::Up));
+        assert_eq!(session.input(), "second", "the history was out of reach");
     }
 
     /// Shift-Enter writes a paragraph mid-turn as it does at rest, so it must not be caught by

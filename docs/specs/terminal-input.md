@@ -231,8 +231,9 @@ compose a new prompt during a turn but could not reach the one they had just sen
 one they want most when a turn is going wrong in front of them. The keys reached no arm and did
 nothing at all, not even the scrolling they fall through to at rest.
 
-A difference between the two has to be a difference about sending. Anything else is drift, and
-this one was silent, so the two paths walk one list of keys rather than a list each.
+A difference between the two has to be a difference about sending. Taking back a prompt that has
+been sent and has not gone yet (INPUT-18) is one; anything else is drift, and this one was silent,
+so the two paths walk one list of keys rather than a list each.
 
 `verified-by: bravebot_tui::app::the_navigation_keys_do_the_same_thing_whether_or_not_a_turn_is_running`
 `verified-by: bravebot_tui::app::up_recalls_a_previous_prompt_while_a_turn_is_running`
@@ -256,7 +257,8 @@ part of that prompt. It is in the prompt history from the moment it is queued, s
 person's side that is when they sent it.
 
 Stopping a turn leaves the queue alone. The next waiting prompt begins its turn as it would after
-any turn, and the rest go on waiting in order.
+any turn, and the rest go on waiting in order. A prompt is taken back out of the queue by asking
+for it (INPUT-18), and until then it goes.
 
 The stopped prompt does **not** come back to the box when something is waiting. It stays in the
 transcript as sent, marked stopped, and the box stays empty for whatever the person types next.
@@ -491,6 +493,34 @@ person back in the middle of a sentence they have not looked at since.
 `verified-by: bravebot_tui::render::what_is_stashed_is_drawn_between_the_attachments_and_the_queue`
 `verified-by: bravebot_tui::render::no_stashed_row_runs_past_the_edge`
 `verified-by: bravebot_tui::render::a_narrow_terminal_keeps_the_words_and_drops_the_reminder`
+
+<a id="INPUT-18"></a>
+### INPUT-18: Up takes back what is waiting before it walks the history
+
+While prompts are waiting, Up puts all of them back into the box in one press, in the order they
+were typed, one to a line. Nothing is waiting afterwards, so the rows under the box that said so
+go with them. A half-typed line stays below them, where the caret is. What each of them named
+comes back staged with it, so a marker in a line that comes back stands for the same file or
+picture it stood for when it went. They stay in the prompt history, since from the person's side
+they were sent and taking them back does not unsay them.
+
+With nothing waiting the key is unchanged: it walks the history, and scrolls once there is nothing
+left to walk. Inside a paragraph it moves between rows first, and reaches the queue from the top
+row, the way it reaches the history there.
+
+**Why.** Up is how a person reaches for the last thing they said, and while something is waiting
+the last thing they said is in the queue. The history holds a copy of every queued line from the
+moment it is queued (INPUT-10), so the key handed back a copy: the person rewrote it, sent it, and
+the original went as well. The only way to take a queued prompt back was to stop the turn in
+flight, which is aimed at something else entirely and costs the answer being written.
+
+`verified-by: bravebot_tui::app::up_takes_back_everything_waiting_rather_than_a_copy_of_it`
+`verified-by: bravebot_tui::app::up_walks_the_history_again_once_nothing_is_waiting`
+`verified-by: bravebot_tui::state::taking_the_queue_back_puts_every_waiting_prompt_in_the_box`
+`verified-by: bravebot_tui::state::a_half_typed_line_stays_below_what_comes_back`
+`verified-by: bravebot_tui::state::what_a_waiting_prompt_named_is_named_again_when_it_comes_back`
+`verified-by: bravebot_tui::state::there_is_nothing_to_take_back_when_nothing_is_waiting`
+`verified-by: bravebot_tui::render::the_waiting_rows_go_when_the_queue_is_taken_back`
 
 ## Known costs
 

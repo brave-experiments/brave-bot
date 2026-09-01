@@ -2375,6 +2375,31 @@ mod tests {
             assert!(output.contains("QUEUED"), "nothing said it was waiting");
         }
 
+        /// Nothing is waiting once the queue has been taken back, so nothing under the box may
+        /// go on saying that something is. The rows are the only place a person can see what is
+        /// still going to be sent, and rows left behind would say two prompts were on their way
+        /// while both of them sat in the box.
+        #[test]
+        fn the_waiting_rows_go_when_the_queue_is_taken_back() {
+            let mut session = working();
+            for line in ["do some long task", "and another one"] {
+                for c in line.chars() {
+                    session.type_char(c);
+                }
+                assert!(session.queue());
+            }
+            assert!(rendered(&session).contains("QUEUED"), "nothing was waiting");
+
+            session.unqueue();
+
+            let output = rendered(&session);
+            assert!(!output.contains("QUEUED"), "still drawn as waiting");
+            assert!(
+                output.contains("do some long task") && output.contains("and another one"),
+                "the prompts left the screen instead of coming back to the box"
+            );
+        }
+
         /// It stops being drawn the moment its own turn starts, because from then on it is in
         /// the transcript like any other prompt and two copies is one too many.
         #[test]

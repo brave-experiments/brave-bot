@@ -1970,6 +1970,45 @@ impl Session {
         Some(self.begin_turn(next.prompt, (next.attached, next.pasted)))
     }
 
+    /// Take every waiting prompt back out of the queue and into the box.
+    ///
+    /// All of them, in the order they were typed, one to a line, and the half-written line already
+    /// in the box stays below them: it was typed after they were, and it is where the caret goes,
+    /// so somebody carries on where they left off. What each of them named comes back with it, the
+    /// way a stashed line's markers do, since a marker with nothing behind it would send a prompt
+    /// pointing at a file that is no longer staged.
+    ///
+    /// The prompts stay in the history. From the person's side they were sent, and taking them back
+    /// does not unsay them.
+    pub fn unqueue(&mut self) -> bool {
+        if self.queued.is_empty() {
+            return false;
+        }
+        // The box is about to be rewritten, so the things standing over it that belong to the line
+        // it held go, exactly as they do for anything else that writes a whole line.
+        self.history.leave();
+        self.shortcuts = false;
+        self.completion = 0;
+
+        let mut lines = Vec::new();
+        let mut attached = Vec::new();
+        let mut pasted = Vec::new();
+        for waiting in self.queued.drain(..) {
+            lines.push(waiting.prompt);
+            attached.extend(waiting.attached);
+            pasted.extend(waiting.pasted);
+        }
+        if !self.input.is_empty() {
+            lines.push(std::mem::take(&mut self.input));
+        }
+        attached.append(&mut self.attached);
+        self.attached = attached;
+        pasted.append(&mut self.pasted);
+        self.pasted = pasted;
+        self.set_input(lines.join("\n"));
+        true
+    }
+
     /// Clear the line and settle what it named.
     ///
     /// Everything still named goes; a marker the user deleted is an attachment they took off, and
@@ -3841,6 +3880,93 @@ mod tests {
         }
         assert!(!s.queue(), "queued with no turn to wait for");
         assert_eq!(s.input, "next", "the line was taken anyway");
+    }
+
+    /// Up is how a person reaches back for what they said last, and while something is waiting the
+    /// last thing they said is in the queue rather than behind them. Recalling it instead handed
+    /// back a copy: the copy was edited, and the original went as it was.
+    #[test]
+    fn taking_the_queue_back_puts_every_waiting_prompt_in_the_box() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for line in ["second", "third"] {
+            for c in line.chars() {
+                s.type_char(c);
+            }
+            s.queue();
+        }
+
+        assert!(s.unqueue(), "nothing came back");
+        assert_eq!(s.input, "second\nthird");
+        assert_eq!(s.caret, s.input.len(), "the caret is not where typing goes");
+        assert!(s.queued.is_empty(), "a prompt was left waiting");
+
+        s.complete("an answer", Vec::new(), 0);
+        assert!(
+            s.send_queued().is_none(),
+            "a prompt taken back was sent anyway"
+        );
+    }
+
+    /// The line in the box was typed after the prompts that are waiting, so it stays after them,
+    /// and it is where the caret was going to be. Dropped instead, taking the queue back would
+    /// cost the person the sentence they were in the middle of.
+    #[test]
+    fn a_half_typed_line_stays_below_what_comes_back() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for c in "waiting".chars() {
+            s.type_char(c);
+        }
+        s.queue();
+        for c in "half".chars() {
+            s.type_char(c);
+        }
+
+        s.unqueue();
+        assert_eq!(s.input, "waiting\nhalf");
+    }
+
+    /// A marker is text in the prompt, and what it stands for was taken off the staging list when
+    /// the prompt was queued. Coming back without it, the line would name a picture that is no
+    /// longer there and send a marker standing over nothing.
+    #[test]
+    fn what_a_waiting_prompt_named_is_named_again_when_it_comes_back() {
+        let mut s = session();
+        s.type_char('a');
+        s.submit().expect("submitted");
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        s.queue();
+        assert!(
+            s.pasted_named(&s.input).is_empty(),
+            "the box still named it"
+        );
+
+        s.unqueue();
+        assert_eq!(
+            s.pasted_named(&s.input).len(),
+            1,
+            "the picture did not come back with the words"
+        );
+    }
+
+    /// Nothing waiting is not a queue of nothing. With none the key means what it has always
+    /// meant, and walks the history.
+    #[test]
+    fn there_is_nothing_to_take_back_when_nothing_is_waiting() {
+        let mut s = session();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.submit().expect("submitted");
+
+        assert!(!s.unqueue(), "something came back out of an empty queue");
+        assert_eq!(s.input, "", "the box was rewritten anyway");
     }
 
     /// The box takes words while a turn runs, so it takes recalled ones too. Refusing here was
