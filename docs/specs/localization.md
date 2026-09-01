@@ -119,6 +119,12 @@ sees is worth nothing if two people running it see different things.
 
 ## Known costs
 
+- **The audit trail is not translated.** `--trace` and the trail the interface shows are a
+  record of what the system decided, in fixed columns, holding gate and capability names that
+  are identifiers rather than words. It is read the way a log is read, and by somebody comparing
+  it against the specs that use those same names, so it stays in one language. See
+  [trace.md](trace.md).
+
 - **A missing translation is invisible from the English side.** A catalog with fewer messages than
   the reference builds, and the messages it does not have are shown in English. The build says how
   many are missing and nothing fails, because a translation that had to be finished before it

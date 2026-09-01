@@ -309,6 +309,7 @@ dependencies = [
  "bravebot-agent",
  "bravebot-config",
  "bravebot-core",
+ "bravebot-i18n",
  "bravebot-net",
  "bravebot-sandbox",
  "bravebot-skus",

@@ -15,6 +15,7 @@ path = "src/main.rs"
 bravebot-agent = { path = "../agent" }
 bravebot-config = { path = "../config" }
 bravebot-core = { path = "../core" }
+bravebot-i18n = { path = "../i18n" }
 bravebot-net = { path = "../net" }
 bravebot-sandbox = { path = "../sandbox" }
 bravebot-skus = { path = "../skus" }

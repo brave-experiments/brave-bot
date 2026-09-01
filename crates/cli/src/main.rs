@@ -8,12 +8,17 @@ use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::event::{Event, RecordingSink, Role};
 use bravebot_core::trust::TrustStore;
+use bravebot_i18n::t;
 use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
+    // Before anything is printed, and exactly once: every later lookup reads what this settled
+    // on. Nothing else in the tree consults the environment about a language.
+    bravebot_i18n::init_from_environment();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {
@@ -40,7 +45,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
-            eprintln!("unknown option: {flag}");
+            eprintln!("{}", t!(cli_unknown_option, flag = flag));
             print_help();
             ExitCode::FAILURE
         }
@@ -50,28 +55,45 @@ fn main() -> ExitCode {
 }
 
 fn print_help() {
-    println!("bravebot {VERSION}: a general-purpose agent resistant to prompt injection");
+    /// Wide enough for the longest invocation below, so a translated description starts in the
+    /// same column as every other one rather than wherever hand-counted spaces left it.
+    const FORM: usize = 39;
+    /// The same, for the key column and the option column, which are narrower.
+    const KEY: usize = 22;
+    const OPTION: usize = 17;
+
+    println!("{}", t!(cli_tagline, version = VERSION));
     println!();
-    println!("Usage:");
-    println!("  bravebot                               Start an interactive session");
-    println!("  bravebot \"<task>\" [--file <path>]...   Run a single task");
-    println!("  cat file | bravebot -p \"<task>\"        ...with piped input, never trusted");
-    println!("  bravebot --resume [id]                 Pick up a session in this directory");
-    println!("  bravebot doctor                        Check configuration and confinement");
-    println!("  bravebot import-leo-creds [channel]    Import a Leo Premium subscription");
+    println!("{}", t!(cli_usage_heading));
+    for (form, description) in [
+        ("bravebot", t!(cli_usage_interactive)),
+        ("bravebot \"<task>\" [--file <path>]...", t!(cli_usage_task)),
+        ("cat file | bravebot -p \"<task>\"", t!(cli_usage_piped)),
+        ("bravebot --resume [id]", t!(cli_usage_resume)),
+        ("bravebot doctor", t!(cli_usage_doctor)),
+        ("bravebot import-leo-creds [channel]", t!(cli_usage_import)),
+    ] {
+        println!("  {form:<FORM$}{description}");
+    }
     println!();
-    println!("Interactive keys:");
-    println!("  Enter                 Send");
-    println!("  Ctrl-T                Toggle the audit trail");
-    println!("  Up/Down               Walk back through sent prompts");
-    println!("  Wheel, PageUp/Down    Scroll the transcript");
-    println!("  Home/End              Jump to the start or the latest");
-    println!("  Esc                   Cancel a running turn, clear the input, or leave");
-    println!("  Ctrl-C                Leave");
+
+    println!("{}", t!(cli_keys_heading));
+    for (keys, description) in [
+        ("Enter", t!(cli_key_send)),
+        ("Ctrl-T", t!(cli_key_audit)),
+        ("Up/Down", t!(cli_key_history)),
+        ("Wheel, PageUp/Down", t!(cli_key_scroll)),
+        ("Home/End", t!(cli_key_jump)),
+        ("Esc", t!(cli_key_cancel)),
+        ("Ctrl-C", t!(cli_key_leave)),
+    ] {
+        println!("  {keys:<KEY$}{description}");
+    }
     println!();
+
     // Listed from the commands themselves, so one renamed or added cannot leave this advertising a
     // word that no longer works. The interface offers the same list when a slash is typed.
-    println!("Interactive commands:");
+    println!("{}", t!(cli_commands_heading));
     for command in bravebot_tui::app::COMMANDS {
         let word = if command.argument.is_empty() {
             command.name.to_string()
@@ -81,17 +103,19 @@ fn print_help() {
         println!("  {word:<20}  {}", command.description);
     }
     // Not a command, but typed in the same place and worth finding here.
-    println!(
-        "  {:<20}  Include a workspace file as trusted context",
-        "@<path>"
-    );
+    println!("  {:<20}  {}", "@<path>", t!(cli_name_a_file));
     println!();
-    println!("Options:");
-    println!("  --file <path>    Include a workspace file as context (repeatable)");
-    println!("  -p, --print      Non-interactive. Reads piped stdin as quarantined context");
-    println!("  --trace          Print the audit trail");
-    println!("  -h, --help       Show this message");
-    println!("  -V, --version    Show the version");
+
+    println!("{}", t!(cli_options_heading));
+    for (flags, description) in [
+        ("--file <path>", t!(cli_option_file)),
+        ("-p, --print", t!(cli_option_print)),
+        ("--trace", t!(cli_option_trace)),
+        ("-h, --help", t!(cli_option_help)),
+        ("-V, --version", t!(cli_option_version)),
+    ] {
+        println!("  {flags:<OPTION$}{description}");
+    }
 }
 
 /// Parse `<prompt> [--file path]... [--trace] [-p]`.
@@ -110,7 +134,7 @@ fn run_task(args: &[String]) -> ExitCode {
                     index += 2;
                 }
                 None => {
-                    eprintln!("--file requires a path");
+                    eprintln!("{}", t!(cli_file_needs_a_path));
                     return ExitCode::FAILURE;
                 }
             },
@@ -127,7 +151,7 @@ fn run_task(args: &[String]) -> ExitCode {
                 index += 1;
             }
             other => {
-                eprintln!("unexpected argument: {other}");
+                eprintln!("{}", t!(cli_unexpected_argument, argument = other));
                 return ExitCode::FAILURE;
             }
         }
@@ -150,14 +174,14 @@ fn run_task(args: &[String]) -> ExitCode {
     };
 
     if prompt.is_empty() && piped.is_none() {
-        eprintln!("a task is required");
+        eprintln!("{}", t!(cli_task_required));
         return ExitCode::FAILURE;
     }
 
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("configuration error: {err}");
+            eprintln!("{}", t!(cli_configuration_problem, problem = err));
             return ExitCode::FAILURE;
         }
     };
@@ -165,7 +189,7 @@ fn run_task(args: &[String]) -> ExitCode {
     let workspace = match current_workspace() {
         Ok(w) => w,
         Err(err) => {
-            eprintln!("workspace error: {err}");
+            eprintln!("{}", t!(cli_workspace_problem, problem = err));
             return ExitCode::FAILURE;
         }
     };
@@ -255,14 +279,14 @@ fn piped_input(source: impl Read, is_tty: bool) -> Result<Option<String>, String
     // problem the cap exists to avoid.
     let mut buffer = Vec::new();
     if let Err(err) = source.take(PIPE_CAP as u64 + 1).read_to_end(&mut buffer) {
-        eprintln!("warning: could not read piped input: {err}");
+        eprintln!("{}", t!(cli_piped_input_unreadable, problem = err));
         return Ok(None);
     }
 
     if buffer.len() > PIPE_CAP {
-        return Err(format!(
-            "piped input is larger than {} MiB. Write it to a file and name that instead",
-            PIPE_CAP / (1024 * 1024)
+        return Err(t!(
+            cli_piped_input_too_large,
+            limit = PIPE_CAP / (1024 * 1024)
         ));
     }
 
@@ -295,20 +319,17 @@ struct Finished<'a> {
 /// was piped into.
 fn report(reply: &mut impl Write, beside: &mut impl Write, run: &Finished<'_>) {
     for notice in run.notices {
-        let _ = writeln!(beside, "note: {notice}");
+        let _ = writeln!(beside, "{}", t!(cli_notice, notice = notice));
     }
     let _ = writeln!(reply, "{}", run.reply);
     if let Some((sink, model)) = run.trail {
         let _ = writeln!(beside);
         print_trace(beside, sink);
-        let _ = writeln!(beside, "model: {model}");
+        let _ = writeln!(beside, "{}", t!(cli_model_used, model = model));
     }
     if !run.clean {
         let _ = writeln!(beside);
-        let _ = writeln!(
-            beside,
-            "note: a policy gate refused something during this turn"
-        );
+        let _ = writeln!(beside, "{}", t!(cli_something_was_refused));
     }
 }
 
@@ -361,13 +382,13 @@ fn print_trace(output: &mut impl Write, sink: &RecordingSink) {
 /// Resume a session by the id the picker shows, without showing the picker.
 fn resume_named(id: &str) -> ExitCode {
     let Ok(directory) = std::env::current_dir() else {
-        eprintln!("cannot tell which directory this is");
+        eprintln!("{}", t!(cli_directory_unknown));
         return ExitCode::FAILURE;
     };
     match bravebot_tui::sessions::load(&directory, id) {
         Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
         None => {
-            eprintln!("no session {id} in this directory");
+            eprintln!("{}", t!(cli_no_such_session, id = id));
             ExitCode::FAILURE
         }
     }
@@ -377,7 +398,7 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("configuration error: {err}");
+            eprintln!("{}", t!(cli_configuration_problem, problem = err));
             return ExitCode::FAILURE;
         }
     };
@@ -385,7 +406,7 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
     let workspace = match current_workspace() {
         Ok(w) => w,
         Err(err) => {
-            eprintln!("workspace error: {err}");
+            eprintln!("{}", t!(cli_workspace_problem, problem = err));
             return ExitCode::FAILURE;
         }
     };
@@ -403,13 +424,13 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
         // session is worth resuming far more often than anybody thinks to write its name down
         // beforehand, and the picker is no help to someone who has already closed the window.
         Ok(Some(id)) => {
-            println!("Resume this session with:");
+            println!("{}", t!(cli_resume_heading));
             println!("bravebot --resume {id}");
             ExitCode::SUCCESS
         }
         Ok(None) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("interface error: {err}");
+            eprintln!("{}", t!(cli_interface_problem, problem = err));
             ExitCode::FAILURE
         }
     }
@@ -436,14 +457,14 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         match arg.as_str() {
             "--forget" => forget = true,
             other if other.starts_with('-') => {
-                eprintln!("unknown option: {other}");
+                eprintln!("{}", t!(cli_unknown_option, flag = other));
                 return ExitCode::FAILURE;
             }
             other => match bravebot_skus::Channel::parse(other) {
                 Some(parsed) => channel = Some(parsed),
                 None => {
-                    eprintln!("unknown channel: {other}");
-                    eprintln!("expected one of: stable, beta, nightly, development");
+                    eprintln!("{}", t!(leo_unknown_channel, channel = other));
+                    eprintln!("{}", t!(leo_expected_channel));
                     return ExitCode::FAILURE;
                 }
             },
@@ -456,7 +477,7 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     if forget {
         return match bravebot_skus::store::clear(channel) {
             Ok(()) => {
-                println!("forgot the {} subscription", channel.as_str());
+                println!("{}", t!(leo_forgotten, channel = channel.as_str()));
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -470,21 +491,19 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     // credential is only ever sent to the premium host.
     match Config::from_env() {
         Ok(config) if config.premium_endpoint.is_none() => {
+            eprintln!("{}", t!(leo_no_premium_endpoint));
             eprintln!(
-                "warning: this build has no premium endpoint, so imported credentials will not be used"
-            );
-            eprintln!(
-                "         set {} and rebuild",
-                bravebot_config::env_var::PREMIUM_ENDPOINT
+                "         {}",
+                t!(
+                    leo_set_and_rebuild,
+                    variable = bravebot_config::env_var::PREMIUM_ENDPOINT
+                )
             );
         }
         _ => {}
     }
 
-    println!(
-        "looking for a Leo subscription in Brave {}",
-        channel.as_str()
-    );
+    println!("{}", t!(leo_looking, channel = channel.as_str()));
 
     let order = match bravebot_skus::find_leo_order(channel) {
         Ok(order) => order,
@@ -495,11 +514,14 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     };
 
     println!(
-        "found a {} subscription: {}",
-        order.environment.as_str(),
-        order.order_id
+        "{}",
+        t!(
+            leo_found,
+            environment = order.environment.as_str(),
+            order = &order.order_id
+        )
     );
-    println!("registering this install as a new device");
+    println!("{}", t!(leo_registering));
 
     // A fresh request id is what makes this a new device rather than a claim on an existing
     // device's batch.
@@ -529,8 +551,8 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    println!("stored {count} credentials in the system keychain, valid through {last}");
-    println!("premium requests will now use them; the browser's own credentials were untouched");
+    println!("{}", t!(leo_stored, count = count, expiry = last));
+    println!("{}", t!(leo_browser_untouched));
     ExitCode::SUCCESS
 }
 
@@ -540,24 +562,30 @@ fn doctor() -> ExitCode {
 
     match Config::from_env() {
         Ok(config) => {
-            println!("configuration OK");
-            println!("  endpoint  {}", config.chat_completions_url());
+            println!("{}", t!(doctor_configuration_ok));
+            fact(t!(doctor_endpoint), config.chat_completions_url());
             match config.premium_chat_completions_url() {
-                Some(url) => println!("  premium   {url}"),
-                None => println!("  premium   not configured"),
+                Some(url) => fact(t!(doctor_premium), &url),
+                None => fact(t!(doctor_premium), t!(doctor_premium_absent)),
             }
-            println!("  key id    {}", config.key_id);
+            fact(t!(doctor_key_id), &config.key_id);
             // What a run would actually request, since a choice made with `/model` overrides the
             // configured default and reporting only the default would explain the wrong thing.
             match bravebot_tui::store::load_model() {
-                Some(chosen) => println!("  model     {chosen} (chosen with /model)"),
-                None => println!("  model     {} (default)", config.default_model),
+                Some(chosen) => fact(t!(doctor_model), t!(doctor_model_chosen, model = chosen)),
+                None => fact(
+                    t!(doctor_model),
+                    t!(doctor_model_default, model = config.default_model),
+                ),
             }
-            println!("  key       {} (never transmitted)", config.signing_key);
+            fact(
+                t!(doctor_key_name),
+                t!(doctor_key, key = config.signing_key),
+            );
             report_subscription();
         }
         Err(err) => {
-            eprintln!("configuration error: {err}");
+            eprintln!("{}", t!(cli_configuration_problem, problem = err));
             ok = false;
         }
     }
@@ -572,17 +600,44 @@ fn doctor() -> ExitCode {
     }
 }
 
+/// Where the values line up in what `doctor` reports, and in its confinement section.
+const FACT: usize = 10;
+const DETAIL: usize = 17;
+
+/// One line of what `doctor` found: a name, then what it is, in two columns.
+///
+/// The gap is computed rather than typed into each line, since a translated name is not the
+/// length the English one was and a column of hand-counted spaces stops being a column. Counted
+/// in characters, which is not the width a terminal draws for every script, but is much closer
+/// to it than a count of bytes and needs nothing to work it out.
+fn aligned(name: impl AsRef<str>, value: impl AsRef<str>, column: usize) -> String {
+    let name = name.as_ref();
+    let gap = column.saturating_sub(name.chars().count()).max(1);
+    format!("  {name}{}{}", " ".repeat(gap), value.as_ref())
+}
+
+fn fact(name: impl AsRef<str>, value: impl AsRef<str>) {
+    println!("{}", aligned(name, value, FACT));
+}
+
+fn detail(name: impl AsRef<str>, value: impl AsRef<str>) {
+    println!("{}", aligned(name, value, DETAIL));
+}
+
 /// Report which channels have an imported subscription, and how much of it is left.
 ///
 /// Counts only: a credential is a bearer secret, so none of it is printed.
 fn report_subscription() {
     for channel in bravebot_skus::Channel::ALL {
         if let Ok(stored) = bravebot_skus::store::load(channel) {
-            println!(
-                "  leo       {} subscription imported, {} of {} credentials unspent",
-                channel.as_str(),
-                stored.remaining(),
-                stored.credentials.len()
+            fact(
+                t!(doctor_leo),
+                t!(
+                    doctor_subscription,
+                    channel = channel.as_str(),
+                    unspent = stored.remaining(),
+                    total = stored.credentials.len()
+                ),
             );
         }
     }
@@ -596,21 +651,21 @@ fn report_confinement(ok: &mut bool) {
     match bravebot_sandbox::for_current_platform() {
         Ok(sandbox) => {
             let caps = sandbox.capabilities();
-            println!("confinement {}", caps.level);
-            println!("  mechanisms       {}", caps.mechanisms.join(", "));
-            println!(
-                "  network denial   {}",
+            println!("{}", t!(doctor_confinement, level = caps.level));
+            detail(t!(doctor_mechanisms), caps.mechanisms.join(", "));
+            detail(
+                t!(doctor_network_denial),
                 if caps.network_denial_enforced {
-                    "kernel-enforced"
+                    t!(doctor_kernel_enforced)
                 } else {
-                    "NOT enforced"
-                }
+                    t!(doctor_not_enforced)
+                },
             );
         }
         Err(err) => {
             // Not a warning: without confinement, untrusted work will be refused
             // rather than run, so this is a hard problem for the user to solve.
-            eprintln!("confinement unavailable");
+            eprintln!("{}", t!(doctor_confinement_unavailable));
             eprintln!("  {err}");
             *ok = false;
         }
@@ -624,6 +679,29 @@ mod tests {
     use bravebot_core::event::Sink;
     use bravebot_core::label::Label;
     use bravebot_core::slot::SlotId;
+
+    /// The column the English names were hand-spaced into, so extracting them changed nothing
+    /// about what `doctor` prints.
+    #[test]
+    fn a_name_shorter_than_its_column_is_padded_out_to_it() {
+        assert_eq!(
+            aligned("endpoint", "https://example", FACT),
+            "  endpoint  https://example"
+        );
+        assert_eq!(aligned("key id", "abc", FACT), "  key id    abc");
+        assert_eq!(
+            aligned("network denial", "kernel-enforced", DETAIL),
+            "  network denial   kernel-enforced"
+        );
+    }
+
+    /// A translation is not the length the English was, and a name that fills the column has to
+    /// stay a name rather than running into what it is naming.
+    #[test]
+    fn a_name_longer_than_its_column_still_leaves_a_gap() {
+        let line = aligned("point de terminaison", "https://example", FACT);
+        assert_eq!(line, "  point de terminaison https://example");
+    }
 
     /// An interactive `bravebot -p "task"` must not block waiting for a pipe that is not coming.
     #[test]
