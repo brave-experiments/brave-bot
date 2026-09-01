@@ -288,6 +288,89 @@ pub struct PastedText {
     pub text: String,
 }
 
+/// What the last frame laid the transcript out to.
+///
+/// Written back after every draw, because none of it is knowable before one: the answers exist
+/// only once the paragraph has been wrapped at the width it is being shown at. A key pressed next
+/// is then answered against the frame the person is looking at, which is the one this describes.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Laid {
+    /// Columns the transcript was drawn in.
+    pub width: u16,
+    /// Rows it had room for.
+    pub height: u16,
+    /// Rows the whole of it came to.
+    pub rows: u16,
+    /// The row each prompt the person typed begins at, in the order they were typed.
+    ///
+    /// Empty unless the scroller is open, since working it out costs a wrap of every line and
+    /// nothing at rest asks the question.
+    pub prompts: Vec<u16>,
+    /// The rows holding a search match, top to bottom.
+    ///
+    /// One entry per row rather than per match: the view moves to a row, and two hits on one row
+    /// are one place to go.
+    pub matches: Vec<u16>,
+}
+
+/// The scroller, while it is open.
+///
+/// Holds what the mode itself is doing and nothing else. Where the view is looking stays in the
+/// field the wheel and the arrows move at rest, so opening the scroller and closing it again move
+/// nothing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Scroller {
+    /// What a finished search is looking for. Empty until one has been run.
+    pub needle: String,
+    /// A search being typed, before Enter runs it or Escape abandons it.
+    pub typing: Option<String>,
+    /// Whether the key list is up.
+    pub help: bool,
+    /// Which match the view is on, counted from zero.
+    ///
+    /// Clamped where it is read. A list laid out afresh can be shorter than the one this indexed,
+    /// because a turn goes on writing underneath.
+    pub at: usize,
+}
+
+/// Where `needle` occurs in `text`, as character ranges, left to right and never overlapping.
+///
+/// Literal, character for character. A needle is what somebody typed to find something they have
+/// already seen, and a pattern language here would be an interpreter reached by a line typed over
+/// text an attacker may have written, with a class of stalls behind it.
+///
+/// Case-insensitive while the needle is all lower case, exact from the moment it holds a capital,
+/// which is the rule every editor with a search box already uses. Folding takes the first
+/// character of a lowering so an offset counts the same in both strings.
+pub fn matched(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let exact = needle.chars().any(char::is_uppercase);
+    let fold = |c: char| {
+        if exact {
+            c
+        } else {
+            c.to_lowercase().next().unwrap_or(c)
+        }
+    };
+    let hay: Vec<char> = text.chars().map(fold).collect();
+    let pin: Vec<char> = needle.chars().map(fold).collect();
+
+    // A forward scan that never goes back, so nothing it is pointed at can make it take long.
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at + pin.len() <= hay.len() {
+        if hay[at..at + pin.len()] == pin[..] {
+            found.push((at, at + pin.len()));
+            at += pin.len();
+        } else {
+            at += 1;
+        }
+    }
+    found
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -327,6 +410,13 @@ pub struct Session {
     pub show_trail: bool,
     /// Scroll offset from the bottom, in lines.
     pub scroll: u16,
+    /// The scroller, while it is open.
+    ///
+    /// `None` at rest, which is what every key in the box is answered against: the mode is the
+    /// one thing that decides whether a letter is a letter or a movement.
+    scroller: Option<Scroller>,
+    /// What the last frame laid the transcript out to.
+    pub laid: Laid,
     /// Confinement in force, reported so the user knows what they have.
     pub confinement: String,
     /// How many turns have been submitted, which picks the indicator's word.
@@ -489,6 +579,8 @@ impl Session {
             status: Status::Idle,
             show_trail: false,
             scroll: 0,
+            scroller: None,
+            laid: Laid::default(),
             confinement: confinement.into(),
             turns: 0,
             tokens: 0,
@@ -2075,6 +2167,246 @@ impl Session {
         self.status == Status::Quitting
     }
 
+    /// Open the scroller on the view already on the screen.
+    ///
+    /// Nothing about the view is touched. The scroller reads the offset the wheel writes, so the
+    /// row under somebody's eye when they press the key is the row under it afterwards. The
+    /// screen around it does change shape, since the box and the indicator come off it, and the
+    /// rows they were using are given to the transcript. What that means for the view is settled
+    /// where every other change of shape is settled, in [`Session::note_layout`]: the row at the
+    /// top stays where it is, and the rows gained appear beneath it, which is where the box that
+    /// gave them up was.
+    pub fn open_scroller(&mut self) {
+        self.scroller = Some(Scroller::default());
+    }
+
+    /// Close it, leaving the view where it was left.
+    pub fn close_scroller(&mut self) {
+        self.scroller = None;
+    }
+
+    pub fn scrolling(&self) -> bool {
+        self.scroller.is_some()
+    }
+
+    /// What the scroller is doing, for the renderer and for a test.
+    pub fn scroller(&self) -> Option<&Scroller> {
+        self.scroller.as_ref()
+    }
+
+    /// Take what the last frame laid out, and hold the view on the row it was showing.
+    ///
+    /// The offset is counted from the end, and while the scroller is open both ends move: rows
+    /// arrive underneath as a turn writes them, and the screen changes shape when the box comes
+    /// off it. Either would otherwise slide the view down the transcript. Holding the view is the
+    /// whole of what the scroller is for, so the offset is worked out afresh from the row that was
+    /// at the top, rather than carried across a layout it was measured against.
+    ///
+    /// A view sitting at the tail stays at the tail, since somebody watching a reply arrive is
+    /// watching the end of it, and only an open scroller holds a view against that.
+    pub fn note_layout(&mut self, laid: Laid) {
+        if self.scrolling() || self.scroll > 0 {
+            let top = self.top_row();
+            let furthest = laid.rows.saturating_sub(laid.height);
+            self.scroll = furthest.saturating_sub(top);
+        }
+        self.laid = laid;
+    }
+
+    /// How far back the view can go before it is looking at the first row.
+    fn furthest(&self) -> u16 {
+        self.laid.rows.saturating_sub(self.laid.height)
+    }
+
+    /// The row at the top of the view.
+    pub fn top_row(&self) -> u16 {
+        self.furthest()
+            .saturating_sub(self.scroll.min(self.furthest()))
+    }
+
+    /// Move the view back by `rows`, stopping at the first row rather than counting past it.
+    pub fn scroller_back(&mut self, rows: u16) {
+        self.scroll = self.scroll.saturating_add(rows).min(self.furthest());
+    }
+
+    /// Move the view on by `rows`, stopping at the last.
+    pub fn scroller_on(&mut self, rows: u16) {
+        self.scroll = self.scroll.saturating_sub(rows);
+    }
+
+    pub fn scroller_to_first_row(&mut self) {
+        self.scroll = self.furthest();
+    }
+
+    pub fn scroller_to_last_row(&mut self) {
+        self.scroll = 0;
+    }
+
+    /// Half a screen, and never nothing: a view one row tall still has to move when asked.
+    pub fn half_screen(&self) -> u16 {
+        (self.laid.height / 2).max(1)
+    }
+
+    pub fn whole_screen(&self) -> u16 {
+        self.laid.height.max(1)
+    }
+
+    /// Put `row` at the top of the view.
+    fn scroller_to_row(&mut self, row: u16) {
+        self.scroll = self.furthest().saturating_sub(row);
+    }
+
+    /// Move to the prompt before the one the view is on, or to the first row past the earliest.
+    ///
+    /// Where these land is settled by what the person typed and by nothing read out of the
+    /// workspace: a prompt is the one thing in a transcript they wrote themselves.
+    pub fn to_previous_prompt(&mut self) {
+        let top = self.top_row();
+        match self.laid.prompts.iter().rev().find(|row| **row < top) {
+            Some(row) => {
+                let row = *row;
+                self.scroller_to_row(row)
+            }
+            None => self.scroller_to_first_row(),
+        }
+    }
+
+    /// Move to the prompt after the one the view is on, or to the last row past the latest.
+    pub fn to_next_prompt(&mut self) {
+        let top = self.top_row();
+        match self.laid.prompts.iter().find(|row| **row > top) {
+            Some(row) => {
+                let row = *row;
+                self.scroller_to_row(row)
+            }
+            None => self.scroller_to_last_row(),
+        }
+    }
+
+    /// Start typing a search, with nothing in it yet.
+    pub fn begin_search(&mut self) {
+        if let Some(scroller) = &mut self.scroller {
+            scroller.typing = Some(String::new());
+        }
+    }
+
+    /// Whether a search is being typed, which is what makes a letter a letter again.
+    pub fn typing_a_search(&self) -> bool {
+        self.scroller
+            .as_ref()
+            .is_some_and(|scroller| scroller.typing.is_some())
+    }
+
+    pub fn type_into_search(&mut self, c: char) {
+        if let Some(typing) = self.scroller.as_mut().and_then(|s| s.typing.as_mut()) {
+            typing.push(c);
+        }
+    }
+
+    /// Take the last character back, and say whether there was one.
+    ///
+    /// An empty needle backspaced into is the search being abandoned, which is what the key means
+    /// when there is nothing left of what it deletes.
+    pub fn backspace_search(&mut self) -> bool {
+        match self.scroller.as_mut().and_then(|s| s.typing.as_mut()) {
+            Some(typing) => typing.pop().is_some(),
+            None => false,
+        }
+    }
+
+    /// Clear a finished search, and say whether there was one to clear.
+    ///
+    /// The highlights go and the view stays. Somebody who has found what they were looking for
+    /// wants the marks off the screen, not to be put back at the box.
+    pub fn clear_search(&mut self) -> bool {
+        match &mut self.scroller {
+            Some(scroller) if !scroller.needle.is_empty() => {
+                scroller.needle.clear();
+                scroller.at = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Abandon a search being typed, leaving the view where it was.
+    pub fn abandon_search(&mut self) {
+        if let Some(scroller) = &mut self.scroller {
+            scroller.typing = None;
+        }
+    }
+
+    /// Run what has been typed, and say what is now being looked for.
+    ///
+    /// The rows it matches are not known here. They come from a layout at the width the transcript
+    /// is drawn in, which is the renderer's to do, so the caller runs this and then lands the view
+    /// on what the layout found.
+    pub fn run_search(&mut self) {
+        if let Some(scroller) = &mut self.scroller
+            && let Some(typed) = scroller.typing.take()
+        {
+            scroller.needle = typed;
+            scroller.at = 0;
+        }
+    }
+
+    /// What a finished search is looking for, which is what the renderer highlights.
+    pub fn needle(&self) -> &str {
+        self.scroller
+            .as_ref()
+            .map_or("", |scroller| scroller.needle.as_str())
+    }
+
+    /// Land on the first match at or after the top of the view, wrapping to the first of all.
+    ///
+    /// At or after, rather than after, because a search run while a match is already on the top
+    /// row has found that one and should not step over it.
+    pub fn land_on_a_match(&mut self, rows: &[u16]) {
+        let top = self.top_row();
+        let landing = rows
+            .iter()
+            .position(|row| *row >= top)
+            .or(if rows.is_empty() { None } else { Some(0) });
+        self.land_at(rows, landing);
+    }
+
+    /// Walk to the next match or the previous one, wrapping at either end.
+    pub fn to_a_match(&mut self, rows: &[u16], forwards: bool) {
+        let top = self.top_row();
+        let landing = if forwards {
+            rows.iter()
+                .position(|row| *row > top)
+                .or(if rows.is_empty() { None } else { Some(0) })
+        } else {
+            rows.iter()
+                .rposition(|row| *row < top)
+                .or(rows.len().checked_sub(1))
+        };
+        self.land_at(rows, landing);
+    }
+
+    fn land_at(&mut self, rows: &[u16], landing: Option<usize>) {
+        let Some(index) = landing else {
+            return;
+        };
+        let row = rows[index];
+        self.scroller_to_row(row);
+        if let Some(scroller) = &mut self.scroller {
+            scroller.at = index;
+        }
+    }
+
+    pub fn toggle_scroller_help(&mut self) {
+        if let Some(scroller) = &mut self.scroller {
+            scroller.help = !scroller.help;
+        }
+    }
+
+    /// How many rows of transcript sit below the view, which is what has yet to be read.
+    pub fn rows_below(&self) -> u16 {
+        self.scroll.min(self.furthest())
+    }
+
     pub fn scroll_up(&mut self, lines: u16) {
         self.scroll = self.scroll.saturating_add(lines);
     }
@@ -2097,6 +2429,208 @@ fn along(line: &str, column: usize) -> usize {
 mod tests {
     use super::*;
     use bravebot_core::ask::Answer;
+
+    /// A needle is a run of characters, and finding it is finding those characters. Anything
+    /// cleverer is a pattern language, and a pattern language here would be an interpreter
+    /// reached by a line typed over text somebody else may have written.
+    #[test]
+    fn a_search_matches_a_substring_literally() {
+        assert_eq!(matched("hello world", "lo wo"), vec![(3, 8)]);
+        assert_eq!(matched("aaaa", "aa"), vec![(0, 2), (2, 4)]);
+        assert_eq!(matched("hello", "goodbye"), Vec::new());
+        assert_eq!(matched("hello", ""), Vec::new());
+    }
+
+    /// The rule every search box already uses, so nobody has to be told it: type in lower case
+    /// and you are not asking about case, type a capital and you are.
+    #[test]
+    fn a_needle_in_lower_case_matches_either_case() {
+        assert_eq!(matched("Hello There", "hello"), vec![(0, 5)]);
+        assert_eq!(matched("SHOUTING", "shouting"), vec![(0, 8)]);
+    }
+
+    #[test]
+    fn a_needle_holding_a_capital_matches_exactly() {
+        assert_eq!(matched("hello", "Hello"), Vec::new());
+        assert_eq!(matched("Hello hello", "Hello"), vec![(0, 5)]);
+    }
+
+    /// The characters somebody typed, and not what a regular expression would have made of them.
+    /// A dot is a dot and a star is a star, which is also what makes the scan unable to backtrack.
+    #[test]
+    fn a_pattern_is_matched_as_the_characters_it_is_spelled_with() {
+        assert_eq!(matched("abc", "a.c"), Vec::new());
+        assert_eq!(matched("a.c", "a.c"), vec![(0, 3)]);
+        assert_eq!(matched("anything at all", ".*"), Vec::new());
+        assert_eq!(matched("one [two] three", "[two]"), vec![(4, 9)]);
+    }
+
+    /// Walking the matches has to reach every one of them, and reach them again: somebody who
+    /// passes the one they wanted presses the key once more rather than starting the search over.
+    #[test]
+    fn n_and_shift_n_walk_the_matches_and_wrap() {
+        let mut session = Session::new("kernel-enforced");
+        session.open_scroller();
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 100,
+            ..Laid::default()
+        });
+        let rows = [20u16, 50, 80];
+
+        session.scroller_to_first_row();
+        session.to_a_match(&rows, true);
+        assert_eq!(session.top_row(), 20);
+        session.to_a_match(&rows, true);
+        assert_eq!(session.top_row(), 50);
+        session.to_a_match(&rows, true);
+        assert_eq!(session.top_row(), 80);
+        session.to_a_match(&rows, true);
+        assert_eq!(session.top_row(), 20, "the walk did not wrap round");
+
+        session.to_a_match(&rows, false);
+        assert_eq!(session.top_row(), 80, "walking back did not wrap round");
+        session.to_a_match(&rows, false);
+        assert_eq!(session.top_row(), 50);
+    }
+
+    /// A search run while a match is already at the top of the view has found that one, and
+    /// stepping over it would mean the first press of the key skipped the answer.
+    #[test]
+    fn a_search_lands_on_the_match_it_is_already_looking_at() {
+        let mut session = Session::new("kernel-enforced");
+        session.open_scroller();
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 100,
+            ..Laid::default()
+        });
+
+        session.land_on_a_match(&[90]);
+        assert_eq!(session.top_row(), 90);
+        session.land_on_a_match(&[90]);
+        assert_eq!(session.top_row(), 90);
+    }
+
+    /// Opening the scroller takes the box off the screen and gives the transcript its rows, and
+    /// closing it hands them back. Neither is a reason for what somebody is reading to move: the
+    /// rows gained appear where the box was, which is beneath what is already on the screen, and
+    /// the rows given back are covered by the box coming home.
+    #[test]
+    fn the_row_at_the_top_of_the_view_survives_the_screen_changing_shape() {
+        let mut session = Session::new("kernel-enforced");
+        session.note_layout(Laid {
+            width: 80,
+            height: 18,
+            rows: 100,
+            ..Laid::default()
+        });
+        session.scroll_up(20);
+        let looking_at = session.top_row();
+
+        session.open_scroller();
+        session.note_layout(Laid {
+            width: 80,
+            height: 23,
+            rows: 100,
+            ..Laid::default()
+        });
+        assert_eq!(
+            session.top_row(),
+            looking_at,
+            "the box coming off the screen took the view with it"
+        );
+
+        session.close_scroller();
+        session.note_layout(Laid {
+            width: 80,
+            height: 18,
+            rows: 100,
+            ..Laid::default()
+        });
+        assert_eq!(
+            session.top_row(),
+            looking_at,
+            "the box coming back took the view with it"
+        );
+    }
+
+    /// Holding the view is the whole of what the scroller is for. The offset is counted from the
+    /// end and the end keeps moving, so rows arriving underneath would otherwise slide the view
+    /// down the transcript while somebody was reading it.
+    #[test]
+    fn what_arrives_while_the_scroller_is_open_does_not_move_the_view() {
+        let mut session = Session::new("kernel-enforced");
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 100,
+            ..Laid::default()
+        });
+        session.open_scroller();
+        session.scroller_back(40);
+        let looking_at = session.top_row();
+
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 130,
+            ..Laid::default()
+        });
+
+        assert_eq!(
+            session.top_row(),
+            looking_at,
+            "thirty rows arrived and took the view with them"
+        );
+    }
+
+    /// At rest the transcript follows what is being written, which is what somebody watching a
+    /// reply arrive is watching it for. Only the scroller holds a view against the tail.
+    #[test]
+    fn what_arrives_at_rest_still_reaches_the_bottom_of_the_screen() {
+        let mut session = Session::new("kernel-enforced");
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 100,
+            ..Laid::default()
+        });
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 130,
+            ..Laid::default()
+        });
+
+        assert_eq!(session.scroll, 0, "the view was held back from the tail");
+    }
+
+    /// The end of the transcript is wherever it is now, not where it was when the scroller
+    /// opened: what arrived underneath is the thing somebody pressing this key wants to see.
+    #[test]
+    fn the_last_row_reached_from_the_scroller_includes_what_arrived() {
+        let mut session = Session::new("kernel-enforced");
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 100,
+            ..Laid::default()
+        });
+        session.open_scroller();
+        session.scroller_back(40);
+        session.note_layout(Laid {
+            width: 80,
+            height: 10,
+            rows: 130,
+            ..Laid::default()
+        });
+
+        session.scroller_to_last_row();
+        assert_eq!(session.top_row(), 120, "the view stopped at the old end");
+    }
 
     /// A question nobody has been asked has no answer to recall, which is what makes the memo
     /// safe to consult for every question in a series.

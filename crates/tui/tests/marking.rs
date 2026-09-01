@@ -13,7 +13,11 @@ use ratatui::backend::TestBackend;
 
 fn rows(session: &Session, width: u16, height: u16) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-    terminal.draw(|f| render::draw(f, session)).expect("draw");
+    terminal
+        .draw(|f| {
+            render::draw(f, session);
+        })
+        .expect("draw");
     let buffer = terminal.backend().buffer().clone();
     (0..height)
         .map(|y| {

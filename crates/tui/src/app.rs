@@ -208,6 +208,9 @@ pub enum Action {
     Status,
     /// Run a command the user typed in shell mode. Needs the workspace and the conversation.
     Run(String),
+    /// Put the transcript in front of the user in their editor. Needs the terminal, which the
+    /// loop owns, and gives the session nothing back.
+    Show,
     Quit,
 }
 
@@ -274,10 +277,207 @@ fn starts_a_line(key: KeyEvent) -> bool {
     }
 }
 
+/// Whether a key press reaches the turn in flight.
+///
+/// The scroller answers these keys before the turn does, because it is the nearest thing there is
+/// to stop. Somebody who opened it to read what the turn had already done is not asking for the
+/// turn to end when they close it again, and the press that reaches the turn is the next one.
+///
+/// Named rather than written out at each loop, because there are three of them and a condition
+/// copied three times is a condition that ends up meaning three things.
+fn stops_the_turn(session: &Session, key: KeyEvent) -> bool {
+    !session.scrolling() && (is_ctrl_c(key) || wants_cancel(key))
+}
+
+/// Interpret a key press while the scroller is open.
+///
+/// Every key the scroller answers is answered here, and a key it does not name does nothing at
+/// all: nothing falls through to the box. A mode that leaks its keystrokes into a box the person
+/// cannot see is the worse half of both, since `j` would scroll and also type a `j`, and the
+/// prompt they had half written would quietly be a different prompt by the time they came back
+/// to it. The line is untouched throughout and comes back exactly as it was.
+///
+/// Nothing here sends anything, so there is nothing in it for a running turn to refuse, and the
+/// same list answers whether or not one is in flight.
+fn scroller_key(session: &mut Session, key: KeyEvent) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // The key list is read instead of the transcript rather than alongside it, so anything at all
+    // puts it away, and that press is spent doing so. The list says as much, because a key that
+    // silently did two things would be worse than one that does the obvious one.
+    if session.scroller().is_some_and(|scroller| scroller.help) {
+        session.toggle_scroller_help();
+        return Action::Redraw;
+    }
+
+    // A search being typed takes the letters back, because typing is what they mean. Only the
+    // three keys that finish one are read as anything else.
+    if session.typing_a_search() {
+        return match key.code {
+            KeyCode::Enter => {
+                session.run_search();
+                land_on_a_match(session);
+                Action::Redraw
+            }
+            KeyCode::Esc => {
+                session.abandon_search();
+                Action::Redraw
+            }
+            // Backspacing past the start abandons the search, which is what the key means once
+            // there is nothing left of the thing it deletes.
+            KeyCode::Backspace => {
+                if !session.backspace_search() {
+                    session.abandon_search();
+                }
+                Action::Redraw
+            }
+            KeyCode::Char(c) if !ctrl => {
+                session.type_into_search(c);
+                Action::Redraw
+            }
+            _ => Action::None,
+        };
+    }
+
+    match key.code {
+        // Four keys close it. Ctrl-C is one of them and does nothing else here: the scroller is
+        // the nearest thing there is to stop, so a turn in flight goes on running and the press
+        // that reaches it is the next one.
+        KeyCode::Char('q') if !ctrl => {
+            session.close_scroller();
+            Action::Redraw
+        }
+        // The same ladder every other stop key here walks: the nearest thing there is to stop.
+        // A standing search is nearer than the mode holding it, so the highlights come off first
+        // and the press after that is the one that closes the scroller.
+        KeyCode::Esc => {
+            if !session.clear_search() {
+                session.close_scroller();
+            }
+            Action::Redraw
+        }
+        KeyCode::Char('o') | KeyCode::Char('c') if ctrl => {
+            session.close_scroller();
+            Action::Redraw
+        }
+
+        // A line at a time.
+        KeyCode::Up | KeyCode::Char('k') => {
+            session.scroller_back(1);
+            Action::Redraw
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            session.scroller_on(1);
+            Action::Redraw
+        }
+
+        // Half a screen, which is the one movement that keeps context on both sides of itself.
+        KeyCode::Char('u') if ctrl => {
+            session.scroller_back(session.half_screen());
+            Action::Redraw
+        }
+        KeyCode::Char('d') if ctrl => {
+            session.scroller_on(session.half_screen());
+            Action::Redraw
+        }
+
+        // A whole screen, in both dialects. `b` is the same key with or without Ctrl, because
+        // somebody who knows one spelling should not find the other typing a letter.
+        KeyCode::Char(' ') | KeyCode::PageDown => {
+            session.scroller_on(session.whole_screen());
+            Action::Redraw
+        }
+        KeyCode::Char('f') if ctrl => {
+            session.scroller_on(session.whole_screen());
+            Action::Redraw
+        }
+        KeyCode::Char('b') | KeyCode::PageUp => {
+            session.scroller_back(session.whole_screen());
+            Action::Redraw
+        }
+
+        // The ends.
+        KeyCode::Char('g') if !ctrl => {
+            session.scroller_to_first_row();
+            Action::Redraw
+        }
+        KeyCode::Char('G') => {
+            session.scroller_to_last_row();
+            Action::Redraw
+        }
+        KeyCode::Home => {
+            session.scroller_to_first_row();
+            Action::Redraw
+        }
+        KeyCode::End => {
+            session.scroller_to_last_row();
+            Action::Redraw
+        }
+
+        // Turn by turn. Where these land is settled by what the person typed, since a prompt is
+        // the one thing in a transcript they wrote themselves.
+        KeyCode::Char('{') => {
+            session.to_previous_prompt();
+            Action::Redraw
+        }
+        KeyCode::Char('}') => {
+            session.to_next_prompt();
+            Action::Redraw
+        }
+
+        KeyCode::Char('/') => {
+            session.begin_search();
+            Action::Redraw
+        }
+        KeyCode::Char('n') => {
+            walk_the_matches(session, true);
+            Action::Redraw
+        }
+        KeyCode::Char('N') => {
+            walk_the_matches(session, false);
+            Action::Redraw
+        }
+
+        KeyCode::Char('?') => {
+            session.toggle_scroller_help();
+            Action::Redraw
+        }
+        KeyCode::Char('v') if !ctrl && session.status != Status::Working => Action::Show,
+
+        _ => Action::None,
+    }
+}
+
+/// Move to the first match at or after the top of the view.
+///
+/// The transcript is laid out again here, because the needle was set by the key press being
+/// answered: the last frame was drawn looking for something else, and what it found is no answer
+/// to the question just asked.
+fn land_on_a_match(session: &mut Session) {
+    let laid = render::as_last_drawn(session);
+    session.land_on_a_match(&laid.matches);
+}
+
+/// Walk to the next match, or the previous one.
+///
+/// The rows are the ones the last frame found, which is the frame the person is looking at while
+/// they press the key. Nothing has changed about what is being looked for since it was drawn, so
+/// there is nothing to lay out again.
+fn walk_the_matches(session: &mut Session, forwards: bool) {
+    let found = session.laid.matches.clone();
+    session.to_a_match(&found, forwards);
+}
+
 /// Interpret a key press against the session.
 ///
 /// Separated from the loop so it can be tested without a terminal.
 pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
+    // Before everything, including the keys that edit the line: while the scroller is open there
+    // is no line being edited, and the keys belong to it.
+    if session.scrolling() {
+        return scroller_key(session, key);
+    }
+
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     // The hint offering the way out lives for one press, and this is it. Cleared before the arms
@@ -312,6 +512,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         }
         KeyCode::Char('t') if ctrl => {
             session.toggle_trail();
+            Action::Redraw
+        }
+        // Reading back through what happened, rather than typing at it. The transcript already
+        // scrolls; what needs a mode is everything a person does once they are reading, since the
+        // keys for it are letters and the box takes letters.
+        KeyCode::Char('o') if ctrl => {
+            session.open_scroller();
             Action::Redraw
         }
         // The paste that can carry a picture. Command-V is the terminal's own, goes through the
@@ -555,6 +762,12 @@ pub fn handle_paste_while_working(session: &mut Session, text: &str) {
 /// therefore watched their words go nowhere, with nothing on the screen to say why, which is
 /// indistinguishable from an interface that has stopped responding.
 pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action {
+    // The same list as at rest, for the reason the ladder below is the same list: nothing the
+    // scroller does sends anything, and sending is the whole of what a running turn refuses.
+    if session.scrolling() {
+        return scroller_key(session, key);
+    }
+
     // Before the modifier guard, since the readline bindings are how the caret moves on a terminal
     // that sends nothing for the named keys, and a line that can be typed mid-turn has to be
     // editable mid-turn: the alternative is a box that takes words and will not let them be fixed.
@@ -573,6 +786,13 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
     // mid-turn: what is refused while a turn runs is sending, never writing.
     if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::Paste;
+    }
+
+    // Before the modifier guard for the same reason, and mid-turn is when it is wanted most: a
+    // person reading back through a turn that is going wrong is reading because it is going wrong.
+    if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        session.open_scroller();
+        return Action::Redraw;
     }
 
     // After the arm that starts a line, so Shift-Enter still writes a paragraph, and before the
@@ -665,6 +885,16 @@ fn in_megabytes(bytes: usize) -> String {
 /// is the only way a user gets to copy anything.
 pub fn handle_mouse(session: &mut Session, mouse: MouseEvent) -> Action {
     match mouse.kind {
+        // While the scroller is open the wheel is one of its keys, so it stops at the first row
+        // and the last the way every other movement in that mode does.
+        MouseEventKind::ScrollUp if session.scrolling() => {
+            session.scroller_back(3);
+            Action::Redraw
+        }
+        MouseEventKind::ScrollDown if session.scrolling() => {
+            session.scroller_on(3);
+            Action::Redraw
+        }
         MouseEventKind::ScrollUp => {
             session.scroll_up(3);
             Action::Redraw
@@ -696,6 +926,23 @@ pub fn handle_mouse(session: &mut Session, mouse: MouseEvent) -> Action {
 /// the frame that drew the screen is the only place the screen can be read from.
 ///
 /// A click that swept over nothing just puts the selection away.
+/// Draw a frame, and take back what it laid the transcript out to.
+///
+/// Every draw a person looks at goes through here, so nothing can redraw without the session
+/// learning the shape of what was drawn. The scroller's keys are answered against those numbers,
+/// and a stale set is a jump to the wrong row.
+fn redraw(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+) -> io::Result<()> {
+    let mut laid = crate::state::Laid::default();
+    terminal
+        .draw(|frame| laid = render::draw(frame, session))
+        .map_err(io::Error::other)?;
+    session.note_layout(laid);
+    Ok(())
+}
+
 fn copy_selection(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
@@ -709,8 +956,12 @@ fn copy_selection(
     }
 
     let text = {
+        // Drawn to be read back rather than to be looked at, and it draws what the last frame
+        // drew, so it has nothing new to tell the session about the layout.
         let completed = terminal
-            .draw(|frame| render::draw(frame, session))
+            .draw(|frame| {
+                render::draw(frame, session);
+            })
             .map_err(io::Error::other)?;
         select::text(completed.buffer, &selection)
     };
@@ -888,6 +1139,32 @@ fn edit_prompt(
     Ok(())
 }
 
+/// Hand the transcript to the user's editor, and take nothing back from it.
+///
+/// The terminal is given up and taken back the way it is for a prompt, since an editor needs the
+/// screen. Nothing is read afterwards: the file was a look at the record, not a draft of it.
+fn show_transcript(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+) -> io::Result<()> {
+    let text = render::as_text(session);
+
+    hand_back_terminal(terminal.backend_mut())?;
+    terminal.show_cursor()?;
+
+    let shown = crate::editor::show(&text);
+
+    take_over_terminal(terminal.backend_mut())?;
+    terminal.clear()?;
+
+    // Said rather than swallowed, for the reason the prompt's editor says it: an editor that
+    // would not start looks exactly like a key that does nothing.
+    if let Err(failure) = shown {
+        session.note(failure.to_string());
+    }
+    Ok(())
+}
+
 /// Concrete in the backend rather than generic: the loop is only ever driven by a real
 /// terminal, and a generic backend's error type carries no bounds to convert from.
 /// The session's own name, for telling somebody how to pick it up again.
@@ -987,9 +1264,7 @@ fn event_loop(
         // otherwise show nothing until it stopped.
         let waited_long_enough = drawn_at.elapsed() >= FRAME;
         if needs_draw && (waited_long_enough || !event::poll(Duration::ZERO)?) {
-            terminal
-                .draw(|frame| render::draw(frame, &session))
-                .map_err(io::Error::other)?;
+            redraw(terminal, &mut session)?;
             needs_draw = false;
             drawn_at = Instant::now();
         }
@@ -1027,6 +1302,10 @@ fn event_loop(
             Action::Paste => take_from_clipboard(&mut session, crate::clipboard::paste()),
             Action::Edit => {
                 edit_prompt(terminal, &mut session)?;
+                needs_draw = true;
+            }
+            Action::Show => {
+                show_transcript(terminal, &mut session)?;
                 needs_draw = true;
             }
             Action::ChooseModel => {
@@ -1303,7 +1582,7 @@ fn choose_theme(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: 
     let themes = crate::theme::offered();
     let current = crate::theme::name();
     if let Some(chosen) = crate::theme_prompt::choose(terminal, themes, &current, |frame| {
-        render::draw(frame, session)
+        render::draw(frame, session);
     }) {
         crate::store::save_theme(&chosen.name);
         session.note(format!("theme {name}", name = chosen.name));
@@ -1390,16 +1669,14 @@ fn run_command(
     // which measure something no command spends.
     session.begin_command();
     while !worker.is_finished() {
-        terminal
-            .draw(|frame| render::draw(frame, session))
-            .map_err(io::Error::other)?;
+        redraw(terminal, session)?;
 
         while event::poll(Duration::ZERO)? {
             match event::read()? {
                 TermEvent::Key(key) if key.kind == KeyEventKind::Release => {}
                 // A running command is something to stop, so Ctrl-C stops it and stays, for the
                 // reason it stops a turn: the way out is the press after that, at the box.
-                TermEvent::Key(key) if is_ctrl_c(key) || wants_cancel(key) => {
+                TermEvent::Key(key) if stops_the_turn(session, key) => {
                     cancel.cancel();
                 }
                 TermEvent::Mouse(mouse) => {
@@ -1491,9 +1768,7 @@ fn compact_animated(
     });
 
     loop {
-        terminal
-            .draw(|frame| render::draw(frame, session))
-            .map_err(io::Error::other)?;
+        redraw(terminal, session)?;
 
         // Input is still read, so a long summary does not leave the interface deaf, and the
         // frame's waiting is done here for the reason the turn loop does it here: a key press
@@ -1505,13 +1780,13 @@ fn compact_animated(
                     // nothing here can stop it. Said once, because the alternative is a key that does
                     // nothing and says nothing, which reads as the interface having hung at the one
                     // moment it is working hardest.
-                    TermEvent::Key(key) if is_ctrl_c(key) => {
+                    TermEvent::Key(key) if is_ctrl_c(key) && !session.scrolling() => {
                         // The one place Ctrl-C still leaves with something in flight: a summary is
                         // one request with no round for a stop to land between, so there is
                         // nothing here for the press to stop and leaving is all it can mean.
                         session.quit();
                     }
-                    TermEvent::Key(key) if wants_cancel(key) => {
+                    TermEvent::Key(key) if wants_cancel(key) && !session.scrolling() => {
                         session
                             .note_once("summarising cannot be interrupted; it takes one request");
                     }
@@ -1677,9 +1952,7 @@ fn run_turn_animated(
 
     // Redraw until the turn finishes, answering approvals and watching for a cancel on the way.
     loop {
-        terminal
-            .draw(|frame| render::draw(frame, session))
-            .map_err(io::Error::other)?;
+        redraw(terminal, session)?;
 
         // Input is polled here rather than in the outer loop, which is blocked for the duration
         // of the turn. Without this the interface would take none at all while working, and a
@@ -1708,7 +1981,7 @@ fn run_turn_animated(
                     // Nothing is said about stopping. The stop is the prompt coming back to the
                     // box a moment later, which is both the answer and what the person wanted;
                     // a line saying "cancelling…" is a progress report on a key press.
-                    TermEvent::Key(key) if is_ctrl_c(key) || wants_cancel(key) => {
+                    TermEvent::Key(key) if stops_the_turn(session, key) => {
                         cancel.cancel();
                     }
                     TermEvent::Key(key) => {
@@ -2035,6 +2308,448 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    mod scroller {
+        use super::*;
+        use crate::state::Laid;
+
+        /// A session with a transcript already laid out, so the keys have rows to move over.
+        /// The numbers are the ones a frame would have written back after drawing.
+        fn reading() -> Session {
+            let mut session = Session::new("kernel-enforced");
+            session.note_layout(Laid {
+                width: 80,
+                height: 10,
+                rows: 100,
+                prompts: vec![0, 30, 60],
+                matches: Vec::new(),
+            });
+            session
+        }
+
+        fn opened() -> Session {
+            let mut session = reading();
+            session.open_scroller();
+            session
+        }
+
+        #[test]
+        fn ctrl_o_opens_the_scroller() {
+            let mut session = reading();
+            assert!(!session.scrolling());
+
+            handle_key(&mut session, ctrl('o'));
+
+            assert!(session.scrolling(), "the key did not open it");
+        }
+
+        /// A viewer that jumps somewhere on the way in has lost the thing the person opened it to
+        /// look at. The scroller reads the offset the wheel writes, so there is nothing to jump.
+        #[test]
+        fn the_scroller_opens_on_the_view_that_was_already_there() {
+            let mut session = reading();
+            session.scroll_up(7);
+
+            handle_key(&mut session, ctrl('o'));
+
+            assert_eq!(session.scroll, 7, "opening it moved the view");
+        }
+
+        #[test]
+        fn q_escape_and_ctrl_o_each_close_the_scroller() {
+            for closing in [key(KeyCode::Char('q')), key(KeyCode::Esc), ctrl('o')] {
+                let mut session = opened();
+                handle_key(&mut session, closing);
+                assert!(!session.scrolling(), "{closing:?} did not close it");
+            }
+        }
+
+        #[test]
+        fn closing_the_scroller_leaves_the_view_where_it_was() {
+            let mut session = opened();
+            handle_key(&mut session, key(KeyCode::Char('k')));
+            handle_key(&mut session, key(KeyCode::Char('k')));
+            let looking_at = session.scroll;
+
+            handle_key(&mut session, key(KeyCode::Char('q')));
+
+            assert_eq!(session.scroll, looking_at, "closing it moved the view");
+        }
+
+        /// The scroller is the nearest thing there is to stop, so the press that stops it is not
+        /// also the press that stops the turn. Each rung of that ladder is visible, and this one
+        /// is the innermost.
+        #[test]
+        fn ctrl_c_closes_the_scroller_before_it_reaches_anything_else() {
+            let mut session = opened();
+            session.status = Status::Working;
+
+            assert_eq!(handle_key(&mut session, ctrl('c')), Action::Redraw);
+            assert!(!session.scrolling(), "the scroller stayed open");
+            assert_eq!(
+                session.status,
+                Status::Working,
+                "the turn was stopped by the press that closed the scroller"
+            );
+
+            assert_eq!(
+                handle_key(&mut session, ctrl('c')),
+                Action::Cancel,
+                "the next press did not reach the turn"
+            );
+        }
+
+        /// Reading back through a turn that is going wrong is reading precisely because it is
+        /// going wrong. Nothing in the mode sends anything, so there is nothing here for a
+        /// running turn to refuse.
+        #[test]
+        fn a_turn_goes_on_running_while_the_scroller_is_open() {
+            let mut session = reading();
+            session.status = Status::Working;
+
+            handle_key_while_working(&mut session, ctrl('o'));
+            assert!(session.scrolling(), "the key did not open it mid-turn");
+
+            for pressed in [key(KeyCode::Char('k')), key(KeyCode::Char('g'))] {
+                assert_eq!(
+                    handle_key_while_working(&mut session, pressed),
+                    Action::Redraw
+                );
+            }
+
+            assert_eq!(session.status, Status::Working, "the turn was stopped");
+            assert!(session.scrolling(), "the scroller closed on its own");
+        }
+
+        /// A mode that leaks its keystrokes into a box nobody can see is the worse half of both:
+        /// `j` would scroll and also type a `j`, and the only way to find out would be to close
+        /// the scroller and look.
+        /// The loops answer the stop keys before anything else does, so the guard that lets the
+        /// scroller have them first is the whole of what keeps the key that closes it from
+        /// ending the turn the person opened it to read.
+        #[test]
+        fn the_scroller_answers_the_stop_keys_before_the_turn_does() {
+            let mut session = reading();
+            session.status = Status::Working;
+
+            for stopping in [ctrl('c'), key(KeyCode::Esc)] {
+                assert!(
+                    stops_the_turn(&session, stopping),
+                    "{stopping:?} did not reach the turn with nothing in the way"
+                );
+            }
+
+            session.open_scroller();
+            for stopping in [ctrl('c'), key(KeyCode::Esc)] {
+                assert!(
+                    !stops_the_turn(&session, stopping),
+                    "{stopping:?} stopped the turn from inside the scroller"
+                );
+            }
+        }
+
+        #[test]
+        fn a_typed_character_does_not_reach_the_box_while_the_scroller_is_open() {
+            let mut session = opened();
+            for c in "jkgbnv".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+
+            assert!(
+                session.input().is_empty(),
+                "the keys reached the box: {:?}",
+                session.input()
+            );
+        }
+
+        #[test]
+        fn the_line_comes_back_untouched_when_the_scroller_closes() {
+            let mut session = reading();
+            for c in "half a thought".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key(&mut session, key(KeyCode::Left));
+
+            handle_key(&mut session, ctrl('o'));
+            for c in "jkG{}".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key(&mut session, key(KeyCode::Char('q')));
+
+            assert_eq!(session.input(), "half a thought");
+
+            // The caret is where it was left, which is the half of the line's state that is not
+            // in the text: typing here has to land where it would have landed.
+            handle_key(&mut session, key(KeyCode::Char('!')));
+            assert_eq!(session.input(), "half a though!t");
+        }
+
+        #[test]
+        fn enter_sends_nothing_from_inside_the_scroller() {
+            let mut session = opened();
+            for c in "a prompt".chars() {
+                session.type_char(c);
+            }
+
+            assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::None);
+            assert_eq!(session.input(), "a prompt", "the line was taken");
+        }
+
+        #[test]
+        fn a_key_the_scroller_does_not_take_does_nothing() {
+            let mut session = opened();
+            let before = session.scroll;
+
+            for pressed in [key(KeyCode::Char('z')), key(KeyCode::Tab), ctrl('w')] {
+                assert_eq!(
+                    handle_key(&mut session, pressed),
+                    Action::None,
+                    "{pressed:?} did something"
+                );
+            }
+
+            assert_eq!(session.scroll, before);
+            assert!(session.input().is_empty());
+        }
+
+        #[test]
+        fn the_line_keys_move_the_view_by_a_line() {
+            let mut session = opened();
+
+            handle_key(&mut session, key(KeyCode::Up));
+            assert_eq!(session.scroll, 1);
+            handle_key(&mut session, key(KeyCode::Char('k')));
+            assert_eq!(session.scroll, 2);
+            handle_key(&mut session, key(KeyCode::Char('j')));
+            assert_eq!(session.scroll, 1);
+            handle_key(&mut session, key(KeyCode::Down));
+            assert_eq!(session.scroll, 0);
+        }
+
+        #[test]
+        fn the_half_page_keys_move_the_view_by_half_a_screen() {
+            let mut session = opened();
+
+            handle_key(&mut session, ctrl('u'));
+            assert_eq!(session.scroll, 5);
+            handle_key(&mut session, ctrl('d'));
+            assert_eq!(session.scroll, 0);
+        }
+
+        /// Both dialects, because somebody who knows one spelling should not find the other
+        /// typing a letter at them.
+        #[test]
+        fn the_page_keys_move_the_view_by_a_whole_screen() {
+            for (back, on) in [
+                (key(KeyCode::Char('b')), key(KeyCode::Char(' '))),
+                (ctrl('b'), ctrl('f')),
+                (key(KeyCode::PageUp), key(KeyCode::PageDown)),
+            ] {
+                let mut session = opened();
+                handle_key(&mut session, back);
+                assert_eq!(session.scroll, 10, "{back:?} did not move a screen");
+                handle_key(&mut session, on);
+                assert_eq!(session.scroll, 0, "{on:?} did not move a screen");
+            }
+        }
+
+        #[test]
+        fn g_and_shift_g_reach_the_first_row_and_the_last() {
+            for (first, last) in [
+                (key(KeyCode::Char('g')), key(KeyCode::Char('G'))),
+                (ctrl_key(KeyCode::Home), ctrl_key(KeyCode::End)),
+            ] {
+                let mut session = opened();
+                handle_key(&mut session, first);
+                assert_eq!(
+                    session.top_row(),
+                    0,
+                    "{first:?} did not reach the first row"
+                );
+                handle_key(&mut session, last);
+                assert_eq!(session.top_row(), 90, "{last:?} did not reach the last");
+            }
+        }
+
+        /// A prompt is the one thing in a transcript the person wrote themselves, so where these
+        /// land is settled by what they typed and by nothing read out of the workspace.
+        #[test]
+        fn the_prompt_keys_land_on_the_turn_before_and_the_turn_after() {
+            let mut session = opened();
+
+            handle_key(&mut session, key(KeyCode::Char('{')));
+            assert_eq!(session.top_row(), 60);
+            handle_key(&mut session, key(KeyCode::Char('{')));
+            assert_eq!(session.top_row(), 30);
+            handle_key(&mut session, key(KeyCode::Char('}')));
+            assert_eq!(session.top_row(), 60);
+
+            // Past the last prompt there is nowhere further to go but the end of the transcript,
+            // which is where somebody pressing the key again is asking to be.
+            handle_key(&mut session, key(KeyCode::Char('}')));
+            assert_eq!(session.top_row(), 90);
+        }
+
+        /// A held key has to come to rest somewhere the next press can move away from. Counting
+        /// past the end and back again is a key that does nothing for as long as it was held.
+        #[test]
+        fn the_view_stops_at_the_first_row_rather_than_scrolling_past_it() {
+            let mut session = opened();
+            for _ in 0..40 {
+                handle_key(&mut session, key(KeyCode::Char('b')));
+            }
+
+            assert_eq!(session.top_row(), 0);
+            handle_key(&mut session, key(KeyCode::Char('j')));
+            assert_eq!(
+                session.top_row(),
+                1,
+                "the view had counted past the first row"
+            );
+        }
+
+        #[test]
+        fn the_view_stops_at_the_last_row_rather_than_scrolling_past_it() {
+            let mut session = opened();
+            for _ in 0..40 {
+                handle_key(&mut session, key(KeyCode::Char(' ')));
+            }
+
+            assert_eq!(session.scroll, 0);
+            handle_key(&mut session, key(KeyCode::Char('k')));
+            assert_eq!(session.scroll, 1, "the view had counted past the last row");
+        }
+
+        #[test]
+        fn the_wheel_scrolls_the_scroller_as_it_scrolls_the_transcript() {
+            let mut session = opened();
+
+            handle_mouse(&mut session, drag(MouseEventKind::ScrollUp, 0, 0));
+            assert_eq!(session.scroll, 3);
+            handle_mouse(&mut session, drag(MouseEventKind::ScrollDown, 0, 0));
+            assert_eq!(session.scroll, 0);
+
+            for _ in 0..40 {
+                handle_mouse(&mut session, drag(MouseEventKind::ScrollUp, 0, 0));
+            }
+            assert_eq!(session.top_row(), 0, "the wheel counted past the first row");
+        }
+
+        /// The keys go into the needle while one is being typed, because that is what typing
+        /// means. Abandoning it leaves the view where it was rather than where a half-typed
+        /// search had reached.
+        #[test]
+        fn escape_abandons_a_half_typed_search() {
+            let mut session = opened();
+            session.scroller_back(20);
+            let looking_at = session.scroll;
+
+            handle_key(&mut session, key(KeyCode::Char('/')));
+            for c in "gjkq".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            assert!(session.typing_a_search(), "a letter was read as a movement");
+            assert_eq!(session.scroll, looking_at, "typing moved the view");
+
+            handle_key(&mut session, key(KeyCode::Esc));
+
+            assert!(!session.typing_a_search());
+            assert!(
+                session.scrolling(),
+                "abandoning the search closed the scroller"
+            );
+            assert_eq!(session.scroll, looking_at);
+        }
+
+        /// The nearest thing there is to stop, which is the ladder every other stop key here
+        /// walks. Closing the mode to get the highlights off the screen would mean losing the
+        /// place somebody had scrolled to in order to undo a search they had finished with.
+        #[test]
+        fn escape_clears_a_finished_search_before_it_closes_the_scroller() {
+            let mut session = opened();
+            session.scroller_back(20);
+            let looking_at = session.scroll;
+
+            handle_key(&mut session, key(KeyCode::Char('/')));
+            for c in "notes".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key(&mut session, key(KeyCode::Enter));
+            assert_eq!(session.needle(), "notes");
+
+            handle_key(&mut session, key(KeyCode::Esc));
+            assert_eq!(session.needle(), "", "the search was not cleared");
+            assert!(
+                session.scrolling(),
+                "clearing the search closed the scroller"
+            );
+            assert_eq!(
+                session.scroll, looking_at,
+                "clearing the search moved the view"
+            );
+
+            handle_key(&mut session, key(KeyCode::Esc));
+            assert!(!session.scrolling(), "the next press did not close it");
+        }
+
+        /// Backspacing past the start is what the key means when there is nothing left of the
+        /// thing it deletes: the search goes, rather than the press doing nothing at all.
+        #[test]
+        fn backspacing_past_the_start_abandons_the_search() {
+            let mut session = opened();
+            handle_key(&mut session, key(KeyCode::Char('/')));
+            handle_key(&mut session, key(KeyCode::Char('a')));
+
+            handle_key(&mut session, key(KeyCode::Backspace));
+            assert!(
+                session.typing_a_search(),
+                "one character took the whole search"
+            );
+            handle_key(&mut session, key(KeyCode::Backspace));
+            assert!(!session.typing_a_search());
+        }
+
+        /// A mode where the letters do nothing and nothing says why is indistinguishable from an
+        /// interface that has stopped responding.
+        #[test]
+        fn the_help_key_lists_the_keys() {
+            let mut session = opened();
+
+            handle_key(&mut session, key(KeyCode::Char('?')));
+            assert!(session.scroller().expect("open").help);
+
+            // Read instead of the transcript rather than alongside it, so anything at all puts it
+            // away and that press is spent doing so.
+            handle_key(&mut session, key(KeyCode::Char('j')));
+            assert!(!session.scroller().expect("open").help);
+            assert_eq!(
+                session.scroll, 0,
+                "the press that put the list away also moved"
+            );
+        }
+
+        #[test]
+        fn v_asks_for_the_editor() {
+            let mut session = opened();
+            assert_eq!(
+                handle_key(&mut session, key(KeyCode::Char('v'))),
+                Action::Show
+            );
+        }
+
+        /// The same answer the key that edits a prompt gives, and for the same reason: an editor
+        /// needs the screen, and a running turn is drawing it.
+        #[test]
+        fn the_transcript_editor_key_does_nothing_while_a_turn_runs() {
+            let mut session = opened();
+            session.status = Status::Working;
+
+            assert_eq!(
+                handle_key_while_working(&mut session, key(KeyCode::Char('v'))),
+                Action::None
+            );
+        }
     }
 
     mod pasting {

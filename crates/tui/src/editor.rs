@@ -80,6 +80,33 @@ pub fn edit(line: &str) -> Result<String, Failure> {
     round_trip(line, open_in_an_editor)
 }
 
+/// Put the transcript in front of the user in their editor, and read nothing back.
+///
+/// The one difference from [`edit`], and the whole of it. A prompt is something they are still
+/// writing, so what they save comes back; a transcript is the record of what happened, and a
+/// record that can be edited into the session is not a record. The file is theirs to do anything
+/// with, and this process never looks at it again.
+pub fn show(text: &str) -> Result<(), Failure> {
+    show_through(text, open_in_an_editor)
+}
+
+/// The file half of [`show`], with opening it left to the caller so it can be tested.
+fn show_through(
+    text: &str,
+    open: impl FnOnce(&Path) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    let path = scratch("transcript");
+    if let Err(failure) = write_scratch(&path, text) {
+        let _ = std::fs::remove_file(&path);
+        return Err(failure);
+    }
+    let opened = open(&path);
+    // Before the result is examined, so a transcript does not outlive the look at it down any
+    // path. Whatever the person wanted to keep, they kept from inside their own editor.
+    let _ = std::fs::remove_file(&path);
+    opened
+}
+
 /// The round trip through a file, with opening it left to the caller.
 ///
 /// Separated so the file half can be tested without an editor, which is the half with the
@@ -88,7 +115,7 @@ fn round_trip(
     line: &str,
     open: impl FnOnce(&Path) -> Result<(), Failure>,
 ) -> Result<String, Failure> {
-    let path = scratch();
+    let path = scratch("prompt");
     if let Err(failure) = write_scratch(&path, line) {
         // A write that failed partway leaves a file behind, and one holding a prompt is not
         // something to leave in a shared directory.
@@ -111,12 +138,12 @@ fn round_trip(
 ///
 /// The system's temporary directory rather than `~/.bravebot`, which is the user's configuration
 /// surface and is read as trusted: scratch files do not belong in it.
-fn scratch() -> PathBuf {
+fn scratch(kind: &str) -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("bravebot-prompt-{}-{stamp}.md", std::process::id()))
+    std::env::temp_dir().join(format!("bravebot-{kind}-{}-{stamp}.md", std::process::id()))
 }
 
 /// Write the line where the editor will find it.
@@ -533,6 +560,79 @@ mod tests {
         assert!(
             matches!(outcome, Err(Failure::Editor(_))),
             "the fallback list was tried behind a configured editor"
+        );
+    }
+
+    /// The one difference between showing a transcript and editing a prompt, and the whole of it.
+    /// A record that can be edited into the session is not a record, so whatever the editor saved
+    /// stays in the editor.
+    #[test]
+    fn a_transcript_opened_in_the_editor_is_never_read_back() {
+        let mut opened = None;
+        show_through("what happened", |path| {
+            assert_eq!(
+                std::fs::read_to_string(path).expect("the transcript is there"),
+                "what happened"
+            );
+            std::fs::write(path, "what did not happen").unwrap();
+            opened = Some(path.to_path_buf());
+            Ok(())
+        })
+        .expect("the editor opens");
+
+        // Nothing came back to compare, which is the property: the call returns no text at all,
+        // so there is no path by which an edited record could reach the session.
+        assert!(opened.is_some(), "the editor was never handed a file");
+    }
+
+    /// A transcript holds content nobody vouched for. It goes where scratch files go, and not
+    /// into the workspace, where the next turn would find it as a file somebody had written.
+    #[test]
+    fn a_transcript_opened_in_the_editor_is_written_outside_the_workspace() {
+        let mut written = None;
+        show_through("what happened", |path| {
+            written = Some(path.to_path_buf());
+            Ok(())
+        })
+        .expect("the editor opens");
+
+        let written = written.expect("the editor was handed a file");
+        assert!(
+            written.starts_with(std::env::temp_dir()),
+            "the transcript was written to {}",
+            written.display()
+        );
+        assert_ne!(
+            written.parent(),
+            std::env::current_dir().ok().as_deref(),
+            "the transcript was written into the working directory"
+        );
+    }
+
+    /// It does not outlive the look at it, down either path. A transcript left in a shared
+    /// temporary directory is the session's contents sitting where anyone can read them.
+    #[test]
+    fn the_file_goes_when_the_editor_exits() {
+        let mut left = None;
+        show_through("what happened", |path| {
+            left = Some(path.to_path_buf());
+            Ok(())
+        })
+        .expect("the editor opens");
+        assert!(
+            !left.expect("a file").exists(),
+            "the transcript was left behind"
+        );
+
+        let mut left = None;
+        let failed = show_through("what happened", |path| {
+            left = Some(path.to_path_buf());
+            Err(Failure::Editor("no".to_string()))
+        });
+        assert!(failed.is_err());
+        assert!(
+            !left.expect("a file").exists(),
+            "an editor that failed left the transcript behind"
         );
     }
 

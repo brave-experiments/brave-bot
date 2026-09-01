@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::audit::TrailLine;
 use crate::logo;
 use crate::markdown;
-use crate::state::{Session, Speaker, Status};
+use crate::state::{Laid, Session, Speaker, Status};
 use crate::table;
 use crate::theme;
 use crate::wrap;
@@ -388,15 +388,26 @@ fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'st
     lines
 }
 
-/// Draw the whole interface.
-pub fn draw(frame: &mut Frame, session: &Session) {
+/// Draw the whole interface, and say what the transcript came to.
+///
+/// The measurements go back to the session, because a key pressed next is answered against them
+/// and none of them exist before a frame: how tall the transcript is, and where in it the rows
+/// worth jumping to are, are both answers about a paragraph wrapped at a particular width.
+pub fn draw(frame: &mut Frame, session: &Session) -> Laid {
     // A named theme paints the frame so chrome and text share one background. `brave` leaves the
-    // terminal's own colours alone.
+    // terminal's own colours alone. It is painted before the mode is chosen, since the scroller
+    // covers the same frame.
     if theme::paints_background() {
         frame.render_widget(
             Block::default().style(Style::default().bg(theme::background()).fg(theme::text())),
             frame.area(),
         );
+    }
+
+    // A different screen rather than the same one with a different footer: nothing below the
+    // transcript is reachable while the scroller is open, so nothing below it is drawn.
+    if session.scrolling() {
+        return draw_scroller(frame, session);
     }
 
     // What is running sits above the box rather than in place of it, so the two are measured
@@ -437,7 +448,7 @@ pub fn draw(frame: &mut Frame, session: &Session) {
         ])
         .split(frame.area());
 
-    draw_transcript(frame, areas[0], session);
+    let laid = draw_transcript(frame, areas[0], session);
     draw_status(frame, areas[1], session);
     draw_input(frame, areas[2], session);
     frame.render_widget(Paragraph::new(beneath), areas[3]);
@@ -448,6 +459,195 @@ pub fn draw(frame: &mut Frame, session: &Session) {
     if let Some(selection) = &session.selection {
         crate::select::highlight(frame.buffer_mut(), selection);
     }
+
+    laid
+}
+
+/// Draw the scroller: the transcript, and one row saying what the keys are.
+///
+/// The box goes, and so does the indicator above it and anything being offered beneath it. Every
+/// one of them is a thing the person is being invited to type at, and while the scroller is open
+/// no key reaches any of them: a box drawn under a mode that cannot reach it is three rows of the
+/// screen spent inviting a keystroke that would do nothing. What they cost is given to the
+/// transcript, which is the whole of what somebody opened a pager to look at.
+///
+/// The one row kept is the footer, because a mode where the letters do nothing with nothing on
+/// the screen to say why is indistinguishable from an interface that has stopped responding.
+fn draw_scroller(frame: &mut Frame, session: &Session) -> Laid {
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // transcript
+            Constraint::Length(1), // footer
+        ])
+        .split(frame.area());
+
+    let laid = draw_transcript(frame, areas[0], session);
+    draw_scroller_hint(frame, areas[1], session, laid.matches.len());
+
+    // Over the transcript rather than beside it, because a key list is read instead of the
+    // transcript and never at the same time.
+    if session.scroller().is_some_and(|scroller| scroller.help) {
+        draw_scroller_help(frame, frame.area());
+    }
+
+    if let Some(selection) = &session.selection {
+        crate::select::highlight(frame.buffer_mut(), selection);
+    }
+
+    laid
+}
+
+/// The keys the scroller answers, in the order somebody reaches for them.
+///
+/// The way out is last and is never the row that did not fit: a list that scrolled its own exit
+/// off the screen would be a mode nobody could leave.
+const SCROLLER_KEYS: [(&str, &str); 8] = [
+    ("up/down, j/k", "line up/down"),
+    ("ctrl-u / ctrl-d", "half page"),
+    ("space / b", "full page   (also ctrl-f / ctrl-b)"),
+    ("g / G", "top / bottom   (also home / end)"),
+    ("{ / }", "previous / next prompt"),
+    ("/ then n/N", "search, next/previous match"),
+    ("v", "open the transcript in $EDITOR"),
+    ("?", "this list"),
+];
+
+/// What closes the scroller, which is the one row of the key list that is never dropped.
+const SCROLLER_EXIT: (&str, &str) = ("q / esc / ctrl-o", "close the scroller");
+
+/// Draw the key list over the transcript.
+///
+/// Short terminals lose rows from the middle of the list rather than the end of it. Every row here
+/// is a convenience except the last, and the last is the only one somebody is stuck without.
+fn draw_scroller_help(frame: &mut Frame, area: Rect) {
+    let row = |(key, what): (&str, &str)| {
+        Line::from(vec![
+            Span::styled(format!(" {key:<18}"), Style::default().fg(Color::Cyan)),
+            Span::styled(what.to_string(), dim()),
+        ])
+    };
+
+    // A border costs two rows, and on a terminal with three there is no version of this worth
+    // having a frame around: the way out is what the list is for, and it goes on the screen with
+    // or without one.
+    let bordered = area.height >= 4;
+    let room = if bordered {
+        (area.height as usize).saturating_sub(2)
+    } else {
+        area.height as usize
+    }
+    .max(1);
+
+    let mut rows: Vec<Line> = SCROLLER_KEYS
+        .iter()
+        .copied()
+        .take(room.saturating_sub(1))
+        .map(row)
+        .collect();
+    rows.push(row(SCROLLER_EXIT));
+
+    let width = area.width.min(58);
+    let height = (rows.len() as u16 + if bordered { 2 } else { 0 }).min(area.height);
+    let box_area = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(ratatui::widgets::Clear, box_area);
+    let list = Paragraph::new(rows);
+    let list = if bordered {
+        list.block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" scroller "),
+        )
+    } else {
+        list
+    };
+    frame.render_widget(list, box_area);
+}
+
+/// The one row under the transcript while the scroller is open.
+///
+/// What it says depends on what the scroller is doing, and in every case the way out comes early
+/// enough to survive a narrow terminal cutting the end off.
+fn draw_scroller_hint(frame: &mut Frame, area: Rect, session: &Session, found: usize) {
+    let scroller = match session.scroller() {
+        Some(scroller) => scroller,
+        None => return,
+    };
+
+    // A search being typed owns the line: what somebody is typing is the thing they are looking
+    // at, and a caret says the keys are going here rather than into the box.
+    if let Some(typing) = &scroller.typing {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("  /{typing}"), Style::default().fg(Color::Cyan)),
+                Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+                Span::styled("  ·  enter to search  ·  esc to abandon", dim()),
+            ])),
+            area,
+        );
+        return;
+    }
+
+    if !scroller.needle.is_empty() {
+        // Never the matched text. The footer is the one row of the screen the interface speaks in
+        // its own voice, and a quotation there is untrusted content drawn outside a marked block.
+        let standing = if found == 0 {
+            "no matches".to_string()
+        } else {
+            format!("{} of {found}", scroller.at.min(found - 1) + 1)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("  /{}", scroller.needle),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(format!("  ·  {standing}"), dim()),
+                Span::styled(
+                    "  ·  n next  ·  N previous  ·  esc clears  ·  q closes",
+                    dim(),
+                ),
+            ])),
+            area,
+        );
+        return;
+    }
+
+    let below = session.rows_below();
+    let arrived = if below == 0 {
+        String::new()
+    } else {
+        format!("  ·  {below} rows below")
+    };
+
+    // The indicator's row went with the box, and a turn that has not written anything yet leaves
+    // nothing else on the screen moving. Somebody reading back through a turn in flight has to be
+    // able to tell it is still in flight, so the footer says so in the indicator's own word.
+    let running = session.indicator().map(|indicator| {
+        Span::styled(
+            format!("  ·  {}…", indicator.verb),
+            Style::default().fg(Color::Green),
+        )
+    });
+
+    // Four things and no more, because every key is behind `?` and a row long enough to be cut in
+    // half advertises whatever happened to be at the near end of it. `/` is here because it is
+    // the one key nobody guesses, and everything else on the row is a way to find out the rest.
+    let mut spans = vec![
+        Span::styled("  scroller", Style::default().fg(Color::Cyan)),
+        Span::styled("  ·  q closes  ·  ? keys", dim()),
+    ];
+    spans.extend(running);
+    spans.push(Span::styled(format!("{arrived}  ·  / search"), dim()));
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Build the transcript as lines, so height is known before rendering.
@@ -497,7 +697,18 @@ fn assistant_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg(test)]
 fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'static>> {
+    with_prompts(session, width, height).0
+}
+
+/// The transcript, and the index of the line each prompt the person typed begins at.
+///
+/// Two answers from one pass, because working the second out afterwards would mean deciding which
+/// drawn lines were prompts by looking at them, and the thing that knows is the pass that drew
+/// them.
+fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<usize>) {
+    let mut prompts: Vec<usize> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
 
     // Nothing has been said yet, so the screen opens on the mark, laid out against the height
@@ -518,6 +729,7 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
         match entry.speaker {
             // The user's own words, echoed the way they were typed.
             Speaker::User => {
+                prompts.push(lines.len());
                 for (index, text) in entry.text.lines().enumerate() {
                     let prefix = if index == 0 { "> " } else { "  " };
                     lines.push(Line::from(Span::styled(
@@ -613,11 +825,167 @@ fn transcript_lines(session: &Session, width: u16, height: u16) -> Vec<Line<'sta
         lines.push(logo::invitation());
     }
 
-    lines
+    (lines, prompts)
 }
 
-fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
-    let lines = transcript_lines(session, area.width, area.height);
+/// Drawn over every character a search matched.
+///
+/// Reversed rather than coloured, so it reads as a highlight against whatever the row was already
+/// wearing: a match in a quarantined preview is dim grey, and a colour of its own would be one
+/// more thing on the screen the content had chosen.
+fn marked() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
+/// Highlight every occurrence of `needle`, and say which lines held one.
+///
+/// The spans are split where a match begins and ends and the pieces restyled. Nothing on the
+/// screen moves and nothing leaves the block it was drawn in: a match inside a quarantined
+/// preview is highlighted between that block's margin and the end of its row, exactly where the
+/// characters already were.
+fn highlight(lines: &mut [Line<'static>], needle: &str) -> Vec<usize> {
+    let mut held = Vec::new();
+    if needle.is_empty() {
+        return held;
+    }
+
+    for (index, line) in lines.iter_mut().enumerate() {
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let found = crate::state::matched(&text, needle);
+        if found.is_empty() {
+            continue;
+        }
+        held.push(index);
+
+        let mut rebuilt: Vec<Span<'static>> = Vec::new();
+        let mut at = 0;
+        for span in line.spans.drain(..) {
+            let characters: Vec<char> = span.content.chars().collect();
+            let mut cut = 0;
+            while cut < characters.len() {
+                let here = at + cut;
+                // Either this character is inside a match, and the piece runs to the end of that
+                // match, or it is not, and the piece runs to the start of the next one. Both
+                // bounds are past `cut`, so the walk always advances.
+                let (until, style) =
+                    match found.iter().find(|(from, to)| here >= *from && here < *to) {
+                        Some((_, to)) => (to - at, span.style.patch(marked())),
+                        None => (
+                            found
+                                .iter()
+                                .map(|(from, _)| *from)
+                                .find(|from| *from > here)
+                                .map_or(characters.len(), |from| from - at),
+                            span.style,
+                        ),
+                    };
+                let until = until.min(characters.len());
+                let piece: String = characters[cut..until].iter().collect();
+                rebuilt.push(Span::styled(piece, style));
+                cut = until;
+            }
+            at += characters.len();
+        }
+        line.spans = rebuilt;
+    }
+    held
+}
+
+/// How many rows one line takes at this width, once it has been wrapped.
+///
+/// Through the same wrapping that will draw it, rather than through a second implementation that
+/// agrees with the first until one day it does not: a count that drifts puts a jump a row or two
+/// off, which is the kind of wrong nobody can see and everybody blames on something else.
+///
+/// This runs over every line of the transcript on every frame the scroller is open, so it does
+/// not copy the text to count it. A line that fits is one row and is answered from its width
+/// alone, which is nearly all of them.
+fn rows_of(line: &Line<'_>, width: u16) -> u16 {
+    let width = width.max(1);
+    if line.width() <= width as usize {
+        return 1;
+    }
+    let borrowed: Vec<Span<'_>> = line
+        .spans
+        .iter()
+        .map(|span| Span::styled(span.content.as_ref(), span.style))
+        .collect();
+    Paragraph::new(Line::from(borrowed))
+        .wrap(Wrap { trim: false })
+        .line_count(width) as u16
+}
+
+/// The transcript laid out at a width: the lines to draw, and where the rows worth reaching are.
+///
+/// Where each line begins is only worked out while the scroller is open. It costs a wrap of every
+/// line, and at rest nothing asks the question: the wheel moves by rows and never has to know
+/// which row is which.
+fn lay_out(session: &Session, width: u16, height: u16) -> (Vec<Line<'static>>, Laid) {
+    let (mut lines, prompts) = with_prompts(session, width, height);
+    let held = highlight(&mut lines, session.needle());
+
+    let mut laid = Laid {
+        width,
+        height,
+        ..Laid::default()
+    };
+    if !session.scrolling() {
+        return (lines, laid);
+    }
+
+    let mut prompts = prompts.into_iter().peekable();
+    let mut held = held.into_iter().peekable();
+    let mut at = 0u16;
+    for (index, line) in lines.iter().enumerate() {
+        if prompts.peek() == Some(&index) {
+            laid.prompts.push(at);
+            prompts.next();
+        }
+        if held.peek() == Some(&index) {
+            laid.matches.push(at);
+            held.next();
+        }
+        at = at.saturating_add(rows_of(line, width));
+    }
+    laid.rows = at;
+    (lines, laid)
+}
+
+/// The transcript as plain text, laid out exactly as it is drawn.
+///
+/// The rows as they are on the screen, margins included, so untrusted content is marked in the
+/// file the same way it is marked on the screen and control characters are already glyphs. What
+/// goes to an editor is what the person was looking at, not a second rendering of it that agrees
+/// about the words and about nothing else.
+pub fn as_text(session: &Session) -> String {
+    let (lines, _) = lay_out(session, session.laid.width, session.laid.height);
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Lay the transcript out again at the size the last frame used.
+///
+/// What a key needs in order to jump: the rows a search matched, at the width they were matched
+/// at. The size comes from the last frame because that is the frame the person is looking at when
+/// they press the key.
+pub fn as_last_drawn(session: &Session) -> Laid {
+    lay_out(session, session.laid.width, session.laid.height).1
+}
+
+fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) -> Laid {
+    let (lines, mut laid) = lay_out(session, area.width, area.height);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
     // Scroll counts up from the bottom, so new output stays in view by default. The count has to
@@ -627,9 +995,25 @@ fn draw_transcript(frame: &mut Frame, area: Rect, session: &Session) {
     // appeared only once the next message pushed it up.
     let total = paragraph.line_count(area.width) as u16;
     let max_offset = total.saturating_sub(area.height);
-    let offset = max_offset.saturating_sub(session.scroll.min(max_offset));
+
+    // While the scroller is open the view is drawn from the row it is holding, counted from the
+    // top, and not from the offset the last frame left behind. The end of the transcript moves
+    // with every token a turn writes, so a frame drawn by counting back from it puts the view
+    // wherever the rows that arrived since the last frame have pushed it: the anchor is correct
+    // and the arithmetic reaching it is a frame out of date. Read from the top, nothing a turn
+    // appends below can move what is above it.
+    let offset = if session.scrolling() {
+        session.top_row().min(max_offset)
+    } else {
+        max_offset.saturating_sub(session.scroll.min(max_offset))
+    };
 
     frame.render_widget(paragraph.scroll((offset, 0)), area);
+
+    // The paragraph's own count rather than the sum of the rows measured line by line, so what a
+    // key is answered against is the number the view was actually drawn with.
+    laid.rows = total;
+    laid
 }
 
 /// Render one line of the audit trail.
@@ -1385,7 +1769,9 @@ mod tests {
     fn rendered(session: &Session) -> String {
         let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, session))
+            .draw(|frame| {
+                draw(frame, session);
+            })
             .expect("draw succeeds");
         terminal
             .backend()
@@ -1400,7 +1786,9 @@ mod tests {
     fn inks_on_row_containing(session: &Session, needle: &str) -> Vec<Color> {
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, session))
+            .draw(|frame| {
+                draw(frame, session);
+            })
             .expect("draw succeeds");
         let buffer = terminal.backend().buffer();
         let area = buffer.area();
@@ -1420,6 +1808,532 @@ mod tests {
         }
         assert!(!inks.is_empty(), "nothing containing {needle:?} was drawn");
         inks
+    }
+
+    mod scroller {
+        use super::*;
+        use crate::state::{Entry, Laid};
+        use bravebot_agent::report::Activity;
+
+        /// A session reading back over one prompt, one reply, and a file it was not allowed to
+        /// read, with the scroller open over it.
+        fn reading() -> Session {
+            reading_over(24)
+        }
+
+        /// The same, over a transcript already this many rows tall when the scroller opens.
+        ///
+        /// The layout is noted before the mode opens, because noting it afterwards is rows
+        /// arriving underneath an open scroller, which is a different thing and moves the view.
+        fn reading_over(rows: u16) -> Session {
+            let shown = Shown {
+                origin: "notes.md".to_string(),
+                reach: bravebot_agent::report::Reach::NotThePlanner,
+                label: "(U,priv)".to_string(),
+                preview: vec![
+                    "the haystack holds a needle".to_string(),
+                    // What the terminal would act on, on its way to a glyph.
+                    "a needle behind \u{1b}[31m an escape".to_string(),
+                ],
+                lines: 40,
+            };
+
+            let mut session = Session::new("kernel-enforced");
+            session.transcript.push(Entry::user("look at the notes"));
+            session.transcript.push(Entry::assistant(
+                "there is a needle in there".to_string(),
+                Vec::new(),
+            ));
+            let mut read = Entry::tool(Activity::running("read", "notes.md").done("40 lines"));
+            read.shown = Some(shown);
+            session.transcript.push(read);
+            session.note_layout(Laid {
+                width: 90,
+                height: 24,
+                rows,
+                ..Laid::default()
+            });
+            session.open_scroller();
+            session
+        }
+
+        /// Render, and give back both what is on the screen and which cells are wearing the
+        /// highlight, since a match is a thing you can see rather than a thing you are told about.
+        fn screen(session: &Session) -> (String, String) {
+            let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    draw(frame, session);
+                })
+                .expect("draw succeeds");
+            let buffer = terminal.backend().buffer().clone();
+            let drawn: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+            // Only above the box. The caret in it is drawn reversed as well, and what this is
+            // asking about is the transcript.
+            let box_top = (0..buffer.area.height)
+                .find(|row| buffer[(0, *row)].symbol() == "╭")
+                .unwrap_or(buffer.area.height);
+            let marked: String = (0..box_top)
+                .flat_map(|row| (0..buffer.area.width).map(move |column| (column, row)))
+                .map(|at| &buffer[at])
+                .filter(|cell| cell.modifier.contains(Modifier::REVERSED))
+                .map(|cell| cell.symbol())
+                .collect();
+            (drawn, marked)
+        }
+
+        /// Search a session for `needle`, the way the keys do it.
+        fn searching(needle: &str) -> Session {
+            let mut session = reading();
+            session.begin_search();
+            for c in needle.chars() {
+                session.type_into_search(c);
+            }
+            session.run_search();
+            session
+        }
+
+        /// Long transcript, for measuring what laying one out costs.
+        fn a_long_session() -> Session {
+            let mut session = Session::new("kernel-enforced");
+            for n in 0..500 {
+                session.transcript.push(Entry::user(format!("prompt {n}")));
+                session.transcript.push(Entry::assistant(
+                    format!(
+                        "a reply to {n} that runs on for a while so that it wraps at eighty or \
+                     ninety columns and takes more than one row of the screen to draw"
+                    ),
+                    Vec::new(),
+                ));
+            }
+            session
+        }
+
+        /// Finding where the rows are is an extra pass over the transcript, on every frame the
+        /// scroller is open. It has to stay in proportion to the drawing the interface already does,
+        /// since the alternative is a mode that gets slower the more there is to read back through.
+        ///
+        /// A ratio rather than a wall clock, because what matters is that the pass is of the same
+        /// order as the one beside it and not that either takes a particular number of milliseconds.
+        #[test]
+        fn measuring_where_the_rows_are_stays_in_proportion_to_drawing_them() {
+            let at_rest = a_long_session();
+            let started = std::time::Instant::now();
+            let (lines, plain) = lay_out(&at_rest, 90, 24);
+            // The wrap a frame at rest already pays for, and the one this is in proportion to.
+            // Laying the lines out is the cheaper half of drawing them, and measuring against it
+            // alone compares the new pass with something no frame has ever consisted of.
+            let rows = Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .line_count(90);
+            let baseline = started.elapsed();
+            assert!(rows > 2000, "the transcript is not long: {rows}");
+
+            let mut scrolling = a_long_session();
+            scrolling.open_scroller();
+            let started = std::time::Instant::now();
+            let (_, laid) = lay_out(&scrolling, 90, 24);
+            let took = started.elapsed();
+
+            assert!(
+                laid.rows > 2000,
+                "the transcript is not long: {}",
+                laid.rows
+            );
+            assert_eq!(plain.rows, 0, "the rows were counted with nobody asking");
+            assert!(
+                took < baseline * 4,
+                "measuring took {took:?} against {baseline:?} to draw, which is out of proportion"
+            );
+        }
+
+        /// Nothing has been drawn yet, so the width is zero. Laying out against it must not panic.
+        #[test]
+        fn measuring_before_the_first_frame_does_not_panic() {
+            let mut session = Session::new("kernel-enforced");
+            session.transcript.push(Entry::user("anything"));
+            session.open_scroller();
+
+            let _ = as_last_drawn(&session);
+            let _ = as_text(&session);
+        }
+
+        #[test]
+        fn the_scroller_says_it_is_open_and_which_key_closes_it() {
+            let (drawn, _) = screen(&reading());
+
+            assert!(drawn.contains("scroller"), "the mode does not say it is on");
+            assert!(
+                drawn.contains("q closes"),
+                "the way out is not on the screen: {drawn}"
+            );
+        }
+
+        /// The transcript at rest keeps its own line, since the bindings the scroller advertises
+        /// are the ones it has taken.
+        #[test]
+        fn the_usual_hint_comes_back_when_the_scroller_closes() {
+            let mut session = reading();
+            session.close_scroller();
+            let (drawn, _) = screen(&session);
+
+            assert!(!drawn.contains("q closes"));
+            assert!(
+                drawn.contains(SHORTCUTS_HINT),
+                "the usual line did not come back"
+            );
+        }
+
+        /// Draw, and give back what the frame laid the transcript out to.
+        fn drawn_over(session: &Session) -> Laid {
+            let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
+            let mut laid = Laid::default();
+            terminal
+                .draw(|frame| laid = draw(frame, session))
+                .expect("draw succeeds");
+            laid
+        }
+
+        /// The box, the indicator above it and anything offered beneath it are all things to type
+        /// at, and no key reaches any of them from in here. Drawing them would be rows of the
+        /// screen spent inviting a keystroke that would do nothing, and the transcript is the
+        /// whole of what somebody opened a pager to look at.
+        #[test]
+        fn the_scroller_takes_the_whole_screen_but_its_own_footer() {
+            let mut session = reading();
+            session.status = Status::Working;
+
+            let (drawn, _) = screen(&session);
+            assert!(
+                !drawn.contains('╭'),
+                "the box was drawn under the scroller: {drawn}"
+            );
+            assert!(
+                !drawn.contains(PLACEHOLDER),
+                "the box was still inviting a prompt: {drawn}"
+            );
+
+            let open = drawn_over(&session);
+            assert_eq!(
+                open.height, 23,
+                "the transcript did not have every row but the footer"
+            );
+
+            session.close_scroller();
+            let (at_rest, _) = screen(&session);
+            assert!(at_rest.contains('╭'), "the box did not come back");
+            assert!(
+                drawn_over(&session).height < open.height,
+                "the rows the box gave up did not go to the transcript"
+            );
+        }
+
+        /// The indicator went with the box, so the footer is the only thing left that can say a
+        /// turn is still in flight. A person reading back through one that is going wrong is
+        /// reading precisely because it is going wrong, and a screen with nothing moving on it
+        /// says the opposite of what is happening.
+        #[test]
+        fn the_scroller_says_a_turn_is_still_running() {
+            let session = reading();
+            let (idle, _) = screen(&session);
+
+            let mut working = reading();
+            working.status = Status::Working;
+            let verb = working
+                .indicator()
+                .expect("a turn in flight has an indicator")
+                .verb
+                .to_string();
+            let (running, _) = screen(&working);
+
+            assert!(
+                running.contains(&format!("{verb}…")),
+                "the footer did not say the turn was still running: {running}"
+            );
+            assert!(
+                !idle.contains(&format!("{verb}…")),
+                "the footer said a turn was running with nothing in flight: {idle}"
+            );
+        }
+
+        #[test]
+        fn every_match_on_the_screen_is_highlighted() {
+            let (_, marked) = screen(&searching("needle"));
+
+            assert!(
+                marked.contains("needle"),
+                "nothing on the screen was highlighted"
+            );
+            assert_eq!(
+                marked.matches("needle").count(),
+                3,
+                "not every occurrence was marked: {marked:?}"
+            );
+        }
+
+        #[test]
+        fn how_many_matches_there_are_is_drawn() {
+            let (drawn, _) = screen(&searching("needle"));
+
+            assert!(
+                drawn.contains("1 of 3"),
+                "the footer does not say where in the matches the view is: {drawn}"
+            );
+        }
+
+        /// The footer is the one row of the screen the interface speaks in its own voice. A
+        /// quotation there is untrusted content drawn outside a marked block, and a line that can
+        /// be quoted is a line that can be written to read like the interface.
+        #[test]
+        fn the_search_footer_never_quotes_what_it_matched() {
+            let (drawn, _) = screen(&searching("needle"));
+
+            let footer = drawn
+                .as_str()
+                .split("/needle")
+                .nth(1)
+                .expect("the footer names what is being looked for");
+            assert!(
+                !footer.contains("haystack"),
+                "the footer quoted the line it matched: {footer}"
+            );
+        }
+
+        /// An interface that shows content and then refuses to let a person find it has protected
+        /// nobody and made the audit worse.
+        #[test]
+        fn a_search_matches_quarantined_content_too() {
+            let (_, marked) = screen(&searching("haystack"));
+
+            assert!(
+                marked.contains("haystack"),
+                "a match in a quarantined block was not highlighted"
+            );
+        }
+
+        /// Highlighting splits the spans a row is already made of, so nothing moves and nothing
+        /// leaves the block it was drawn in: the margin is still in front of the row, and the
+        /// match is still behind it.
+        #[test]
+        fn a_match_inside_a_quarantined_block_stays_inside_it() {
+            let session = searching("haystack");
+            let (lines, _) = lay_out(&session, 90, 24);
+
+            let row = lines
+                .iter()
+                .find(|line| {
+                    let drawn: String = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect();
+                    drawn.contains("haystack")
+                })
+                .expect("the matched row is drawn");
+
+            let drawn: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+            assert!(
+                drawn.starts_with(&format!("  {QUARANTINE_BAR} ")),
+                "the match left the margin behind: {drawn}"
+            );
+            assert!(
+                row.spans
+                    .iter()
+                    .any(|span| span.style.add_modifier.contains(Modifier::REVERSED)),
+                "the match inside the block was not highlighted"
+            );
+        }
+
+        #[test]
+        fn a_quarantined_row_is_marked_in_the_scroller_as_it_is_in_the_transcript() {
+            let searched = searching("haystack");
+            let mut plain = reading();
+            plain.close_scroller();
+
+            let marked_rows = |session: &Session| {
+                let (lines, _) = lay_out(session, 90, 24);
+                lines
+                    .iter()
+                    .filter(|line| {
+                        let drawn: String = line
+                            .spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect();
+                        drawn.starts_with(&format!("  {QUARANTINE_BAR} "))
+                    })
+                    .count()
+            };
+
+            assert_eq!(
+                marked_rows(&searched),
+                marked_rows(&plain),
+                "the block lost or gained a margin under a search"
+            );
+        }
+
+        /// What a needle meets is the glyph the escape was replaced with on its way to the
+        /// screen. The bytes behind it are not there to be found, which is what keeps a match
+        /// from being a thing nobody can see.
+        #[test]
+        fn a_search_matches_what_is_drawn_and_not_the_bytes_behind_it() {
+            let (_, marked) = screen(&searching("\u{1b}[31m"));
+            assert!(
+                marked.is_empty(),
+                "the raw escape was found in the drawn text: {marked:?}"
+            );
+
+            let (_, glyph) = screen(&searching("␛"));
+            assert!(
+                !glyph.is_empty(),
+                "the glyph the escape is drawn as could not be found"
+            );
+        }
+
+        #[test]
+        fn a_search_that_matches_nothing_says_so_and_moves_nothing() {
+            let mut session = reading_over(100);
+            session.scroller_back(30);
+            let looking_at = session.scroll;
+
+            session.begin_search();
+            for c in "nothing at all like this".chars() {
+                session.type_into_search(c);
+            }
+            session.run_search();
+            let found = as_last_drawn(&session);
+            session.land_on_a_match(&found.matches);
+
+            assert_eq!(
+                session.scroll, looking_at,
+                "a search with no answer moved the view"
+            );
+            let (drawn, _) = screen(&session);
+            assert!(
+                drawn.contains("no matches"),
+                "the footer did not say there were none: {drawn}"
+            );
+        }
+
+        /// Draw one frame the way the loop draws it, and give back the top row of the screen and
+        /// what the frame laid the transcript out to.
+        fn a_frame(session: &mut Session) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
+            let mut laid = Laid::default();
+            terminal
+                .draw(|frame| laid = draw(frame, session))
+                .expect("draw succeeds");
+            session.note_layout(laid);
+
+            let buffer = terminal.backend().buffer();
+            let top: String = (0..buffer.area.width)
+                .map(|column| buffer[(column, 0)].symbol())
+                .collect();
+            top.trim_end().to_string()
+        }
+
+        /// Holding the view has to hold it in the frame that draws it, not in the one after. The
+        /// end of the transcript moves with every token, so a frame that counts back from it is
+        /// drawn wherever the rows that arrived since the last frame have pushed the count, and
+        /// somebody trying to read while a turn writes watches the screen slide under them.
+        #[test]
+        fn a_turn_writing_underneath_does_not_slide_the_view_between_frames() {
+            let mut session = Session::new("kernel-enforced");
+            for n in 0..60 {
+                session.transcript.push(Entry::user(format!("prompt {n}")));
+                session
+                    .transcript
+                    .push(Entry::assistant(format!("reply {n}"), Vec::new()));
+            }
+            session.open_scroller();
+
+            a_frame(&mut session);
+            session.scroller_back(40);
+            let reading = a_frame(&mut session);
+            assert!(
+                reading.contains("prompt") || reading.contains("reply"),
+                "the view is not on the transcript: {reading:?}"
+            );
+
+            for n in 0..3 {
+                session
+                    .transcript
+                    .push(Entry::assistant(format!("arriving {n}"), Vec::new()));
+                assert_eq!(
+                    a_frame(&mut session),
+                    reading,
+                    "a row arriving below slid the view"
+                );
+            }
+        }
+
+        /// The view is held, so what arrives goes below it. Somebody reading has to be able to
+        /// tell that there is something they have not read.
+        #[test]
+        fn the_scroller_says_more_has_arrived_below() {
+            let mut session = reading_over(100);
+            session.scroller_back(12);
+
+            let (drawn, _) = screen(&session);
+            assert!(
+                drawn.contains("12 rows below"),
+                "nothing said there was more underneath: {drawn}"
+            );
+        }
+
+        /// The way out is the one row of a key list that must never be the row that did not fit.
+        #[test]
+        fn the_help_renders_on_a_tiny_terminal() {
+            let mut session = reading();
+            session.toggle_scroller_help();
+
+            for (width, height) in [(90, 24), (40, 8), (20, 4), (10, 3), (30, 2), (30, 1)] {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width, height)).expect("terminal");
+                terminal
+                    .draw(|frame| {
+                        draw(frame, &session);
+                    })
+                    .expect("draw succeeds");
+                let drawn: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(
+                    drawn.contains("q / esc"),
+                    "the way out did not fit at {width}x{height}: {drawn}"
+                );
+            }
+        }
+
+        /// What goes to an editor is what the person was looking at, not a second rendering that
+        /// agrees about the words and about nothing else. The margin is how untrusted content is
+        /// marked, so it goes too.
+        #[test]
+        fn what_goes_to_the_editor_is_marked_the_way_the_screen_is() {
+            let session = reading_over(40);
+
+            let text = as_text(&session);
+            let quarantined: Vec<&str> = text
+                .lines()
+                .filter(|line| line.contains("haystack"))
+                .collect();
+
+            assert_eq!(quarantined.len(), 1, "the block is not in the file");
+            assert!(
+                quarantined[0].starts_with(&format!("  {QUARANTINE_BAR} ")),
+                "untrusted content reached the file unmarked: {}",
+                quarantined[0]
+            );
+            assert!(
+                !text.contains('\u{1b}'),
+                "an escape reached the file as an escape"
+            );
+        }
     }
 
     mod progress {
@@ -2113,7 +3027,9 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, &session))
+            .draw(|frame| {
+                draw(frame, &session);
+            })
             .expect("draw succeeds");
 
         let buffer = terminal.backend().buffer();
@@ -2293,7 +3209,9 @@ mod tests {
             }
             let mut terminal = Terminal::new(TestBackend::new(96, 14)).expect("terminal");
             terminal
-                .draw(|frame| draw(frame, &session))
+                .draw(|frame| {
+                    draw(frame, &session);
+                })
                 .expect("draw succeeds");
             let buffer = terminal.backend().buffer();
             for row in 0..14u16 {
@@ -2661,7 +3579,9 @@ mod tests {
         let session = Session::new("none");
         let mut terminal = Terminal::new(TestBackend::new(10, 5)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, &session))
+            .draw(|frame| {
+                draw(frame, &session);
+            })
             .expect("draw must not panic on a small area");
     }
 
@@ -2742,7 +3662,9 @@ mod tests {
     fn rendered_at(session: &Session, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, session))
+            .draw(|frame| {
+                draw(frame, session);
+            })
             .expect("draw succeeds");
         terminal
             .backend()
@@ -2760,7 +3682,9 @@ mod tests {
     fn hint_row_at(session: &Session, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, session))
+            .draw(|frame| {
+                draw(frame, session);
+            })
             .expect("draw succeeds");
         let buffer = terminal.backend().buffer().clone();
         (0..width)
@@ -2783,7 +3707,9 @@ mod tests {
     fn caret_cell(session: &Session, width: u16, height: u16) -> Option<(u16, u16, String)> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, session))
+            .draw(|frame| {
+                draw(frame, session);
+            })
             .expect("draw succeeds");
         let buffer = terminal.backend().buffer().clone();
         (0..height)
@@ -2799,7 +3725,9 @@ mod tests {
     fn caret_cells(session: &Session, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, session))
+            .draw(|frame| {
+                draw(frame, session);
+            })
             .expect("draw succeeds");
         let buffer = terminal.backend().buffer().clone();
         (0..height)
@@ -3141,7 +4069,9 @@ mod tests {
             let session = working_with(three());
             let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("terminal");
             terminal
-                .draw(|frame| draw(frame, &session))
+                .draw(|frame| {
+                    draw(frame, &session);
+                })
                 .expect("draw succeeds");
 
             // Found by content rather than position, so the assertion survives a layout change.
@@ -3159,7 +4089,9 @@ mod tests {
             let session = working_with(list(&[("still to do", Status::Pending)]));
             let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("terminal");
             terminal
-                .draw(|frame| draw(frame, &session))
+                .draw(|frame| {
+                    draw(frame, &session);
+                })
                 .expect("draw succeeds");
 
             let buffer = terminal.backend().buffer().clone();

@@ -7,7 +7,11 @@ fn a_default_terminal_size_renders_content() {
 
     let session = Session::new("kernel-enforced");
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-    terminal.draw(|f| render::draw(f, &session)).expect("draw");
+    terminal
+        .draw(|f| {
+            render::draw(f, &session);
+        })
+        .expect("draw");
     let text: String = terminal
         .backend()
         .buffer()
