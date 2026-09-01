@@ -7,6 +7,7 @@
 use crate::audit::TrailLine;
 use bravebot_agent::report::{Activity, Landing, Phase, Shown};
 use bravebot_core::event::Event;
+use bravebot_i18n::t;
 use std::time::{Duration, Instant};
 
 /// How many newlines a paste carries before it is folded behind a marker.
@@ -1356,7 +1357,7 @@ impl Session {
     ) {
         use bravebot_agent::conversation::Said;
 
-        self.note(format!("resumed session: {title}"));
+        self.note(t!(session_resumed, title = title));
 
         // The last entry of each turn, which is where that turn's trail goes. Filled as the
         // transcript is built and applied afterwards, so a turn that spoke several times ends up
@@ -1455,10 +1456,10 @@ impl Session {
         // Numbered off the counter a dropped file and a pasted picture use, so no two markers in
         // one line can carry the same number and a number is never reused.
         self.attachments_made += 1;
-        let marker = format!(
-            "[Pasted text #{} +{} lines]",
-            self.attachments_made,
-            lines_in(&text)
+        let marker = t!(
+            paste_folded,
+            number = self.attachments_made,
+            lines = lines_in(&text)
         );
         self.paste(&marker);
         self.pasted_text.push(PastedText { marker, text });
@@ -1576,6 +1577,10 @@ impl Session {
     /// would change the marker sitting in the line the user is looking at.
     pub fn attach(&mut self, image: crate::clipboard::Image) {
         self.attachments_made += 1;
+        // Not from a catalog, and deliberately. Unlike a folded paste, which is put back to its
+        // words before the turn is built, this marker is sent as it stands: the planner reads
+        // "[Image #2]" and counts to the picture that answers it. Translating it would change
+        // what the model is given, which is the one thing a change of language must not do.
         let marker = format!("[Image #{}]", self.attachments_made);
         self.paste(&marker);
         self.pasted.push(AttachedImage {
@@ -1897,7 +1902,7 @@ impl Session {
     /// Show what a command printed, or that it printed nothing.
     pub fn printed(&mut self, text: &str) {
         if text.trim().is_empty() {
-            self.transcript.push(Entry::system("no output"));
+            self.transcript.push(Entry::system(t!(session_no_output)));
         } else {
             self.transcript.push(Entry::output(text.trim_end()));
         }

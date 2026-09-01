@@ -11,6 +11,7 @@
 
 use bravebot_agent::diff::Change;
 use bravebot_agent::report::{Activity, Landing, Shown};
+use bravebot_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -94,7 +95,9 @@ const QUARANTINE_BAR: &str = "\u{2503}";
 ///
 /// Drawn rather than typed, so it is never part of a prompt and never has to be deleted: the
 /// first character typed takes its place, because the line it was standing in for now exists.
-const PLACEHOLDER: &str = "Ask Brave Bot to do anything";
+fn placeholder() -> &'static str {
+    t!(input_placeholder)
+}
 
 /// Replace control characters, so drawn text cannot move the cursor or recolour the screen.
 ///
@@ -306,7 +309,11 @@ fn quarantined_lines(shown: &Shown, width: usize) -> Vec<Line<'static>> {
         &margin,
         &[
             Span::styled(
-                format!("untrusted \u{b7} {} \u{b7} {}", shown.origin, shown.label),
+                t!(
+                    quarantined_heading,
+                    origin = &shown.origin,
+                    label = &shown.label
+                ),
                 marked.add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  {}", shown.reach.describe()), dim()),
@@ -327,7 +334,10 @@ fn quarantined_lines(shown: &Shown, width: usize) -> Vec<Line<'static>> {
         lines.extend(marked_rows(
             &margin,
             &[Span::styled(
-                format!("\u{2026} {} more lines", shown.lines - shown.preview.len()),
+                t!(
+                    transcript_more_lines,
+                    count = shown.lines - shown.preview.len()
+                ),
                 dim(),
             )],
             width,
@@ -365,7 +375,9 @@ fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'st
                     Span::styled(format!("- {text}"), Style::default().fg(theme::fail()))
                 }
                 Change::Kept(text) => Span::styled(format!("  {text}"), dim()),
-                Change::Elided(count) => Span::styled(format!("… {count} unchanged lines"), dim()),
+                Change::Elided(count) => {
+                    Span::styled(t!(transcript_unchanged, count = *count), dim())
+                }
             };
             marked_rows(&margin, &[body], width)
         })
@@ -378,7 +390,10 @@ fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'st
         lines.extend(marked_rows(
             &margin,
             &[Span::styled(
-                format!("… {} more lines", changes.len() - MAX_DIFF_LINES),
+                t!(
+                    transcript_more_lines,
+                    count = changes.len() - MAX_DIFF_LINES
+                ),
                 dim(),
             )],
             width,
@@ -502,19 +517,23 @@ fn draw_scroller(frame: &mut Frame, session: &Session) -> Laid {
 ///
 /// The way out is last and is never the row that did not fit: a list that scrolled its own exit
 /// off the screen would be a mode nobody could leave.
-const SCROLLER_KEYS: [(&str, &str); 8] = [
-    ("up/down, j/k", "line up/down"),
-    ("ctrl-u / ctrl-d", "half page"),
-    ("space / b", "full page   (also ctrl-f / ctrl-b)"),
-    ("g / G", "top / bottom   (also home / end)"),
-    ("{ / }", "previous / next prompt"),
-    ("/ then n/N", "search, next/previous match"),
-    ("v", "open the transcript in $EDITOR"),
-    ("?", "this list"),
-];
+fn scroller_keys() -> [(&'static str, &'static str); 8] {
+    [
+        ("up/down, j/k", t!(scroller_key_line)),
+        ("ctrl-u / ctrl-d", t!(scroller_key_half_page)),
+        ("space / b", t!(scroller_key_full_page)),
+        ("g / G", t!(scroller_key_ends)),
+        ("{ / }", t!(scroller_key_prompts)),
+        ("/ then n/N", t!(scroller_key_search)),
+        ("v", t!(scroller_key_editor)),
+        ("?", t!(scroller_key_this_list)),
+    ]
+}
 
 /// What closes the scroller, which is the one row of the key list that is never dropped.
-const SCROLLER_EXIT: (&str, &str) = ("q / esc / ctrl-o", "close the scroller");
+fn scroller_exit() -> (&'static str, &'static str) {
+    ("q / esc / ctrl-o", t!(scroller_key_close))
+}
 
 /// Draw the key list over the transcript.
 ///
@@ -539,13 +558,12 @@ fn draw_scroller_help(frame: &mut Frame, area: Rect) {
     }
     .max(1);
 
-    let mut rows: Vec<Line> = SCROLLER_KEYS
-        .iter()
-        .copied()
+    let mut rows: Vec<Line> = scroller_keys()
+        .into_iter()
         .take(room.saturating_sub(1))
         .map(row)
         .collect();
-    rows.push(row(SCROLLER_EXIT));
+    rows.push(row(scroller_exit()));
 
     let width = area.width.min(58);
     let height = (rows.len() as u16 + if bordered { 2 } else { 0 }).min(area.height);
@@ -563,7 +581,7 @@ fn draw_scroller_help(frame: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title(" scroller "),
+                .title(format!(" {} ", t!(scroller_title))),
         )
     } else {
         list
@@ -588,7 +606,7 @@ fn draw_scroller_hint(frame: &mut Frame, area: Rect, session: &Session, found: u
             Paragraph::new(Line::from(vec![
                 Span::styled(format!("  /{typing}"), Style::default().fg(Color::Cyan)),
                 Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
-                Span::styled("  ·  enter to search  ·  esc to abandon", dim()),
+                Span::styled(format!("  ·  {}", t!(scroller_searching)), dim()),
             ])),
             area,
         );
@@ -599,9 +617,13 @@ fn draw_scroller_hint(frame: &mut Frame, area: Rect, session: &Session, found: u
         // Never the matched text. The footer is the one row of the screen the interface speaks in
         // its own voice, and a quotation there is untrusted content drawn outside a marked block.
         let standing = if found == 0 {
-            "no matches".to_string()
+            t!(scroller_no_matches).to_string()
         } else {
-            format!("{} of {found}", scroller.at.min(found - 1) + 1)
+            t!(
+                scroller_match_of,
+                at = scroller.at.min(found - 1) + 1,
+                total = found
+            )
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -610,10 +632,7 @@ fn draw_scroller_hint(frame: &mut Frame, area: Rect, session: &Session, found: u
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(format!("  ·  {standing}"), dim()),
-                Span::styled(
-                    "  ·  n next  ·  N previous  ·  esc clears  ·  q closes",
-                    dim(),
-                ),
+                Span::styled(format!("  ·  {}", t!(scroller_search_keys)), dim()),
             ])),
             area,
         );
@@ -624,7 +643,7 @@ fn draw_scroller_hint(frame: &mut Frame, area: Rect, session: &Session, found: u
     let arrived = if below == 0 {
         String::new()
     } else {
-        format!("  ·  {below} rows below")
+        format!("  ·  {}", t!(scroller_rows_below, count = below))
     };
 
     // The indicator's row went with the box, and a turn that has not written anything yet leaves
@@ -641,11 +660,17 @@ fn draw_scroller_hint(frame: &mut Frame, area: Rect, session: &Session, found: u
     // half advertises whatever happened to be at the near end of it. `/` is here because it is
     // the one key nobody guesses, and everything else on the row is a way to find out the rest.
     let mut spans = vec![
-        Span::styled("  scroller", Style::default().fg(Color::Cyan)),
-        Span::styled("  ·  q closes  ·  ? keys", dim()),
+        Span::styled(
+            format!("  {}", t!(scroller_footer)),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(format!("  ·  {}", t!(scroller_footer_keys)), dim()),
     ];
     spans.extend(running);
-    spans.push(Span::styled(format!("{arrived}  ·  / search"), dim()));
+    spans.push(Span::styled(
+        format!("{arrived}  ·  {}", t!(scroller_footer_search)),
+        dim(),
+    ));
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -1128,7 +1153,7 @@ fn lead_for(index: usize, shell: bool) -> &'static str {
 /// than as text somebody has to clear.
 fn placeholder_spans(colour: Color) -> Vec<Span<'static>> {
     let block = Style::default().fg(colour).add_modifier(Modifier::REVERSED);
-    let mut characters = PLACEHOLDER.chars();
+    let mut characters = placeholder().chars();
     let first: String = characters.by_ref().take(1).collect();
     vec![
         Span::styled(first, block),
@@ -1482,7 +1507,7 @@ fn lines_beneath_the_box(
 /// sits in the same place however far the list has narrowed. Measuring the visible rows instead
 /// would slide the descriptions sideways with each letter typed.
 fn command_lines(session: &Session, offered: &[crate::app::Command]) -> Vec<Line<'static>> {
-    let column = crate::app::COMMANDS
+    let column = crate::app::commands()
         .iter()
         .map(|command| command_word(command).chars().count())
         .max()
@@ -2010,7 +2035,7 @@ mod tests {
                 "the box was drawn under the scroller: {drawn}"
             );
             assert!(
-                !drawn.contains(PLACEHOLDER),
+                !drawn.contains(placeholder()),
                 "the box was still inviting a prompt: {drawn}"
             );
 
@@ -3171,7 +3196,7 @@ mod tests {
         session.type_char('/');
         let output = rendered_at(&session, 120, 24);
 
-        for command in crate::app::COMMANDS {
+        for command in crate::app::commands() {
             assert!(output.contains(command.name), "{} missing", command.name);
             assert!(
                 output.contains(command.description),

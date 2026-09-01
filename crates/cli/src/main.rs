@@ -94,7 +94,7 @@ fn print_help() {
     // Listed from the commands themselves, so one renamed or added cannot leave this advertising a
     // word that no longer works. The interface offers the same list when a slash is typed.
     println!("{}", t!(cli_commands_heading));
-    for command in bravebot_tui::app::COMMANDS {
+    for command in bravebot_tui::app::commands() {
         let word = if command.argument.is_empty() {
             command.name.to_string()
         } else {

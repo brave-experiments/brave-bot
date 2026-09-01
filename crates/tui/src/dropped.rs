@@ -33,6 +33,8 @@ pub struct Dropped {
 
 impl Dropped {
     /// The word the marker uses, so a user can tell one dropped thing from another.
+    /// Not from a catalog: this word goes into the marker the planner is sent, so it is part of
+    /// what the model reads rather than something a person is being told. See [`Session::attach`].
     pub fn noun(&self) -> &'static str {
         match self.kind {
             Kind::Attachment("application/pdf") => "PDF",

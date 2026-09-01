@@ -16,6 +16,7 @@ use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::trust::TrustStore;
+use bravebot_i18n::t;
 use bravebot_net::Egress;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -99,48 +100,50 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub const COMMANDS: [Command; 8] = [
-    Command {
-        name: STATUS_COMMAND,
-        argument: "",
-        description: "Report this session, what it may touch, and what it has spent",
-    },
-    Command {
-        name: MODEL_COMMAND,
-        argument: "",
-        description: "Choose which model to think with",
-    },
-    Command {
-        name: THEME_COMMAND,
-        argument: "[name]",
-        description: "Choose which theme paints the interface",
-    },
-    Command {
-        name: ADD_DIR_COMMAND,
-        argument: "<path>",
-        description: "Open another directory, and trust it for this session",
-    },
-    Command {
-        name: RENAME_COMMAND,
-        argument: "<name>",
-        description: "Call this conversation something else",
-    },
-    Command {
-        name: COMPACT_COMMAND,
-        argument: "",
-        description: "Summarise the conversation so far, keeping the recent part",
-    },
-    Command {
-        name: CLEAR_COMMAND,
-        argument: "",
-        description: "Start a new session here, keeping this one resumable",
-    },
-    Command {
-        name: EXIT_COMMAND,
-        argument: "",
-        description: "Leave",
-    },
-];
+pub fn commands() -> [Command; 8] {
+    [
+        Command {
+            name: STATUS_COMMAND,
+            argument: "",
+            description: t!(command_status),
+        },
+        Command {
+            name: MODEL_COMMAND,
+            argument: "",
+            description: t!(command_model),
+        },
+        Command {
+            name: THEME_COMMAND,
+            argument: "[name]",
+            description: t!(command_theme),
+        },
+        Command {
+            name: ADD_DIR_COMMAND,
+            argument: "<path>",
+            description: t!(command_add_dir),
+        },
+        Command {
+            name: RENAME_COMMAND,
+            argument: "<name>",
+            description: t!(command_rename),
+        },
+        Command {
+            name: COMPACT_COMMAND,
+            argument: "",
+            description: t!(command_compact),
+        },
+        Command {
+            name: CLEAR_COMMAND,
+            argument: "",
+            description: t!(command_clear),
+        },
+        Command {
+            name: EXIT_COMMAND,
+            argument: "",
+            description: t!(command_exit),
+        },
+    ]
+}
 
 /// The commands a half-typed line could still become, in the order they are offered.
 ///
@@ -152,7 +155,7 @@ pub fn completions(line: &str) -> Vec<Command> {
     if !trimmed.starts_with('/') || trimmed.contains(char::is_whitespace) {
         return Vec::new();
     }
-    COMMANDS
+    commands()
         .iter()
         .filter(|command| command.name.starts_with(trimmed))
         .copied()
@@ -838,9 +841,7 @@ pub fn handle_paste(session: &mut Session, text: &str) -> Action {
     // the terminal hands over text and there is none. Said before anything else looks at the
     // text, because an empty paste is no more a drop than it is a prompt.
     if text.is_empty() {
-        session.note_once(
-            "that paste arrived empty: the terminal hands over text only, so a picture needs ctrl-v",
-        );
+        session.note_once(t!(paste_arrived_empty));
         return Action::Paste;
     }
     // A drop reaches the terminal as a paste of the path, so this is where one is recognised.
@@ -866,23 +867,23 @@ fn take_from_clipboard(session: &mut Session, pasted: crate::clipboard::Pasted) 
     match pasted {
         // A command line is not a sentence, so a marker in one names nothing and would be passed to
         // the shell as literal text. Saying so beats writing it and letting the shell complain.
-        Pasted::Image(_) if session.shell => {
-            session.note("a picture is not a command: leave shell mode to paste one")
-        }
+        Pasted::Image(_) if session.shell => session.note(t!(paste_not_a_command)),
         Pasted::Image(image) => session.attach(image),
         Pasted::Text(text) => session.paste_text(&text),
-        Pasted::TooLarge(bytes) => session.note(format!(
-            "that picture is {}, and a paste carries at most {}",
-            in_megabytes(bytes),
-            in_megabytes(MAX_IMAGE_BYTES)
+        Pasted::TooLarge(bytes) => session.note(t!(
+            paste_too_large,
+            size = in_megabytes(bytes),
+            limit = in_megabytes(MAX_IMAGE_BYTES)
         )),
-        Pasted::Nothing => session.note("there is nothing on the clipboard to paste"),
+        Pasted::Nothing => session.note(t!(paste_nothing_on_clipboard)),
     }
 }
 
 /// A byte count as a person would say it, since nobody reads seven digits off a screen.
 fn in_megabytes(bytes: usize) -> String {
-    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    let size = format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
+        .replace('.', t!(number_decimal_separator));
+    t!(megabytes, size = size)
 }
 
 /// Interpret a mouse event.
@@ -1334,11 +1335,11 @@ fn event_loop(
             }
             Action::Rename(name) => {
                 if name.is_empty() {
-                    session.note("/rename needs a name, as in /rename the parser bug");
+                    session.note(t!(session_rename_needs_a_name));
                 } else if stored.rename(&name) {
-                    session.note(format!("renamed to {}", stored.title()));
+                    session.note(t!(session_renamed, title = stored.title()));
                 } else {
-                    session.note("/rename needs a name with something in it");
+                    session.note(t!(session_rename_needs_something));
                 }
             }
             Action::Status => {
@@ -1390,7 +1391,7 @@ fn event_loop(
                 session.clear();
                 conversation = Conversation::new();
                 stored = crate::sessions::Handle::begin(workspace.root());
-                session.note("cleared: a new session, with the previous one still resumable");
+                session.note(t!(session_cleared));
 
                 // A new session, so it is asked what a new session is asked. The map goes with the
                 // context and the directories opened under it go too, since opening one is a grant
@@ -1500,7 +1501,7 @@ fn add_directory(
     directory: &str,
 ) {
     if directory.is_empty() {
-        session.note("/add-dir needs a directory, as in /add-dir ~/notes");
+        session.note(t!(session_add_dir_needs_a_path));
         return;
     }
 
@@ -1512,9 +1513,13 @@ fn add_directory(
         Ok(added) => {
             let shown = added.display().to_string();
             trust.trust(&shown);
-            session.note(format!("added {shown}, and trusting it for this session"));
+            session.note(t!(session_directory_added, directory = shown));
         }
-        Err(error) => session.note(format!("could not add {directory}: {error}")),
+        Err(error) => session.note(t!(
+            session_directory_not_added,
+            directory = directory,
+            problem = error
+        )),
     }
 }
 
@@ -1579,10 +1584,10 @@ fn choose_model(
         Ok(models) => {
             if let Some(chosen) = crate::model_prompt::choose(terminal, models, session.model()) {
                 session.choose_model(chosen.key);
-                session.note(format!("using {}", chosen.display_name));
+                session.note(t!(session_using_model, model = &chosen.display_name));
             }
         }
-        Err(detail) => session.note(format!("could not list models: {detail}")),
+        Err(detail) => session.note(t!(session_models_unavailable, problem = detail)),
     }
 }
 
@@ -1594,7 +1599,7 @@ fn choose_theme(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: 
         render::draw(frame, session);
     }) {
         crate::store::save_theme(&chosen.name);
-        session.note(format!("theme {name}", name = chosen.name));
+        session.note(t!(session_theme_set, theme = &chosen.name));
     }
 }
 
@@ -1604,9 +1609,9 @@ fn set_theme(session: &mut Session, name: &str) {
         Some(theme) => {
             crate::theme::apply(&theme);
             crate::store::save_theme(&theme.name);
-            session.note(format!("theme {}", theme.name));
+            session.note(t!(session_theme_set, theme = &theme.name));
         }
-        None => session.note(format!("no theme named {name}; try /theme for the list")),
+        None => session.note(t!(session_no_such_theme, theme = name)),
     }
 }
 
@@ -1630,16 +1635,21 @@ fn opening_trust(
 ) -> Option<TrustStore> {
     // Said only when resuming. On a fresh start the user has just answered the question and does
     // not need telling where the answer came from.
-    let (trust, how) = match inherited {
-        Some(trust) => (trust, " (as this session left it)"),
-        None => (crate::trust_prompt::ask(terminal, root)?, ""),
+    let (trust, inherited) = match inherited {
+        Some(trust) => (trust, true),
+        None => (crate::trust_prompt::ask(terminal, root)?, false),
     };
 
-    if trust.is_trusted(".") {
-        session.note(format!("trusting {}{how}", root.display()));
-    } else {
-        session.note("this directory is not trusted; every write will be shown to you");
+    if !trust.is_trusted(".") {
+        session.note(t!(session_not_trusting));
+        return Some(trust);
     }
+    let where_it_is = root.display();
+    session.note(if inherited {
+        t!(session_trusting_as_left, directory = where_it_is)
+    } else {
+        t!(session_trusting, directory = where_it_is)
+    });
     Some(trust)
 }
 
@@ -1706,7 +1716,7 @@ fn run_command(
 
     let ran = worker.join().unwrap_or_else(|_| {
         Err(bravebot_agent::shell::ShellError::Io(
-            "the command's thread stopped unexpectedly".to_string(),
+            t!(command_thread_stopped).to_string(),
         ))
     });
     session.finish_command();
@@ -1720,7 +1730,7 @@ fn run_command(
             Ok(recorded) => {
                 session.printed(&recorded.text);
                 if !recorded.succeeded {
-                    session.note("the command reported a failure");
+                    session.note(t!(command_reported_a_failure));
                 }
             }
             Err(error) => session.note(format!("{error}")),
@@ -1796,8 +1806,7 @@ fn compact_animated(
                         session.quit();
                     }
                     TermEvent::Key(key) if wants_cancel(key) && !session.scrolling() => {
-                        session
-                            .note_once("summarising cannot be interrupted; it takes one request");
+                        session.note_once(t!(compact_uninterruptible));
                     }
                     TermEvent::Key(key) => {
                         handle_key_while_working(session, key);
@@ -1830,7 +1839,7 @@ fn compact_animated(
 
     let (done, conversation, sink) = worker.join().unwrap_or_else(|_| {
         (
-            Err("the summary ended unexpectedly".to_string()),
+            Err(t!(compact_ended_unexpectedly).to_string()),
             Conversation::new(),
             Trail::new(),
         )
@@ -1840,20 +1849,19 @@ fn compact_animated(
         Ok(Some(summary)) => {
             session.end_aside(summary.usage.total());
             session.measured(conversation.last_request_tokens(), config.context_budget);
-            session.note(format!(
-                "summarised {} earlier messages, keeping the last {} as they are",
-                summary.summarised, summary.kept
+            session.note(t!(
+                compact_done,
+                summarised = summary.summarised,
+                kept = summary.kept
             ));
         }
         Ok(None) => {
             session.end_aside(0);
-            session.note("there is nothing to summarise yet");
+            session.note(t!(compact_nothing_to_do));
         }
         Err(message) => {
             session.end_aside(0);
-            session.note(format!(
-                "the conversation could not be summarised: {message}"
-            ));
+            session.note(t!(compact_failed, problem = message));
         }
     }
 
@@ -2050,7 +2058,7 @@ fn run_turn_animated(
                 if answer == crate::confirm::Answer::Approve {
                     // Said on the transcript because it is a standing decision the user will not
                     // otherwise see recorded anywhere until they ask for /status.
-                    session.note(format!("trusting {} for this session", request.path));
+                    session.note(t!(session_vouched_for, path = &request.path));
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Vouch(answer.decision()));
             }
@@ -2065,7 +2073,7 @@ fn run_turn_animated(
                     .collect();
                 for (prompt, earlier) in asking.prompts.iter().zip(&known) {
                     if earlier.is_some() {
-                        session.note(format!("answered already: {}", prompt.question));
+                        session.note(t!(session_answered_already, question = &prompt.question));
                     }
                 }
 
@@ -2113,7 +2121,7 @@ fn run_turn_animated(
         // conversation does not, since the thread that held it is gone.
         (
             Err(turn::TurnError::Precommit(
-                "the turn ended unexpectedly".to_string(),
+                t!(turn_ended_unexpectedly).to_string(),
             )),
             Conversation::new(),
             Trail::new(),
@@ -2224,7 +2232,7 @@ fn fold_outcome(
                 outcome.tokens,
             );
             if !outcome.clean {
-                session.note("a policy gate refused something during that turn");
+                session.note(t!(session_something_was_refused));
             }
             // What the turn's last request came to, against what it would be compacted at. Not
             // the same figure as the cost above: that adds every round together, this says how
@@ -2243,7 +2251,7 @@ fn fold_outcome(
                 .iter()
                 .map(|stamped| crate::audit::as_line(&stamped.event))
                 .collect();
-            session.fail(format!("error: {error}"));
+            session.fail(t!(session_error, problem = error));
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;
             }
@@ -3914,7 +3922,7 @@ mod tests {
         assert!(is_ctrl_c(ctrl('c')));
     }
 
-    /// COMMANDS is the one place the set is written down, so a command missing from it is a
+    /// `commands()` is the one place the set is written down, so a command missing from it is a
     /// command the hint line, the completion list and Tab all fail to know about.
     #[test]
     fn compacting_is_offered_while_a_command_is_being_typed() {
@@ -4009,7 +4017,7 @@ mod tests {
     /// comes next and there is nothing left to complete.
     #[test]
     fn what_a_half_typed_line_could_become() {
-        assert_eq!(completions("/").len(), COMMANDS.len());
+        assert_eq!(completions("/").len(), commands().len());
         assert_eq!(
             completions("/cl")
                 .iter()
@@ -4085,25 +4093,25 @@ mod tests {
 
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMMANDS[0].name),
+            Some(commands()[0].name),
             "the list opens at the top"
         );
         handle_key(&mut session, key(KeyCode::Down));
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMMANDS[1].name)
+            Some(commands()[1].name)
         );
         handle_key(&mut session, key(KeyCode::Up));
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMMANDS[0].name)
+            Some(commands()[0].name)
         );
 
         // Up at the top stays, rather than wrapping to the end.
         handle_key(&mut session, key(KeyCode::Up));
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMMANDS[0].name)
+            Some(commands()[0].name)
         );
     }
 
@@ -4112,12 +4120,12 @@ mod tests {
     fn walking_past_the_end_stays_on_the_last_command() {
         let mut session = Session::new("none");
         handle_key(&mut session, key(KeyCode::Char('/')));
-        for _ in 0..COMMANDS.len() + 3 {
+        for _ in 0..commands().len() + 3 {
             handle_key(&mut session, key(KeyCode::Down));
         }
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMMANDS[COMMANDS.len() - 1].name)
+            Some(commands()[commands().len() - 1].name)
         );
     }
 
@@ -4147,12 +4155,12 @@ mod tests {
         handle_key(&mut session, key(KeyCode::Char('/')));
         // To the last of them, counted rather than named, so adding a command does not make this
         // test assert about the wrong row.
-        for _ in 0..COMMANDS.len() {
+        for _ in 0..commands().len() {
             handle_key(&mut session, key(KeyCode::Down));
         }
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMMANDS[COMMANDS.len() - 1].name)
+            Some(commands()[commands().len() - 1].name)
         );
 
         // Now one command matches, while the cursor still points at the last.

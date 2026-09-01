@@ -327,3 +327,109 @@ editor-named-but-missing =
 editor-exited-badly = { $editor } exited with status { $code }, so the line is unchanged
 editor-was-stopped = { $editor } was stopped before it finished, so the line is unchanged
 editor-would-not-start = { $editor } would not start: { $problem }
+
+
+## The transcript
+
+input-placeholder = Ask Brave Bot to do anything
+quarantined-heading = untrusted · { $origin } · { $label }
+transcript-more-lines = { $count ->
+    [one] … { $count } more line
+   *[other] … { $count } more lines
+    }
+transcript-unchanged = { $count ->
+    [one] … { $count } unchanged line
+   *[other] … { $count } unchanged lines
+    }
+
+
+## Reading back through the transcript
+
+scroller-title = scroller
+scroller-key-line = line up/down
+scroller-key-half-page = half page
+scroller-key-full-page = full page   (also ctrl-f / ctrl-b)
+scroller-key-ends = top / bottom   (also home / end)
+scroller-key-prompts = previous / next prompt
+scroller-key-search = search, next/previous match
+scroller-key-editor = open the transcript in $EDITOR
+scroller-key-this-list = this list
+scroller-key-close = close the scroller
+scroller-searching = enter to search  ·  esc to abandon
+scroller-no-matches = no matches
+scroller-match-of = { $at } of { $total }
+scroller-search-keys = n next  ·  N previous  ·  esc clears  ·  q closes
+scroller-rows-below = { $count ->
+    [one] { $count } row below
+   *[other] { $count } rows below
+    }
+scroller-footer = scroller
+scroller-footer-keys = q closes  ·  ? keys
+scroller-footer-search = / search
+
+
+## The commands a line beginning with a slash may be
+
+command-status = Report this session, what it may touch, and what it has spent
+command-model = Choose which model to think with
+command-theme = Choose which theme paints the interface
+command-add-dir = Open another directory, and trust it for this session
+command-rename = Call this conversation something else
+command-compact = Summarise the conversation so far, keeping the recent part
+command-clear = Start a new session here, keeping this one resumable
+command-exit = Leave
+
+
+## What the session says back
+
+session-resumed = resumed session: { $title }
+session-renamed = renamed to { $title }
+session-rename-needs-a-name = /rename needs a name, as in /rename the parser bug
+session-rename-needs-something = /rename needs a name with something in it
+session-cleared = cleared: a new session, with the previous one still resumable
+session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/notes
+session-directory-added = added { $directory }, and trusting it for this session
+session-directory-not-added = could not add { $directory }: { $problem }
+session-using-model = using { $model }
+session-models-unavailable = could not list models: { $problem }
+session-theme-set = theme { $theme }
+session-no-such-theme = no theme named { $theme }; try /theme for the list
+session-trusting = trusting { $directory }
+session-trusting-as-left = trusting { $directory } (as this session left it)
+session-not-trusting = this directory is not trusted; every write will be shown to you
+session-vouched-for = trusting { $path } for this session
+session-answered-already = answered already: { $question }
+session-something-was-refused = a policy gate refused something during that turn
+session-error = error: { $problem }
+session-no-output = no output
+
+
+## Pasting, dropping and attaching
+
+paste-arrived-empty =
+    that paste arrived empty: the terminal hands over text only, so a picture needs ctrl-v
+paste-not-a-command = a picture is not a command: leave shell mode to paste one
+paste-too-large = that picture is { $size }, and a paste carries at most { $limit }
+paste-nothing-on-clipboard = there is nothing on the clipboard to paste
+paste-folded = { $lines ->
+    [one] [Pasted text #{ $number } +{ $lines } line]
+   *[other] [Pasted text #{ $number } +{ $lines } lines]
+    }
+megabytes = { $size } MB
+
+
+## Running a command the person typed
+
+command-thread-stopped = the command's thread stopped unexpectedly
+command-reported-a-failure = the command reported a failure
+
+
+## Shortening a long conversation
+
+compact-uninterruptible = summarising cannot be interrupted; it takes one request
+compact-ended-unexpectedly = the summary ended unexpectedly
+compact-done =
+    summarised { $summarised } earlier messages, keeping the last { $kept } as they are
+compact-nothing-to-do = there is nothing to summarise yet
+compact-failed = the conversation could not be summarised: { $problem }
+turn-ended-unexpectedly = the turn ended unexpectedly
