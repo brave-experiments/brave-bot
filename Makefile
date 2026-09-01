@@ -17,6 +17,7 @@ help:
 	@echo "  make test           Run all tests"
 	@echo "  make check          Format check, clippy, and tests"
 	@echo "  make check-spec     Check docs/specs against the implementation"
+	@echo "  make locales        What each translation has, and what it is missing"
 	@echo "  make check-linux    The same checks on Linux, current stable toolchain"
 	@echo "  make fmt            Apply formatting"
 	@echo
@@ -73,6 +74,23 @@ check:
 check-spec:
 	python3 agents/skills/check-spec/selftest.py
 	python3 agents/skills/check-spec/check-spec.py --mechanical-only
+
+# What each catalog has of the reference, and what it is missing. The build says so too, in a
+# warning, but a warning is only printed when the build script actually runs, so a translator
+# working through a file learns nothing from a cached build. This always answers.
+.PHONY: locales
+locales:
+	@ref=crates/i18n/locales/en-US.ftl; \
+	ids() { grep -oE '^[a-z][a-z0-9-]+ =' "$$1" | tr -d ' ='; }; \
+	total=$$(ids $$ref | wc -l | tr -d ' '); \
+	echo "en-US  $$total messages, the reference"; \
+	for f in crates/i18n/locales/*.ftl; do \
+		case "$$f" in *en-US.ftl) continue;; esac; \
+		tag=$$(basename "$$f" .ftl); \
+		have=$$({ ids $$ref; ids "$$f"; } | sort | uniq -d | wc -l | tr -d ' '); \
+		echo "$$tag  $$have of $$total"; \
+		{ ids $$ref; ids "$$f"; } | sort | uniq -u | sed 's/^/    missing: /'; \
+	done
 
 # Runs the same checks on Linux with the current stable toolchain. Worth doing before
 # pushing platform-specific code: a macOS host never compiles the Linux backend, and

@@ -45,6 +45,32 @@ in every directory. Custom themes are JSON files under `~/.bravebot/themes/`. Se
 Add `--trace` to a one-shot run for the audit trail: which gate checked what, the label every
 value carried, and what was released.
 
+## Language
+
+bravebot reads the interface in your language where a translation for it has shipped, and in
+English otherwise. It takes the first of `BRAVEBOT_LOCALE`, `LC_ALL`, `LC_MESSAGES` and `LANG`
+that is set, so on a machine already set up for French there is nothing to do.
+
+```sh
+bravebot                          # whatever your shell says
+BRAVEBOT_LOCALE=fr bravebot       # this once
+export BRAVEBOT_LOCALE=fr         # from now on
+```
+
+`BRAVEBOT_LOCALE` is there so one program can be in a language the rest of the shell is not,
+which is usually wanted the other way round: an English interface on an otherwise French machine.
+
+`fr-CA` and `fr-BE` are answered by the French catalog where they have none of their own, and a
+language nothing has shipped for reads in English. `LC_ALL=C` asks for no translation at all.
+
+English and French are what ship today. Adding a language is a file, and needs no Rust:
+[crates/i18n/locales/README.md](https://github.com/brave-experiments/brave-bot/blob/main/crates/i18n/locales/README.md).
+
+What stays in English whatever you set: the names of the slash commands, so `/model` is `/model`
+everywhere; the letters a question is answered with, `y` and `n`; and the audit trail, which is a
+record rather than prose. Nothing the model is sent changes with your language either, so
+switching it changes what you read and never what the agent does.
+
 ## Trusted directories
 
 At startup you are asked whether you trust the working directory. **Trust it** and ordinary work
