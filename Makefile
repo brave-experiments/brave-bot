@@ -1,5 +1,6 @@
 BINARY = bravebot
 VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)
+TAG = v$(VERSION)
 
 # Forwarded into the cross-build container, which does not inherit the host environment.
 BUILD_ENV = SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
@@ -29,6 +30,10 @@ help:
 	@echo "  make linux-arm64    Linux aarch64"
 	@echo "  make windows-amd64  Windows x86_64"
 	@echo "  make windows-arm64  Windows aarch64"
+	@echo
+	@echo "Releasing:"
+	@echo "  make bump-version BUMP=bugfix|minor|major   Set the next version"
+	@echo "  make github-release                         Tag it and let CI publish"
 	@echo
 	@echo "  make clean          Remove build output"
 
@@ -161,6 +166,87 @@ checksums:
 		shasum -a 256 "$$f" >> SHA256SUMS; \
 	done
 	@echo "wrote dist/SHA256SUMS"
+
+# Edits the version in place and stops. Committing it is a separate, reviewable step,
+# and `github-release` refuses to tag a dirty tree, so the bump cannot ride along
+# untracked with a tag that claims to name it.
+.PHONY: bump-version
+bump-version:
+	@if [ "$(BUMP)" != "bugfix" ] && [ "$(BUMP)" != "minor" ] && [ "$(BUMP)" != "major" ]; then \
+		echo "error: BUMP must be one of: bugfix, minor, major"; \
+		exit 1; \
+	fi
+	@set -eu; \
+	current="$(VERSION)"; \
+	if [ -z "$$current" ]; then \
+		echo "error: unable to read version from Cargo.toml"; \
+		exit 1; \
+	fi; \
+	major="$${current%%.*}"; rest="$${current#*.}"; \
+	minor="$${rest%%.*}"; patch="$${rest#*.}"; \
+	case "$(BUMP)" in \
+		bugfix) patch="$$((patch + 1))" ;; \
+		minor) minor="$$((minor + 1))"; patch=0 ;; \
+		major) major="$$((major + 1))"; minor=0; patch=0 ;; \
+	esac; \
+	next="$$major.$$minor.$$patch"; \
+	awk -v v="$$next" ' \
+		BEGIN { in_pkg = 0; done = 0 } \
+		/^\[/ { in_pkg = ($$0 == "[workspace.package]") } \
+		in_pkg && !done && /^version[[:space:]]*=/ { \
+			print "version = \"" v "\""; done = 1; next \
+		} \
+		{ print }' Cargo.toml > Cargo.toml.tmp; \
+	mv Cargo.toml.tmp Cargo.toml; \
+	if [ "$$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)" != "$$next" ]; then \
+		echo "error: Cargo.toml version was not rewritten"; \
+		exit 1; \
+	fi; \
+	cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null; \
+	V="$$next" node -e ' \
+const fs = require("node:fs"); \
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); \
+if (!process.env.V) { throw new Error("version not passed through"); } \
+pkg.version = process.env.V; \
+fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");'; \
+	echo "bumped $$current -> $$next (Cargo.toml, Cargo.lock, package.json)"; \
+	echo "commit this, then run: make github-release"
+
+# Tags the current version and pushes it. The tag push is the only thing that triggers
+# a release build, so everything CI needs must already be committed and on origin.
+.PHONY: github-release
+github-release:
+	@set -eu; \
+	if [ -z "$(VERSION)" ]; then \
+		echo "error: unable to read version from Cargo.toml"; \
+		exit 1; \
+	fi; \
+	if [ "$$(node -p 'require("./package.json").version')" != "$(VERSION)" ]; then \
+		echo "error: package.json version does not match Cargo.toml ($(VERSION)); run make bump-version"; \
+		exit 1; \
+	fi; \
+	if ! git diff --quiet || ! git diff --cached --quiet; then \
+		echo "error: working tree must be clean before tagging"; \
+		exit 1; \
+	fi; \
+	branch="$$(git rev-parse --abbrev-ref HEAD)"; \
+	if [ "$$branch" != "main" ]; then \
+		echo "error: releases are tagged from main, not $$branch"; \
+		exit 1; \
+	fi; \
+	git fetch --quiet origin main; \
+	if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse origin/main)" ]; then \
+		echo "error: HEAD differs from origin/main; push or pull first"; \
+		exit 1; \
+	fi; \
+	if git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null; then \
+		echo "error: tag $(TAG) already exists"; \
+		exit 1; \
+	fi; \
+	git tag -a -m "bravebot $(TAG)" "$(TAG)"; \
+	git push origin "$(TAG)"; \
+	echo "pushed $(TAG); CI will build, checksum, and publish the GitHub release"; \
+	echo "watch with: gh run watch --repo brave-experiments/brave-bot"
 
 .PHONY: clean
 clean:

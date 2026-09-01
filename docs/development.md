@@ -21,6 +21,34 @@ comes out on any host:
 make all-platforms
 ```
 
+## Releasing
+
+Two steps, because the version is a reviewable change and the tag is the trigger.
+
+```sh
+make bump-version BUMP=bugfix   # or minor, major
+# commit the result, land it on main
+make github-release
+```
+
+`bump-version` rewrites the version in `Cargo.toml`, `Cargo.lock`, and `package.json` and stops
+there; nothing is committed or pushed for you. `github-release` refuses to tag unless the tree is
+clean, the two version files agree, and HEAD is `main` at `origin/main`, then pushes `v<version>`.
+
+The tag push is the only thing that publishes. CI builds all six targets, strips them, writes a
+`.sha256` beside each one plus a `SHA256SUMS`, and creates the GitHub release. A tag whose name
+disagrees with the version in the tree fails the job rather than publishing assets the installer
+would then look for under the wrong name.
+
+Unlike other builds, a tag build does not set `BRAVEBOT_ALLOW_UNCONFIGURED_BUILD`, so a missing
+credential fails the release instead of shipping a binary that cannot reach the backend.
+
+Released binaries are **not** code-signed or notarised yet, so macOS Gatekeeper will refuse a
+downloaded one until that is added. What makes an unsigned asset safe to fetch is the checksum: the
+npm `postinstall` verifies the binary against its published `.sha256` before writing it, so TLS is
+not the only thing standing between a substituted asset and an executable. npm publication is
+deliberately not wired up.
+
 ## Agent configuration
 
 `agents/` is the checked-in source of truth for what an agent reads in this repo: `AGENTS.md`

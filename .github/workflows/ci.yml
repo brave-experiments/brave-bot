@@ -5,12 +5,9 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish release artifacts (requires signing secrets)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -18,7 +15,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   # No credentials here, and none needed: these jobs compile and test rather than
-  # producing a binary anyone runs against the backend.
+  # producing a binary anyone runs against the backend. The cross-build job overrides
+  # this, because a binary that is published does need them.
   BRAVEBOT_ALLOW_UNCONFIGURED_BUILD: "1"
 
 jobs:
@@ -79,6 +77,16 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     needs: check
+    env:
+      # A tag build is the one people install, so it must carry real configuration:
+      # leaving the allow-flag set would ship a binary that cannot reach the backend
+      # and fails at run time instead of here. Every other build keeps the flag, so
+      # forks and PRs still compile without secrets.
+      #
+      # "0" rather than an empty string: an empty string is falsy in a GitHub
+      # expression, so `... && '' || '1'` would yield "1" and silently allow exactly
+      # the build this is meant to stop. build.rs only accepts "1" as permission.
+      BRAVEBOT_ALLOW_UNCONFIGURED_BUILD: ${{ startsWith(github.ref, 'refs/tags/v') && '0' || '1' }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +111,26 @@ jobs:
             ext: ".exe"
     steps:
       - uses: actions/checkout@v4
+
+      # Fails before the six builds start rather than letting each one panic in
+      # build.rs, and names every missing secret at once instead of the first.
+      - name: Check the release configuration is present
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SERVICES_KEY_AICHAT: ${{ secrets.SERVICES_KEY_AICHAT }}
+          BRAVE_SERVICES_KEY_ID: ${{ secrets.BRAVE_SERVICES_KEY_ID }}
+          BRAVE_AI_CHAT_ENDPOINT: ${{ secrets.BRAVE_AI_CHAT_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT; do
+            eval "value=\${$name:-}"
+            [ -n "$value" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required GitHub secrets: ${missing[*]}"
+            exit 1
+          fi
 
       # Same Dockerfile the Makefile uses, so a local build and a CI build produce
       # the same artifact rather than diverging through a separate host toolchain.
@@ -135,6 +163,13 @@ jobs:
           docker cp extract:/bravebot "dist/bravebot-${{ matrix.name }}${{ matrix.ext }}"
           docker rm extract
 
+      # Release builds keep symbols out of the published binary. The Makefile target
+      # already does this with the same container, and dist/ holds exactly one file
+      # here, so it strips this target and nothing else.
+      - name: Strip
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make strip
+
       - name: Verify the artifact is the expected format
         run: file "dist/bravebot-${{ matrix.name }}${{ matrix.ext }}"
 
@@ -144,18 +179,67 @@ jobs:
           path: dist/bravebot-${{ matrix.name }}${{ matrix.ext }}
           if-no-files-found: error
 
-  # Publishing is intentionally NOT triggered by tags. It runs only when a human
-  # dispatches it, so pushing a tag cannot sign, notarise, or publish anything.
-  # Signing and npm publication are not implemented yet; this job exists to keep the
-  # gate explicit rather than leaving the door open.
-  publish:
-    name: Publish release artifacts
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+  # Runs only for a pushed v* tag, which `make github-release` is the way to create.
+  #
+  # The binaries here are NOT code-signed or notarised, so macOS Gatekeeper will refuse
+  # them on download until that is added. Checksums are published alongside, and the npm
+  # postinstall verifies them, which is what makes an unsigned asset safe to fetch.
+  # npm publication is deliberately not wired up yet.
+  github-release:
+    name: Publish the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: cross-build
+    needs: [check, minimum-toolchain, cross-build]
+    permissions:
+      contents: write
     steps:
-      - name: Not yet implemented
+      - uses: actions/checkout@v4
+
+      # A tag whose name disagrees with the version in the tree would publish assets
+      # the npm postinstall then cannot find, since it derives the tag from its own
+      # package version.
+      - name: Check the tag matches the version in the tree
         run: |
-          echo "::error::Publishing is not implemented. Signing, notarisation, and npm"
-          echo "::error::publication must be added deliberately, with secrets reviewed."
-          exit 1
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)"
+          npm_version="$(node -p 'require("./package.json").version')"
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+          if [ "$tag_version" != "$npm_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $npm_version"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bravebot-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check every target is present
+        run: |
+          set -euo pipefail
+          missing=()
+          for asset in bravebot-darwin-arm64 bravebot-darwin-amd64 \
+                       bravebot-linux-amd64 bravebot-linux-arm64 \
+                       bravebot-windows-amd64.exe bravebot-windows-arm64.exe; do
+            [ -f "dist/$asset" ] || missing+=("$asset")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing release assets: ${missing[*]}"
+            exit 1
+          fi
+
+      # Per-asset .sha256 files are what the npm postinstall fetches; SHA256SUMS is for
+      # anyone verifying a download by hand.
+      - name: Write checksums
+        run: make checksums
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
