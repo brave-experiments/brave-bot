@@ -1084,6 +1084,9 @@ fn status_height(session: &Session, height: u16) -> u16 {
         Status::Working => (1 + session.todos.len()).min(ceiling) as u16,
         // A command spends no tokens and keeps no task list, so one line says everything.
         Status::Running => 1,
+        // Idle, but with a turn just finished to report. One line, and only until the next turn
+        // starts: the row is what says a turn ended, which the indicator going out does not.
+        Status::Idle if session.finished.is_some() => 1,
         Status::Idle | Status::Quitting => 0,
     }
 }
@@ -1208,6 +1211,33 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
             ]),
             None => Line::from(Span::styled("  waiting for the model…", dim())),
         }
+    } else if let Some(finished) = session.finished {
+        // The end of a turn, said rather than left to the spinner's absence. A turn whose last
+        // words were "now let me look at the dispatch code" is over, and nothing on the screen
+        // used to say so: the indicator was simply gone, and a user reads that as a session that
+        // has stopped responding rather than one waiting for them.
+        let (glyph, colour, word) = if finished.failed {
+            ("✗", theme::fail(), t!(turn_failed, turn = finished.turn))
+        } else {
+            ("✓", theme::ok(), t!(turn_done, turn = finished.turn))
+        };
+        let mut spans = vec![
+            Span::styled(format!("  {glyph} "), Style::default().fg(colour)),
+            Span::styled(format!("{word} "), Style::default().fg(colour)),
+        ];
+        // Cost is worth reporting, and a failed turn's is not: it is counted as the turn is
+        // abandoned rather than as it finishes, so the figure would be a guess.
+        if !finished.failed {
+            spans.push(Span::styled(
+                format!(
+                    "({}, {})",
+                    crate::indicator::format_tokens(finished.tokens),
+                    crate::indicator::format_elapsed(finished.took)
+                ),
+                dim(),
+            ));
+        }
+        Line::from(spans)
     } else {
         return;
     };
@@ -3335,6 +3365,59 @@ mod tests {
     fn an_idle_session_shows_no_indicator() {
         let session = Session::new("partial");
         assert!(session.indicator().is_none());
+    }
+
+    /// The turn this exists for: the reply asked for no tool, so the turn is over. The spinner
+    /// going out used to be the only thing that said so, and a person reads that as a hang.
+    #[test]
+    fn a_finished_turn_says_so_rather_than_leaving_an_empty_line() {
+        let mut session = Session::new("partial");
+        session.type_char('a');
+        session.submit();
+        session.complete(
+            "Now let me look at how the command dispatch works",
+            Vec::new(),
+            4_200,
+        );
+
+        let output = rendered(&session);
+        assert!(
+            output.contains("turn 1 done"),
+            "the turn's end was not reported: {output}"
+        );
+        assert!(
+            output.contains("4.2k"),
+            "what the turn cost was not reported: {output}"
+        );
+    }
+
+    /// A tick beside a turn that did not finish would say the wrong thing about it.
+    #[test]
+    fn a_failed_turn_is_not_drawn_as_a_finished_one() {
+        let mut session = Session::new("partial");
+        session.type_char('a');
+        session.submit();
+        session.fail("the model could not be reached");
+
+        let output = rendered(&session);
+        assert!(
+            output.contains("turn 1 stopped"),
+            "the failure was not reported: {output}"
+        );
+        assert!(
+            !output.contains("turn 1 done"),
+            "a failed turn was drawn as done: {output}"
+        );
+    }
+
+    /// Before the first turn there is nothing to report, so the line stays out of the way.
+    #[test]
+    fn a_session_that_has_not_run_a_turn_reports_nothing() {
+        let output = rendered(&Session::new("partial"));
+        assert!(
+            !output.contains("done"),
+            "a turn was reported before one ran: {output}"
+        );
     }
 
     #[test]

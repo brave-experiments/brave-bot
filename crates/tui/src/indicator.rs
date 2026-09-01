@@ -143,7 +143,7 @@ pub fn format_elapsed(elapsed: Duration) -> String {
 ///
 /// Thousands are abbreviated with one decimal, because the exact figure is noise at that scale
 /// and a five-digit number in a status line is harder to read at a glance than `38.3k`.
-fn format_tokens(tokens: u64) -> String {
+pub fn format_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
         return tokens.to_string();
     }

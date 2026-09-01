@@ -314,6 +314,8 @@ indicator-tokens-read = ↓ { $tokens } jetons
 indicator-tokens-written = ↑ { $tokens }
 tokens-thousands = { $thousands } k
 tokens-millions = { $millions } M
+turn-done = tour { $turn } terminé
+turn-failed = tour { $turn } interrompu
 
 
 ## Reprendre une session qui tournait ailleurs, ou sur autre chose

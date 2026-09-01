@@ -241,3 +241,27 @@ this list that is not read off the name.
 `verified-by: bravebot_tui::theme_prompt::the_picker_is_drawn_as_a_centred_panel`
 `verified-by: bravebot_tui::theme_prompt::the_panel_stays_inside_a_tiny_terminal`
 `verified-by: bravebot_tui::theme_prompt::the_list_shows_names_a_person_reads`
+
+<a id="VIEW-13"></a>
+### VIEW-13: the end of a turn is said, not left to the indicator disappearing
+
+A finished turn is reported on its own row: which turn it was, what it cost, and how long it took.
+A turn that failed is reported as stopped, without a cost, since the figure is settled as a turn is
+abandoned rather than as it finishes. The row lasts until the next turn starts, and a session that
+has not run one shows nothing.
+
+**Why.** The indicator going out was the only thing that said a turn was over, and an announcement
+made by something disappearing is one nobody reads. It matters most for the turn that ends on a
+sentence like `now let me look at the dispatch code`: the model asked for no tool, so the turn ended
+there, and the last thing on the screen was a promise with nothing to distinguish it from a hang.
+The cost is on the row because a turn that spent forty rounds and one that spent a single round look
+identical in scrollback, and the difference is most of the explanation.
+
+`verified-by: bravebot_tui::render::a_finished_turn_says_so_rather_than_leaving_an_empty_line`
+`verified-by: bravebot_tui::render::a_failed_turn_is_not_drawn_as_a_finished_one`
+`verified-by: bravebot_tui::render::a_session_that_has_not_run_a_turn_reports_nothing`
+`verified-by: bravebot_tui::state::a_completed_turn_is_reported_with_what_it_cost`
+`verified-by: bravebot_tui::state::a_failed_turn_is_reported_as_failed`
+`verified-by: bravebot_tui::state::starting_another_turn_forgets_the_last_one`
+`verified-by: bravebot_tui::state::a_session_that_has_not_run_a_turn_reports_none_finished`
+`verified-by: bravebot_tui::state::clearing_a_session_forgets_the_turn_that_finished`

@@ -226,6 +226,23 @@ pub enum Status {
     Quitting,
 }
 
+/// What the last turn came to, for the line that says it is over.
+///
+/// Kept rather than recomputed from the transcript because the figures are about the turn, and the
+/// transcript is about what was said. A turn that spent forty rounds and one that spent one look
+/// the same in scrollback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Finished {
+    /// Which turn it was, counted the way the session counts them.
+    pub turn: usize,
+    /// What the whole turn cost, every round added together.
+    pub tokens: u64,
+    /// How long it took, wall clock.
+    pub took: Duration,
+    /// Whether it ended by failing, which is a different thing to report.
+    pub failed: bool,
+}
+
 /// What a half-typed line could still become.
 ///
 /// One kind at a time: a command is the whole line and a file reference is its last word, so the
@@ -441,6 +458,16 @@ pub struct Session {
     pub selection: Option<crate::select::Selection>,
     /// How much the last copy took, until the next thing happens.
     pub copied: Option<usize>,
+    /// What the turn that just finished cost, until the next one starts.
+    ///
+    /// The spinner going out is how the end of a turn used to be announced, and an announcement
+    /// made by something disappearing is one nobody reads. It matters most for the turn that ends
+    /// on a sentence like "now let me look at the dispatch code": the model asked for no tool, so
+    /// the turn was over, and the only thing that said so was a line that was no longer there.
+    ///
+    /// `None` before the first turn, so a fresh session says nothing rather than claiming a turn
+    /// that has not happened.
+    pub finished: Option<Finished>,
     /// Whether the last press took a line out of the box rather than ending the session.
     ///
     /// The hint saying which key ends it hangs on this. It lives for exactly one press, because it
@@ -589,6 +616,7 @@ impl Session {
             history: crate::history::History::new(),
             selection: None,
             copied: None,
+            finished: None,
             cleared_by_interrupt: false,
             image_on_clipboard: false,
             written: 0,
@@ -747,6 +775,7 @@ impl Session {
         self.scroll = 0;
         self.selection = None;
         self.copied = None;
+        self.finished = None;
         // A standing condition is worth saying once per session, and this is now a new one: the
         // reason a skill was left out applies to the next turn as much as it did to the last.
         self.said.clear();
@@ -2035,6 +2064,9 @@ impl Session {
         self.status = Status::Working;
         self.scroll = 0;
         self.turns += 1;
+        // The last turn's figures are not this one's, and a line reporting a finished turn while
+        // another is running is a line about the wrong turn.
+        self.finished = None;
         // The previous turn's plan is not this turn's. Leaving it would show finished work as
         // though the new turn had it outstanding.
         self.todos.clear();
@@ -2055,6 +2087,12 @@ impl Session {
             .push(Entry::assistant(reply, trail).with_todos(todos));
         self.status = Status::Idle;
         self.scroll = 0;
+        self.finished = Some(Finished {
+            turn: self.turns,
+            tokens,
+            took: self.elapsed(),
+            failed: false,
+        });
         self.started = None;
         self.phase = None;
         self.running = None;
@@ -2074,6 +2112,14 @@ impl Session {
             .push(Entry::system(message).with_todos(todos));
         self.status = Status::Idle;
         self.scroll = 0;
+        // Reported as a failure rather than left to the success line, which would put a tick
+        // beside a turn that did not finish.
+        self.finished = Some(Finished {
+            turn: self.turns,
+            tokens: 0,
+            took: self.elapsed(),
+            failed: true,
+        });
         self.started = None;
         self.phase = None;
         self.running = None;
@@ -3231,6 +3277,65 @@ mod tests {
         let mut s = Session::new("none");
         s.measured(0, 100_000);
         assert_eq!(s.fullness(), None);
+    }
+
+    /// Before the first turn there is no turn to report, and a line claiming one would be about
+    /// nothing.
+    #[test]
+    fn a_session_that_has_not_run_a_turn_reports_none_finished() {
+        assert_eq!(Session::new("none").finished, None);
+    }
+
+    /// The case this exists for: a turn whose reply asked for no tool is over, and the spinner
+    /// going out was the only thing that used to say so.
+    #[test]
+    fn a_completed_turn_is_reported_with_what_it_cost() {
+        let mut s = Session::new("none");
+        s.set_input("do the thing".to_string());
+        s.submit();
+        s.complete("now let me look at the dispatch code", Vec::new(), 4_200);
+
+        let finished = s.finished.expect("a finished turn");
+        assert_eq!(finished.turn, 1);
+        assert_eq!(finished.tokens, 4_200);
+        assert!(!finished.failed);
+    }
+
+    /// A tick beside a turn that did not finish would be the wrong thing to say about it.
+    #[test]
+    fn a_failed_turn_is_reported_as_failed() {
+        let mut s = Session::new("none");
+        s.set_input("do the thing".to_string());
+        s.submit();
+        s.fail("the model could not be reached");
+
+        let finished = s.finished.expect("a finished turn");
+        assert!(finished.failed);
+    }
+
+    /// A line reporting a finished turn while the next one runs is a line about the wrong turn.
+    #[test]
+    fn starting_another_turn_forgets_the_last_one() {
+        let mut s = Session::new("none");
+        s.set_input("do the thing".to_string());
+        s.submit();
+        s.complete("done", Vec::new(), 100);
+        assert!(s.finished.is_some());
+
+        s.set_input("do another thing".to_string());
+        s.submit();
+        assert_eq!(s.finished, None, "the last turn's figures outlived it");
+    }
+
+    /// A new session has not run the old one's turns.
+    #[test]
+    fn clearing_a_session_forgets_the_turn_that_finished() {
+        let mut s = Session::new("none");
+        s.set_input("do the thing".to_string());
+        s.submit();
+        s.complete("done", Vec::new(), 100);
+        s.clear();
+        assert_eq!(s.finished, None);
     }
 
     /// A new session's context is empty, so the gauge from the old one would be describing a

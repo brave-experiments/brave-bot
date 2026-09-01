@@ -295,6 +295,10 @@ indicator-tokens-written = ↑ { $tokens }
 # Abbreviated counts, already rounded to one place.
 tokens-thousands = { $thousands }k
 tokens-millions = { $millions }M
+# Said once a turn is over, because the end of one used to be announced by the indicator
+# disappearing, and an announcement made by something vanishing is one nobody reads.
+turn-done = turn { $turn } done
+turn-failed = turn { $turn } stopped
 
 
 ## Picking up a session that ran somewhere, or on something, else
