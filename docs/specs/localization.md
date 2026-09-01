@@ -119,6 +119,17 @@ sees is worth nothing if two people running it see different things.
 
 ## Known costs
 
+- **Numbers are not fully formatted for the locale.** A catalog says what separates a whole
+  number from its fraction, which covers the two figures in the interface that have one. Digit
+  grouping, alternative numerals, and percent and currency forms are not done: each needs the
+  CLDR tables, and a partial imitation of them reads worse than a plain number because it is
+  wrong only sometimes.
+
+- **The words on the working indicator are not in a catalog.** They are chosen for tone and
+  variety rather than for meaning, and translating one word for word keeps neither. A language
+  supplies its own list, of its own length, in the interface rather than in a catalog, and one
+  that has not supplied any is shown English.
+
 - **The audit trail is not translated.** `--trace` and the trail the interface shows are a
   record of what the system decided, in fixed columns, holding gate and capability names that
   are identifiers rather than words. It is read the way a log is read, and by somebody comparing

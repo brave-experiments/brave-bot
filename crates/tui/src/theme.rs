@@ -6,6 +6,7 @@
 //! theme chosen with `/theme` paints every role from that table, including the background, so two
 //! roles cannot collapse because the terminal remapped a slot.
 
+use bravebot_i18n::t;
 use ratatui::style::Color;
 use serde::Deserialize;
 use std::io::Write;
@@ -50,7 +51,7 @@ pub const BRAVE: &str = "brave";
 /// slots are left to it, and brand primary is picked for the background sensed at startup. Every
 /// other theme is the same table of shades wherever it is opened, which its name already implies.
 pub fn hint(name: &str) -> Option<&'static str> {
-    (name == BRAVE || name == "system").then_some("follows your terminal, light or dark")
+    (name == BRAVE || name == "system").then_some(t!(theme_follows_terminal))
 }
 
 /// Every semantic ink the interface draws itself in.

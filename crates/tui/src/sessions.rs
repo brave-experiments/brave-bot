@@ -35,6 +35,7 @@ use bravebot_core::label::Integrity;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::todo::{self, Item, List, Row, Status};
 use bravebot_core::trust::TrustStore;
+use bravebot_i18n::t;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -211,7 +212,11 @@ impl Record {
             .iter()
             .filter_map(|directory| match workspace.add_directory(directory) {
                 Ok(_) => None,
-                Err(error) => Some(format!("could not reopen {directory}: {error}")),
+                Err(error) => Some(t!(
+                    session_reopen_failed,
+                    directory = directory,
+                    problem = error
+                )),
             })
             .collect()
     }
@@ -622,13 +627,9 @@ pub fn branch_note(was: Option<&str>, now: Option<&str>) -> Option<String> {
         return None;
     }
     Some(match (was, now) {
-        (Some(was), Some(now)) => format!("this session ran on {was}; this checkout is on {now}"),
-        (Some(was), None) => {
-            format!("this session ran on {was}; this checkout is not on a branch")
-        }
-        (None, Some(now)) => {
-            format!("this session ran on no branch; this checkout is on {now}")
-        }
+        (Some(was), Some(now)) => t!(session_branch_moved, was = was, now = now),
+        (Some(was), None) => t!(session_branch_gone, was = was),
+        (None, Some(now)) => t!(session_branch_new, now = now),
         (None, None) => unreachable!("equal cases returned above"),
     })
 }
@@ -645,7 +646,7 @@ pub fn branch_note(was: Option<&str>, now: Option<&str>) -> Option<String> {
 /// with no build written down, which is one from before this was kept and has nothing to compare.
 pub fn build_note(was: Option<&str>, now: &str) -> Option<String> {
     let was = was?;
-    (was != now).then(|| format!("that session ran on bravebot {was}; this is {now}"))
+    (was != now).then(|| t!(session_build_differs, was = was, now = now))
 }
 
 pub fn branch_of(directory: &Path) -> Option<String> {

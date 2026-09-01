@@ -13,6 +13,7 @@
 //! costs nothing to keep: a shell between the user's configuration and what starts would be a
 //! second interpreter with its own opinions about quoting.
 
+use bravebot_i18n::t;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Write};
@@ -62,12 +63,11 @@ pub enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Failure::NoEditor => write!(
-                f,
-                "no editor found: set $VISUAL or $EDITOR to the one you want"
-            ),
+            Failure::NoEditor => write!(f, "{}", t!(editor_none_configured)),
             Failure::Editor(what) => write!(f, "{what}"),
-            Failure::Scratch(error) => write!(f, "the file to edit could not be used: {error}"),
+            Failure::Scratch(error) => {
+                write!(f, "{}", t!(editor_scratch_unusable, problem = error))
+            }
         }
     }
 }
@@ -191,11 +191,8 @@ fn which_editor(command: Option<String>) -> Result<(PathBuf, Vec<String>), Failu
             .ok_or(Failure::NoEditor);
     };
 
-    command_line(&command).ok_or_else(|| {
-        Failure::Editor(format!(
-            "'{command}' was not found, and $VISUAL or $EDITOR names it, so nothing else was tried"
-        ))
-    })
+    command_line(&command)
+        .ok_or_else(|| Failure::Editor(t!(editor_named_but_missing, command = command)))
 }
 
 /// The editor the user configured, if they configured one.
@@ -340,10 +337,14 @@ fn start(program: &Path, arguments: &[String], path: &Path) -> Result<(), Failur
     match Command::new(program).args(arguments).arg(path).status() {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => Err(Failure::Editor(match status.code() {
-            Some(code) => format!("{name} exited with status {code}, so the line is unchanged"),
-            None => format!("{name} was stopped before it finished, so the line is unchanged"),
+            Some(code) => t!(editor_exited_badly, editor = name, code = code),
+            None => t!(editor_was_stopped, editor = name),
         })),
-        Err(error) => Err(Failure::Editor(format!("{name} would not start: {error}"))),
+        Err(error) => Err(Failure::Editor(t!(
+            editor_would_not_start,
+            editor = name,
+            problem = error
+        ))),
     }
 }
 

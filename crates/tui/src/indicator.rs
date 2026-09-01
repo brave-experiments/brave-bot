@@ -15,6 +15,7 @@
 //! Rendering is separated from drawing so the whole thing is testable without a terminal.
 
 use crate::verbs;
+use bravebot_i18n::t;
 use std::borrow::Cow;
 use std::time::Duration;
 
@@ -90,12 +91,18 @@ impl Indicator {
         let mut detail = self.elapsed.clone();
         if let Some(tokens) = &self.tokens {
             // The arrow marks these as tokens consumed, matching how usage is reported.
-            detail.push_str(&format!(" · ↓ {tokens} tokens"));
+            detail.push_str(&format!(
+                " · {}",
+                t!(indicator_tokens_read, tokens = tokens)
+            ));
         }
         if let Some(written) = &self.written {
             // The opposite arrow, since these went the other way. No unit: it sits beside a figure
             // already labelled tokens, and repeating the word crowds the line.
-            detail.push_str(&format!(" · ↑ {written}"));
+            detail.push_str(&format!(
+                " · {}",
+                t!(indicator_tokens_written, tokens = written)
+            ));
         }
         format!("({detail})")
     }
@@ -121,10 +128,15 @@ pub fn glyph_at(elapsed: Duration) -> &'static str {
 pub fn format_elapsed(elapsed: Duration) -> String {
     let total = elapsed.as_secs();
     if total < 60 {
-        format!("{total}s")
-    } else {
-        format!("{}m {:02}s", total / 60, total % 60)
+        return t!(elapsed_seconds, seconds = total);
     }
+    // Zero-padded here rather than in the catalog, since the padding is what keeps the line from
+    // twitching as the seconds roll over and is not something a translation gets a say in.
+    t!(
+        elapsed_minutes,
+        minutes = total / 60,
+        seconds = format!("{:02}", total % 60)
+    )
 }
 
 /// Format a token count compactly.
@@ -133,12 +145,23 @@ pub fn format_elapsed(elapsed: Duration) -> String {
 /// and a five-digit number in a status line is harder to read at a glance than `38.3k`.
 fn format_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
-        tokens.to_string()
-    } else if tokens < 1_000_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+        return tokens.to_string();
     }
+    if tokens < 1_000_000 {
+        return t!(
+            tokens_thousands,
+            thousands = rounded(tokens as f64 / 1_000.0)
+        );
+    }
+    t!(
+        tokens_millions,
+        millions = rounded(tokens as f64 / 1_000_000.0)
+    )
+}
+
+/// One decimal place, written the way the reader's language writes a fraction.
+fn rounded(value: f64) -> String {
+    format!("{value:.1}").replace('.', t!(number_decimal_separator))
 }
 
 #[cfg(test)]

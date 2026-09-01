@@ -18,6 +18,7 @@ use bravebot_config::Config;
 use bravebot_core::label::Integrity;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::trust::TrustStore;
+use bravebot_i18n::t;
 use std::path::Path;
 
 /// How many vouched commands are listed before the rest become a count.
@@ -79,64 +80,76 @@ pub fn report(facts: &Facts<'_>) -> Report {
     let mut lines = Vec::new();
 
     lines.push(Line::new(
-        "Session",
+        t!(status_session),
         if facts.session_name.is_empty() {
-            "untitled, nothing sent yet".to_string()
+            t!(status_session_untitled).to_string()
         } else {
             facts.session_name.to_string()
         },
     ));
-    lines.push(Line::new("Session id", facts.session_id));
+    lines.push(Line::new(t!(status_session_id), facts.session_id));
 
     let trusted = facts.trust.is_trusted(".");
     lines.push(
-        Line::new("Directory", abbreviate(facts.directory)).with_note(if trusted {
-            "trusted"
+        Line::new(t!(status_directory), abbreviate(facts.directory)).with_note(if trusted {
+            t!(status_directory_trusted)
         } else {
-            "not trusted, so every write is shown to you"
+            t!(status_directory_untrusted)
         }),
     );
 
     for added in facts.added_directories {
-        lines.push(Line::new("Also open", abbreviate(added)).with_note("added with /add-dir"));
+        lines.push(
+            Line::new(t!(status_also_open), abbreviate(added))
+                .with_note(t!(status_added_directory)),
+        );
     }
 
     lines.push(match facts.model {
-        Some(model) => Line::new("Model", model).with_note("chosen with /model"),
-        None => Line::new("Model", &facts.config.default_model).with_note("the configured default"),
+        Some(model) => Line::new(t!(status_model), model).with_note(t!(status_model_chosen)),
+        None => Line::new(t!(status_model), &facts.config.default_model)
+            .with_note(t!(status_model_default)),
     });
 
-    lines.push(Line::new("Theme", facts.theme).with_note("chosen with /theme"));
+    lines.push(Line::new(t!(status_theme), facts.theme).with_note(t!(status_theme_chosen)));
 
     // The environment rather than the host. See the note at the top of this file.
     lines.push(
-        Line::new("Endpoint", environment(&facts.config.endpoint)).with_note(
-            match facts.config.premium_endpoint {
-                Some(_) => "premium configured",
-                None => "free tier only",
-            },
-        ),
+        Line::new(t!(status_endpoint), environment(&facts.config.endpoint)).with_note(match facts
+            .config
+            .premium_endpoint
+        {
+            Some(_) => t!(status_premium_configured),
+            None => t!(status_free_tier),
+        }),
     );
 
-    lines.push(Line::new("Confinement", facts.confinement));
+    lines.push(Line::new(t!(status_confinement), facts.confinement));
 
     lines.push(Line::new(
-        "This session",
-        format!("{} · {}", plural(facts.turns, "turn"), tokens(facts.tokens)),
+        t!(status_this_session),
+        format!(
+            "{} · {}",
+            t!(count_turns, count = facts.turns),
+            tokens(facts.tokens)
+        ),
     ));
 
     // Last because it is the part that grows. What a write recorded is the thing nothing else
     // reports: a file an earlier turn marked untrusted is invisible until it refuses to be read.
     let rules: Vec<(&str, Integrity)> = facts.trust.rules().collect();
     if rules.is_empty() {
-        lines.push(Line::new("Trust", "nothing vouched for"));
+        lines.push(Line::new(t!(status_trust), t!(status_nothing_vouched_for)));
     } else {
-        lines.push(Line::new("Trust", plural(rules.len(), "rule")));
+        lines.push(Line::new(
+            t!(status_trust),
+            t!(count_rules, count = rules.len()),
+        ));
         for (path, integrity) in rules.iter() {
             let shown = if path.is_empty() { "." } else { path };
             lines.push(match integrity {
-                Integrity::Trusted => Line::new("", shown).with_note("trusted"),
-                Integrity::Untrusted => Line::new("", shown).with_note("untrusted"),
+                Integrity::Trusted => Line::new("", shown).with_note(t!(status_trusted)),
+                Integrity::Untrusted => Line::new("", shown).with_note(t!(status_untrusted)),
             });
         }
     }
@@ -147,11 +160,17 @@ pub fn report(facts: &Facts<'_>) -> Report {
     // is being read as trusted.
     let vouched: Vec<&bravebot_core::programs::Command> = facts.programs.iter().collect();
     if vouched.is_empty() {
-        lines.push(Line::new("Programs", "every run is put to you"));
+        lines.push(Line::new(
+            t!(status_programs),
+            t!(status_every_run_is_asked),
+        ));
     } else {
         lines.push(
-            Line::new("Trusted commands", plural(vouched.len(), "command"))
-                .with_note("run unasked, and their output is trusted"),
+            Line::new(
+                t!(status_trusted_commands),
+                t!(count_commands, count = vouched.len()),
+            )
+            .with_note(t!(status_trusted_commands_note)),
         );
         for command in vouched.iter().take(MAX_COMMANDS) {
             lines.push(Line::new("", command.display()));
@@ -159,7 +178,7 @@ pub fn report(facts: &Facts<'_>) -> Report {
         if vouched.len() > MAX_COMMANDS {
             lines.push(Line::new(
                 "",
-                format!("… and {} more", vouched.len() - MAX_COMMANDS),
+                t!(status_and_more, count = vouched.len() - MAX_COMMANDS),
             ));
         }
     }
@@ -174,13 +193,13 @@ pub fn report(facts: &Facts<'_>) -> Report {
 /// custom rather than guessed at.
 fn environment(endpoint: &str) -> &'static str {
     if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
-        "local"
+        t!(environment_local)
     } else if endpoint.contains(".brave.software") {
-        "dev"
+        t!(environment_dev)
     } else if endpoint.contains(".brave.com") {
-        "prod"
+        t!(environment_prod)
     } else {
-        "custom"
+        t!(environment_custom)
     }
 }
 
@@ -200,22 +219,16 @@ fn abbreviate(path: &Path) -> String {
     }
 }
 
-/// "1 turn", "4 turns".
-fn plural(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("{count} {noun}")
-    } else {
-        format!("{count} {noun}s")
-    }
-}
-
 /// Tokens, in the units a person reads them in.
 fn tokens(count: u64) -> String {
     if count < 1_000 {
-        format!("{count} tokens")
-    } else {
-        format!("{:.1}k tokens", count as f64 / 1_000.0)
+        return t!(count_tokens, count = count);
     }
+    // The one fraction the interface shows, so the one place a language that does not write a
+    // point between a whole number and its fraction has anything to say about it.
+    let thousands =
+        format!("{:.1}", count as f64 / 1_000.0).replace('.', t!(number_decimal_separator));
+    t!(count_tokens_thousands, thousands = thousands)
 }
 
 #[cfg(test)]
@@ -422,10 +435,11 @@ mod tests {
 
     #[test]
     fn counts_read_the_way_a_person_says_them() {
-        assert_eq!(plural(1, "turn"), "1 turn");
-        assert_eq!(plural(0, "turn"), "0 turns");
-        assert_eq!(plural(4, "rule"), "4 rules");
+        assert_eq!(t!(count_turns, count = 1), "1 turn");
+        assert_eq!(t!(count_turns, count = 0), "0 turns");
+        assert_eq!(t!(count_rules, count = 4), "4 rules");
         assert_eq!(tokens(940), "940 tokens");
+        assert_eq!(tokens(1), "1 token");
         assert_eq!(tokens(12_400), "12.4k tokens");
     }
 

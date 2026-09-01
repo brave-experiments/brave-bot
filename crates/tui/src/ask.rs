@@ -12,6 +12,7 @@
 //! can dismiss, and a picker with no exit would make the model able to stall the session.
 
 use bravebot_core::ask::{Answer, Asking, Prompt, Row};
+use bravebot_i18n::t;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode};
@@ -36,7 +37,9 @@ const MARKER_WIDTH: usize = 4;
 /// An entry in the list rather than only a key, because an affordance nobody can see is one most
 /// people never find, and answering in your own words is the way out of a set of options that
 /// does not contain the answer.
-const OWN_WORDS: &str = "Answer in my own words";
+fn own_words() -> &'static str {
+    t!(ask_own_words)
+}
 
 /// Widest a tag is drawn, in characters.
 ///
@@ -385,7 +388,7 @@ impl<'a> Picker<'a> {
         let hidden = self.prompt().rows.len() - visible;
         if hidden > 0 {
             lines.push(Line::from(Span::styled(
-                format!("    … {hidden} more, use the arrow keys"),
+                format!("    {}", t!(ask_more_options, count = hidden)),
                 Style::default().fg(theme::muted()),
             )));
         }
@@ -416,7 +419,7 @@ impl<'a> Picker<'a> {
                     },
                     style,
                 ),
-                Span::styled(OWN_WORDS, style),
+                Span::styled(own_words(), style),
             ]));
         }
 
@@ -461,12 +464,15 @@ impl<'a> Picker<'a> {
     /// there to tell someone partway through a series how much of it is left.
     fn title(&self) -> String {
         if self.asking.prompts.len() == 1 {
-            return " the agent is asking ".to_string();
+            return format!(" {} ", t!(ask_title));
         }
         format!(
-            " the agent is asking ({} of {}) ",
-            self.at + 1,
-            self.asking.prompts.len()
+            " {} ",
+            t!(
+                ask_title_numbered,
+                at = self.at + 1,
+                total = self.asking.prompts.len()
+            )
         )
     }
 
@@ -476,15 +482,21 @@ impl<'a> Picker<'a> {
             .add_modifier(Modifier::BOLD);
         // Short enough to stay on one line in a narrow terminal. A key hint that wraps is a key
         // hint the person skims past, and the way out is the one they must not miss.
-        let mut spans = vec![Span::styled("  ↑↓", bold), Span::raw(" move   ")];
+        let mut spans = vec![
+            Span::styled("  ↑↓", bold),
+            Span::raw(format!(" {}   ", t!(ask_key_move))),
+        ];
         spans.push(Span::styled("space", bold));
-        spans.push(Span::raw(if self.prompt().multiple {
-            " pick any   "
-        } else {
-            " pick   "
-        }));
+        spans.push(Span::raw(format!(
+            " {}   ",
+            if self.prompt().multiple {
+                t!(ask_key_pick_any)
+            } else {
+                t!(ask_key_pick_one)
+            }
+        )));
         spans.push(Span::styled("enter", bold));
-        spans.push(Span::raw(" answer   "));
+        spans.push(Span::raw(format!(" {}   ", t!(ask_key_answer))));
         // No hint for the free-text field: it is a row in the list now, and a line this short
         // cannot afford to say twice what the person can already read.
         spans.push(Span::styled(
@@ -493,7 +505,7 @@ impl<'a> Picker<'a> {
                 .fg(theme::fail())
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(" skip"));
+        spans.push(Span::raw(format!(" {}", t!(ask_key_skip))));
         spans
     }
 
@@ -504,7 +516,7 @@ impl<'a> Picker<'a> {
             .add_modifier(Modifier::BOLD);
         vec![
             Span::styled("  enter", bold),
-            Span::raw(" answer   "),
+            Span::raw(format!(" {}   ", t!(ask_key_answer))),
             Span::styled(
                 "esc",
                 Style::default()
@@ -512,11 +524,14 @@ impl<'a> Picker<'a> {
                     .add_modifier(Modifier::BOLD),
             ),
             // Escape goes back to the options where there are any, and out where there are none.
-            Span::raw(if self.prompt().rows.is_empty() {
-                " skip the question"
-            } else {
-                " back to the options"
-            }),
+            Span::raw(format!(
+                " {}",
+                if self.prompt().rows.is_empty() {
+                    t!(ask_key_skip_question)
+                } else {
+                    t!(ask_key_back_to_options)
+                }
+            )),
         ]
     }
 
@@ -958,7 +973,7 @@ mod tests {
     fn answering_in_your_own_words_is_offered_in_the_list() {
         let rows = screen_rows(&prompt(false), 80, 24);
         assert!(
-            rows.iter().any(|row| row.contains(OWN_WORDS)),
+            rows.iter().any(|row| row.contains(own_words())),
             "the free-text row is not on screen: {rows:?}"
         );
     }
@@ -969,7 +984,7 @@ mod tests {
     fn the_free_text_row_sits_below_every_option() {
         let rows = screen_rows(&prompt(false), 80, 24);
         assert!(
-            row_holding(&rows, OWN_WORDS) > row_holding(&rows, "Neither"),
+            row_holding(&rows, own_words()) > row_holding(&rows, "Neither"),
             "the free-text row was drawn among the options: {rows:?}"
         );
     }
@@ -1017,7 +1032,7 @@ mod tests {
     fn the_free_text_row_makes_way_for_the_field_it_opens() {
         let rows = rows_after(&one(&prompt(false)), &[KeyCode::Char('o')], 80, 24);
         assert!(
-            !rows.iter().any(|row| row.contains(OWN_WORDS)),
+            !rows.iter().any(|row| row.contains(own_words())),
             "the row was still drawn under the open field: {rows:?}"
         );
     }

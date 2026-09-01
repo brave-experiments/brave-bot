@@ -214,3 +214,116 @@ vouch-explained =
     this file for the rest of this session, here and in every later read.
 vouch-yes = trust it
 vouch-no = leave it quarantined
+
+
+## Counting the things a session accumulates
+
+count-rules = { $count ->
+    [one] { $count } rule
+   *[other] { $count } rules
+    }
+count-commands = { $count ->
+    [one] { $count } command
+   *[other] { $count } commands
+    }
+count-tokens = { $count ->
+    [one] { $count } token
+   *[other] { $count } tokens
+    }
+# Thousands, already rounded to one place, because the exact figure is not the point at that size.
+count-tokens-thousands = { $thousands }k tokens
+# What separates a whole number from its fraction. English writes a point and much of Europe a
+# comma, and the interface has one number in it that has a fraction at all.
+number-decimal-separator = .
+
+
+## What /status reports about the session
+
+status-session = Session
+status-session-untitled = untitled, nothing sent yet
+status-session-id = Session id
+status-directory = Directory
+status-directory-trusted = trusted
+status-directory-untrusted = not trusted, so every write is shown to you
+status-also-open = Also open
+status-added-directory = added with /add-dir
+status-model = Model
+status-model-chosen = chosen with /model
+status-model-default = the configured default
+status-theme = Theme
+status-theme-chosen = chosen with /theme
+status-endpoint = Endpoint
+status-premium-configured = premium configured
+status-free-tier = free tier only
+status-confinement = Confinement
+status-this-session = This session
+status-trust = Trust
+status-nothing-vouched-for = nothing vouched for
+status-trusted = trusted
+status-untrusted = untrusted
+status-programs = Programs
+status-every-run-is-asked = every run is put to you
+status-trusted-commands = Trusted commands
+status-trusted-commands-note = run unasked, and their output is trusted
+status-and-more = … and { $count } more
+
+# Which deployment is being talked to. Left as they are where a language borrows the English
+# abbreviation, which is common for these four.
+environment-local = local
+environment-dev = dev
+environment-prod = prod
+environment-custom = custom
+
+
+## The indicator drawn while a turn runs
+
+# How long the turn has been going. No hours: a turn that ran that long has gone wrong, and
+# `73m 04s` says so more plainly than `1h 13m`.
+elapsed-seconds = { $seconds }s
+elapsed-minutes = { $minutes }m { $seconds }s
+# Beside a figure already labelled in tokens, so the unit is not repeated.
+indicator-tokens-read = ↓ { $tokens } tokens
+indicator-tokens-written = ↑ { $tokens }
+# Abbreviated counts, already rounded to one place.
+tokens-thousands = { $thousands }k
+tokens-millions = { $millions }M
+
+
+## Picking up a session that ran somewhere, or on something, else
+
+session-reopen-failed = could not reopen { $directory }: { $problem }
+session-branch-moved = this session ran on { $was }; this checkout is on { $now }
+session-branch-gone = this session ran on { $was }; this checkout is not on a branch
+session-branch-new = this session ran on no branch; this checkout is on { $now }
+session-build-differs = that session ran on bravebot { $was }; this is { $now }
+
+
+## Themes
+
+theme-follows-terminal = follows your terminal, light or dark
+
+
+## Answering a question the agent asked
+
+ask-title = the agent is asking
+ask-title-numbered = the agent is asking ({ $at } of { $total })
+ask-own-words = Answer in my own words
+ask-more-options = … { $count } more, use the arrow keys
+ask-key-move = move
+ask-key-pick-any = pick any
+ask-key-pick-one = pick
+ask-key-answer = answer
+ask-key-skip = skip
+ask-key-skip-question = skip the question
+ask-key-back-to-options = back to the options
+
+
+## Handing the line to an editor
+
+editor-none-configured = no editor found: set $VISUAL or $EDITOR to the one you want
+editor-scratch-unusable = the file to edit could not be used: { $problem }
+editor-named-but-missing =
+    '{ $command }' was not found, and $VISUAL or $EDITOR names it, so nothing else was tried
+editor-exited-badly = { $editor } exited with status { $code }, so the line is unchanged
+editor-was-stopped = { $editor } was stopped before it finished, so the line is unchanged
+editor-would-not-start = { $editor } would not start: { $problem }

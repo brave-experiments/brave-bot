@@ -8,8 +8,21 @@
 //! so nothing here is crude, cute to the point of grating, or a joke that wears out. Nothing
 //! implies a capability the agent lacks either: "Deducing" would suggest reasoning it is not
 //! doing, whereas "Percolating" claims nothing.
+//!
+//! # Why this is not in a catalog
+//!
+//! Every other word the interface says is a sentence with a meaning to carry across, and the
+//! translation is the same sentence in another language. These are not. What has to survive is
+//! the tone and the variety, and a word-for-word translation of "Percolating" would keep neither:
+//! the joke is that the word is odd, and odd does not translate. A language wants its own list,
+//! of its own length, written by somebody who knows which words in it are mild and which are
+//! grating, which is a different job from translating a prompt.
+//!
+//! So a language adds a list here rather than a hundred entries to a catalog, and one that has
+//! not is shown the English rather than a machine-translated set of words whose whole purpose is
+//! that a person chose them.
 
-/// Present participles shown while a turn runs.
+/// Present participles shown while a turn runs, in English.
 ///
 /// Kept in one place so the tone stays consistent as entries are added.
 pub const VERBS: &[&str] = &[
@@ -133,13 +146,24 @@ pub const VERBS: &[&str] = &[
     "Conducting",
 ];
 
+/// The list for a language, or the English one where that language has not written its own.
+///
+/// Keyed on the language rather than the full locale: the words are the same whichever region a
+/// speaker is in, which is not true of much else in the interface but is true of these.
+fn for_language(_language: &str) -> &'static [&'static str] {
+    // English is the only list written so far. A language adds itself here, by matching its
+    // subtag and returning its own words, rather than by translating the ones above.
+    VERBS
+}
+
 /// The verb for a turn, chosen by its number.
 ///
 /// Deterministic rather than random: the same turn always shows the same word, so a test can
 /// assert on it and a bug report can be reproduced. Cycling by index also guarantees a user
 /// sees the whole list before any repeat, which random choice would not.
 pub fn for_turn(turn: usize) -> &'static str {
-    VERBS[turn % VERBS.len()]
+    let words = for_language(bravebot_i18n::locale().language());
+    words[turn % words.len()]
 }
 
 #[cfg(test)]
