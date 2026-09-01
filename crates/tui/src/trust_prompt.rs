@@ -10,6 +10,7 @@
 //! session silently writes to files nobody vouched for.
 
 use bravebot_core::trust::TrustStore;
+use bravebot_i18n::t;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -114,7 +115,7 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                "Trust ",
+                format!("{} ", t!(trust_directory_question)),
                 Style::default()
                     .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD),
@@ -126,19 +127,12 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
             Span::raw("?"),
         ]),
         Line::raw(""),
-        Line::from(Span::raw(
-            "Files here will be read as trusted, and edits to them will not be",
-        )),
-        Line::from(Span::raw(
-            "shown to you one by one. Say no if you did not write this code.",
-        )),
+        // One line each, wrapped by the paragraph rather than broken here: a translation does
+        // not break where the English did, and a sentence split into two spans cannot be rewrapped.
+        Line::from(Span::raw(t!(trust_directory_explained))),
         Line::raw(""),
         Line::from(Span::styled(
-            "Either way, anything derived from the web or from an untrusted",
-            Style::default().fg(theme::muted()),
-        )),
-        Line::from(Span::styled(
-            "file is still shown before it is written.",
+            t!(trust_directory_regardless),
             Style::default().fg(theme::muted()),
         )),
         Line::raw(""),
@@ -149,21 +143,24 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
                     .fg(theme::ok())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" trust it    "),
+            Span::raw(format!(" {}    ", t!(trust_directory_yes))),
             Span::styled(
                 "n",
                 Style::default()
                     .fg(theme::fail())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" ask me about every write    "),
+            Span::raw(format!(" {}    ", t!(trust_directory_no))),
             Span::styled(
                 "ctrl-c",
                 Style::default()
                     .fg(theme::muted())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" quit", Style::default().fg(theme::muted())),
+            Span::styled(
+                format!(" {}", t!(quit)),
+                Style::default().fg(theme::muted()),
+            ),
         ]),
     ];
 
@@ -174,7 +171,7 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(theme::brand_primary()))
-                    .title(" trust this directory? "),
+                    .title(format!(" {} ", t!(trust_directory_title))),
             )
             .wrap(Wrap { trim: false }),
         area,

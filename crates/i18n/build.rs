@@ -369,7 +369,17 @@ fn append(parts: &[Part], pad: &str) -> String {
     let mut out = String::new();
     for part in parts {
         match part {
-            Part::Text(text) => out.push_str(&format!("{pad}out.push_str({text:?});\n")),
+            // A one-character run becomes a `push`, because clippy is right that it should and
+            // because clippy reads what is generated here as readily as what is written by hand.
+            Part::Text(text) => {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(only), None) => {
+                        out.push_str(&format!("{pad}out.push({only:?});\n"));
+                    }
+                    _ => out.push_str(&format!("{pad}out.push_str({text:?});\n")),
+                }
+            }
             Part::Arg(name) => {
                 out.push_str(&format!("{pad}out.push_str(&{name}.to_string());\n"));
             }

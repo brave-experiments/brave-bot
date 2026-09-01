@@ -12,6 +12,7 @@ use bravebot_agent::confirm::{
 };
 use bravebot_agent::diff::Change;
 use bravebot_core::ask::{Answer as UserAnswer, Asking};
+use bravebot_i18n::t;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -168,16 +169,16 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::brand_primary()))
-        .title(" approve this write? ");
+        .title(format!(" {} ", t!(write_title)));
     // Before the body rather than after it, because the hunks are laid out against the width they
     // will be drawn at: a margin decided without knowing the width is a margin the first wrapped
     // row escapes.
     let inside = block.inner(area);
 
     let (verb, colour) = match request.intent {
-        Intent::Create => ("Create", theme::ok()),
-        Intent::Overwrite => ("Overwrite", theme::running()),
-        Intent::Edit => ("Edit", theme::brand_primary()),
+        Intent::Create => (t!(write_create), theme::ok()),
+        Intent::Overwrite => (t!(write_overwrite), theme::running()),
+        Intent::Edit => (t!(write_edit), theme::brand_primary()),
     };
 
     let diff = request.diff();
@@ -193,7 +194,10 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  +{} -{}", diff.added(), diff.removed()),
+                format!(
+                    "  {}",
+                    t!(write_tally, added = diff.added(), removed = diff.removed())
+                ),
                 Style::default().fg(theme::muted()),
             ),
         ]),
@@ -205,9 +209,12 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     if !diff.is_exact() {
         lines.push(Line::from(Span::styled(
             format!(
-                "  the change is too large to show: {} lines replace {}",
-                diff.added(),
-                diff.removed()
+                "  {}",
+                t!(
+                    write_too_large_to_show,
+                    added = diff.added(),
+                    removed = diff.removed()
+                )
             ),
             Style::default().fg(theme::running()),
         )));
@@ -221,10 +228,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
     if request.untrusted {
         lines.extend(marked_rows(
             &margin,
-            &[Span::styled(
-                "untrusted: nobody has read this, and the model never saw it",
-                marked,
-            )],
+            &[Span::styled(t!(write_untrusted), marked)],
             inside.width as usize,
         ));
     }
@@ -247,7 +251,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
                 Span::styled(format!(" {text}"), Style::default().fg(theme::muted()))
             }
             Change::Elided(count) => Span::styled(
-                format!(" … {count} unchanged lines"),
+                format!(" {}", t!(write_unchanged, count = *count)),
                 Style::default().fg(theme::muted()),
             ),
         };
@@ -261,21 +265,24 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
                 .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" write it    "),
+        Span::raw(format!(" {}    ", t!(write_yes))),
         Span::styled(
             "n",
             Style::default()
                 .fg(theme::fail())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" leave it alone    "),
+        Span::raw(format!(" {}    ", t!(write_no))),
         Span::styled(
             "ctrl-c",
             Style::default()
                 .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
+        Span::styled(
+            format!(" {}", t!(stop_the_turn)),
+            Style::default().fg(theme::muted()),
+        ),
     ]);
 
     frame.render_widget(block, area);
@@ -301,11 +308,7 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
         keys.push_span(Span::styled(
             // Short, because the row is as wide as the box and the keys come first: a hint
             // that gets clipped in half tells the reviewer less than no hint at all.
-            if below > 0 {
-                format!("   ↑↓ {below} more")
-            } else {
-                "   ↑↓ back".to_string()
-            },
+            scroll_hint(below),
             Style::default().fg(theme::brand_primary()),
         ));
     }
@@ -434,17 +437,17 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
-                "Run ",
+                format!("{} ", t!(run_verb)),
                 Style::default()
                     .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                crate::confirm::stage_count(request.pipeline.len()),
+                t!(run_stages, count = request.pipeline.len()),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  in {}", request.directory),
+                format!("  {}", t!(run_in_directory, directory = &request.directory)),
                 Style::default().fg(theme::muted()),
             ),
         ]),
@@ -480,7 +483,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     // to assume otherwise. A program here is not sandboxed and runs with the access the user's own
     // shell would give it.
     lines.push(Line::from(Span::styled(
-        "  this is not sandboxed: it runs with the access your own shell has",
+        format!("  {}", t!(run_not_sandboxed)),
         Style::default().fg(theme::running()),
     )));
 
@@ -488,7 +491,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     // Only said when it applies, so it does not become noise that hides the case it is for.
     if request.releases_private() {
         lines.push(Line::from(Span::styled(
-            "  it is also being fed your own data, which leaves here with it",
+            format!("  {}", t!(run_releases_private)),
             Style::default().fg(theme::fail()),
         )));
     }
@@ -501,7 +504,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     if !request.releases_private() {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "  a: trust this exact command for the rest of this session",
+            format!("  {}", t!(run_always_explained)),
             Style::default().fg(theme::muted()),
         )));
         // The command first, then what trusting it means. The claims are about this, so a reader
@@ -513,21 +516,21 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
             )));
         }
         lines.push(Line::from(Span::styled(
-            "     which means both:",
+            format!("     {}", t!(run_always_means_both)),
             Style::default().fg(theme::muted()),
         )));
         lines.push(Line::from(Span::styled(
-            "       it runs again unasked, side effects and all",
+            format!("       {}", t!(run_always_runs_again)),
             Style::default().fg(theme::muted()),
         )));
         // The half nothing else in the interface would reveal, so it is the half that is coloured.
         lines.push(Line::from(Span::styled(
-            "       what it prints is trusted, and the model reads it",
+            format!("       {}", t!(run_always_output_trusted)),
             Style::default().fg(theme::running()),
         )));
         // Exact arguments, so the narrowness is visible rather than assumed the other way.
         lines.push(Line::from(Span::styled(
-            "     these arguments only: git log would not cover git push",
+            format!("     {}", t!(run_always_exact_arguments)),
             Style::default().fg(theme::muted()),
         )));
     } else {
@@ -535,7 +538,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         // be offering something that will not happen.
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "  private input is asked about every time, so this one cannot be remembered",
+            format!("  {}", t!(run_private_not_remembered)),
             Style::default().fg(theme::muted()),
         )));
     }
@@ -547,7 +550,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
                 .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" run it    "),
+        Span::raw(format!(" {}    ", t!(run_yes))),
     ];
     // Offered only where it would do something. Private input asks every time whatever is
     // remembered, so the key would promise something that will not happen.
@@ -558,7 +561,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
                 .fg(theme::running())
                 .add_modifier(Modifier::BOLD),
         ));
-        key_spans.push(Span::raw(" always    "));
+        key_spans.push(Span::raw(format!(" {}    ", t!(run_always))));
     }
     key_spans.extend([
         Span::styled(
@@ -567,14 +570,17 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
                 .fg(theme::fail())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" don't    "),
+        Span::raw(format!(" {}    ", t!(run_no))),
         Span::styled(
             "ctrl-c",
             Style::default()
                 .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
+        Span::styled(
+            format!(" {}", t!(stop_the_turn)),
+            Style::default().fg(theme::muted()),
+        ),
     ]);
     let keys = Line::from(key_spans);
 
@@ -582,7 +588,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::accent()))
-        .title(" run this? ");
+        .title(format!(" {} ", t!(run_title)));
     let inside = block.inner(area);
     frame.render_widget(block, area);
 
@@ -603,11 +609,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     if furthest > 0 {
         let below = furthest - offset;
         keys.push_span(Span::styled(
-            if below > 0 {
-                format!("   ↑↓ {below} more")
-            } else {
-                "   ↑↓ back".to_string()
-            },
+            scroll_hint(below),
             Style::default().fg(theme::accent()),
         ));
     }
@@ -616,12 +618,21 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     furthest
 }
 
-/// `1 stage`, `2 stages`.
-fn stage_count(count: usize) -> String {
-    if count == 1 {
-        format!("{count} stage")
+/// Prose the panels indent by two columns, wrapped so every row keeps the indent.
+///
+/// The paragraph would wrap it too, but back to column zero, and these sentences sit beside
+/// lines that are indented on purpose. Wrapped here rather than broken in the catalog, since a
+/// translation does not break where the English did.
+fn indented(text: impl Into<String>, style: Style, width: usize) -> Vec<Line<'static>> {
+    marked_rows(&Span::raw("  "), &[Span::styled(text.into(), style)], width)
+}
+
+/// How much further the body goes, or that there is nothing below.
+fn scroll_hint(below: u16) -> String {
+    if below > 0 {
+        format!("   {}", t!(scroll_more, count = below))
     } else {
-        format!("{count} stages")
+        format!("   {}", t!(scroll_back))
     }
 }
 
@@ -675,7 +686,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::brand_primary()))
-        .title(" let the model read this? ");
+        .title(format!(" {} ", t!(output_title)));
     // Before the body, because the output is laid out against the width it will be drawn at. A
     // command's output is untrimmed, so reaching the wrap point takes nothing unusual.
     let inside = block.inner(area);
@@ -685,28 +696,28 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
-                "Read ",
+                format!("{} ", t!(output_verb)),
                 Style::default()
                     .fg(theme::brand_primary())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                stage_count_of(request.lines(), "line", "lines"),
+                t!(output_lines, count = request.lines()),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  printed by {}", request.command),
+                format!("  {}", t!(output_printed_by, command = &request.command)),
                 Style::default().fg(theme::muted()),
             ),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(
-            "  the model has not seen this. Approving puts it in its context, and it will act \
-             on it.",
-            Style::default().fg(theme::muted()),
-        )),
-        Line::raw(""),
     ];
+    lines.extend(indented(
+        t!(output_unseen),
+        Style::default().fg(theme::muted()),
+        inside.width as usize,
+    ));
+    lines.push(Line::raw(""));
 
     // An empty result is a fact worth stating. Drawing nothing would read as a prompt that failed
     // to render, and the reviewer would be deciding about a blank box.
@@ -714,7 +725,7 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
         lines.extend(marked_rows(
             &margin,
             &[Span::styled(
-                "(it printed nothing)",
+                t!(output_empty),
                 Style::default().fg(theme::muted()),
             )],
             inside.width as usize,
@@ -735,21 +746,24 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
                 .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" let it read this    "),
+        Span::raw(format!(" {}    ", t!(output_yes))),
         Span::styled(
             "n",
             Style::default()
                 .fg(theme::fail())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" keep it back    "),
+        Span::raw(format!(" {}    ", t!(output_no))),
         Span::styled(
             "ctrl-c",
             Style::default()
                 .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
+        Span::styled(
+            format!(" {}", t!(stop_the_turn)),
+            Style::default().fg(theme::muted()),
+        ),
     ]);
 
     frame.render_widget(block, area);
@@ -769,26 +783,13 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
     if furthest > 0 {
         let below = furthest - offset;
         keys.push_span(Span::styled(
-            if below > 0 {
-                format!("   ↑↓ {below} more")
-            } else {
-                "   ↑↓ back".to_string()
-            },
+            scroll_hint(below),
             Style::default().fg(theme::brand_primary()),
         ));
     }
     frame.render_widget(Paragraph::new(keys), rows[1]);
 
     furthest
-}
-
-/// `1 line`, `2 lines`.
-fn stage_count_of(count: usize, one: &str, many: &str) -> String {
-    if count == 1 {
-        format!("{count} {one}")
-    } else {
-        format!("{count} {many}")
-    }
 }
 
 /// Draw the offer to vouch for a quarantined file, and wait for an answer.
@@ -832,7 +833,7 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::ok()))
-        .title(" let the model read this file? ");
+        .title(format!(" {} ", t!(vouch_title)));
     // Before the body, because the preview is laid out against the width it will be drawn at.
     let inside = block.inner(area);
 
@@ -841,7 +842,7 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
-                "Trust ",
+                format!("{} ", t!(vouch_verb)),
                 Style::default()
                     .fg(theme::ok())
                     .add_modifier(Modifier::BOLD),
@@ -852,16 +853,13 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
             ),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(
-            "  the model cannot read this file, so it is working blind on it. Vouching lets it",
-            Style::default().fg(theme::muted()),
-        )),
-        Line::from(Span::styled(
-            "  read this file for the rest of this session, here and in every later read.",
-            Style::default().fg(theme::muted()),
-        )),
-        Line::raw(""),
     ];
+    lines.extend(indented(
+        t!(vouch_explained),
+        Style::default().fg(theme::muted()),
+        inside.width as usize,
+    ));
+    lines.push(Line::raw(""));
 
     for line in request.preview.lines() {
         lines.extend(marked_rows(
@@ -885,21 +883,24 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
                 .fg(theme::ok())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" trust it    "),
+        Span::raw(format!(" {}    ", t!(vouch_yes))),
         Span::styled(
             "n",
             Style::default()
                 .fg(theme::fail())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" leave it quarantined    "),
+        Span::raw(format!(" {}    ", t!(vouch_no))),
         Span::styled(
             "ctrl-c",
             Style::default()
                 .fg(theme::muted())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" stop the turn", Style::default().fg(theme::muted())),
+        Span::styled(
+            format!(" {}", t!(stop_the_turn)),
+            Style::default().fg(theme::muted()),
+        ),
     ]);
 
     frame.render_widget(block, area);
@@ -919,11 +920,7 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     if furthest > 0 {
         let below = furthest - offset;
         keys.push_span(Span::styled(
-            if below > 0 {
-                format!("   ↑↓ {below} more")
-            } else {
-                "   ↑↓ back".to_string()
-            },
+            scroll_hint(below),
             Style::default().fg(theme::ok()),
         ));
     }
@@ -1446,6 +1443,48 @@ mod tests {
     /// Rows rather than one flattened string, because a margin is a claim about where a row
     /// *starts*, and a buffer joined end to end cannot tell a continuation row from the line it
     /// continues.
+    /// The sentences these panels put above the body are indented by two columns, and a
+    /// translation is not the length the English is, so they have to wrap without losing the
+    /// indent. Broken by hand into lines that fit, as they were, the second row of a longer
+    /// translation would start hard against the border and read as part of the body.
+    #[test]
+    fn explanatory_prose_keeps_its_indent_on_every_row_it_wraps_to() {
+        let request = VouchRequest {
+            path: "notes.md".into(),
+            preview: "some contents".into(),
+            truncated: false,
+        };
+        // Narrow enough that the sentence cannot fit on one row.
+        let drawn = rows_of(52, 24, |frame| {
+            draw_vouch(frame, &request, 0);
+        });
+
+        let wrapped: Vec<&String> = drawn
+            .iter()
+            .filter(|row| {
+                row.contains("working blind")
+                    || row.contains("rest of this session")
+                    || row.contains("later read")
+            })
+            .collect();
+        assert!(
+            wrapped.len() > 1,
+            "the sentence did not wrap, so this proves nothing: {drawn:#?}"
+        );
+        // The panel is centred, so the box's own left border is where the indent is measured
+        // from rather than the start of the terminal row.
+        for row in wrapped {
+            let inside = row
+                .split_once('\u{2502}')
+                .map(|(_, rest)| rest)
+                .expect("the panel draws a border");
+            assert!(
+                inside.starts_with("  ") && !inside.starts_with("   "),
+                "a wrapped row lost the indent: {row:?}"
+            );
+        }
+    }
+
     fn rows_of(
         width: u16,
         height: u16,

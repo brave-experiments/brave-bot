@@ -9,6 +9,7 @@
 
 use crate::sessions::{self, Summary};
 use crate::theme;
+use bravebot_i18n::t;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -211,7 +212,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  Resume session",
+            format!("  {}", t!(resume_heading)),
             Style::default()
                 .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD),
@@ -220,7 +221,10 @@ fn draw(frame: &mut Frame, picker: &Picker) {
     );
 
     let search = if picker.search.is_empty() {
-        Span::styled("Search…", Style::default().fg(theme::muted()))
+        Span::styled(
+            t!(resume_search_placeholder),
+            Style::default().fg(theme::muted()),
+        )
     } else {
         Span::raw(picker.search.clone())
     };
@@ -246,7 +250,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session",
+            format!("  {}", t!(resume_keys)),
             Style::default().fg(theme::muted()),
         ))),
         layout[4],
@@ -258,7 +262,7 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
     let matching = picker.matching();
     if matching.is_empty() {
         return vec![Line::from(Span::styled(
-            "  nothing matches that",
+            format!("  {}", t!(resume_nothing_matches)),
             Style::default().fg(theme::muted()),
         ))];
     }

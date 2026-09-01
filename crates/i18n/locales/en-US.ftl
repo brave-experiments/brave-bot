@@ -110,3 +110,107 @@ leo-registering = registering this install as a new device
 leo-stored = stored { $count } credentials in the system keychain, valid through { $expiry }
 leo-browser-untouched =
     premium requests will now use them; the browser's own credentials were untouched
+
+
+## Vouching for a directory, asked once when a session starts somewhere new
+
+trust-directory-title = trust this directory?
+trust-directory-question = Trust
+trust-directory-explained =
+    Files here will be read as trusted, and edits to them will not be shown to you one by
+    one. Say no if you did not write this code.
+trust-directory-regardless =
+    Either way, anything derived from the web or from an untrusted file is still shown
+    before it is written.
+trust-directory-yes = trust it
+trust-directory-no = ask me about every write
+quit = quit
+
+
+## Choosing a theme, a model, or a session to pick up
+
+theme-picker-title = themes
+theme-picker-keys = ↑↓ choose  ·  Enter select  ·  Esc keep current
+model-picker-heading = Select model
+model-picker-keys = ↑↓ to choose  ·  Enter to select  ·  Esc to keep the current one
+picker-current = current
+picker-premium = premium
+resume-heading = Resume session
+resume-search-placeholder = Search…
+resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session
+resume-nothing-matches = nothing matches that
+
+
+## Shared by every question the interface stops to ask
+
+stop-the-turn = stop the turn
+scroll-more = ↑↓ { $count } more
+scroll-back = ↑↓ back
+
+
+## Approving a write
+
+write-title = approve this write?
+write-create = Create
+write-overwrite = Overwrite
+write-edit = Edit
+write-tally = +{ $added } -{ $removed }
+write-too-large-to-show =
+    the change is too large to show: { $added } lines replace { $removed }
+write-untrusted = untrusted: nobody has read this, and the model never saw it
+write-unchanged = { $count ->
+    [one] … { $count } unchanged line
+   *[other] … { $count } unchanged lines
+    }
+write-yes = write it
+write-no = leave it alone
+
+
+## Approving a command
+
+run-title = run this?
+run-verb = Run
+run-stages = { $count ->
+    [one] { $count } stage
+   *[other] { $count } stages
+    }
+run-in-directory = in { $directory }
+run-not-sandboxed = this is not sandboxed: it runs with the access your own shell has
+run-releases-private = it is also being fed your own data, which leaves here with it
+run-always-explained = a: trust this exact command for the rest of this session
+run-always-means-both = which means both:
+run-always-runs-again = it runs again unasked, side effects and all
+run-always-output-trusted = what it prints is trusted, and the model reads it
+run-always-exact-arguments = these arguments only: git log would not cover git push
+run-private-not-remembered =
+    private input is asked about every time, so this one cannot be remembered
+run-yes = run it
+run-always = always
+run-no = don't
+
+
+## Letting the model read what a command printed
+
+output-title = let the model read this?
+output-verb = Read
+output-lines = { $count ->
+    [one] { $count } line
+   *[other] { $count } lines
+    }
+output-printed-by = printed by { $command }
+output-unseen =
+    the model has not seen this. Approving puts it in its context, and it will act on it.
+output-empty = (it printed nothing)
+output-yes = let it read this
+output-no = keep it back
+
+
+## Vouching for a quarantined file
+
+vouch-title = let the model read this file?
+vouch-verb = Trust
+vouch-explained =
+    the model cannot read this file, so it is working blind on it. Vouching lets it read
+    this file for the rest of this session, here and in every later read.
+vouch-yes = trust it
+vouch-no = leave it quarantined

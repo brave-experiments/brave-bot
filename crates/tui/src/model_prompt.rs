@@ -20,6 +20,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::theme;
+use bravebot_i18n::t;
 
 /// What the picker is showing and where the cursor is.
 #[derive(Debug)]
@@ -160,7 +161,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  Select model",
+            format!("  {}", t!(model_picker_heading)),
             Style::default()
                 .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD),
@@ -172,7 +173,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  ↑↓ to choose  ·  Enter to select  ·  Esc to keep the current one",
+            format!("  {}", t!(model_picker_keys)),
             Style::default().fg(theme::muted()),
         ))),
         layout[3],
@@ -206,12 +207,15 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
         // premium model returns 403 and the session looks broken for no stated reason.
         if model.premium {
             spans.push(Span::styled(
-                "  premium",
+                format!("  {}", t!(picker_premium)),
                 Style::default().fg(theme::running()),
             ));
         }
         if picker.is_current(model) {
-            spans.push(Span::styled("  current", Style::default().fg(theme::ok())));
+            spans.push(Span::styled(
+                format!("  {}", t!(picker_current)),
+                Style::default().fg(theme::ok()),
+            ));
         }
 
         lines.push(Line::from(spans));

@@ -17,6 +17,7 @@ bravebot-agent = { path = "../agent" }
 bravebot-aichat = { path = "../aichat" }
 bravebot-config = { path = "../config" }
 bravebot-core = { path = "../core" }
+bravebot-i18n = { path = "../i18n" }
 bravebot-net = { path = "../net" }
 bravebot-sandbox = { path = "../sandbox" }
 # Already in the tree for the credential protocol; here it names a session, which has to be

@@ -11,6 +11,7 @@
 //! Nothing labelled is involved. The names never reach a model: they are drawn for a person, who
 //! picks one.
 
+use bravebot_i18n::t;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -188,7 +189,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::brand_primary()))
-        .title(" themes ")
+        .title(format!(" {} ", t!(theme_picker_title)))
         .style(Style::default().bg(theme::background()).fg(theme::text()));
     let inside = block.inner(area);
     frame.render_widget(block, area);
@@ -220,7 +221,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " ↑↓ choose  ·  Enter select  ·  Esc keep current",
+            format!(" {}", t!(theme_picker_keys)),
             Style::default().fg(theme::muted()),
         ))),
         layout[2],
@@ -272,7 +273,10 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
         ];
 
         if picker.is_current(theme) {
-            spans.push(Span::styled("  current", Style::default().fg(theme::ok())));
+            spans.push(Span::styled(
+                format!("  {}", t!(picker_current)),
+                Style::default().fg(theme::ok()),
+            ));
         }
 
         lines.push(Line::from(spans));
