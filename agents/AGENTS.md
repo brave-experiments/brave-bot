@@ -106,6 +106,23 @@ Keep them small. If the message needs an "and" to describe what the commit does,
 two commits. Every commit must leave the tree building and passing, since that is the whole of
 what makes a history worth bisecting.
 
+**A spec clause ships with the work it describes**, in the same commit and the same pull request.
+Do not land the spec on its own. A clause names the tests that pin it, so a spec commit by itself
+leaves `make check-spec` pointing at tests that do not exist, and a code commit by itself is
+behaviour nothing specifies. Reviewing them together is also the only way to see whether the clause
+and the code actually agree. The history has commits that did it the other way; do not read those
+as the convention.
+
+The exception is a spec written to be argued about before anything is built. That is a design
+document, its clauses say `verified-by: none` until the work lands, and the message should say
+plainly that it specifies work not yet done. Documenting behaviour that already exists is not this
+case.
+
+Adding a clause means bumping that spec's count in [docs/specs/README.md](docs/specs/README.md),
+and `make check-spec` fails on a mismatch. When one commit adds clauses to two specs, that one table
+is edited by both, so stage it a hunk at a time rather than landing an unrelated count alongside the
+wrong change.
+
 
 ## Pull requests
 
