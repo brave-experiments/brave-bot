@@ -10,6 +10,7 @@
 
 use bravebot_agent::report::{Activity, Reporter, Shown};
 use bravebot_core::todo::Row;
+use bravebot_i18n::t;
 use bravebot_tui::wrap::display_width;
 use std::io::Write;
 
@@ -136,7 +137,11 @@ impl<W: Write> Reporter for Progress<W> {
         // it can be a filename read out of a quarantined listing. So it is neutralised too, and a
         // long one continues on another marked row rather than outside the block.
         let mut block = vec![
-            format!("untrusted \u{b7} {} \u{b7} {}", shown.origin, shown.label),
+            t!(
+                quarantined_heading,
+                origin = &shown.origin,
+                label = &shown.label
+            ),
             format!("  {}", shown.reach.describe()),
         ];
         block.extend(shown.preview.iter().cloned());
@@ -144,9 +149,9 @@ impl<W: Write> Reporter for Progress<W> {
         // Said rather than silently dropped: a preview that stops without saying so reads as the
         // whole of what was there.
         if shown.lines > shown.preview.len() {
-            block.push(format!(
-                "\u{2026} {} more lines",
-                shown.lines - shown.preview.len()
+            block.push(t!(
+                transcript_more_lines,
+                count = shown.lines - shown.preview.len()
             ));
         }
 
