@@ -5,6 +5,7 @@
 //! floated down from the top edge, because a block pinned into the corner reads as an error
 //! message rather than as a title.
 
+use bravebot_i18n::t;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -163,7 +164,7 @@ pub fn lines(confinement: &str, width: u16, available: u16) -> Vec<Line<'static>
         Span::raw(INDENT),
         Span::styled("bravebot", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
-            format!("  ·  confinement {confinement}"),
+            format!("  ·  {}", t!(opening_confinement, level = confinement)),
             Style::default().fg(theme::muted()),
         ),
     ]));
@@ -178,10 +179,7 @@ pub fn lines(confinement: &str, width: u16, available: u16) -> Vec<Line<'static>
 pub fn invitation() -> Line<'static> {
     Line::from(vec![
         Span::raw(INDENT),
-        Span::styled(
-            "Ask a question about this workspace.",
-            Style::default().fg(theme::muted()),
-        ),
+        Span::styled(t!(opening_invitation), Style::default().fg(theme::muted())),
     ])
 }
 

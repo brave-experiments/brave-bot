@@ -11,6 +11,7 @@
 
 use crate::diff::Change;
 use bravebot_core::todo::Row;
+use bravebot_i18n::t;
 
 /// One thing the turn did, shaped for the person watching.
 ///
@@ -147,6 +148,9 @@ impl Phase {
 /// Lives here rather than in the interface because two things need it and a phrase written twice
 /// is a phrase that will disagree with itself: the list of sessions saying when one was last
 /// touched, and a write saying how old the file it replaced was.
+/// Deliberately not from a catalog. This reads back as part of the note a write answers the
+/// planner with, in tools.rs, so the words are interface to the model rather than prose for a
+/// person. The session list has its own, in the interface, which is translated.
 pub fn how_long_ago(age: std::time::Duration) -> String {
     let seconds = age.as_secs();
 
@@ -187,10 +191,8 @@ pub enum Reach {
 impl Reach {
     pub fn describe(self) -> &'static str {
         match self {
-            Self::NotThePlanner => {
-                "not in the planner's context; a processor can be sent to read it"
-            }
-            Self::NoModel => "in no model's context: nothing can be sent to read this",
+            Self::NotThePlanner => t!(reach_not_the_planner),
+            Self::NoModel => t!(reach_no_model),
         }
     }
 }
@@ -243,11 +245,9 @@ impl Landing {
     /// question a person is asking.
     pub fn describe(self) -> &'static str {
         match self {
-            Self::Context => "read into the planner's context",
-            Self::Quarantined => {
-                "not in the planner's context; only an isolated processor can be sent to read it"
-            }
-            Self::Reserved => "read by nothing: only its name is known",
+            Self::Context => t!(landed_in_the_planner),
+            Self::Quarantined => t!(landed_quarantined),
+            Self::Reserved => t!(landed_reserved),
         }
     }
 }
@@ -414,21 +414,21 @@ impl Reporter for RecordingReporter {
 /// says what happened and "read_file" says what was typed.
 pub(crate) fn verb_for(tool: &str) -> &'static str {
     match tool {
-        "read_file" => "Read",
-        "list_files" => "List",
-        "search" => "Search",
-        "write_file" => "Write",
-        "edit_file" => "Update",
-        "todo_write" => "Plan",
+        "read_file" => t!(verb_read_file),
+        "list_files" => t!(verb_list_files),
+        "search" => t!(verb_search),
+        "write_file" => t!(verb_write_file),
+        "edit_file" => t!(verb_edit_file),
+        "todo_write" => t!(verb_todo_write),
         // Named for what it is rather than for what it does: every one of these is a model
         // with no tools, no memory and one round, and a person watching a line go by should not
         // have to remember which of the verbs meant that.
-        "spawn_processor" => "Isolated processor",
-        "load_skill" => "Skill",
-        "ask_user" => "Ask",
-        "run" => "Run",
-        "read_output" => "Read output",
-        _ => "Tool",
+        "spawn_processor" => t!(verb_spawn_processor),
+        "load_skill" => t!(verb_load_skill),
+        "ask_user" => t!(verb_ask_user),
+        "run" => t!(verb_run),
+        "read_output" => t!(verb_read_output),
+        _ => t!(verb_unknown),
     }
 }
 

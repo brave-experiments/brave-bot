@@ -433,3 +433,41 @@ compact-done =
 compact-nothing-to-do = there is nothing to summarise yet
 compact-failed = the conversation could not be summarised: { $problem }
 turn-ended-unexpectedly = the turn ended unexpectedly
+
+
+## The opening screen
+
+opening-confinement = confinement { $level }
+opening-invitation = Ask a question about this workspace.
+
+
+## What a turn did, in the words a transcript line begins with
+
+# One per tool. A word rather than the tool's own name, because a person reads the line:
+# "Read(src/main.rs)" says what happened and "read_file" says what was typed.
+verb-read-file = Read
+verb-list-files = List
+verb-search = Search
+verb-write-file = Write
+verb-edit-file = Update
+verb-todo-write = Plan
+# Named for what it is rather than for what it does: every one of these is a model with no
+# tools, no memory and one round, and a person watching a line go by should not have to
+# remember which of the verbs meant that.
+verb-spawn-processor = Isolated processor
+verb-load-skill = Skill
+verb-ask-user = Ask
+verb-run = Run
+verb-read-output = Read output
+verb-unknown = Tool
+
+## Where what a call produced ended up, said at the end of the line about it
+#
+# Names which context, because there is more than one kind of model here and the driver is not
+# one of them: the planner is the model holding the conversation, and a processor is an isolated
+# model that is handed slots and nothing else. "The model" answers neither question.
+landed-in-the-planner = read into the planner's context
+landed-quarantined = not in the planner's context; only an isolated processor can be sent to read it
+landed-reserved = read by nothing: only its name is known
+reach-not-the-planner = not in the planner's context; a processor can be sent to read it
+reach-no-model = in no model's context: nothing can be sent to read this

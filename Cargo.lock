@@ -284,6 +284,7 @@ dependencies = [
  "bravebot-aichat",
  "bravebot-config",
  "bravebot-core",
+ "bravebot-i18n",
  "bravebot-net",
  "bravebot-skus",
  "serde",
