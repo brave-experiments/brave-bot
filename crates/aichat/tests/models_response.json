@@ -25,6 +25,7 @@
       "chat",
       "tools",
       "vision",
+      "video",
       "deep_research"
     ],
     "is_suggested_model": false,
@@ -35,8 +36,8 @@
       "display_maker": "Alibaba",
       "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "basic_and_premium",
-      "max_associated_content_length": 20000,
-      "long_conversation_warning_character_limit": 32000
+      "max_associated_content_length": 39460,
+      "long_conversation_warning_character_limit": 63136
     }
   },
   {
@@ -47,7 +48,8 @@
       "tools",
       "vision",
       "files",
-      "deep_research"
+      "deep_research",
+      "content_agent"
     ],
     "is_suggested_model": false,
     "is_near_model": false,
@@ -57,8 +59,8 @@
       "display_maker": "Anthropic",
       "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "premium",
-      "max_associated_content_length": 16000,
-      "long_conversation_warning_character_limit": 25600
+      "max_associated_content_length": 64000,
+      "long_conversation_warning_character_limit": 102400
     }
   },
   {
@@ -78,8 +80,8 @@
       "display_maker": "Anthropic",
       "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "basic_and_premium",
-      "max_associated_content_length": 16000,
-      "long_conversation_warning_character_limit": 25600
+      "max_associated_content_length": 90000,
+      "long_conversation_warning_character_limit": 144000
     }
   },
   {
@@ -98,8 +100,8 @@
       "display_maker": "Brave",
       "description": "Hi, I'm Leo. I'm an AI assistant by Brave.",
       "access": "basic_and_premium",
-      "max_associated_content_length": 8000,
-      "long_conversation_warning_character_limit": 12800
+      "max_associated_content_length": 40000,
+      "long_conversation_warning_character_limit": 64000
     }
   }
 ]
