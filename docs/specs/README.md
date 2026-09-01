@@ -39,6 +39,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |
 | [layering.md](layering.md) | `LAYER` | 3 | which crate is allowed to do what |
+| [releases.md](releases.md) | `RELEASE` | 9 | what names a version, what starts a release, and what an installer trusts about what it fetched |
 
 ## The tools
 
