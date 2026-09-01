@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent", "crates/i18n", "crates/tui", "crates/aichat", "crates/cli", "crates/config", "crates/core", "crates/mcp", "crates/net", "crates/sandbox", "crates/signing", "crates/skus"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # Matches the pinned cross-build container, so `cargo build` fails on a feature the
 # release build could not compile rather than deferring that to CI.
