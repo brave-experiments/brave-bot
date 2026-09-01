@@ -160,6 +160,12 @@ one window describes it, and for an entry that reports nothing. A budget set by 
 A figure the endpoint advertises is believed even where it is small, and never raised toward
 something more comfortable.
 
+**The window is looked up whenever a model is in force, not only when one is picked.** A choice
+outlives the session that made it, and nothing on disk remembers the window that came with it, so a
+session starting on a model chosen earlier asks the endpoint again. A listing that cannot be fetched
+leaves the default in place and says nothing: a session that is merely offline should not open with a
+complaint about a request nobody asked for.
+
 **Why.** The default was a single constant standing in for a figure that varies across the roster by
 a factor of thirty. Sessions compacted at 24,000 tokens against a model advertising 102,400, giving
 up three quarters of the conversation it could have held, while models advertising 6,400 had a budget
@@ -182,3 +188,7 @@ than necessary, which is a mistake this project made before measuring the endpoi
 `verified-by: bravebot_config::lib::nothing_advertised_leaves_the_default_alone`
 `verified-by: bravebot_config::lib::a_budget_set_by_hand_is_not_replaced_by_an_advertised_one`
 `verified-by: bravebot_config::lib::adopting_the_budget_already_in_use_reports_no_change`
+`verified-by: bravebot_tui::app::the_window_of_a_model_chosen_earlier_is_found_in_the_listing`
+`verified-by: bravebot_tui::app::nothing_chosen_has_no_advertised_window`
+`verified-by: bravebot_tui::app::a_model_the_listing_no_longer_offers_has_no_window`
+`verified-by: bravebot_tui::app::a_model_that_advertises_nothing_has_no_window`

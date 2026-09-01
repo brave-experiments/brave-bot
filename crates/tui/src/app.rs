@@ -1207,6 +1207,10 @@ fn event_loop(
         .with_stored_history()
         .in_workspace(workspace.root());
 
+    // The model outlived the session that chose it, so the window that came with it has to be asked
+    // for again: it is reported by the listing and nowhere else, and nothing on disk remembers it.
+    adopt_budget_for_current_model(&mut session, config);
+
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
     // session begins with an exchange that outlived the process it happened in.
@@ -1559,11 +1563,12 @@ fn expand_home(directory: &str) -> String {
 /// The list is content and the choice is routing. Nothing here is quarantined, because there is no
 /// planner context to keep it out of: the names are drawn for a person, and their pick is the
 /// endorsement for the request field it lands in.
-fn choose_model(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    session: &mut Session,
-    config: &mut Config,
-) {
+/// Ask the endpoint what it offers.
+///
+/// Shared by the picker and by the budget lookup a session does when it starts, because both want
+/// the same listing and a second copy of the policy setup would be a second place for the gate to
+/// be got wrong.
+fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, String> {
     let mut sink = Trail::new();
     let egress = Egress::new();
 
@@ -1573,7 +1578,7 @@ fn choose_model(
     let mut routing = bravebot_core::policy::Routing::new();
     routing.insert_trusted("models", config.models_url());
 
-    let models = bravebot_core::policy::Policy::begin(
+    bravebot_core::policy::Policy::begin(
         routing,
         bravebot_core::policy::ReleasePlan::new(),
         bravebot_core::capability::CapabilitySet::from_iter([
@@ -1585,9 +1590,48 @@ fn choose_model(
     .and_then(|mut policy| {
         bravebot_aichat::models::list(&mut policy, config, &egress)
             .map_err(|error| error.to_string())
-    });
+    })
+}
 
-    match models {
+/// Take the budget for the model already in force, without asking anyone to choose it again.
+///
+/// A model chosen in an earlier session is read back off disk, and until this ran the window that
+/// came with it was not: the budget stayed at the default and a session with room for a hundred
+/// thousand tokens compacted at twenty-four, having said nothing about why.
+///
+/// A listing that cannot be fetched is not worth a word. The budget falls back to the default, which
+/// is what it was before this existed, and a session that is merely offline should not open with a
+/// complaint about a request nobody asked for.
+fn adopt_budget_for_current_model(session: &mut Session, config: &mut Config) {
+    let Ok(models) = list_models(config) else {
+        return;
+    };
+    if config.adopt_window(advertised_window(&models, session.model())) {
+        session.note(t!(session_context_budget, budget = config.context_budget));
+    }
+}
+
+/// The window advertised for `chosen`, or `None` where the listing does not describe it.
+///
+/// Split from the fetch so the matching is testable without a server. Nothing chosen means
+/// `automatic`, whose model is resolved per request, so no entry's window is the one in force.
+fn advertised_window(
+    models: &[bravebot_aichat::models::Model],
+    chosen: Option<&str>,
+) -> Option<u64> {
+    let name = chosen?;
+    models
+        .iter()
+        .find(|model| model.key == name)?
+        .conversation_tokens
+}
+
+fn choose_model(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    config: &mut Config,
+) {
+    match list_models(config) {
         Ok(models) => {
             if let Some(chosen) = crate::model_prompt::choose(terminal, models, session.model()) {
                 // The listing is the only place a window is ever reported, so the budget is taken
@@ -2283,6 +2327,53 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn listed(key: &str, window: Option<u64>) -> bravebot_aichat::models::Model {
+        bravebot_aichat::models::Model {
+            key: key.to_string(),
+            display_name: key.to_string(),
+            premium: false,
+            conversation_tokens: window,
+        }
+    }
+
+    /// A model chosen in an earlier session is read back off disk, and the window that came with it
+    /// is not: it is reported by the listing and nowhere else. Until this was looked up, a session
+    /// with room for a hundred thousand tokens compacted at twenty-four thousand.
+    #[test]
+    fn the_window_of_a_model_chosen_earlier_is_found_in_the_listing() {
+        let models = [
+            listed("claude-opus", Some(102_400)),
+            listed("some-other-model", Some(8_000)),
+        ];
+        assert_eq!(
+            advertised_window(&models, Some("claude-opus")),
+            Some(102_400)
+        );
+    }
+
+    /// Nothing chosen is `automatic`, whose model is resolved per request, so no entry's window is
+    /// the one in force.
+    #[test]
+    fn nothing_chosen_has_no_advertised_window() {
+        let models = [listed("claude-opus", Some(102_400))];
+        assert_eq!(advertised_window(&models, None), None);
+    }
+
+    /// A model that has been withdrawn since it was chosen. The default stands rather than the
+    /// window of whichever entry happened to be first.
+    #[test]
+    fn a_model_the_listing_no_longer_offers_has_no_window() {
+        let models = [listed("claude-opus", Some(102_400))];
+        assert_eq!(advertised_window(&models, Some("withdrawn-model")), None);
+    }
+
+    /// An entry that reports no window of its own leaves the budget alone.
+    #[test]
+    fn a_model_that_advertises_nothing_has_no_window() {
+        let models = [listed("quiet-model", None)];
+        assert_eq!(advertised_window(&models, Some("quiet-model")), None);
     }
 
     /// A reply arrives as hundreds of messages and a draw rebuilds the whole transcript, so a
