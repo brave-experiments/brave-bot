@@ -89,6 +89,11 @@ doctor-leo = leo
 doctor-subscription =
     { $channel } subscription imported, { $unspent } of { $total } credentials unspent
 doctor-confinement = confinement { $level }
+# How much confinement was actually achieved. The sandbox reports which of the three it got and
+# the interface is what names it, because bravebot-sandbox holds no words for a person.
+confinement-kernel = kernel-enforced
+confinement-partial = partial
+confinement-none = none
 doctor-mechanisms = mechanisms
 doctor-network-denial = network denial
 doctor-kernel-enforced = kernel-enforced

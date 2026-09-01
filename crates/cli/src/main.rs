@@ -414,8 +414,8 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
     // Reported in the status bar so the guarantee in force is visible for the whole
     // session rather than assumed.
     let confinement = match bravebot_sandbox::for_current_platform() {
-        Ok(sandbox) => sandbox.capabilities().level.to_string(),
-        Err(_) => "none".to_string(),
+        Ok(sandbox) => named(sandbox.capabilities().level),
+        Err(_) => named(bravebot_sandbox::policy::ConfinementLevel::None),
     };
 
     match bravebot_tui::app::run(&config, &workspace, confinement, start) {
@@ -434,6 +434,21 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// What to call the confinement that was achieved.
+///
+/// Named here rather than by `bravebot_sandbox`, whose Display is a diagnostic and whose whole
+/// point is to hold no words meant for a person: it depends on nothing, and a catalog is a
+/// dependency. So it reports which of the three it got and this says it in the reader's language.
+fn named(level: bravebot_sandbox::policy::ConfinementLevel) -> String {
+    use bravebot_sandbox::policy::ConfinementLevel;
+    match level {
+        ConfinementLevel::Kernel => t!(confinement_kernel),
+        ConfinementLevel::Partial => t!(confinement_partial),
+        ConfinementLevel::None => t!(confinement_none),
+    }
+    .to_string()
 }
 
 /// The workspace is the current directory: file arguments resolve relative to it, and
@@ -651,7 +666,7 @@ fn report_confinement(ok: &mut bool) {
     match bravebot_sandbox::for_current_platform() {
         Ok(sandbox) => {
             let caps = sandbox.capabilities();
-            println!("{}", t!(doctor_confinement, level = caps.level));
+            println!("{}", t!(doctor_confinement, level = named(caps.level)));
             detail(t!(doctor_mechanisms), caps.mechanisms.join(", "));
             detail(
                 t!(doctor_network_denial),
