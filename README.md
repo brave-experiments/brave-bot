@@ -8,6 +8,12 @@ opencode. Its defining property is **structural resistance to indirect prompt in
 `npm install -g @brave/bravebot`, then run `bravebot` in a repository. See
 [docs/getting-started.md](docs/getting-started.md) for installing, running, and what it asks you.
 
+The documentation site at
+[brave-experiments.github.io/brave-bot-docs](https://brave-experiments.github.io/brave-bot-docs/)
+covers the same ground for somebody using bravebot rather than working on it, and is kept downstream
+of the specs below. Its source is
+[brave-bot-docs](https://github.com/brave-experiments/brave-bot-docs).
+
 ## How it works
 
 Before data is processed it is labelled as trusted or untrusted and as public or private.
