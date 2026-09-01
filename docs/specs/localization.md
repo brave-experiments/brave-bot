@@ -119,6 +119,11 @@ sees is worth nothing if two people running it see different things.
 
 ## Known costs
 
+- **The letters a question is answered with are not translated.** `y`, `n` and `a` are both the
+  key drawn and the key matched, so a catalog cannot move them: a French reader is told to press
+  `y` for *oui*. Changing that means deciding per language which letters a prompt answers to,
+  which is a change to what the interface listens for rather than to what it says.
+
 - **Numbers are not fully formatted for the locale.** A catalog says what separates a whole
   number from its fraction, which covers the two figures in the interface that have one. Digit
   grouping, alternative numerals, and percent and currency forms are not done: each needs the
