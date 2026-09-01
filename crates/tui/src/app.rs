@@ -1922,7 +1922,10 @@ fn run_turn_animated(
     // the planner is given what pasting into the box has always given it, and everything the user
     // looks at keeps the short form.
     let sent = session.unfolded(prompt);
+    // No round limit: the person reading this screen is the bound, and a stop reaches a turn
+    // mid-round. A number here would only interrupt work that was going fine.
     let mut task = Task::new(&sent)
+        .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string));
     for file in crate::entries::referenced(&sent) {

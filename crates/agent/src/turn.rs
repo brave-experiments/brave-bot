@@ -188,13 +188,23 @@ each one finishes so the user can watch progress. Send the whole list every time
 finished tasks in it marked completed, and keep exactly one task in_progress while work \
 remains on it. Do not use it for a single step or a question.";
 
-/// How many rounds of tool calls one turn may make before it has to answer.
+/// How many rounds of tool calls one turn may make before it has to answer, where nobody is
+/// watching.
 ///
 /// Not a safety property: nothing here is unsafe for running long, and a gate refuses what it
-/// refuses on the thousandth round as readily as on the first. It is a bound on futility. Real
-/// work in a large repository takes tens of calls, so the number is high enough not to interrupt
-/// any of that, and low enough that a turn which has stopped making progress stops.
-pub const MAX_TOOL_ROUNDS: usize = 40;
+/// refuses on the thousandth round as readily as on the first. It is a bound on futility, and it
+/// applies to an unattended run because a loop there has nothing else to stop it. What ran into
+/// this was a directory nobody vouched for, where a listing comes back as a reference and the
+/// planner cannot learn a filename, so it probed one glob after another, learning nothing from
+/// each and having no reason to stop.
+///
+/// Compaction does not cover this. It bounds how full the context is, not how long a turn runs,
+/// and the loop above stays comfortably under any budget forever: compaction is what lets it run
+/// forever rather than what stops it.
+///
+/// This was 40 and applied everywhere, which interrupted real work in a large repository. See
+/// [`Task::rounds`] for the interactive case, which is unbounded.
+pub const MAX_TOOL_ROUNDS: usize = 200;
 
 /// How the driver introduces itself when it takes the tools away.
 ///
@@ -362,6 +372,14 @@ pub struct Task {
     /// the same reason as `home`: where the choice is stored is the caller's business, and a turn
     /// should not differ from the same turn elsewhere for reasons the task does not state.
     pub model: Option<String>,
+    /// How many tool-calling rounds this turn may make, or `None` for no bound.
+    ///
+    /// The caller's business, like `model` and `home`, because the right answer depends on who is
+    /// there. A person watching a turn is a better bound than any number: they can see what it is
+    /// doing, and a stop reaches it mid-round. A bound would only interrupt work that was going
+    /// fine. So the interface passes `None`, and an unattended run passes
+    /// [`MAX_TOOL_ROUNDS`], where nothing else can end a loop.
+    pub rounds: Option<usize>,
 }
 
 /// An image on its way into a prompt, before it has been encoded for the wire.
@@ -390,6 +408,10 @@ impl Task {
             piped: None,
             home: None,
             model: None,
+            // Bounded unless a caller says otherwise. The unbounded case needs somebody watching,
+            // and a default cannot know whether anybody is, so the default is the one that is
+            // wrong in the cheaper direction.
+            rounds: Some(MAX_TOOL_ROUNDS),
         }
     }
 
@@ -435,6 +457,15 @@ impl Task {
     /// Request a particular model rather than the configured default.
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Bound how many tool-calling rounds this turn may make, or `None` to leave it unbounded.
+    ///
+    /// `None` is for a caller with a person in front of it, who is the better bound. See
+    /// [`Task::rounds`].
+    pub fn with_rounds(mut self, rounds: Option<usize>) -> Self {
+        self.rounds = rounds;
         self
     }
 }
@@ -1064,27 +1095,29 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
 
         steps += 1;
 
-        // A turn with no bound on it does not stop being a turn, it stops being anything: an
-        // agent that cannot make progress asks for one more tool call for as long as anyone
-        // lets it. What ran into this was a directory nobody vouched for, where a listing comes
-        // back as a reference and the planner cannot learn a filename, so it probed one glob
-        // after another, learning nothing from each and having no reason to stop.
+        // An unwatched turn with no bound on it does not stop being a turn, it stops being
+        // anything: an agent that cannot make progress asks for one more tool call for as long as
+        // anyone lets it. Where a person is watching there is a better bound than any number, and
+        // `rounds` is `None`. See [`Task::rounds`] and [`MAX_TOOL_ROUNDS`].
         //
         // The budget is spent on tools, so the last word is taken away rather than the turn:
         // the next request carries no tools at all, and the planner answers with what it has.
         // Ending here instead would throw away the work and tell the user only that something
         // went round in circles.
-        if steps >= MAX_TOOL_ROUNDS && may_call_tools {
+        if let Some(limit) = task
+            .rounds
+            .filter(|limit| steps >= *limit && may_call_tools)
+        {
             may_call_tools = false;
             reporter.narration(format!(
-                "that is {MAX_TOOL_ROUNDS} tool calls without an answer, so this turn has to \
-                 finish with what it has"
+                "that is {limit} tool calls without an answer, so this turn has to finish with \
+                 what it has"
             ));
             conversation.push(Message::user(format!(
-                "{TOOL_BUDGET_SPENT} You have made {MAX_TOOL_ROUNDS} tool calls this turn and \
-                 have no more. Answer now with what you know. If the work is not finished, say \
-                 what you found, what stopped you, and what would let you finish, such as a \
-                 file named or a directory trusted."
+                "{TOOL_BUDGET_SPENT} You have made {limit} tool calls this turn and have no more. \
+                 Answer now with what you know. If the work is not finished, say what you found, \
+                 what stopped you, and what would let you finish, such as a file named or a \
+                 directory trusted."
             )));
         }
 

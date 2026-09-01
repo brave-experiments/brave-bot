@@ -16,7 +16,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [routing.md](routing.md) | `ROUTE` | 7 | where an effect may land and what may decide it |
 | [trust-map.md](trust-map.md) | `TRUST` | 12 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |
-| [turns.md](turns.md) | `TURN` | 1 | how long a turn may go on, and what happens when it does not stop |
+| [turns.md](turns.md) | `TURN` | 2 | how long a turn may go on, and what happens when it does not stop |
 | [prompting.md](prompting.md) | `PROMPT` | 9 | every moment the system stops and puts something to a human, and what an answer grants |
 | [naming-files.md](naming-files.md) | `NAME` | 7 | writing `@path` in a prompt: what it puts into the turn and what it vouches for |
 | [pasting.md](pasting.md) | `PASTE` | 9 | what Ctrl-V puts into a turn, text or picture, and on what footing |

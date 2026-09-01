@@ -4656,12 +4656,17 @@ fn a_processors_output_cannot_be_a_destination() {
 /// reference, the planner could not learn a single filename from one, and it worked through
 /// globs one extension at a time for as long as it was allowed to. Nothing was unsafe about it.
 /// It simply never ended, because nothing in the loop had a reason to end it.
+///
+/// A small cap rather than [`MAX_TOOL_ROUNDS`]: what is under test is that a bound is enforced,
+/// and spending two hundred round trips to watch it happen tests the same thing more slowly.
 #[test]
 fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
+    const ROUNDS: usize = 3;
+
     let scratch = Scratch::new("round-cap");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let mut replies: Vec<String> = (0..MAX_TOOL_ROUNDS)
+    let mut replies: Vec<String> = (0..ROUNDS)
         .map(|_| tool_request("list_files", r#"{"directory":"."}"#))
         .collect();
     replies.push(reply_with(
@@ -4673,7 +4678,7 @@ fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let task = Task::new("fix the bug");
+    let task = Task::new("fix the bug").with_rounds(Some(ROUNDS));
     let outcome = turn::run(
         &config,
         &egress,
@@ -4693,13 +4698,13 @@ fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
     let bodies: Vec<String> = received.try_iter().collect();
     assert_eq!(
         bodies.len(),
-        MAX_TOOL_ROUNDS + 1,
-        "the budget bought {MAX_TOOL_ROUNDS} rounds and one last request"
+        ROUNDS + 1,
+        "the budget bought {ROUNDS} rounds and one last request"
     );
 
     // Every round up to the cap could call tools, and the last one could not: taking the tools
     // away is what makes the planner answer, rather than telling it to and hoping.
-    for (round, body) in bodies.iter().take(MAX_TOOL_ROUNDS).enumerate() {
+    for (round, body) in bodies.iter().take(ROUNDS).enumerate() {
         assert!(
             body.contains("\"tools\""),
             "round {round} was offered no tools"
@@ -4716,18 +4721,69 @@ fn a_turn_that_keeps_calling_tools_is_made_to_answer() {
     );
 }
 
+/// A turn with no bound keeps its tools for as long as it keeps asking.
+///
+/// The interactive case, where the person watching is the bound. A cap there would interrupt work
+/// that was going fine, so there is none: past what used to be the limit, the tools are still on
+/// the request.
+#[test]
+fn an_unbounded_turn_is_never_made_to_answer() {
+    let scratch = Scratch::new("round-unbounded");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Comfortably past the bounded default, so a cap that still applied would show up here.
+    let rounds = MAX_TOOL_ROUNDS + 5;
+    let mut replies: Vec<String> = (0..rounds)
+        .map(|_| tool_request("list_files", r#"{"directory":"."}"#))
+        .collect();
+    replies.push(reply_with("done"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("keep looking").with_rounds(None);
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("the turn finishes");
+
+    assert_eq!(
+        outcome.steps, rounds,
+        "the turn was cut short despite having no bound"
+    );
+
+    // The planner stopped because it stopped asking, so every request carried tools: nothing was
+    // ever taken away.
+    let bodies: Vec<String> = received.try_iter().collect();
+    for (round, body) in bodies.iter().enumerate() {
+        assert!(
+            body.contains("\"tools\""),
+            "round {round} was offered no tools"
+        );
+    }
+}
+
 /// A planner that asks for a tool after the budget is spent does not get one.
 ///
 /// The request it was answering offered no tools, so the call is not an answer to anything, and
 /// running it would put the turn back in the loop the budget exists to end.
 #[test]
 fn calls_made_after_the_budget_is_spent_are_not_run() {
+    const ROUNDS: usize = 3;
+
     let scratch = Scratch::new("round-cap-ignored");
     std::fs::write(scratch.path.join("marker.txt"), "before").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
     // Every round asks to overwrite the file, including the round after the tools are gone.
-    let replies: Vec<String> = (0..MAX_TOOL_ROUNDS + 1)
+    let replies: Vec<String> = (0..ROUNDS + 1)
         .map(|_| tool_request("write_file", r#"{"path":"marker.txt","contents":"after"}"#))
         .collect();
 
@@ -4736,7 +4792,7 @@ fn calls_made_after_the_budget_is_spent_are_not_run() {
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let task = Task::new("keep going");
+    let task = Task::new("keep going").with_rounds(Some(ROUNDS));
     let outcome = turn::run(
         &config,
         &egress,
@@ -4750,11 +4806,11 @@ fn calls_made_after_the_budget_is_spent_are_not_run() {
     let bodies: Vec<String> = received.try_iter().collect();
     assert_eq!(
         bodies.len(),
-        MAX_TOOL_ROUNDS + 1,
+        ROUNDS + 1,
         "the turn kept going after the budget was spent"
     );
     assert_eq!(
-        outcome.steps, MAX_TOOL_ROUNDS,
+        outcome.steps, ROUNDS,
         "the round after the budget was spent ran its calls anyway"
     );
 }
