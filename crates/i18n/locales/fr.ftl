@@ -53,6 +53,7 @@ cli-name-a-file = Inclure un fichier de l'espace de travail comme contexte fiabl
 
 cli-options-heading = Options :
 cli-option-file = Inclure un fichier de l'espace de travail comme contexte (répétable)
+cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord
 cli-option-print = Non interactif. Lit l'entrée redirigée comme contexte en quarantaine
 cli-option-trace = Afficher le journal d'audit
 cli-option-help = Afficher ce message
@@ -63,6 +64,7 @@ cli-option-version = Afficher la version
 
 cli-unknown-option = option inconnue : { $flag }
 cli-file-needs-a-path = --file demande un chemin
+cli-mode-needs-a-name = --mode demande l'un de : { $names }
 cli-unexpected-argument = argument inattendu : { $argument }
 cli-task-required = une tâche est requise
 cli-configuration-problem = erreur de configuration : { $problem }
@@ -164,6 +166,9 @@ resume-keys =
     ↑↓ pour choisir  ·  Entrée pour reprendre  ·  tapez pour rechercher  ·  Échap pour une
     nouvelle session
 resume-nothing-matches = aucune correspondance
+resume-manifest-run =
+    c'était une exécution manifest, qui ne peut pas être reprise ; démarrez une nouvelle
+    session
 
 
 ## Commun à toutes les questions que l'interface s'arrête pour poser

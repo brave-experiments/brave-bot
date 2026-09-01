@@ -74,6 +74,7 @@ rules here.
 | which crate may do what | [layering.md](docs/specs/layering.md) |
 | shortening a long conversation | [compaction.md](docs/specs/compaction.md) |
 | what is recorded about every decision | [trace.md](docs/specs/trace.md) |
+| planning a whole run before anything is read | [manifest.md](docs/specs/manifest.md) |
 
 Before adding a tool, ask what its routing field is and whether a person could approve that field
 alone. If they could not, it does not get built.

@@ -161,6 +161,19 @@ nothing about a theme depends on which files are open.
 `verified-by: bravebot_tui::store::only_the_first_theme_line_is_read`
 `verified-by: bravebot_tui::store::an_over_long_theme_name_is_not_a_choice`
 
+<a id="SESSION-10"></a>
+### SESSION-10: a manifest run is recorded, and cannot be continued
+
+The goal, the proposed plan, the frozen steps, and what each one did are written into the record,
+finished or not. The conversation is empty: a session is turns over one conversation, and a
+manifest run has none. The picker marks the row and refuses Enter rather than loading an empty
+session and asking the model to carry on from nothing. Naming one on the command line prints
+what it produced, and still does not continue it.
+
+`verified-by: bravebot_tui::sessions::a_manifest_run_is_recorded_and_cannot_be_resumed`
+`verified-by: bravebot_tui::resume::a_manifest_session_cannot_be_resumed`
+`verified-by: bravebot_tui::resume::a_manifest_run_is_marked_in_the_list`
+
 ## Known costs
 
 - **Two working directories can share a session store.** The directory name is derived by mapping

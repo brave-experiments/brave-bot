@@ -126,3 +126,11 @@ one gate that ran: what it checked, the label it saw, and what it allowed. It is
 find out why something was refused.
 
 `verified-by: bravebot_tui::app::ctrl_t_toggles_the_trail`
+
+<a id="TRACE-6"></a>
+### TRACE-6: each planning call is recorded, like any other gate
+
+A manifest run makes two of them, and both appear in the trail: one for the goal in plain words,
+and one for fitting that to the tool set. A refusal is as much a record as a permission.
+
+`verified-by: bravebot_agent::manifest::the_audit_trail_records_each_planning_call`

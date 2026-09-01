@@ -92,3 +92,20 @@ makes it fail rather than pass with a warning.
 is in force would explain the wrong thing.
 
 `verified-by: none`
+
+<a id="CLI-8"></a>
+### CLI-8: `--mode` chooses how a one-shot is run; the default is the turn loop
+
+`turn` observes and decides step by step, which is what an unqualified `bravebot "task"` has
+always been. `manifest` plans the whole run first, then executes it. An unknown name is refused
+rather than guessed. Both modes are unattended, with an empty trust map: where nobody can be
+asked, nothing is approved.
+
+A failed plan is printed on stderr even without `--trace`, because otherwise a one-line complaint
+is all that remains of a document nobody can see. The plan never shares stdout with the reply.
+
+`verified-by: bravebot_cli::main::the_default_mode_is_the_turn_loop`
+`verified-by: bravebot_cli::main::a_leading_mode_flag_is_a_task_not_an_unknown_option`
+`verified-by: bravebot_cli::main::an_unknown_mode_is_refused_rather_than_guessed`
+`verified-by: bravebot_cli::main::a_failed_plan_is_printed_beside_the_reply`
+`verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`

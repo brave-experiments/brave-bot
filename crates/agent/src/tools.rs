@@ -810,7 +810,7 @@ fn note_for<S: Sink, T: Clone>(
 }
 
 /// A count with the right noun, so a line does not read "1 lines".
-fn tally(n: usize, one: &str, many: &str) -> String {
+pub(crate) fn tally(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
     } else {
@@ -838,7 +838,7 @@ const VOUCH_PREVIEW: usize = 20;
 /// screen. The display trims what it draws, so it does not; and in a directory the user has
 /// vouched for a create is never reviewed either, so that count was the only thing they were
 /// ever going to be told about a file that had just appeared in their workspace.
-fn change_report(
+pub(crate) fn change_report(
     intent: Intent,
     existing: Option<&str>,
     written: &str,

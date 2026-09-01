@@ -43,6 +43,7 @@ cli-name-a-file = Include a workspace file as trusted context
 
 cli-options-heading = Options:
 cli-option-file = Include a workspace file as context (repeatable)
+cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
 cli-option-help = Show this message
@@ -53,6 +54,7 @@ cli-option-version = Show the version
 
 cli-unknown-option = unknown option: { $flag }
 cli-file-needs-a-path = --file requires a path
+cli-mode-needs-a-name = --mode requires one of { $names }
 cli-unexpected-argument = unexpected argument: { $argument }
 cli-task-required = a task is required
 cli-configuration-problem = configuration error: { $problem }
@@ -144,6 +146,7 @@ resume-heading = Resume session
 resume-search-placeholder = Search…
 resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session
 resume-nothing-matches = nothing matches that
+resume-manifest-run = that was a manifest run, which cannot be continued; start a new session
 
 
 ## Shared by every question the interface stops to ask
