@@ -691,31 +691,6 @@ fn strip_namespace(name: &str) -> &str {
     name
 }
 
-/// The driver's word for what a tool does.
-///
-/// Chosen from the tool's name, which dispatch already matches on, so this decides nothing new.
-/// A literal rather than the raw name because the line is read by a person: "Read(src/main.rs)"
-/// says what happened and "read_file" says what was typed.
-fn verb_for(tool: &str) -> &'static str {
-    match tool {
-        "read_file" => "Read",
-        "list_files" => "List",
-        "search" => "Search",
-        "write_file" => "Write",
-        "edit_file" => "Update",
-        "todo_write" => "Plan",
-        // Named for what it is rather than for what it does: every one of these is a model
-        // with no tools, no memory and one round, and a person watching a line go by should not
-        // have to remember which of the verbs meant that.
-        "spawn_processor" => "Isolated processor",
-        "load_skill" => "Skill",
-        "ask_user" => "Ask",
-        "run" => "Run",
-        "read_output" => "Read output",
-        _ => "Tool",
-    }
-}
-
 /// Which argument names what a call is about.
 ///
 /// Chosen from the tool's own name, which dispatch already matches on, so this decides nothing
@@ -815,7 +790,7 @@ pub fn describe_stored_call(tool: &str, arguments: &str) -> String {
             .to_string()
     };
 
-    Activity::running(verb_for(tool), target).line()
+    Activity::running(crate::report::verb_for(tool), target).line()
 }
 
 /// Shape a count out of a labelled result and release it to the person watching.
@@ -925,7 +900,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     // against the table, which is the driver's own list of literals: nothing the model writes
     // reaches anything but that comparison.
     let name = strip_namespace(&call.function.name).to_string();
-    let verb = verb_for(&name);
+    let verb = crate::report::verb_for(&name);
 
     let arguments = match call.arguments() {
         Ok(value) => value,
@@ -3016,20 +2991,6 @@ mod tests {
 
     mod activity {
         use super::*;
-
-        /// Every tool the model is offered needs a word of its own. Without this a new tool
-        /// shows up in the transcript as the fallback, which tells the user nothing.
-        #[test]
-        fn every_offered_tool_has_its_own_verb() {
-            for tool in available() {
-                let name = &tool.function.name;
-                assert_ne!(
-                    verb_for(name),
-                    verb_for("something nobody wrote"),
-                    "{name} has no verb of its own"
-                );
-            }
-        }
 
         #[test]
         fn counts_read_naturally_in_both_numbers() {

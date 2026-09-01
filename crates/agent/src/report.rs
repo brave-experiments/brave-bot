@@ -407,6 +407,31 @@ impl Reporter for RecordingReporter {
     }
 }
 
+/// The driver's word for what a tool does.
+///
+/// Chosen from the tool's name, which dispatch already matches on, so this decides nothing new.
+/// A literal rather than the raw name because the line is read by a person: "Read(src/main.rs)"
+/// says what happened and "read_file" says what was typed.
+pub(crate) fn verb_for(tool: &str) -> &'static str {
+    match tool {
+        "read_file" => "Read",
+        "list_files" => "List",
+        "search" => "Search",
+        "write_file" => "Write",
+        "edit_file" => "Update",
+        "todo_write" => "Plan",
+        // Named for what it is rather than for what it does: every one of these is a model
+        // with no tools, no memory and one round, and a person watching a line go by should not
+        // have to remember which of the verbs meant that.
+        "spawn_processor" => "Isolated processor",
+        "load_skill" => "Skill",
+        "ask_user" => "Ask",
+        "run" => "Run",
+        "read_output" => "Read output",
+        _ => "Tool",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +513,19 @@ mod tests {
     #[test]
     fn a_line_with_nothing_to_name_is_the_verb_alone() {
         assert_eq!(Activity::running("Plan", "").line(), "Plan");
+    }
+
+    /// Every tool the model is offered needs a word of its own. Without this a new tool
+    /// shows up in the transcript as the fallback, which tells the user nothing.
+    #[test]
+    fn every_offered_tool_has_its_own_verb() {
+        for tool in crate::tools::available() {
+            let name = &tool.function.name;
+            assert_ne!(
+                verb_for(name),
+                verb_for("something nobody wrote"),
+                "{name} has no verb of its own"
+            );
+        }
     }
 }
