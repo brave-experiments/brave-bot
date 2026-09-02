@@ -699,7 +699,7 @@ impl Produced {
 ///
 /// Only the one prefix, and only where something is left after it: this is for a name that means
 /// one of ours, not a general invitation to guess.
-fn strip_namespace(name: &str) -> &str {
+pub(crate) fn strip_namespace(name: &str) -> &str {
     for prefix in ["functions.", "functions_"] {
         if let Some(rest) = name.strip_prefix(prefix)
             && !rest.is_empty()
