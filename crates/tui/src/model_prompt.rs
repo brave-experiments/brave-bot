@@ -17,7 +17,7 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers}
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::theme;
 use bravebot_i18n::t;
@@ -148,6 +148,13 @@ pub fn choose<B: Backend>(
 fn draw(frame: &mut Frame, picker: &Picker) {
     let area = frame.area();
     frame.render_widget(Clear, area);
+    // The theme's own colours rather than the terminal's. `Clear` only empties the cells, so without
+    // this the list is drawn on whatever the terminal's default background is and a theme chosen for
+    // readability stops applying at the moment somebody opens a picker.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::background()).fg(theme::text())),
+        area,
+    );
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -195,7 +202,9 @@ fn list_lines(picker: &Picker, area: Rect) -> Vec<Line<'static>> {
                 .fg(theme::brand_primary())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
+            // Named rather than left to default, so a row reads as the theme's text and not as
+            // whatever colour the terminal happens to use for unstyled cells.
+            Style::default().fg(theme::text())
         };
 
         let mut spans = vec![
