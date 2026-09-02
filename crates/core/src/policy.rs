@@ -984,6 +984,28 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(summary.clone().declassify(&proof))
     }
 
+    /// Record what one compaction did: how much it gave up, how much it kept, and what it cost.
+    ///
+    /// Counts and nothing else, so the trail stays free of content. Separate from
+    /// [`Policy::adopt_summary`], which is the gate: that runs before the conversation is
+    /// shortened and so cannot know any of these figures. Both lines are wanted, because one says
+    /// the summary was allowed in and this says what it bought.
+    ///
+    /// **Why the trail needs it.** A compaction is the point a session stops being able to
+    /// remember what it did, and reading one back afterwards the question is always where that
+    /// happened and whether it helped. A record saying only that a summary was adopted answers
+    /// neither: a compaction that dropped ninety messages and one that dropped three look the
+    /// same, and so do one that halved the request and one that barely moved it.
+    pub fn record_compaction(&mut self, summarised: usize, kept: usize, round: usize, cost: u64) {
+        self.allow(
+            "compact",
+            format!(
+                "round {round}: {summarised} message(s) summarised, {kept} kept word for word, \
+                 costing {cost} tokens"
+            ),
+        );
+    }
+
     /// Whether a read of `path` would be quarantined rather than shown.
     ///
     /// A question about the trust map, keyed by a path the planner named, which is routing and

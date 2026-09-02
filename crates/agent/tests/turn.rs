@@ -7681,6 +7681,129 @@ fn compacting_on_request_reaches_the_model_and_shortens_the_conversation() {
     );
 }
 
+/// A compaction is the point a session stops being able to remember what it did, so reading one
+/// back afterwards the questions are where it happened and whether it helped. A line saying only
+/// that a summary was adopted answers neither: one that dropped ninety messages and one that
+/// dropped three would read the same.
+#[test]
+fn the_trail_says_what_a_compaction_gave_up_and_what_it_cost() {
+    let (endpoint, _received) = serve_sequence(vec![reply_with("they were porting the parser")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut conversation = a_long_conversation();
+
+    let done = turn::compact(
+        &config,
+        &egress,
+        &mut conversation,
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("compacting runs")
+    .expect("a long conversation has something to summarise");
+
+    let recorded: Vec<String> = sink
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            Event::GatePassed { gate, detail } if *gate == "compact" => Some(detail.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains(&format!("{} message(s) summarised", done.summarised))),
+        "the trail did not say how much was given up: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains(&format!("{} kept word for word", done.kept))),
+        "the trail did not say how much was kept: {recorded:?}"
+    );
+    // Without the cost, the tokens a compaction spent are invisible in a turn's total.
+    assert!(
+        recorded.iter().any(|line| line.contains("costing")),
+        "the trail did not say what the summary cost: {recorded:?}"
+    );
+    // `/compact` is asked for between rounds, so it reports round zero rather than claiming to
+    // have landed in the middle of one.
+    assert!(
+        recorded.iter().any(|line| line.contains("round 0")),
+        "the trail did not say which round this was: {recorded:?}"
+    );
+}
+
+/// Where a compaction landed is most of what a reader wants afterwards, because it is the point
+/// the turn stopped being able to remember what it had done. A compaction forced by the budget
+/// happens in the middle of a turn's rounds, and the round it happened on is the part that cannot
+/// be recovered from a timestamp.
+#[test]
+fn the_trail_says_which_round_a_compaction_landed_on() {
+    let scratch = Scratch::new("compact-round-recorded");
+    for n in 1..=15 {
+        std::fs::write(scratch.path.join(format!("f{n}.txt")), format!("value {n}")).unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut replies: Vec<String> = (1..=15)
+        .map(|n| {
+            tool_request_with_usage(
+                "read_file",
+                &format!(r#"{{"path":"f{n}.txt"}}"#),
+                50_000,
+                10,
+            )
+        })
+        .collect();
+    replies.push(reply_with_usage("read them all", 50_000, 10));
+    replies.push(reply_with("they have been reading f1.txt onwards"));
+    replies.push(reply_with("they have been reading f1.txt onwards"));
+
+    let (endpoint, _received) = serve_sequence(replies);
+    let config = config_with_budget(&endpoint, 1_000);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read f1.txt through f15.txt, one at a time"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let recorded: Vec<String> = sink
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            Event::GatePassed { gate, detail } if *gate == "compact" => Some(detail.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // A round partway through, not the zero `/compact` reports: the whole point is that this one
+    // interrupted work that was already under way.
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("round ") && !line.contains("round 0:")),
+        "no compaction reported the round it interrupted: {recorded:?}"
+    );
+}
+
 /// The command asks for no more than it needs. A compaction that could read or write files would
 /// be a second turn wearing the name of a summary.
 #[test]

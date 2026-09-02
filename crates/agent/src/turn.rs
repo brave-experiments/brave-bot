@@ -722,7 +722,9 @@ pub fn compact<S: Sink, R: Reporter>(
         cancel: None,
     };
 
-    let done = crate::compact::compact(&mut policy, &mut chat, conversation);
+    // Zero: `/compact` is asked for between rounds rather than during one, so there is no round
+    // for it to have landed in the middle of.
+    let done = crate::compact::compact(&mut policy, &mut chat, conversation, 0);
     policy.finish();
     done
 }
@@ -1031,7 +1033,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 model: task.model.as_deref(),
                 cancel: Some(cancel),
             };
-            match crate::compact::compact(&mut policy, &mut chat, conversation) {
+            match crate::compact::compact(&mut policy, &mut chat, conversation, steps) {
                 Ok(Some(done)) => {
                     tokens += done.usage.total();
                     output_tokens += done.usage.completion_tokens;

@@ -192,3 +192,24 @@ than necessary, which is a mistake this project made before measuring the endpoi
 `verified-by: bravebot_tui::app::nothing_chosen_has_no_advertised_window`
 `verified-by: bravebot_tui::app::a_model_the_listing_no_longer_offers_has_no_window`
 `verified-by: bravebot_tui::app::a_model_that_advertises_nothing_has_no_window`
+
+<a id="COMPACT-10"></a>
+### COMPACT-10: every compaction is recorded, with what it gave up and where it happened
+
+The trail says how many messages were summarised, how many were kept word for word, what the
+summary cost, and which tool-calling round it landed on. A compaction asked for between rounds
+reports round zero, having interrupted nothing. Counts and nothing else, so the trail carries no
+more content than it did before.
+
+Recorded after the conversation is shortened, so a summary refused on the way back in leaves no
+line claiming one was made.
+
+**Why.** A compaction is the point a session stops being able to remember what it did, and it is
+read back afterwards to ask exactly two things: where that happened, and whether it helped. A
+record saying only that a summary was adopted answers neither, since one that gave up ninety
+messages and one that gave up three read identically. The round matters most for a compaction the
+budget forced, which lands in the middle of a turn's work: a timestamp says when in the session, and
+only the round says how far into the work.
+
+`verified-by: bravebot_agent::turn::the_trail_says_what_a_compaction_gave_up_and_what_it_cost`
+`verified-by: bravebot_agent::turn::the_trail_says_which_round_a_compaction_landed_on`

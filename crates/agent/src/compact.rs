@@ -133,10 +133,16 @@ impl From<ChatError> for CompactError {
 /// Nothing happens to the conversation unless the whole of this succeeds. A refused summary, a
 /// failed request or a cancelled turn leaves a session with the history it already had, which is
 /// longer than anyone wanted but is the one thing here that is never wrong.
+///
+/// `round` is the tool-calling round this happened on, for the trail. A compaction lands in the
+/// middle of a turn's work, and where it landed is most of what a reader afterwards wants: it is
+/// the point the turn stopped being able to remember what it had done. `/compact` passes zero,
+/// having no round to be in the middle of.
 pub fn compact<S: Sink>(
     policy: &mut Policy<'_, S>,
     chat: &mut Chat<'_>,
     conversation: &mut Conversation,
+    round: usize,
 ) -> Result<Option<Compacted>, CompactError> {
     let Some(boundary) = conversation.compaction_boundary() else {
         return Ok(None);
@@ -174,6 +180,11 @@ pub fn compact<S: Sink>(
     let summary = policy.adopt_summary(&written)?;
     let kept = conversation.len() - boundary;
     conversation.compacted(boundary, &summary);
+
+    // After the conversation is shortened, so the figures describe what actually happened rather
+    // than what was about to be attempted: a summary refused above leaves no line saying it
+    // worked.
+    policy.record_compaction(boundary, kept, round, completion.usage.total());
 
     Ok(Some(Compacted {
         summarised: boundary,
