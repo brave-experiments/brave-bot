@@ -1,4 +1,9 @@
-//! Brave services request signing.
+//! Request signing for the backends this agent talks to.
+//!
+//! Two schemes, one per backend: Brave's services below, and AWS Signature Version 4 in
+//! [`sigv4`] for Bedrock. They share this crate because they share their whole toolkit,
+//! HMAC-SHA256 over a canonical string, and because signing is all either of them does:
+//! neither carries workspace content or model output.
 //!
 //! The services key is an HMAC signing key, **not** a bearer token: it is never
 //! transmitted. Each request carries a `Digest` header over the body and an
@@ -18,6 +23,8 @@
 //! Signing the digest is what binds the signature to the body: altering the body
 //! changes the digest, which changes the signing string, which invalidates the
 //! signature.
+
+pub mod sigv4;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
