@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 bravebot-aichat = { path = "../aichat" }
+bravebot-bedrock = { path = "../bedrock" }
 bravebot-config = { path = "../config" }
 bravebot-core = { path = "../core" }
 bravebot-i18n = { path = "../i18n" }

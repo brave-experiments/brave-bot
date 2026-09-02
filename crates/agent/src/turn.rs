@@ -13,7 +13,6 @@
 //! each turn, resuming a conversation that outlives it.
 
 use base64::Engine;
-use bravebot_aichat::AichatClient;
 use bravebot_aichat::protocol::{ChatRequest, ImageUrl, Message, Part, ToolCall};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
@@ -239,7 +238,7 @@ pub enum TurnError {
     /// A file operation failed or was refused.
     Workspace(WorkspaceError),
     /// The model call failed or was refused.
-    Chat(bravebot_aichat::ChatError),
+    Chat(crate::backend::BackendError),
     /// A manifest run stopped before it had a frozen plan, or a step failed.
     ///
     /// Carries what the run produced so a caller can still look at it. A plan that would not
@@ -270,15 +269,21 @@ impl From<WorkspaceError> for TurnError {
     }
 }
 
+impl From<crate::backend::BackendError> for TurnError {
+    fn from(value: crate::backend::BackendError) -> Self {
+        // A reply stopped part way through is the person's own stop arriving back, not a
+        // failure of the call. Reported as one, it would be written into the transcript as
+        // something that went wrong with the model.
+        if value.is_cancelled() {
+            return Self::Cancelled;
+        }
+        Self::Chat(value)
+    }
+}
+
 impl From<bravebot_aichat::ChatError> for TurnError {
     fn from(value: bravebot_aichat::ChatError) -> Self {
-        match value {
-            // A reply stopped part way through is the person's own stop arriving back, not a
-            // failure of the call. Reported as one, it would be written into the transcript as
-            // something that went wrong with the model.
-            bravebot_aichat::ChatError::Cancelled => Self::Cancelled,
-            other => Self::Chat(other),
-        }
+        Self::from(crate::backend::BackendError::from(value))
     }
 }
 
@@ -1095,7 +1100,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         let as_written = policy.authorise_display_release("the reply as the model writes it");
 
         let completion = {
-            let mut client = AichatClient::new(config, egress).with_cancel(cancel.clone());
+            let mut client =
+                crate::backend::Backend::select(config, egress, model).with_cancel(cancel.clone());
             if let Some(subscription) = subscription.as_mut() {
                 client = client.with_subscription(subscription);
             }

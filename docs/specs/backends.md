@@ -3,6 +3,7 @@ id: BACKEND
 title: Backends
 status: normative
 governs:
+  - crates/agent/src/backend.rs
   - crates/config/src/bedrock.rs
   - crates/config/src/settings.rs
 ---
@@ -48,6 +49,25 @@ budget from a window that belongs to a model the session may never use.
 
 `verified-by: bravebot_config::lib::a_bedrock_block_does_not_change_the_default_model`
 `verified-by: bravebot_config::lib::a_bedrock_block_does_not_move_the_budget_off_the_default`
+
+<a id="BACKEND-3"></a>
+### BACKEND-3: the model names the service, and nothing else selects one
+
+A request goes to whichever service offers the model it names. No other fact participates: not
+which configuration is present, not which service answered last, not which one a person used
+first.
+
+**Why.** Where both are reachable a configuration cannot say where a request belongs. Bedrock
+refuses a model it does not recognise rather than substituting one, and the aichat endpoint has
+never heard of an inference-profile ARN, so a request sent on the strength of anything but the name
+fails at the far end for a reason nothing local could explain.
+
+**Note.** The name is not content. It comes from a configured default or from a person picking off a
+list they read, and a model's own output never reaches it.
+
+`verified-by: bravebot_agent::backend::a_configured_bedrock_model_selects_the_bedrock_backend`
+`verified-by: bravebot_agent::backend::a_brave_model_still_reaches_aichat_while_bedrock_is_configured`
+`verified-by: bravebot_agent::backend::without_bedrock_configured_the_aichat_backend_is_selected`
 
 ## Known costs
 

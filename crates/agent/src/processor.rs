@@ -17,7 +17,7 @@
 //! the model's output exactly as trusted as it was.
 
 use bravebot_aichat::protocol::{ChatRequest, Message, Usage};
-use bravebot_aichat::{AichatClient, ChatError, Subscription};
+use bravebot_aichat::{ChatError, Subscription};
 use bravebot_config::Config;
 use bravebot_core::event::Sink;
 use bravebot_core::policy::{Denial, Policy};
@@ -131,7 +131,7 @@ pub enum ProcessorError {
     /// A gate refused before the call was made.
     Denied(Denial),
     /// The call failed or was refused in transit.
-    Chat(ChatError),
+    Chat(crate::backend::BackendError),
 }
 
 impl fmt::Display for ProcessorError {
@@ -151,9 +151,15 @@ impl From<Denial> for ProcessorError {
     }
 }
 
+impl From<crate::backend::BackendError> for ProcessorError {
+    fn from(value: crate::backend::BackendError) -> Self {
+        Self::Chat(value)
+    }
+}
+
 impl From<ChatError> for ProcessorError {
     fn from(value: ChatError) -> Self {
-        Self::Chat(value)
+        Self::Chat(value.into())
     }
 }
 
@@ -200,7 +206,7 @@ pub fn run<S: Sink>(
     let model = chat.model.unwrap_or(&chat.config.default_model);
     let request = ChatRequest::new(model, messages);
 
-    let mut client = AichatClient::new(chat.config, chat.egress);
+    let mut client = crate::backend::Backend::select(chat.config, chat.egress, model);
     if let Some(cancel) = chat.cancel {
         client = client.with_cancel(cancel.clone());
     }

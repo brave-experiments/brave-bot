@@ -65,7 +65,6 @@
 //! conversation to resume: the planner is never shown a result, so there is nothing for a second
 //! turn to continue. A manifest run is one run, start to finish.
 
-use bravebot_aichat::AichatClient;
 use bravebot_aichat::protocol::{ChatRequest, Message};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
@@ -820,7 +819,8 @@ fn ask<S: Sink, R: Reporter>(
 
     let written_before = *output_tokens;
     let completion = {
-        let mut client = AichatClient::new(config, egress).with_cancel(cancel.clone());
+        let mut client =
+            crate::backend::Backend::select(config, egress, chosen).with_cancel(cancel.clone());
         if let Some(subscription) = subscription {
             client = client.with_subscription(subscription);
         }

@@ -19,7 +19,7 @@ this spec.
 | Crate | Purpose | Depends on | Constraint |
 |---|---|---|---|
 | `bravebot-core` | The information-flow kernel: the label lattice, slots, references, capabilities, and every policy gate | none | No I/O, and nothing prints. Owns every decision derived from content, and the only place a declassification witness can be minted |
-| `bravebot-agent` | Task execution: the tools and the turn loop | `core`, `aichat`, `config`, `i18n`, `net`, `skus` | Carries labelled values and must not inspect them. `exec` stays argv-only, and `shell` runs only a line a person typed |
+| `bravebot-agent` | Task execution: the tools and the turn loop | `core`, `aichat`, `bedrock`, `config`, `i18n`, `net`, `skus` | Carries labelled values and must not inspect them. `exec` stays argv-only, and `shell` runs only a line a person typed |
 | `bravebot-net` | The network egress path for everything carrying labelled content | `core` | All agent traffic passes the policy gate here. See the known cost below |
 | `bravebot-aichat` | Client for the OpenAI-compatible aichat backend | `core`, `config`, `net`, `signing` | Speaks the wire protocol only, and reaches the network through `net` |
 | `bravebot-bedrock` | Client for Claude on AWS Bedrock | `core`, `aichat`, `config`, `net`, `signing` | Speaks the wire protocol only, and reaches the network through `net`. Runs the AWS CLI to resolve a credential, which is the one subprocess it starts |

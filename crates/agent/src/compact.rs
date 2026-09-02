@@ -24,8 +24,8 @@
 //! Like a processor, and for the same reasons: no tools in the request, and one round with nothing
 //! for a reply to steer.
 
+use bravebot_aichat::ChatError;
 use bravebot_aichat::protocol::{ChatRequest, Message, Usage};
-use bravebot_aichat::{AichatClient, ChatError};
 use bravebot_core::event::Sink;
 use bravebot_core::policy::{Denial, Policy};
 use std::fmt;
@@ -98,7 +98,7 @@ pub enum CompactError {
     /// The summary was refused on the way back into the context.
     Denied(Denial),
     /// The call failed or was refused in transit.
-    Chat(ChatError),
+    Chat(crate::backend::BackendError),
 }
 
 impl fmt::Display for CompactError {
@@ -118,9 +118,15 @@ impl From<Denial> for CompactError {
     }
 }
 
+impl From<crate::backend::BackendError> for CompactError {
+    fn from(value: crate::backend::BackendError) -> Self {
+        Self::Chat(value)
+    }
+}
+
 impl From<ChatError> for CompactError {
     fn from(value: ChatError) -> Self {
-        Self::Chat(value)
+        Self::Chat(value.into())
     }
 }
 
@@ -157,7 +163,7 @@ pub fn compact<S: Sink>(
     let model = chat.model.unwrap_or(&chat.config.default_model);
     let request = ChatRequest::new(model, messages);
 
-    let mut client = AichatClient::new(chat.config, chat.egress);
+    let mut client = crate::backend::Backend::select(chat.config, chat.egress, model);
     if let Some(cancel) = chat.cancel {
         client = client.with_cancel(cancel.clone());
     }
