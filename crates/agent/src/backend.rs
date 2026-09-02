@@ -80,7 +80,6 @@ pub enum Backend<'a> {
         config: &'a bravebot_config::bedrock::Bedrock,
         egress: &'a Egress,
         cancel: Option<Cancel>,
-        announce_login: Option<&'a dyn Fn()>,
     },
 }
 
@@ -100,7 +99,6 @@ impl<'a> Backend<'a> {
                 config: bedrock,
                 egress,
                 cancel: None,
-                announce_login: None,
             },
             _ => Self::Aichat {
                 config,
@@ -109,6 +107,39 @@ impl<'a> Backend<'a> {
                 cancel: None,
             },
         }
+    }
+
+    /// Sign in for `model`, where its backend needs that and has no usable session.
+    ///
+    /// Here rather than in an interface because which backend answers, and whether it authenticates
+    /// interactively at all, is this module's question. A caller asks once, before it starts work,
+    /// and does not learn which service it was for.
+    ///
+    /// Called for its side effect on a terminal: the sign-in prints a URL and a code to the one it
+    /// inherits and waits there, so a caller drawing a full-screen display has to give the screen
+    /// back first. Quiet and cheap where nothing is needed, which is every turn but the first of a
+    /// day, so it is safe to call before each one.
+    pub fn sign_in_if_needed(config: &Config, model: &str) -> Result<(), BackendError> {
+        let Some(bedrock) = config.bedrock.as_ref().filter(|it| it.offers(model)) else {
+            return Ok(());
+        };
+        bravebot_bedrock::credentials::sign_in_if_needed(bedrock.profile.as_deref())
+            .map_err(|failure| BedrockError::Credentials(failure).into())
+    }
+
+    /// Whether [`Backend::sign_in_if_needed`] would do anything, without doing it.
+    ///
+    /// For an interface deciding whether to say something first. Asking separately rather than
+    /// having the sign-in report back, because what it would return is "nothing happened", and a
+    /// caller that has already dismantled its display to find that out has paid the whole cost.
+    pub fn needs_sign_in(config: &Config, model: &str) -> bool {
+        config
+            .bedrock
+            .as_ref()
+            .filter(|it| it.offers(model))
+            .is_some_and(|bedrock| {
+                !bravebot_bedrock::credentials::is_signed_in(bedrock.profile.as_deref())
+            })
     }
 
     /// Send requests on the premium tier, where the backend has one.
@@ -126,17 +157,6 @@ impl<'a> Backend<'a> {
     pub fn with_cancel(mut self, stop: Cancel) -> Self {
         match &mut self {
             Self::Aichat { cancel, .. } | Self::Bedrock { cancel, .. } => *cancel = Some(stop),
-        }
-        self
-    }
-
-    /// Say something before a browser opens for an AWS sign-in.
-    ///
-    /// Only Bedrock ever signs in. Without this the first request of the day opens a window with
-    /// nothing said about it, which reads as something having gone wrong.
-    pub fn announcing_login(mut self, announce: &'a dyn Fn()) -> Self {
-        if let Self::Bedrock { announce_login, .. } = &mut self {
-            *announce_login = Some(announce);
         }
         self
     }
@@ -167,14 +187,10 @@ impl<'a> Backend<'a> {
                 config,
                 egress,
                 cancel,
-                announce_login,
             } => {
                 let mut client = BedrockClient::new(config, egress);
                 if let Some(cancel) = cancel {
                     client = client.with_cancel(cancel.clone());
-                }
-                if let Some(announce) = announce_login {
-                    client = client.announcing_login(*announce);
                 }
                 Ok(client.complete(policy, request)?)
             }
@@ -208,14 +224,10 @@ impl<'a> Backend<'a> {
                 config,
                 egress,
                 cancel,
-                announce_login,
             } => {
                 let mut client = BedrockClient::new(config, egress);
                 if let Some(cancel) = cancel {
                     client = client.with_cancel(cancel.clone());
-                }
-                if let Some(announce) = announce_login {
-                    client = client.announcing_login(*announce);
                 }
                 Ok(client.complete_streaming(policy, request, progress)?)
             }
@@ -244,6 +256,11 @@ mod tests {
             env_var::USE_BEDROCK => Some("1".to_string()),
             env_var::AWS_REGION => Some("us-west-2".to_string()),
             env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".to_string()),
+            // A profile no machine has, so whether an AWS session exists is a property of this
+            // configuration rather than of whoever is running the tests. Left unset, the CLI falls
+            // back to ambient credentials and a developer with a live session would see a different
+            // answer from one without.
+            env_var::AWS_PROFILE => Some("a-profile-no-machine-has".to_string()),
             other => aichat_only(other),
         })
         .expect("configured")
@@ -269,6 +286,37 @@ mod tests {
             Backend::select(&both_backends(), &egress, "opus-arn"),
             Backend::Bedrock { .. }
         ));
+    }
+
+    /// A model Brave serves needs no AWS session, whatever else is configured. Deciding otherwise
+    /// would run the AWS CLI, and on the interactive path would hand a person's screen to a sign-in
+    /// for a service the turn was never going to touch.
+    #[test]
+    fn a_brave_model_never_needs_an_aws_sign_in() {
+        for model in ["automatic", "claude-3-sonnet"] {
+            assert!(
+                !Backend::needs_sign_in(&both_backends(), model),
+                "{model} asked for a sign-in"
+            );
+        }
+    }
+
+    /// A build with no AWS configuration has nothing to sign in to, so the question is answered
+    /// without asking anything of the machine.
+    #[test]
+    fn without_bedrock_configured_nothing_needs_a_sign_in() {
+        let config = Config::from_lookup(aichat_only).expect("configured");
+        assert!(!Backend::needs_sign_in(&config, "automatic"));
+        assert!(!Backend::needs_sign_in(&config, "opus-arn"));
+    }
+
+    /// Signing in is a no-op for anything this configuration does not serve, so a caller may ask
+    /// before every turn without a thought for which backend is about to answer.
+    #[test]
+    fn signing_in_for_a_model_no_aws_account_serves_does_nothing() {
+        let config = Config::from_lookup(aichat_only).expect("configured");
+        assert!(Backend::sign_in_if_needed(&config, "automatic").is_ok());
+        assert!(Backend::sign_in_if_needed(&both_backends(), "claude-3-sonnet").is_ok());
     }
 
     /// The model decides, not the block. A Bedrock block adds a roster rather than diverting the

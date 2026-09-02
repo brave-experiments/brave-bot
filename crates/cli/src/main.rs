@@ -259,6 +259,21 @@ fn run_task(args: &[String]) -> ExitCode {
     // the command pipeable. Without it a long turn prints nothing until it is over.
     let mut reporter = progress::Progress::new(std::io::stderr());
 
+    // Before the turn, so the sign-in's own output is not interleaved with progress lines and a
+    // browser opening is accounted for. Nothing happens where no sign-in is wanted, which includes
+    // every run whose model is served by Brave.
+    //
+    // Not fatal: the turn goes ahead and fails with the backend's own account of what is wrong,
+    // which says more than this could guess.
+    let model = task
+        .model
+        .as_deref()
+        .unwrap_or(&config.default_model)
+        .to_string();
+    if let Err(failure) = bravebot_agent::backend::Backend::sign_in_if_needed(&config, &model) {
+        eprintln!("{}", t!(cli_notice, notice = failure.to_string()));
+    }
+
     // Both modes take the same arguments and return the same outcome. The whole of the
     // difference is inside: one asks the model what to do next after every result, the other
     // asked once, before there were any.

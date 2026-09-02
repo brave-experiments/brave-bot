@@ -137,6 +137,24 @@ the position somebody offline is most likely to be in.
 `verified-by: bravebot_tui::app::an_unreachable_listing_still_offers_the_configured_tiers`
 `verified-by: bravebot_tui::app::an_unreachable_listing_with_no_tiers_configured_is_still_a_failure`
 
+<a id="BACKEND-9"></a>
+### BACKEND-9: a sign-in is asked for before work starts, by the model about to answer
+
+Where a service authenticates interactively and has no usable session, the sign-in happens before a
+request is attempted, and only for the service the next request will actually go to. A sign-in gets
+the terminal to itself, and what it needs from the person is said first.
+
+**Why.** A sign-in prints a URL and a code and waits for them to be used, so it is unusable
+underneath a display that redraws over it, and unusable at all from a worker thread with no terminal.
+Doing it up front is also what keeps it off the request path, where the work has already begun and
+there is nothing to give the screen back to. Asking by the model rather than by what is configured
+matters because otherwise a turn served entirely by one backend stops to authenticate against
+another it will never call.
+
+`verified-by: bravebot_agent::backend::a_brave_model_never_needs_an_aws_sign_in`
+`verified-by: bravebot_agent::backend::without_bedrock_configured_nothing_needs_a_sign_in`
+`verified-by: bravebot_agent::backend::signing_in_for_a_model_no_aws_account_serves_does_nothing`
+
 ## Known costs
 
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that

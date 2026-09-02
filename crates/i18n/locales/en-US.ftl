@@ -431,6 +431,9 @@ session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/note
 session-directory-added = added { $directory }, and trusting it for this session
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }
+# Said before the screen is handed to the AWS CLI, so a terminal filling with its output, and a
+# browser opening, are accounted for rather than looking like something having gone wrong.
+session-signing-in = signing in to AWS; follow the instructions below, and this returns when it is done
 session-context-budget = compacting above { $budget } tokens, as this model advertises
 session-models-unavailable = could not list models: { $problem }
 session-theme-set = theme { $theme }

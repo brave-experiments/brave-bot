@@ -86,25 +86,50 @@ impl std::error::Error for CredentialError {}
 
 /// Resolve credentials for a profile, signing in first if the session has expired.
 ///
-/// `announce` is called before a browser is opened, because a window appearing unprompted with
-/// nothing said about it is indistinguishable from something having gone wrong. It is only called
-/// when a login is actually about to happen.
-pub fn resolve(
-    profile: Option<&str>,
-    announce: impl FnOnce(),
-) -> Result<Credentials, CredentialError> {
+/// The fallback is a last resort rather than the way a person is meant to sign in. A sign-in prints
+/// a URL and a code to the terminal it inherits and waits there, and by the time this runs the
+/// caller may be a worker thread with no terminal to print to, or one whose terminal belongs to a
+/// full-screen display. Callers that can be interrupted safely call [`sign_in_if_needed`] before
+/// they start, and reach here with nothing left to fix.
+pub fn resolve(profile: Option<&str>) -> Result<Credentials, CredentialError> {
     match export(profile) {
         Ok(credentials) => Ok(credentials),
         // The common cause of a failed export is a session that has expired, and the remedy is a
         // browser. Attempted once: a second login would open a second window for whatever the first
         // one failed to fix.
         Err(CredentialError::Refused { detail }) => {
-            announce();
             login(profile).map_err(|_| CredentialError::Refused { detail })?;
             export(profile)
         }
         Err(other) => Err(other),
     }
+}
+
+/// Whether a session is already good, without touching a browser or a terminal.
+///
+/// For a caller deciding whether it is about to need one. Any failure reads as "a sign-in would
+/// help", because the alternative is inspecting the CLI's wording to tell an expired session from a
+/// misconfigured profile, and being wrong that way costs a sign-in that explains itself while being
+/// wrong the other way leaves somebody staring at a stalled turn.
+pub fn is_signed_in(profile: Option<&str>) -> bool {
+    export(profile).is_ok()
+}
+
+/// Sign in for a profile, if that is what is missing.
+///
+/// Separated from [`resolve`] so an interface that owns the terminal can do the interactive part at
+/// a moment of its own choosing, having given the screen back first. The sign-in inherits the
+/// terminal and prints a URL and a code to it, so run underneath a full-screen display it would
+/// paint into a frame that is about to be redrawn over it, which loses the one thing the person
+/// needs to read.
+///
+/// Quiet when the session is already good: nothing is printed and no browser opens, so this is safe
+/// to call before every turn.
+pub fn sign_in_if_needed(profile: Option<&str>) -> Result<(), CredentialError> {
+    if is_signed_in(profile) {
+        return Ok(());
+    }
+    login(profile)
 }
 
 /// Ask the CLI for credentials, without trying to fix anything.

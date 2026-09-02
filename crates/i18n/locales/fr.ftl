@@ -447,6 +447,8 @@ session-add-dir-needs-a-path = /add-dir demande un répertoire, comme /add-dir ~
 session-directory-added = { $directory } ajouté, et approuvé pour cette session
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }
+session-signing-in =
+    connexion à AWS ; suivez les instructions ci-dessous, cela reprend une fois terminé
 session-context-budget = compactage au-delà de { $budget } jetons, selon ce que ce modèle annonce
 session-models-unavailable = impossible de lister les modèles : { $problem }
 session-theme-set = thème { $theme }

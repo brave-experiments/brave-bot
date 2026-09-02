@@ -106,8 +106,6 @@ pub struct BedrockClient<'a> {
     config: &'a Bedrock,
     egress: &'a Egress,
     cancel: Option<Cancel>,
-    /// Called before a browser is opened for a sign-in, so a window appearing is explained.
-    announce_login: Option<&'a dyn Fn()>,
 }
 
 impl<'a> BedrockClient<'a> {
@@ -116,22 +114,12 @@ impl<'a> BedrockClient<'a> {
             config,
             egress,
             cancel: None,
-            announce_login: None,
         }
     }
 
     /// Stop reading a streamed reply as soon as this says to.
     pub fn with_cancel(mut self, cancel: Cancel) -> Self {
         self.cancel = Some(cancel);
-        self
-    }
-
-    /// Say something before a browser opens for an AWS sign-in.
-    ///
-    /// Without this the first request of the day opens a window with nothing said about it, which is
-    /// indistinguishable from something having gone wrong.
-    pub fn announcing_login(mut self, announce: &'a dyn Fn()) -> Self {
-        self.announce_login = Some(announce);
         self
     }
 
@@ -348,11 +336,7 @@ impl<'a> BedrockClient<'a> {
         ))
         .map_err(|e| BedrockError::Encode(e.to_string()))?;
 
-        let resolved = credentials::resolve(self.config.profile.as_deref(), || {
-            if let Some(announce) = self.announce_login {
-                announce();
-            }
-        })?;
+        let resolved = credentials::resolve(self.config.profile.as_deref())?;
 
         let url = self.config.invoke_url(&model, streaming);
         let host = self.config.host();

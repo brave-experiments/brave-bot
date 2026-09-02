@@ -1153,6 +1153,46 @@ fn edit_prompt(
     Ok(())
 }
 
+/// Sign in to the backend the next request will use, where it needs one and has none.
+///
+/// The terminal is given up and taken back the way it is for an editor, and for the same reason: the
+/// AWS CLI prints a URL and a confirmation code and waits, and that is the whole of what makes a
+/// sign-in completable. Underneath a full-screen interface it would be painted into a frame the
+/// redraw loop immediately covers, leaving a browser open on a page nobody can match to a code.
+///
+/// Nothing happens in the common case. A good session is not a sign-in, a build with no AWS
+/// configuration cannot want one, and a model served by Brave never needs one whatever else is
+/// configured, so the check is by the model that is about to answer rather than by what exists.
+fn sign_in_if_needed(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    config: &Config,
+) -> io::Result<()> {
+    let model = session.model().unwrap_or(&config.default_model).to_string();
+    if !bravebot_agent::backend::Backend::needs_sign_in(config, &model) {
+        return Ok(());
+    }
+
+    // Said before the screen goes, so the reason a terminal full of AWS output appears is on it.
+    session.note(t!(session_signing_in));
+    redraw(terminal, session)?;
+
+    hand_back_terminal(terminal.backend_mut())?;
+    terminal.show_cursor()?;
+
+    let outcome = bravebot_agent::backend::Backend::sign_in_if_needed(config, &model);
+
+    take_over_terminal(terminal.backend_mut())?;
+    terminal.clear()?;
+
+    // Said rather than swallowed, and not fatal: the turn goes ahead and fails with the backend's
+    // own account of what is wrong, which is more use than this function's guess at it.
+    if let Err(failure) = outcome {
+        session.note(failure.to_string());
+    }
+    Ok(())
+}
+
 /// Hand the transcript to the user's editor, and take nothing back from it.
 ///
 /// The terminal is given up and taken back the way it is for a prompt, since an editor needs the
@@ -1907,6 +1947,10 @@ fn compact_animated(
     conversation: Conversation,
     trust: &TrustStore,
 ) -> io::Result<(Conversation, Vec<Stamped>)> {
+    // For the reason a turn does it: the summary is one request to the same backend, and a sign-in
+    // is not something a worker thread can ask for.
+    sign_in_if_needed(terminal, session, config)?;
+
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
 
     let worker_config = config.clone();
@@ -2036,6 +2080,11 @@ fn run_turn_animated(
     trust: TrustStore,
     programs: TrustedPrograms,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
+    // Before the worker starts, because a sign-in needs the terminal and this is the thread that
+    // has it. Left to the worker, the URL and code the AWS CLI prints would land in a frame this
+    // loop redraws over.
+    sign_in_if_needed(terminal, session, config)?;
+
     // One channel for everything the worker sends, because the main thread waits on exactly one
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
