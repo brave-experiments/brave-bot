@@ -270,7 +270,13 @@ fn run_task(args: &[String]) -> ExitCode {
         .as_deref()
         .unwrap_or(&config.default_model)
         .to_string();
-    if let Err(failure) = bravebot_agent::backend::Backend::sign_in_if_needed(&config, &model) {
+    // The sign-in's own lines go to stderr as they arrive, beside every other progress line, which
+    // keeps stdout the reply and nothing else. A URL and a code are no use after the fact, so they
+    // are printed while the command that wrote them is still waiting.
+    let signed_in = bravebot_agent::backend::Backend::sign_in_if_needed(&config, &model, |line| {
+        eprintln!("{line}");
+    });
+    if let Err(failure) = signed_in {
         eprintln!("{}", t!(cli_notice, notice = failure.to_string()));
     }
 

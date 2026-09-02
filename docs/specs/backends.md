@@ -141,13 +141,16 @@ the position somebody offline is most likely to be in.
 ### BACKEND-9: a sign-in is asked for before work starts, by the model about to answer
 
 Where a service authenticates interactively and has no usable session, the sign-in happens before a
-request is attempted, and only for the service the next request will actually go to. A sign-in gets
-the terminal to itself, and what it needs from the person is said first.
+request is attempted, and only for the service the next request will actually go to. What it asks of
+the person is shown where they are already reading, line by line as it is written, and the interface
+keeps its display throughout.
 
-**Why.** A sign-in prints a URL and a code and waits for them to be used, so it is unusable
-underneath a display that redraws over it, and unusable at all from a worker thread with no terminal.
-Doing it up front is also what keeps it off the request path, where the work has already begun and
-there is nothing to give the screen back to. Asking by the model rather than by what is configured
+**Why.** A sign-in prints a URL and a code and then waits for them to be used, so those lines are the
+flow rather than a report of it: shown after the fact, or collected and printed at the end, they
+arrive once the code has stopped working. Giving the screen away instead puts them under a display
+that is about to redraw over them, and leaves somebody in a terminal that no longer resembles the
+program they were using. Doing it up front is what keeps it off the request path, where the work has
+begun and nobody is being asked anything. Asking by the model rather than by what is configured
 matters because otherwise a turn served entirely by one backend stops to authenticate against
 another it will never call.
 

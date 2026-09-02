@@ -115,15 +115,19 @@ impl<'a> Backend<'a> {
     /// interactively at all, is this module's question. A caller asks once, before it starts work,
     /// and does not learn which service it was for.
     ///
-    /// Called for its side effect on a terminal: the sign-in prints a URL and a code to the one it
-    /// inherits and waits there, so a caller drawing a full-screen display has to give the screen
-    /// back first. Quiet and cheap where nothing is needed, which is every turn but the first of a
-    /// day, so it is safe to call before each one.
-    pub fn sign_in_if_needed(config: &Config, model: &str) -> Result<(), BackendError> {
+    /// `say` is called per line as the sign-in writes it, while it is still waiting: a URL and a code
+    /// to type into it. A caller shows them, because they are the flow rather than a report of it.
+    /// Never called where no sign-in is needed, which is every turn but the first of a day, so this
+    /// is cheap enough to ask before each one.
+    pub fn sign_in_if_needed(
+        config: &Config,
+        model: &str,
+        say: impl FnMut(String),
+    ) -> Result<(), BackendError> {
         let Some(bedrock) = config.bedrock.as_ref().filter(|it| it.offers(model)) else {
             return Ok(());
         };
-        bravebot_bedrock::credentials::sign_in_if_needed(bedrock.profile.as_deref())
+        bravebot_bedrock::credentials::sign_in_if_needed(bedrock.profile.as_deref(), say)
             .map_err(|failure| BedrockError::Credentials(failure).into())
     }
 
@@ -325,12 +329,18 @@ mod tests {
     }
 
     /// Signing in is a no-op for anything this configuration does not serve, so a caller may ask
-    /// before every turn without a thought for which backend is about to answer.
+    /// before every turn without a thought for which backend is about to answer. Nothing is said
+    /// either: the lines exist to walk somebody through a sign-in, and there is no sign-in.
     #[test]
     fn signing_in_for_a_model_no_aws_account_serves_does_nothing() {
         let config = Config::from_lookup(aichat_only).expect("configured");
-        assert!(Backend::sign_in_if_needed(&config, "automatic").is_ok());
-        assert!(Backend::sign_in_if_needed(&both_backends(), "claude-3-sonnet").is_ok());
+        let mut said = Vec::new();
+        assert!(Backend::sign_in_if_needed(&config, "automatic", |line| said.push(line)).is_ok());
+        assert!(
+            Backend::sign_in_if_needed(&both_backends(), "claude-3-sonnet", |line| said.push(line))
+                .is_ok()
+        );
+        assert!(said.is_empty(), "{said:?}");
     }
 
     /// The aichat endpoint lists concrete models and answers with one of them, so a name that comes

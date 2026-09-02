@@ -1155,14 +1155,17 @@ fn edit_prompt(
 
 /// Sign in to the backend the next request will use, where it needs one and has none.
 ///
-/// The terminal is given up and taken back the way it is for an editor, and for the same reason: the
-/// AWS CLI prints a URL and a confirmation code and waits, and that is the whole of what makes a
-/// sign-in completable. Underneath a full-screen interface it would be painted into a frame the
-/// redraw loop immediately covers, leaving a browser open on a page nobody can match to a code.
+/// The URL and the code go into the transcript, where the person is already looking. The interface
+/// keeps the screen throughout: handing it over instead put the one thing somebody has to read and
+/// type underneath a display that was about to be redrawn, and left them in a terminal that no longer
+/// looked like the program they were using.
+///
+/// Off-thread for the reason a turn is: the sign-in waits for a browser to be visited, which is as
+/// long as the person takes, and run here it would freeze the interface for the whole of it.
 ///
 /// Nothing happens in the common case. A good session is not a sign-in, a build with no AWS
 /// configuration cannot want one, and a model served by Brave never needs one whatever else is
-/// configured, so the check is by the model that is about to answer rather than by what exists.
+/// configured, so the question is asked of the model about to answer rather than of what exists.
 fn sign_in_if_needed(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
@@ -1173,23 +1176,37 @@ fn sign_in_if_needed(
         return Ok(());
     }
 
-    // Said before the screen goes, so the reason a terminal full of AWS output appears is on it.
     session.note(t!(session_signing_in));
-    redraw(terminal, session)?;
 
-    hand_back_terminal(terminal.backend_mut())?;
-    terminal.show_cursor()?;
+    let (lines, arriving) = mpsc::channel::<String>();
+    let worker_config = config.clone();
+    let worker = thread::spawn(move || {
+        bravebot_agent::backend::Backend::sign_in_if_needed(&worker_config, &model, |line| {
+            // A closed channel is an interface that has stopped listening, and there is nothing to
+            // be done about it from here: the sign-in is already running.
+            let _ = lines.send(line);
+        })
+        .map_err(|failure| failure.to_string())
+    });
 
-    let outcome = bravebot_agent::backend::Backend::sign_in_if_needed(config, &model);
+    // Drawn as they arrive rather than collected, because a code is only useful while the command
+    // that printed it is still waiting.
+    loop {
+        redraw(terminal, session)?;
 
-    take_over_terminal(terminal.backend_mut())?;
-    terminal.clear()?;
+        match arriving.recv_timeout(FRAME) {
+            Ok(line) => session.note(line),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 
     // Said rather than swallowed, and not fatal: the turn goes ahead and fails with the backend's
     // own account of what is wrong, which is more use than this function's guess at it.
-    if let Err(failure) = outcome {
-        session.note(failure.to_string());
+    if let Ok(Err(failure)) = worker.join() {
+        session.note(failure);
     }
+    redraw(terminal, session)?;
     Ok(())
 }
 

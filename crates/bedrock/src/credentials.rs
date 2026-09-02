@@ -25,7 +25,9 @@
 //! a turn, and the only thing it is ever used for is computing a signature.
 
 use bravebot_config::Secret;
-use std::process::Command;
+use std::io::BufRead;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 
 /// The program asked for credentials.
 ///
@@ -86,11 +88,10 @@ impl std::error::Error for CredentialError {}
 
 /// Resolve credentials for a profile, signing in first if the session has expired.
 ///
-/// The fallback is a last resort rather than the way a person is meant to sign in. A sign-in prints
-/// a URL and a code to the terminal it inherits and waits there, and by the time this runs the
-/// caller may be a worker thread with no terminal to print to, or one whose terminal belongs to a
-/// full-screen display. Callers that can be interrupted safely call [`sign_in_if_needed`] before
-/// they start, and reach here with nothing left to fix.
+/// The fallback is a last resort rather than the way a person is meant to sign in: what the sign-in
+/// prints goes nowhere, because by the time this runs the caller is usually a worker thread with
+/// nothing to draw on. Callers that can ask beforehand call [`sign_in_if_needed`], which reports
+/// those lines to somebody, and reach here with nothing left to fix.
 pub fn resolve(profile: Option<&str>) -> Result<Credentials, CredentialError> {
     match export(profile) {
         Ok(credentials) => Ok(credentials),
@@ -98,7 +99,7 @@ pub fn resolve(profile: Option<&str>) -> Result<Credentials, CredentialError> {
         // browser. Attempted once: a second login would open a second window for whatever the first
         // one failed to fix.
         Err(CredentialError::Refused { detail }) => {
-            login(profile).map_err(|_| CredentialError::Refused { detail })?;
+            login(profile, |_| {}).map_err(|_| CredentialError::Refused { detail })?;
             export(profile)
         }
         Err(other) => Err(other),
@@ -115,21 +116,23 @@ pub fn is_signed_in(profile: Option<&str>) -> bool {
     export(profile).is_ok()
 }
 
-/// Sign in for a profile, if that is what is missing.
+/// Sign in for a profile, if that is what is missing, reporting what the sign-in says.
 ///
-/// Separated from [`resolve`] so an interface that owns the terminal can do the interactive part at
-/// a moment of its own choosing, having given the screen back first. The sign-in inherits the
-/// terminal and prints a URL and a code to it, so run underneath a full-screen display it would
-/// paint into a frame that is about to be redrawn over it, which loses the one thing the person
-/// needs to read.
+/// Separated from [`resolve`] so an interface can do the interactive part at a moment of its own
+/// choosing, and put the URL and the code where a person is already looking. `say` is called per
+/// line as the CLI writes it, while the command is still waiting: that is the whole of the flow, so
+/// a caller that discards them leaves somebody with a browser open and no code to type into it.
 ///
-/// Quiet when the session is already good: nothing is printed and no browser opens, so this is safe
-/// to call before every turn.
-pub fn sign_in_if_needed(profile: Option<&str>) -> Result<(), CredentialError> {
+/// Quiet when the session is already good: `say` is never called and no browser opens, so this is
+/// safe to call before every turn.
+pub fn sign_in_if_needed(
+    profile: Option<&str>,
+    say: impl FnMut(String),
+) -> Result<(), CredentialError> {
     if is_signed_in(profile) {
         return Ok(());
     }
-    login(profile)
+    login(profile, say)
 }
 
 /// Ask the CLI for credentials, without trying to fix anything.
@@ -159,22 +162,69 @@ fn export(profile: Option<&str>) -> Result<Credentials, CredentialError> {
     decode(&output.stdout)
 }
 
-/// Open a browser and wait for the person to approve the session.
+/// Open a browser and wait for the person to approve the session, reporting what the CLI says.
 ///
-/// Inherits the terminal deliberately: the CLI prints the URL and a confirmation code, and on a
-/// machine with no browser to open that output is the only way through.
-fn login(profile: Option<&str>) -> Result<(), CredentialError> {
+/// `say` is called once per line as it arrives, because those lines are the sign-in: a URL and a
+/// confirmation code, printed while the command waits for them to be used. Output is piped rather
+/// than inherited so a caller drawing its own display can put them where a person is already
+/// looking, instead of underneath it. The CLI flushes them immediately when piped, which is what
+/// makes that safe: buffered until exit, a code would arrive after it had stopped being useful.
+///
+/// The browser is still opened. `--no-browser` would suppress the one step that needs no typing at
+/// all, and the URL is printed either way for a machine that cannot open one.
+///
+/// Nothing here is labelled. The lines are a program's own prompt to the person at the keyboard, not
+/// workspace content and not model output, and they reach a screen rather than a planner.
+fn login(profile: Option<&str>, mut say: impl FnMut(String)) -> Result<(), CredentialError> {
     let mut command = Command::new(AWS);
     command.args(["sso", "login"]);
     if let Some(profile) = profile {
         command.args(["--profile", profile]);
     }
 
-    let status = command.status().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => CredentialError::NotInstalled,
-        _ => CredentialError::Refused {
-            detail: e.to_string(),
-        },
+    let mut child = command
+        // Both streams, because which one carries the code is the CLI's business and a person who
+        // cannot see it is stuck either way.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Nothing is typed at this: the code goes into a browser, and the terminal belongs to
+        // whoever called. A program left able to read stdin would fight for the keys.
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => CredentialError::NotInstalled,
+            _ => CredentialError::Refused {
+                detail: e.to_string(),
+            },
+        })?;
+
+    // Drained on a thread apiece and merged over one channel, so neither stream blocks against a
+    // pipe nobody is reading and the lines arrive in the order they were written.
+    let (lines, arriving) = mpsc::channel::<String>();
+    let readers: Vec<_> = [
+        child.stdout.take().map(Reading::Out),
+        child.stderr.take().map(Reading::Err),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|stream| {
+        let lines = lines.clone();
+        std::thread::spawn(move || stream.read_lines_into(&lines))
+    })
+    .collect();
+    drop(lines);
+
+    // Every line is passed on as it arrives. The loop ends when both readers have finished, which
+    // is when the command has closed its streams.
+    for line in arriving {
+        say(line);
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
+
+    let status = child.wait().map_err(|e| CredentialError::Refused {
+        detail: e.to_string(),
     })?;
 
     if status.success() {
@@ -183,6 +233,33 @@ fn login(profile: Option<&str>) -> Result<(), CredentialError> {
         Err(CredentialError::Refused {
             detail: "the sign-in did not complete".to_string(),
         })
+    }
+}
+
+/// One of the child's two streams, so both can be read by the same code.
+enum Reading {
+    Out(std::process::ChildStdout),
+    Err(std::process::ChildStderr),
+}
+
+impl Reading {
+    /// Send every line this stream produces, dropping a trailing newline.
+    ///
+    /// Lines rather than chunks, because a caller is putting them into a transcript one entry at a
+    /// time and a chunk boundary is not a place a person would break a sentence.
+    fn read_lines_into(self, lines: &mpsc::Sender<String>) {
+        let reader: Box<dyn std::io::Read> = match self {
+            Self::Out(stream) => Box::new(stream),
+            Self::Err(stream) => Box::new(stream),
+        };
+        for line in std::io::BufReader::new(reader).lines() {
+            // A stream that stopped mid-line is a command that has finished or died, and either way
+            // there is nothing further to report from it.
+            let Ok(line) = line else { return };
+            if lines.send(line).is_err() {
+                return;
+            }
+        }
     }
 }
 
