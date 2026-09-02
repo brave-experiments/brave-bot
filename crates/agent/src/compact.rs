@@ -63,6 +63,12 @@ Keep, in whatever order reads best:
 - facts the user gave about themselves or their work, attributed to the user
 - questions still outstanding
 
+Name the path of every file the remaining work still has to touch, spelled exactly, next to the \
+work itself. Outstanding work described without its paths cannot be picked up: the agent reading \
+you cannot search for a file it has not been told exists, so it does the part it can see and \
+reports the rest as done. A file that was located but not yet edited is the case this exists for, \
+and the one most easily lost, because nothing in the exchange yet points at it.
+
 Leave out the agent's account of how it got somewhere, and anything later work superseded.
 
 Write plain prose, or prose with a short list in it. No preamble, no sign-off, and nothing about \
@@ -175,4 +181,48 @@ pub fn compact<S: Sink>(
         model: completion.model,
         usage: completion.usage,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A summary that says work remains without saying which files it remains in cannot be picked
+    /// up: the agent reading it cannot search for a file it has not been told exists, so it
+    /// finishes the visible part and reports the rest as done. The instruction has to reach the
+    /// summariser in the request, not merely exist as a constant.
+    #[test]
+    fn the_summariser_is_told_to_name_the_paths_work_still_has_to_touch() {
+        let mut conversation = Conversation::new();
+        for (asked, answered) in [
+            ("add the feature", "reading the source"),
+            ("carry on", "wrote the source, tests still to do"),
+            ("and now", "half way"),
+            ("keep going", "nearly"),
+        ] {
+            conversation.push(Message::user(asked));
+            conversation.push(Message::assistant(answered));
+        }
+
+        let boundary = conversation
+            .compaction_boundary()
+            .expect("something to compact");
+        let messages = conversation.to_summarise(boundary, SYSTEM_PROMPT);
+
+        let system = messages
+            .first()
+            .expect("a request has a system message")
+            .content
+            .text();
+        assert!(
+            system.contains("Name the path of every file the remaining work still has to touch"),
+            "the summariser was not asked for the paths of outstanding work"
+        );
+        // The failure this exists for: a file found but not yet edited, which nothing else in the
+        // exchange points at.
+        assert!(
+            system.contains("located but not yet edited"),
+            "the summariser was not told which case is most easily lost"
+        );
+    }
 }
