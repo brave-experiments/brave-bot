@@ -64,6 +64,13 @@ impl fmt::Display for BedrockError {
             Self::Credentials(e) => write!(f, "{e}"),
             Self::Encode(detail) => write!(f, "could not encode the request: {detail}"),
             Self::Decode { detail } => write!(f, "unexpected response: {detail}"),
+            // Named as what it is, because the bare status says nothing about the remedy. A refused
+            // credential reads as an unexplained HTTP failure otherwise, and the thing that fixes it
+            // is a sign-in nobody was told to do.
+            Self::Egress(_) if self.is_credential_refused() => f.write_str(
+                "AWS refused the credentials this request was signed with. The session has most \
+                 likely expired: sign in again, and the next turn will offer to",
+            ),
             Self::Egress(e) => write!(f, "{e}"),
             Self::Frame(e) => write!(f, "{e}"),
             Self::NoContent => f.write_str("the response contained no message content"),
@@ -83,6 +90,31 @@ impl fmt::Display for BedrockError {
 }
 
 impl std::error::Error for BedrockError {}
+
+/// The statuses AWS answers a credential it will not accept with.
+///
+/// 401 is a credential it did not recognise and 403 one it recognised and refused. Neither is worth
+/// sending again unchanged, which is why they are absent from what the egress layer calls transient:
+/// what they are worth is a sign-in.
+const REFUSED_STATUSES: [u16; 2] = [401, 403];
+
+impl BedrockError {
+    /// Whether AWS refused the credential this request was signed with.
+    ///
+    /// Asked so a caller can offer the remedy. A credential the AWS CLI produced happily can still be
+    /// rejected here: it caches the role credentials it derived, so an expired session keeps
+    /// answering locally with something the service has stopped accepting, and expiry can also fall
+    /// between the start of a run and a later request in it.
+    ///
+    /// Not a decision taken from content. A status is the transport's own report, and nothing in the
+    /// body is read to reach it.
+    pub fn is_credential_refused(&self) -> bool {
+        matches!(
+            self,
+            Self::Egress(EgressError::Status { status, .. }) if REFUSED_STATUSES.contains(status)
+        )
+    }
+}
 
 impl From<EgressError> for BedrockError {
     fn from(value: EgressError) -> Self {
@@ -577,6 +609,41 @@ mod tests {
             .map(str::to_string)
         })
         .expect("configured")
+    }
+
+    /// A credential the CLI produced happily can still be refused here: it caches the role
+    /// credentials it derived, so an expired session keeps answering locally with something AWS has
+    /// stopped accepting. The bare status said nothing about the remedy, which is a sign-in.
+    #[test]
+    fn a_refused_credential_says_so_rather_than_reporting_a_status() {
+        for status in [401, 403] {
+            let error = BedrockError::Egress(EgressError::Status {
+                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/invoke".to_string(),
+                status,
+            });
+            assert!(error.is_credential_refused(), "{status} was not recognised");
+            let said = error.to_string();
+            assert!(said.contains("AWS"), "{said}");
+            assert!(said.contains("sign in"), "{said}");
+            assert!(!said.contains(&status.to_string()), "{said}");
+        }
+    }
+
+    /// Every other failure keeps its own account of itself. Reported as a refused credential, a
+    /// server that was merely unwell would send somebody to sign in for nothing.
+    #[test]
+    fn another_failing_status_is_not_read_as_a_refused_credential() {
+        for status in [400, 404, 429, 500, 503] {
+            let error = BedrockError::Egress(EgressError::Status {
+                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/invoke".to_string(),
+                status,
+            });
+            assert!(
+                !error.is_credential_refused(),
+                "{status} was read as a refusal"
+            );
+            assert!(error.to_string().contains(&status.to_string()));
+        }
     }
 
     /// The signature covers the path as sent. Signing a different one is a rejected request.
