@@ -83,13 +83,17 @@ exiting successfully with an explanation on stdout.
 <a id="CLI-7"></a>
 ### CLI-7: `doctor` reports configuration and confinement without changing anything
 
-It prints the endpoint, whether a premium host is configured, the key id, the model in force and
-whether it was chosen or defaulted, the confinement available on this platform, and the state of
-any imported subscription. The signing key is named as never transmitted. A configuration error
-makes it fail rather than pass with a warning.
+It prints every backend this build can reach and what identifies it, which names a settings file
+set, the model in force and whether it was chosen or defaulted, the confinement available on this
+platform, and the state of any imported subscription. The signing key is named as never
+transmitted, and a value from the settings file is never printed. A configuration error makes it
+fail rather than pass with a warning.
 
 **Why.** It exists to answer "what will this actually use", so reporting a default when a choice
-is in force would explain the wrong thing.
+is in force would explain the wrong thing, and naming one backend where two are reachable would
+explain only the half somebody happened to ask about. Values are withheld because a settings file
+holds credentials on some machines, and a diagnostic that prints one is a diagnostic people paste
+into issues.
 
 `verified-by: none`
 

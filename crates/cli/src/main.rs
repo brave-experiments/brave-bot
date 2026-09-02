@@ -744,29 +744,51 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
 fn doctor() -> ExitCode {
     let mut ok = true;
 
-    match Config::from_env() {
+    // Read before the configuration so the file can be reported even when it is what made the
+    // configuration wrong.
+    let settings = bravebot_config::Settings::load();
+
+    match Config::from_env_and_settings(&settings) {
         Ok(config) => {
             println!("{}", t!(doctor_configuration_ok));
-            fact(t!(doctor_endpoint), config.chat_completions_url());
-            match config.premium_chat_completions_url() {
-                Some(url) => fact(t!(doctor_premium), &url),
-                None => fact(t!(doctor_premium), t!(doctor_premium_absent)),
+
+            match settings.is_empty() {
+                // Names only. On some machines a value here is a credential, and a diagnostic that
+                // prints one is a diagnostic people paste into issues.
+                false => fact(
+                    t!(doctor_settings),
+                    t!(
+                        doctor_settings_names,
+                        names = settings.names().collect::<Vec<_>>().join(", ")
+                    ),
+                ),
+                true => fact(t!(doctor_settings), t!(doctor_settings_absent)),
             }
-            fact(t!(doctor_key_id), &config.key_id);
+
+            // Both, where both are reachable, because both are offered to a person choosing and a
+            // report naming one of them explains only the half of the picker they happened to use.
+            if config.serves_aichat() {
+                report_aichat(&config);
+            }
+            if let Some(bedrock) = config.bedrock.as_ref() {
+                report_bedrock(bedrock);
+            }
+
             // What a run would actually request, since a choice made with `/model` overrides the
             // configured default and reporting only the default would explain the wrong thing.
             match bravebot_tui::store::load_model() {
                 Some(chosen) => fact(t!(doctor_model), t!(doctor_model_chosen, model = chosen)),
                 None => fact(
                     t!(doctor_model),
-                    t!(doctor_model_default, model = config.default_model),
+                    t!(doctor_model_default, model = &config.default_model),
                 ),
             }
-            fact(
-                t!(doctor_key_name),
-                t!(doctor_key, key = config.signing_key),
-            );
-            report_subscription();
+
+            // Only where a subscription means something. A Leo credential is what the premium half of
+            // the Brave roster needs, and it means nothing to Bedrock.
+            if config.serves_aichat() {
+                report_subscription();
+            }
         }
         Err(err) => {
             eprintln!("{}", t!(cli_configuration_problem, problem = err));
@@ -782,6 +804,51 @@ fn doctor() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// What `doctor` says about the Bedrock half of the roster.
+///
+/// No key and no endpoint: there is no key, and the host is derived from the region rather than
+/// configured. The credentials are the AWS CLI's to hold, which is why the profile is the useful
+/// thing to report and there is nothing here to redact.
+fn report_bedrock(bedrock: &bravebot_config::bedrock::Bedrock) {
+    fact(t!(doctor_backend), t!(doctor_backend_bedrock));
+    fact(t!(doctor_region), &bedrock.region);
+    match bedrock.profile.as_deref() {
+        Some(profile) => fact(t!(doctor_profile), profile),
+        None => fact(t!(doctor_profile), t!(doctor_profile_absent)),
+    }
+
+    // The tiers a person may choose, by name. An ARN is unreadable and looks identical between
+    // tiers, so the names are what tells someone whether the block did what they meant.
+    match bedrock.models().is_empty() {
+        false => fact(
+            t!(doctor_tiers),
+            bedrock
+                .models()
+                .iter()
+                .map(|(tier, _)| tier.display_name())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        true => fact(t!(doctor_tiers), t!(doctor_tiers_absent)),
+    }
+}
+
+/// What `doctor` says about a build pointed at the Brave backend.
+fn report_aichat(config: &Config) {
+    fact(t!(doctor_backend), t!(doctor_backend_aichat));
+    fact(t!(doctor_endpoint), config.chat_completions_url());
+    match config.premium_chat_completions_url() {
+        Some(url) => fact(t!(doctor_premium), &url),
+        None => fact(t!(doctor_premium), t!(doctor_premium_absent)),
+    }
+    fact(t!(doctor_key_id), &config.key_id);
+    // Redacting `Display`, so what is reported is the placeholder rather than the key.
+    fact(
+        t!(doctor_key_name),
+        t!(doctor_key, key = &config.signing_key),
+    );
 }
 
 /// Where the values line up in what `doctor` reports, and in its confinement section.
