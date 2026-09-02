@@ -87,6 +87,18 @@ doctor-model-chosen = { $model } (chosen with /model)
 doctor-model-default = { $model } (default)
 doctor-key-name = key
 doctor-key = { $key } (never transmitted)
+# Both are reported when both are reachable, so this names one of the two rather than the backend.
+doctor-backend = offers
+doctor-backend-bedrock = AWS Bedrock
+doctor-backend-aichat = Brave Leo
+doctor-region = region
+doctor-profile = profile
+doctor-profile-absent = default credentials
+doctor-tiers = models
+doctor-tiers-absent = none configured (set ANTHROPIC_DEFAULT_OPUS_MODEL)
+doctor-settings = settings
+doctor-settings-names = { $names }
+doctor-settings-absent = no settings.json
 doctor-leo = leo
 doctor-subscription =
     { $channel } subscription imported, { $unspent } of { $total } credentials unspent
@@ -148,6 +160,11 @@ model-picker-heading = Select model
 model-picker-keys = ↑↓ to choose  ·  Enter to select  ·  Esc to keep the current one
 picker-current = current
 picker-premium = premium
+# Both rosters are offered at once, and a tier name alone does not say which of the two it is: the
+# same model is reachable through either, billed and reached differently. Not "(Bedrock)", which the
+# Brave roster already says of the models it serves through its own account.
+picker-model-bedrock-profile = { $tier } (your { $profile } AWS profile)
+picker-model-bedrock = { $tier } (your AWS account)
 resume-heading = Resume session
 resume-search-placeholder = Search…
 resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session

@@ -1578,6 +1578,45 @@ fn expand_home(directory: &str) -> String {
 /// the same listing and a second copy of the policy setup would be a second place for the gate to
 /// be got wrong.
 fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, String> {
+    // Bedrock is additive. Its tiers come from configuration rather than from a listing, since it has
+    // no listing endpoint and an ARN does not say which model it resolves to, but the Brave roster is
+    // what everyone has and a settings block adds to it rather than replacing it.
+    //
+    // The configured tiers come first: someone who named them went out of their way to, and the
+    // alternative buries them under a roster they did not ask about.
+    let configured = config
+        .bedrock
+        .as_ref()
+        .map(bedrock_models)
+        .unwrap_or_default();
+
+    // A build from source pointed only at Bedrock has blank Brave credentials, and asking with them
+    // would list a roster whose every request then fails unsigned.
+    if !config.serves_aichat() {
+        return Ok(configured);
+    }
+
+    combined(configured, fetch_models(config))
+}
+
+/// The tiers and the listing as one roster.
+///
+/// Split from the request so the joining is testable without a server. A listing nobody could fetch
+/// is not worth losing the tiers over: they need no network to know, and a picker that refused
+/// everything because one half was unreachable would leave the working half unpickable.
+fn combined(
+    configured: Vec<bravebot_aichat::models::Model>,
+    listed: Result<Vec<bravebot_aichat::models::Model>, String>,
+) -> Result<Vec<bravebot_aichat::models::Model>, String> {
+    match listed {
+        Ok(listed) => Ok(configured.into_iter().chain(listed).collect()),
+        Err(_) if !configured.is_empty() => Ok(configured),
+        Err(problem) => Err(problem),
+    }
+}
+
+/// Ask the Brave endpoint what it offers.
+fn fetch_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, String> {
     let mut sink = Trail::new();
     let egress = Egress::new();
 
@@ -1600,6 +1639,50 @@ fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, S
         bravebot_aichat::models::list(&mut policy, config, &egress)
             .map_err(|error| error.to_string())
     })
+}
+
+/// The models a Bedrock configuration offers, strongest tier first.
+///
+/// One entry per tier that names a model, and nothing else. A tier whose variable is unset is one
+/// this configuration cannot reach: an ARN cannot be derived from a model name, so an entry invented
+/// for it would be a choice that fails at the far end for a reason nothing here could explain.
+///
+/// No `automatic` among them. There it means "let the server choose", which Bedrock does not offer: a
+/// request names one model and gets it or an error. The entry still reaches the picker, from the Brave
+/// half of the roster, where it is a choice that backend can honour.
+///
+/// Every entry is marked free. Premium here means a Leo subscription, and reaching a model through
+/// somebody's own AWS account does not involve one.
+///
+/// The name says whose account answers. Both rosters are offered together and a bare tier name would
+/// sit beside a Brave entry for the same model, where the two are reached and billed differently and
+/// nothing on the row would say which was about to answer.
+///
+/// Not "(Bedrock)": the Brave roster already says that of models it serves through its own AWS
+/// account, so the word distinguishes nothing. The profile is the useful thing, being what decides
+/// which credentials sign the request, and the account is all that can be said without one.
+fn bedrock_models(
+    bedrock: &bravebot_config::bedrock::Bedrock,
+) -> Vec<bravebot_aichat::models::Model> {
+    bedrock
+        .models()
+        .iter()
+        .map(|(tier, name)| bravebot_aichat::models::Model {
+            key: name.clone(),
+            display_name: match bedrock.profile.as_deref() {
+                Some(profile) => t!(
+                    picker_model_bedrock_profile,
+                    tier = tier.display_name(),
+                    profile = profile
+                ),
+                None => t!(picker_model_bedrock, tier = tier.display_name()),
+            },
+            premium: false,
+            // The same figure for every tier, because it is a property of what an opaque profile
+            // ARN gets rather than of a particular model.
+            conversation_tokens: Some(bravebot_config::bedrock::CONTEXT_WINDOW),
+        })
+        .collect()
 }
 
 /// Take the budget for the model already in force, without asking anyone to choose it again.
@@ -2367,6 +2450,206 @@ mod tests {
             premium: false,
             conversation_tokens: window,
         }
+    }
+
+    fn bedrock_configured(pairs: &[(&str, &str)]) -> bravebot_config::bedrock::Bedrock {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        bravebot_config::bedrock::Bedrock::from_lookup(|name| {
+            owned
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        })
+        .expect("configured")
+    }
+
+    /// The picker offers what was configured, under the tier names a person recognises rather than
+    /// the ARNs they were given as. An ARN is unreadable and identical-looking between tiers.
+    #[test]
+    fn the_bedrock_picker_offers_the_configured_tiers_by_name() {
+        use bravebot_config::env_var;
+
+        let models = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+            (env_var::BEDROCK_SONNET_MODEL, "sonnet-arn"),
+            (env_var::BEDROCK_HAIKU_MODEL, "haiku-arn"),
+        ]));
+
+        let shown: Vec<&String> = models.iter().map(|m| &m.display_name).collect();
+        let expected: Vec<String> = ["Opus", "Sonnet", "Haiku"]
+            .iter()
+            .map(|tier| t!(picker_model_bedrock, tier = *tier))
+            .collect();
+        assert_eq!(shown, expected.iter().collect::<Vec<&String>>());
+        // The key is what lands in the request's model field, and it has to be the ARN.
+        assert_eq!(models[0].key, "opus-arn");
+    }
+
+    /// Naming the service does not distinguish the row: Brave serves some of its own roster through
+    /// Bedrock and says so in the display name it sends, so "(Bedrock)" appeared on both halves of the
+    /// picker and told a person nothing about which account was about to be billed.
+    #[test]
+    fn a_configured_tier_is_not_confusable_with_a_brave_model_served_through_bedrock() {
+        use bravebot_config::env_var;
+
+        let mut brave = listed("gpt-5.5", Some(102_400));
+        brave.display_name = "GPT-5.5 (Bedrock)".to_string();
+
+        let roster = combined(
+            bedrock_models(&bedrock_configured(&[
+                (env_var::USE_BEDROCK, "1"),
+                (env_var::AWS_REGION, "us-west-2"),
+                (env_var::AWS_PROFILE, "some-profile"),
+                (env_var::BEDROCK_SONNET_MODEL, "sonnet-arn"),
+            ])),
+            Ok(vec![brave]),
+        )
+        .expect("a roster");
+
+        let shown: Vec<&str> = roster.iter().map(|m| m.display_name.as_str()).collect();
+        assert_eq!(shown.len(), 2);
+        // The profile is what decides which credentials sign, and no name off the wire carries it.
+        assert!(shown[0].contains("some-profile"), "{shown:?}");
+        assert!(!shown[1].contains("some-profile"), "{shown:?}");
+    }
+
+    /// A profile is optional, and a row still has to say the tier is reached through the person's own
+    /// account rather than through Brave's.
+    #[test]
+    fn a_tier_with_no_profile_configured_still_names_the_account() {
+        use bravebot_config::env_var;
+
+        let models = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        assert_eq!(
+            models[0].display_name,
+            t!(picker_model_bedrock, tier = "Opus")
+        );
+    }
+
+    /// The same condition Claude Code applies: a tier appears only when its variable names a model.
+    /// An entry invented for an unset tier is a choice that fails at the far end.
+    #[test]
+    fn a_tier_with_no_model_configured_is_not_offered() {
+        use bravebot_config::env_var;
+
+        let models = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_SONNET_MODEL, "sonnet-arn"),
+        ]));
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].display_name,
+            t!(picker_model_bedrock, tier = "Sonnet")
+        );
+    }
+
+    /// A settings block adds to the roster rather than replacing it. Replacing it left a person who
+    /// configured one tier with a picker offering exactly one model, and no way back to the Brave
+    /// models every build has.
+    #[test]
+    fn configured_tiers_are_offered_alongside_the_brave_roster() {
+        use bravebot_config::env_var;
+
+        let configured = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        let roster = combined(
+            configured,
+            Ok(vec![
+                bravebot_aichat::models::Model::automatic(),
+                listed("claude-sonnet", Some(102_400)),
+            ]),
+        )
+        .expect("a roster");
+
+        let keys: Vec<&str> = roster.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["opus-arn", bravebot_config::DEFAULT_MODEL, "claude-sonnet"]
+        );
+    }
+
+    /// The tiers need no network to know. Losing them because the other half was unreachable would
+    /// leave the only models this configuration can definitely reach unpickable.
+    #[test]
+    fn an_unreachable_listing_still_offers_the_configured_tiers() {
+        use bravebot_config::env_var;
+
+        let configured = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        let roster = combined(configured, Err("the endpoint is unreachable".into()))
+            .expect("the tiers survive");
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].key, "opus-arn");
+    }
+
+    /// With nothing configured there is nothing to fall back to, and a picker showing an empty list
+    /// would read as a backend with no models rather than as a listing that failed.
+    #[test]
+    fn an_unreachable_listing_with_no_tiers_configured_is_still_a_failure() {
+        assert!(combined(vec![], Err("the endpoint is unreachable".into())).is_err());
+    }
+
+    /// `automatic` means "let the server choose", which Bedrock does not offer: a request names one
+    /// model and gets it or an error. It reaches the picker from the Brave half instead.
+    #[test]
+    fn the_bedrock_picker_does_not_offer_automatic() {
+        use bravebot_config::env_var;
+
+        let models = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        assert!(!models.iter().any(|model| model.is_automatic()));
+    }
+
+    /// Premium means a Leo subscription. Reaching a model through somebody's own AWS account does
+    /// not involve one, and marking it premium would ask them to import a subscription to use what
+    /// they already pay for.
+    #[test]
+    fn bedrock_models_are_not_marked_premium() {
+        use bravebot_config::env_var;
+
+        let models = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        assert!(!models[0].premium);
+    }
+
+    /// The budget lookup shares this listing, so a Bedrock entry has to carry a window or a session
+    /// would fall back to the default and compact five times sooner than it had to.
+    #[test]
+    fn a_bedrock_entry_carries_the_window_the_budget_is_taken_from() {
+        use bravebot_config::env_var;
+
+        let models = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        assert_eq!(
+            advertised_window(&models, Some("opus-arn")),
+            Some(bravebot_config::bedrock::CONTEXT_WINDOW)
+        );
     }
 
     /// A model chosen in an earlier session is read back off disk, and the window that came with it

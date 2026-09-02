@@ -4,6 +4,7 @@ title: Backends
 status: normative
 governs:
   - crates/agent/src/backend.rs
+  - crates/tui/src/app.rs
   - crates/config/src/bedrock.rs
   - crates/config/src/settings.rs
 ---
@@ -68,6 +69,73 @@ list they read, and a model's own output never reaches it.
 `verified-by: bravebot_agent::backend::a_configured_bedrock_model_selects_the_bedrock_backend`
 `verified-by: bravebot_agent::backend::a_brave_model_still_reaches_aichat_while_bedrock_is_configured`
 `verified-by: bravebot_agent::backend::without_bedrock_configured_the_aichat_backend_is_selected`
+
+<a id="BACKEND-4"></a>
+### BACKEND-4: what a person may choose is every model any reachable service offers
+
+Configuring a second backend puts its models on offer beside the first one's rather than in place of
+them.
+
+**Why.** A roster that replaced the other left somebody who named a single tier with a picker
+offering exactly one model and no way back to the ones every build has. Reaching more models is not
+a reason to stop reaching the existing ones.
+
+`verified-by: bravebot_tui::app::configured_tiers_are_offered_alongside_the_brave_roster`
+
+<a id="BACKEND-5"></a>
+### BACKEND-5: only models that can actually be reached are offered
+
+A tier appears when the configuration names a model for it, and not otherwise. A service's own
+roster is offered only where this build holds the credentials to reach it. Nothing is invented for a
+tier that was left unset.
+
+**Why.** A name on the list is a promise that picking it works. An ARN cannot be derived from a
+model name, so an entry guessed for an unnamed tier is a choice that fails remotely, and a build
+pointed only at AWS has no Brave credentials, so offering that roster would list models whose every
+request fails unsigned.
+
+`verified-by: bravebot_tui::app::a_tier_with_no_model_configured_is_not_offered`
+`verified-by: bravebot_config::lib::without_brave_credentials_the_default_is_the_strongest_bedrock_tier`
+
+<a id="BACKEND-6"></a>
+### BACKEND-6: a row says which service will answer it
+
+Where the same model is reachable through more than one service, what a person reads says which one
+a given row is, in terms that cannot collide with a name a service chose for itself.
+
+**Why.** The two are billed differently and authenticate differently, so which one answers is the
+whole of what is being chosen between. Naming the service is not enough: Brave serves part of its own
+roster through Bedrock and says so in the names it sends, so that word appeared on both halves of the
+list and distinguished nothing.
+
+`verified-by: bravebot_tui::app::a_configured_tier_is_not_confusable_with_a_brave_model_served_through_bedrock`
+`verified-by: bravebot_tui::app::a_tier_with_no_profile_configured_still_names_the_account`
+
+<a id="BACKEND-7"></a>
+### BACKEND-7: the conversation budget belongs to the model in force
+
+How large a request may get before the conversation is shortened is taken from the model that will
+answer it, at the moment that model is chosen.
+
+**Why.** A budget above the real window does not shorten a conversation late, it stops shortening it
+at all, silently: every round asks, no round qualifies, and the session runs to exhaustion looking
+like one with nothing to summarise.
+
+`verified-by: bravebot_tui::app::a_bedrock_entry_carries_the_window_the_budget_is_taken_from`
+`verified-by: bravebot_tui::app::the_window_of_a_model_chosen_earlier_is_found_in_the_listing`
+
+<a id="BACKEND-8"></a>
+### BACKEND-8: an unreachable listing costs only what it described
+
+One service failing to say what it offers does not withdraw models known from configuration alone. A
+choice is refused only when there is nothing left that could be chosen.
+
+**Why.** Configured tiers need no network to know. Refusing the whole picker because one half was
+unreachable would leave the only models this configuration can definitely reach unpickable, which is
+the position somebody offline is most likely to be in.
+
+`verified-by: bravebot_tui::app::an_unreachable_listing_still_offers_the_configured_tiers`
+`verified-by: bravebot_tui::app::an_unreachable_listing_with_no_tiers_configured_is_still_a_failure`
 
 ## Known costs
 
