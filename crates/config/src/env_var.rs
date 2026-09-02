@@ -27,6 +27,45 @@ pub const DEFAULT_MODEL: &str = "BRAVE_AI_CHAT_DEFAULT_MODEL";
 /// release.
 pub const CONTEXT_BUDGET: &str = "BRAVEBOT_CONTEXT_BUDGET";
 
+/// Set to `1` to reach Claude through AWS Bedrock rather than the aichat backend.
+///
+/// The Bedrock names here are Claude Code's, spelled exactly as it spells them, so an `env` block
+/// that configures `~/.claude/settings.json` configures `~/.bravebot/settings.json` unedited. They
+/// break this file's convention that every name is Brave-prefixed, and that is deliberate: what
+/// makes the setting worth having is that it transfers, and a second spelling for the same values
+/// would be another thing to learn in exchange for nothing.
+///
+/// None of them appear in ALL. They describe one person's AWS account, not the build.
+pub const USE_BEDROCK: &str = "CLAUDE_CODE_USE_BEDROCK";
+
+/// Which AWS region to reach Bedrock in. Required once [`USE_BEDROCK`] is on.
+pub const AWS_REGION: &str = "AWS_REGION";
+
+/// Which profile in the AWS configuration names the credentials to sign with.
+///
+/// Optional: with nothing set the AWS CLI resolves credentials as it would for any other command,
+/// which is what a machine using instance credentials or a bare access key already relies on.
+pub const AWS_PROFILE: &str = "AWS_PROFILE";
+
+/// The model each tier names, as either a model id or an inference-profile ARN.
+///
+/// A tier whose variable is unset is one this configuration cannot reach, and it is left out rather
+/// than guessed at: an ARN cannot be derived from a model name, so inventing one would produce a
+/// request that fails at the far end for a reason nothing here could explain.
+pub const BEDROCK_OPUS_MODEL: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
+pub const BEDROCK_SONNET_MODEL: &str = "ANTHROPIC_DEFAULT_SONNET_MODEL";
+pub const BEDROCK_HAIKU_MODEL: &str = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
+
+/// Every name the Bedrock backend reads, in the order `doctor` reports them.
+pub const BEDROCK_ALL: [&str; 6] = [
+    USE_BEDROCK,
+    AWS_REGION,
+    AWS_PROFILE,
+    BEDROCK_OPUS_MODEL,
+    BEDROCK_SONNET_MODEL,
+    BEDROCK_HAIKU_MODEL,
+];
+
 /// Every name a build may bake in, in the order `doctor` reports them.
 pub const ALL: [&str; 5] = [SIGNING_KEY, KEY_ID, ENDPOINT, PREMIUM_ENDPOINT, DEFAULT_MODEL];
 

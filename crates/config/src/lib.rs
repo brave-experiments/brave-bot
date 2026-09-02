@@ -15,6 +15,11 @@ pub mod env_var {
 }
 
 mod obfuscate;
+mod settings;
+
+pub use settings::Settings;
+
+pub mod bedrock;
 
 include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 
@@ -142,9 +147,16 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Everything needed to talk to the aichat backend.
+/// Everything needed to talk to the backends this build can reach.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Bedrock configuration, when a settings file or the environment asked for it.
+    ///
+    /// Additive, and not a choice of backend: the tiers named here are offered alongside the aichat
+    /// roster and the model a person picks is what decides where a request goes. The aichat fields
+    /// below may still be blank, since somebody pointing the agent at their own AWS account is not
+    /// required to hold Brave service credentials as well.
+    pub bedrock: Option<bedrock::Bedrock>,
     /// HMAC signing key. Never transmitted; used only to sign the request digest.
     pub signing_key: Secret,
     /// Key id sent in the Authorization header. The server derives its copy of the
@@ -208,17 +220,41 @@ impl Config {
     /// The environment wins, so a developer can point a released binary at a local
     /// backend without rebuilding it.
     pub fn from_env() -> Result<Self, ConfigError> {
-        Self::from_lookup(|key| resolve(key, env::var(key).ok(), built_in))
+        Self::from_env_and_settings(&Settings::load())
+    }
+
+    /// Read configuration from the environment, with a settings file underneath it.
+    ///
+    /// The environment wins over the file for the same reason it wins over a baked-in value: a
+    /// variable someone exported for one session is the most specific thing they said, and a file
+    /// that overrode it would make `AWS_PROFILE=other bravebot` do nothing.
+    pub fn from_env_and_settings(settings: &Settings) -> Result<Self, ConfigError> {
+        Self::from_lookup(|key| {
+            resolve(key, env::var(key).ok(), built_in)
+                .or_else(|| settings.get(key).map(str::to_string))
+        })
     }
 
     /// Read configuration from an arbitrary lookup, so tests need not mutate global
     /// process state.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let bedrock = bedrock::Bedrock::from_lookup(&lookup);
+
+        // With Bedrock configured these are not requirements. Insisting on them would mean anyone
+        // pointing the agent at their own AWS account also had to hold Brave service credentials for
+        // a backend they may not be entitled to, and a released binary has them baked in anyway, so
+        // the demand would be satisfied by values nothing goes on to read.
+        //
+        // Blank rather than absent is what the rest of this reads to decide whether the Brave roster
+        // is offered at all. See [`Config::serves_aichat`].
+        let optional = bedrock.is_some();
+
         let required = |name: &'static str| -> Result<String, ConfigError> {
             match lookup(name) {
+                Some(v) if !v.trim().is_empty() => Ok(v),
+                _ if optional => Ok(String::new()),
                 None => Err(ConfigError::Missing(name)),
-                Some(v) if v.trim().is_empty() => Err(ConfigError::Empty(name)),
-                Some(v) => Ok(v),
+                Some(_) => Err(ConfigError::Empty(name)),
             }
         };
 
@@ -226,12 +262,25 @@ impl Config {
         let key_id = required(env_var::KEY_ID)?;
         let endpoint = required(env_var::ENDPOINT)?;
 
-        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+        // A blank endpoint only reaches here when Bedrock is configured, where no aichat URL is
+        // ever built. Checking the scheme of a value nothing will use would refuse a working
+        // configuration over a field it does not have.
+        if !endpoint.is_empty()
+            && !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
+        {
             return Err(ConfigError::InvalidEndpoint { value: endpoint });
         }
 
+        // `automatic` for everyone, Bedrock block or not: it is the Brave backend's own default and a
+        // settings block adds a roster rather than changing what answers when nobody has picked. The
+        // exception is a build that cannot reach Brave at all, where `automatic` names a backend with
+        // no credentials and the strongest configured tier is the only thing that can answer.
         let default_model = lookup(env_var::DEFAULT_MODEL)
             .filter(|m| !m.trim().is_empty())
+            .or_else(|| match bedrock.as_ref() {
+                Some(bedrock) if endpoint.is_empty() => bedrock.default_model().map(str::to_string),
+                _ => None,
+            })
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
         // A premium host that is present but malformed is dropped rather than rejected: it only
@@ -248,10 +297,17 @@ impl Config {
         let chosen_budget = lookup(env_var::CONTEXT_BUDGET)
             .and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|budget| *budget > 0);
+
+        // No Bedrock window applied here, though the block may be present. Both rosters are offered
+        // at once now, so the window belongs to whichever model was picked rather than to the
+        // configuration, and `adopt_window` takes it from the entry that named it. Applying the
+        // Bedrock figure to a session that goes on to use a Brave model would set a budget for a
+        // window that is not the one in force.
         let context_budget = chosen_budget.unwrap_or(DEFAULT_CONTEXT_BUDGET);
         let budget_was_chosen = chosen_budget.is_some();
 
         Ok(Self {
+            bedrock,
             signing_key,
             key_id,
             endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -278,6 +334,17 @@ impl Config {
             }
             _ => false,
         }
+    }
+
+    /// Whether the Brave backend can be reached at all.
+    ///
+    /// Every ordinary build can: the credentials are baked in, and a missing one is refused at
+    /// startup. A build from source pointed at Bedrock is the exception, where they are allowed to be
+    /// blank, and offering that roster would list models whose every request fails unsigned.
+    pub fn serves_aichat(&self) -> bool {
+        !self.endpoint.is_empty()
+            && !self.key_id.is_empty()
+            && !self.signing_key.expose().is_empty()
     }
 
     /// Full URL for the OpenAI-compatible chat completions endpoint.
@@ -457,6 +524,127 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.default_model, DEFAULT_MODEL);
+    }
+
+    /// The point of the whole feature: a settings file naming an AWS account is enough to reach a
+    /// backend, without the Brave service credentials the other one needs.
+    #[test]
+    fn bedrock_configures_a_backend_without_any_aichat_credentials() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+            _ => None,
+        })
+        .expect("bedrock alone is a working configuration");
+        let bedrock = config.bedrock.expect("bedrock configured");
+        assert_eq!(bedrock.default_model(), Some("opus-arn"));
+    }
+
+    /// Without Bedrock the aichat credentials are still required. Relaxing them for everyone would
+    /// turn a missing key into a confusing runtime failure instead of a startup error.
+    #[test]
+    fn the_aichat_credentials_are_still_required_without_bedrock() {
+        let err = Config::from_lookup(|k| match k {
+            env_var::SIGNING_KEY => None,
+            other => complete_env(other),
+        })
+        .unwrap_err();
+        assert_eq!(err, ConfigError::Missing(env_var::SIGNING_KEY));
+    }
+
+    /// A released binary has the aichat values baked in, so a Bedrock user's config carries them
+    /// whether they wanted them or not. Their presence must not switch the backend back.
+    #[test]
+    fn bedrock_wins_over_baked_in_aichat_values() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            other => complete_env(other),
+        })
+        .expect("configured");
+        assert!(config.bedrock.is_some());
+    }
+
+    /// A Bedrock block adds a roster; it does not move the budget. Both backends are offered at once,
+    /// so a session configured for Bedrock may spend every turn on a Brave model, and a budget set
+    /// from the Bedrock window would sit above the window actually in force, which does not delay
+    /// compaction but removes it. The figure is adopted when a tier is picked instead.
+    #[test]
+    fn a_bedrock_block_does_not_move_the_budget_off_the_default() {
+        let mut config = Config::from_lookup(|k| match k {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+            other => complete_env(other),
+        })
+        .expect("configured");
+        assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
+        assert!(config.adopt_window(Some(bedrock::CONTEXT_WINDOW)));
+        assert_eq!(config.context_budget, bedrock::CONTEXT_WINDOW);
+    }
+
+    /// A settings block adds to what a person may choose rather than changing what answers when they
+    /// have chosen nothing. A new user has Brave and a block must not silently take that away.
+    #[test]
+    fn a_bedrock_block_does_not_change_the_default_model() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+            other => complete_env(other),
+        })
+        .expect("configured");
+        assert_eq!(config.default_model, DEFAULT_MODEL);
+    }
+
+    /// The exception: with no Brave credentials, `automatic` names a backend that cannot be reached at
+    /// all, so the strongest configured tier is the only thing that could answer.
+    #[test]
+    fn without_brave_credentials_the_default_is_the_strongest_bedrock_tier() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_SONNET_MODEL => Some("sonnet-arn".into()),
+            _ => None,
+        })
+        .expect("configured");
+        assert!(!config.serves_aichat());
+        assert_eq!(config.default_model, "sonnet-arn");
+    }
+
+    /// A budget somebody typed outranks an advertised one: they may know which model an opaque ARN
+    /// actually resolves to.
+    #[test]
+    fn a_budget_set_by_hand_outranks_the_assumed_bedrock_window() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::CONTEXT_BUDGET => Some("4096".into()),
+            other => complete_env(other),
+        })
+        .expect("configured");
+        assert_eq!(config.context_budget, 4096);
+    }
+
+    /// A variable exported for one session is the most specific thing the person said. A file that
+    /// overrode it would make `AWS_PROFILE=other bravebot` do nothing at all.
+    #[test]
+    fn the_environment_outranks_the_settings_file() {
+        let settings = Settings::parse(r#"{"env": {"AWS_REGION": "from-the-file"}}"#);
+        let chosen = resolve(env_var::AWS_REGION, Some("from-the-env".into()), |_| None)
+            .or_else(|| settings.get(env_var::AWS_REGION).map(str::to_string));
+        assert_eq!(chosen.as_deref(), Some("from-the-env"));
+    }
+
+    /// The file is consulted when the environment is silent, which is the case it exists for: a
+    /// session started from a shell that never exported anything.
+    #[test]
+    fn the_settings_file_applies_when_the_environment_is_silent() {
+        let settings = Settings::parse(r#"{"env": {"AWS_REGION": "from-the-file"}}"#);
+        let chosen = resolve(env_var::AWS_REGION, None, |_| None)
+            .or_else(|| settings.get(env_var::AWS_REGION).map(str::to_string));
+        assert_eq!(chosen.as_deref(), Some("from-the-file"));
     }
 
     #[test]
