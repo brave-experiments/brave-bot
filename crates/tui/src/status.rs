@@ -80,6 +80,11 @@ pub struct Facts<'a> {
     pub theme: &'a str,
     pub config: &'a Config,
     pub confinement: &'a str,
+    /// Which loop decides the next step, where it is not the default.
+    ///
+    /// `None` for the ordinary turn loop, which is what a person gets by typing `bravebot` and so
+    /// is not worth a line. The opening screen follows the same rule, and for the same reason.
+    pub mode: Option<&'a str>,
     pub turns: usize,
     pub tokens: u64,
     /// Where the session's wall clock went, every turn added together.
@@ -172,6 +177,12 @@ pub fn report(facts: &Facts<'_>) -> Report {
     );
 
     lines.push(Line::new(t!(status_confinement), facts.confinement));
+
+    // Only where it is not the default. The opening screen says this too, but a session outlives
+    // the screen it opened on, and `/status` is what someone reads an hour later.
+    if let Some(mode) = facts.mode {
+        lines.push(Line::new(t!(status_mode), mode));
+    }
 
     lines.push(Line::new(
         t!(status_this_session),
@@ -370,6 +381,8 @@ mod tests {
             theme: "brave",
             config,
             confinement: "kernel-enforced",
+            // The ordinary turn loop, which says nothing about its mode.
+            mode: None,
             turns: 4,
             tokens: 12_400,
             // Nothing measured, which is what a session looks like before its first turn. Tests
@@ -378,6 +391,28 @@ mod tests {
             trust,
             programs: &NOTHING_VOUCHED,
         }
+    }
+
+    /// A session outlives the screen it opened on, so the mode has to be findable an hour later.
+    #[test]
+    fn the_report_names_a_mode_that_is_not_the_default() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let mut facts = facts(&config, &trust);
+        facts.mode = Some("skill-state");
+
+        let rendered = format!("{:?}", report(&facts));
+        assert!(rendered.contains("skill-state"), "{rendered}");
+    }
+
+    /// And says nothing where the session is in the mode everybody gets by default.
+    #[test]
+    fn the_report_is_silent_about_the_default_mode() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+
+        let rendered = format!("{:?}", report(&facts(&config, &trust)));
+        assert!(!rendered.contains("skill-state"), "{rendered}");
     }
 
     /// The one standing permission that stops announcing itself. Every other prompt in a session

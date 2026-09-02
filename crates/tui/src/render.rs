@@ -749,6 +749,7 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
         lines.extend(logo::lines(
             &session.confinement,
             &session.tier,
+            session.mode_to_announce().as_deref(),
             width,
             height,
         ));

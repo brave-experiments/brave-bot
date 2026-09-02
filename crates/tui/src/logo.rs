@@ -154,7 +154,19 @@ fn mark_row(row: &str) -> Line<'static> {
 ///
 /// Stops at the name because whatever the session has to report about starting up goes next, and
 /// [`invitation`] closes the screen underneath that.
-pub fn lines(confinement: &str, tier: &str, width: u16, available: u16) -> Vec<Line<'static>> {
+///
+/// `mode` is drawn only where the session is in one that is not the default. The ordinary turn loop
+/// is what a person gets by typing `bravebot`, and a line on every session saying so would be a
+/// line nobody reads, which is the same as no line at all on the day it matters. A session that is
+/// in a different mode says so, because how the agent decides its next step is not something to
+/// discover from its behaviour.
+pub fn lines(
+    confinement: &str,
+    tier: &str,
+    mode: Option<&str>,
+    width: u16,
+    available: u16,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for _ in 0..top_padding(width, available) {
@@ -166,7 +178,7 @@ pub fn lines(confinement: &str, tier: &str, width: u16, available: u16) -> Vec<L
         lines.push(Line::raw(""));
     }
 
-    lines.push(Line::from(vec![
+    let mut headline = vec![
         Span::raw(INDENT),
         Span::styled("bravebot", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
@@ -176,7 +188,20 @@ pub fn lines(confinement: &str, tier: &str, width: u16, available: u16) -> Vec<L
             ),
             Style::default().fg(theme::muted()),
         ),
-    ]));
+    ];
+    if let Some(mode) = mode {
+        // Emphasised rather than muted, unlike the confinement beside it. The confinement is the
+        // ordinary state of affairs reported for reassurance; a mode is a departure from the
+        // default, and the person who asked for it should be able to see at a glance that they got
+        // it, while one who did not should be able to see that something is different.
+        headline.push(Span::styled(
+            format!("  ·  {}", t!(opening_mode, mode = mode)),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    lines.push(Line::from(headline));
 
     lines
 }
@@ -200,11 +225,21 @@ mod tests {
     const WIDE: u16 = 90;
 
     fn rows(width: u16, available: u16) -> Vec<String> {
-        lines("kernel-enforced", "premium available", width, available)
-            .iter()
-            .chain(std::iter::once(&invitation()))
-            .map(|line| line.to_string())
-            .collect()
+        rows_in(None, width, available)
+    }
+
+    fn rows_in(mode: Option<&str>, width: u16, available: u16) -> Vec<String> {
+        lines(
+            "kernel-enforced",
+            "premium available",
+            mode,
+            width,
+            available,
+        )
+        .iter()
+        .chain(std::iter::once(&invitation()))
+        .map(|line| line.to_string())
+        .collect()
     }
 
     /// The mark is the point of the screen, so a short terminal loses the padding and keeps it.
@@ -263,6 +298,34 @@ mod tests {
         let all = rows(narrow, 24).join("\n");
         assert!(all.contains("confinement kernel-enforced"), "{all}");
         assert!(all.contains("premium available"), "{all}");
+    }
+
+    /// A session in a mode that is not the default says so on the screen the person is looking at
+    /// before they type anything. Which loop decides the next step is not a thing to infer from
+    /// behaviour afterwards.
+    #[test]
+    fn a_session_in_another_mode_says_so_on_the_opening_screen() {
+        let all = rows_in(Some("skill-state"), WIDE, 24).join("\n");
+        assert!(all.contains("skill-state"), "{all}");
+        // Beside the confinement rather than in place of it: both facts are about the session.
+        assert!(all.contains("confinement kernel-enforced"), "{all}");
+    }
+
+    /// The ordinary session says nothing about its mode. A line on every screen saying "turn"
+    /// would be one nobody reads, which is the same as no line at all on the day it matters.
+    #[test]
+    fn an_ordinary_session_does_not_announce_a_mode() {
+        let all = rows(WIDE, 24).join("\n");
+        assert!(!all.contains("mode"), "{all}");
+    }
+
+    /// The mode survives a pane too narrow for the mark, since it is on the name's line and the
+    /// name is what a narrow pane keeps.
+    #[test]
+    fn a_narrow_pane_still_says_which_mode_it_is_in() {
+        let narrow = (INDENT.len() + mark_width() - 1) as u16;
+        let all = rows_in(Some("skill-state"), narrow, 24).join("\n");
+        assert!(all.contains("skill-state"), "{all}");
     }
 
     /// Wrapping the word under itself reads as a rendering fault, so a pane too narrow for the
