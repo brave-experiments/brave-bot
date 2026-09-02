@@ -147,12 +147,11 @@ pub fn report(facts: &Facts<'_>) -> Report {
     lines.push(
         Line::new(t!(status_endpoint), environment(&facts.config.endpoint)).with_note(
             match (facts.config.premium_endpoint.is_some(), facts.premium) {
-                // Nothing has run yet, so nothing has been observed. Saying which tier is in use
-                // before a request has been made would be the same guess as before.
-                (true, None) => t!(status_premium_available),
                 (true, Some(true)) => t!(status_premium_in_use),
                 (true, Some(false)) => t!(status_premium_not_spent),
-                (false, _) => t!(status_free_tier),
+                // Nothing has run yet, so nothing has been observed. Saying which tier is in use
+                // before a request has been made would be the same guess as before.
+                (_, None) | (false, _) => configured_tier(facts.config),
             },
         ),
     );
@@ -217,6 +216,22 @@ pub fn report(facts: &Facts<'_>) -> Report {
     }
 
     Report { lines }
+}
+
+/// What can be said about the tier before a request has settled it.
+///
+/// The configuration and nothing else, which is why the premium wording stops short of claiming a
+/// credential will be spent: knowing that means reading the keychain, and the keychain prompts for a
+/// password on macOS. A dialog on every session opened, before anybody has typed anything, is how
+/// people are trained to approve dialogs without reading them.
+///
+/// Shared with the opening screen rather than written twice, so the line drawn at startup and the
+/// line `/status` shows an hour later cannot drift apart.
+pub fn configured_tier(config: &Config) -> &'static str {
+    match config.premium_endpoint {
+        Some(_) => t!(status_premium_available),
+        None => t!(status_free_tier),
+    }
 }
 
 /// Which deployment an endpoint names, without naming the host.
@@ -422,6 +437,30 @@ mod tests {
         premium.premium = Some(true);
         let shown = rendered(&report(&premium));
         assert!(shown.contains("a credential was spent"), "{shown}");
+    }
+
+    /// What the opening screen draws before anything has run is what `/status` says at that moment,
+    /// because both take it from here. Two copies of this wording would be two things to keep true,
+    /// and the one that drifted would be the one nobody re-reads.
+    ///
+    /// Neither reads the keychain. Naming the real tier means opening it, which prompts for a
+    /// password on macOS, and a dialog on every session opened is how people are trained to approve
+    /// dialogs unread.
+    #[test]
+    fn the_opening_line_and_the_panel_say_the_same_thing_before_a_turn_runs() {
+        let premium = config_for(
+            "https://ai-chat.bsg.brave.com",
+            Some("https://ai-chat-premium.bsg.brave.com"),
+        );
+        let trust = trusting();
+        let shown = rendered(&report(&facts(&premium, &trust)));
+        assert!(shown.contains(configured_tier(&premium)), "{shown}");
+
+        // And a build that cannot reach premium at all says so in both places.
+        let free = config_for("https://ai-chat.bsg.brave.com", None);
+        assert_eq!(configured_tier(&free), t!(status_free_tier));
+        let shown = rendered(&report(&facts(&free, &trust)));
+        assert!(shown.contains(configured_tier(&free)), "{shown}");
     }
 
     /// Before the first turn nothing has been observed, so the panel says premium is available

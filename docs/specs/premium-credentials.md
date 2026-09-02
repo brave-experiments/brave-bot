@@ -9,6 +9,7 @@ governs:
   - crates/aichat/src/lib.rs
   - crates/agent/src/subscription.rs
   - crates/tui/src/status.rs
+  - crates/tui/src/logo.rs
 ---
 
 ## Scope
@@ -136,6 +137,12 @@ only other symptom is the agent appearing to get worse for no reason.
 What `/status` says about the tier is what the last turn actually did. Before the first turn it says
 premium is available rather than claiming it is or is not in use.
 
+The opening screen draws the tier beside the confinement, from the configuration, in the same words
+`/status` uses before a turn has run. It does **not** read the keychain: naming the real tier means
+opening it, which prompts for a password, and a dialog on every session opened before anybody has
+typed anything is how people are trained to approve dialogs unread. A pane too narrow for the
+wordmark still reports both.
+
 Where the server reports using a model other than the one requested, both are shown: the choice that
 was made and the model that actually answered. Said once when it starts happening rather than every
 turn. `automatic` resolving to a concrete model is not a substitution, since that is the server
@@ -150,6 +157,9 @@ is most likely to notice first.
 
 `verified-by: bravebot_tui::status::the_tier_reported_is_the_one_the_last_turn_actually_ran_on`
 `verified-by: bravebot_tui::status::a_session_with_no_turn_yet_does_not_claim_a_tier`
+`verified-by: bravebot_tui::status::the_opening_line_and_the_panel_say_the_same_thing_before_a_turn_runs`
+`verified-by: bravebot_tui::logo::the_mark_names_the_agent_its_confinement_and_its_tier`
+`verified-by: bravebot_tui::logo::a_narrow_pane_still_reports_the_confinement_and_the_tier`
 `verified-by: bravebot_tui::status::a_substituted_model_is_reported_beside_the_one_asked_for`
 `verified-by: bravebot_tui::status::automatic_being_resolved_to_a_real_model_is_not_a_substitution`
 

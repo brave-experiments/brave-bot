@@ -746,7 +746,12 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
         .iter()
         .all(|entry| entry.speaker == Speaker::System);
     if opening {
-        lines.extend(logo::lines(&session.confinement, width, height));
+        lines.extend(logo::lines(
+            &session.confinement,
+            &session.tier,
+            width,
+            height,
+        ));
         lines.push(Line::raw(""));
     }
 

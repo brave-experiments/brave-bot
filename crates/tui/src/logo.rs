@@ -146,9 +146,16 @@ fn mark_row(row: &str) -> Line<'static> {
 /// `width` and `available` are the transcript area's. The first decides whether the mark is drawn
 /// at all and the second how far down it floats. A terminal too short for the padding gets none.
 ///
+/// `tier` says whether this build can reach the premium host, and is deliberately about the
+/// configuration rather than about the credentials: naming the real tier would mean reading the
+/// keychain, which prompts for a password on macOS, and a dialog on every session opened before
+/// anybody has typed anything is how people learn to approve dialogs without reading them. What was
+/// actually spent is settled by the first turn, which says so if it could not spend anything, and by
+/// `/status` afterwards.
+///
 /// Stops at the name because whatever the session has to report about starting up goes next, and
 /// [`invitation`] closes the screen underneath that.
-pub fn lines(confinement: &str, width: u16, available: u16) -> Vec<Line<'static>> {
+pub fn lines(confinement: &str, tier: &str, width: u16, available: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for _ in 0..top_padding(width, available) {
@@ -164,7 +171,10 @@ pub fn lines(confinement: &str, width: u16, available: u16) -> Vec<Line<'static>
         Span::raw(INDENT),
         Span::styled("bravebot", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
-            format!("  ·  {}", t!(opening_confinement, level = confinement)),
+            format!(
+                "  ·  {}  ·  {tier}",
+                t!(opening_confinement, level = confinement)
+            ),
             Style::default().fg(theme::muted()),
         ),
     ]));
@@ -191,7 +201,7 @@ mod tests {
     const WIDE: u16 = 90;
 
     fn rows(width: u16, available: u16) -> Vec<String> {
-        lines("kernel-enforced", width, available)
+        lines("kernel-enforced", "premium available", width, available)
             .iter()
             .chain(std::iter::once(&invitation()))
             .map(|line| line.to_string())
@@ -233,12 +243,27 @@ mod tests {
 
     /// The mark says nothing a screen reader or a narrow pane can use, so the name is written
     /// out too, next to the confinement the session is running under.
+    ///
+    /// The tier is beside it because a person who is paying for premium wants to know at a glance
+    /// that this session can reach it. Learning otherwise from a worse answer several turns in is
+    /// the failure this line exists to prevent.
     #[test]
-    fn the_mark_names_the_agent_and_its_confinement() {
+    fn the_mark_names_the_agent_its_confinement_and_its_tier() {
         let all = rows(WIDE, 24).join("\n");
         assert!(all.contains("bravebot"), "{all}");
         assert!(all.contains("confinement kernel-enforced"), "{all}");
+        assert!(all.contains("premium available"), "{all}");
         assert!(all.contains("Ask a question"), "{all}");
+    }
+
+    /// A pane too narrow for the mark still has to say what the session is running under, since
+    /// dropping the mark must not take the tier and the confinement with it.
+    #[test]
+    fn a_narrow_pane_still_reports_the_confinement_and_the_tier() {
+        let narrow = (INDENT.len() + mark_width() - 1) as u16;
+        let all = rows(narrow, 24).join("\n");
+        assert!(all.contains("confinement kernel-enforced"), "{all}");
+        assert!(all.contains("premium available"), "{all}");
     }
 
     /// Wrapping the word under itself reads as a rendering fault, so a pane too narrow for the

@@ -437,6 +437,13 @@ pub struct Session {
     pub laid: Laid,
     /// Confinement in force, reported so the user knows what they have.
     pub confinement: String,
+    /// What the configuration says about the tier, drawn beside the confinement on the opening
+    /// screen.
+    ///
+    /// The configuration rather than the credentials, because naming the real tier means reading the
+    /// keychain and the keychain prompts. See [`crate::status::configured_tier`]. What was actually
+    /// spent is settled by the first turn.
+    pub tier: String,
     /// How many turns have been submitted, which picks the indicator's word.
     pub turns: usize,
     /// Tokens spent across the whole session.
@@ -627,6 +634,9 @@ impl Session {
             scroller: None,
             laid: Laid::default(),
             confinement: confinement.into(),
+            // The free tier until a caller says otherwise, which is what a build with no premium
+            // host has and what a test that does not care about tiers should see.
+            tier: t!(status_free_tier).to_string(),
             turns: 0,
             tokens: 0,
             occupancy: None,
@@ -666,6 +676,12 @@ impl Session {
     /// site rather than a side effect of constructing a session.
     pub fn in_workspace(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = root.into();
+        self
+    }
+
+    /// Say what the configuration allows, for the opening screen to draw.
+    pub fn on_tier(mut self, tier: impl Into<String>) -> Self {
+        self.tier = tier.into();
         self
     }
 

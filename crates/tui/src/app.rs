@@ -1205,7 +1205,8 @@ fn event_loop(
     // The one place persistence is turned on: history in ~/.bravebot outlives the session.
     let mut session = Session::new(confinement)
         .with_stored_history()
-        .in_workspace(workspace.root());
+        .in_workspace(workspace.root())
+        .on_tier(crate::status::configured_tier(config));
 
     // The model outlived the session that chose it, so the window that came with it has to be asked
     // for again: it is reported by the listing and nowhere else, and nothing on disk remembers it.
