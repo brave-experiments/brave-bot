@@ -38,8 +38,11 @@ this stops a turn never dying.
 
 Who is watching decides the limit, so the caller sets it. The terminal passes none: a person can
 see what a turn is doing and a stop reaches it mid-round, so any number would only interrupt work
-that was going fine. A one-shot `-p` run and a manifest run pass the default 200, because an
-unwatched loop has nothing else to end it.
+that was going fine. A one-shot `-p` run, a manifest run and a one-shot bounded run pass the default
+200, because an unwatched loop has nothing else to end it.
+
+A bounded run needs the bound most, because its request does not grow: nothing else there gets
+uncomfortable as the steps mount up. See [skill-state.md](skill-state.md).
 
 The default is bounded, because a default cannot know whether anybody is watching and being wrong
 that way is the cheaper mistake. This was 40 everywhere, which interrupted real work in a large
