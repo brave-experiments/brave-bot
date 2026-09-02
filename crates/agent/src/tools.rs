@@ -390,10 +390,13 @@ pub fn available() -> Vec<Tool> {
              pipes, no redirection, no && and no $(...): a character like ; or | inside an \
              argument is part of that argument and nothing splits it. Compose stages instead of \
              reaching for a pipe. The user approves the exact arguments before anything runs, so \
-             say what you are running and why first. You will NOT be shown the output: it comes \
-             back as a reference, like a file you may not read, and you can pass that reference \
-             to spawn_processor or write it to a file with write_file. Do not run a program to \
-             read something you could read with read_file or search.",
+             say what you are running and why first. Output usually comes back as a reference \
+             rather than as text, like a file you may not read: pass it to read_output to ask the \
+             user to show it to you, hand it to spawn_processor, or write it to a file with \
+             write_file. Once the user has vouched for a command, that exact command runs without \
+             asking and its output comes back as text you can read, which is what makes running a \
+             build or a test suite worth doing repeatedly. Do use it to compile and test what you \
+             changed. Do not use it to read something read_file or search would have told you.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2778,6 +2781,33 @@ mod tests {
                 "a stage gained a '{absent}' field, which would be a command line"
             );
         }
+    }
+
+    /// Blind output is the default, not the rule, and describing it as the rule is what made
+    /// compiling look pointless: a planner told it will never see what a program printed has no
+    /// reason to run a build. Vouching is the way out and the description has to say so.
+    #[test]
+    fn run_says_a_vouched_command_comes_back_readable() {
+        let tool = available()
+            .into_iter()
+            .find(|t| t.function.name == "run")
+            .expect("run is offered");
+        let description = &tool.function.description;
+
+        assert!(
+            description.contains("vouched"),
+            "run's description does not mention vouching, so blind output reads as permanent"
+        );
+        assert!(
+            description.contains("compile and test"),
+            "run's description does not say to use it for building and testing"
+        );
+        // The old wording promised the output would never be shown, which is false for a vouched
+        // command and is the sentence a planner reasoned from.
+        assert!(
+            !description.contains("You will NOT be shown the output"),
+            "run's description still claims output is never shown"
+        );
     }
 
     /// The same ban across every tool rather than only `run`, because the tool a shell arrives in

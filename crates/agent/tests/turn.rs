@@ -5458,6 +5458,48 @@ fn a_trusted_workspace_agents_file_reaches_the_system_prompt() {
     );
 }
 
+/// A planner that never compiles what it wrote reports work it has not checked. The instruction
+/// to build and test has to reach the model on every turn, not only where a project happens to
+/// state it: a repository with no AGENTS.md is the case where nothing else will say so.
+#[test]
+fn the_planner_is_told_to_build_and_test_what_it_changed() {
+    let scratch = Scratch::new("verify-instruction");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("do the work"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        body.contains("build it and run its tests before you say you are done"),
+        "the planner was not told to verify what it changed"
+    );
+    // Where to find the command, since guessing at one is how a planner concludes there is none.
+    assert!(
+        body.contains("Makefile"),
+        "the planner was not told where to look for the command"
+    );
+    // A warning is a failure in any project that promotes them, so a build that only checks for
+    // errors reports success on a change that will not land.
+    assert!(
+        body.contains("A warning counts"),
+        "the planner was not told a warning counts"
+    );
+}
+
 /// A project without one is the ordinary case, and it must not cost a notice or a refusal.
 #[test]
 fn a_missing_agents_file_is_not_an_error() {
