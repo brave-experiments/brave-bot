@@ -514,6 +514,10 @@ fn record_manifest_run(
     let snapshot = conversation.snapshot();
     let todos = std::collections::BTreeMap::new();
     let programs = TrustedPrograms::new();
+    let tokens = outcome.as_ref().map(|o| o.tokens).unwrap_or(0);
+    // One turn, so the breakdown and the total say the same thing. Written anyway, because a
+    // reader comparing runs should not have to special-case where the figure came from.
+    let spend = std::collections::BTreeMap::from([(1, tokens)]);
     let mut handle = Handle::begin(workspace.root());
     handle.save(
         prompt,
@@ -523,7 +527,9 @@ fn record_manifest_run(
             // would make the picker offer to continue a run that cannot be continued.
             conversation: &snapshot,
             turns: 1,
-            tokens: outcome.as_ref().map(|o| o.tokens).unwrap_or(0),
+            tokens,
+            spend: &spend,
+            model: outcome.as_ref().ok().map(|o| o.model.as_str()),
             todos: &todos,
             trust: &trust,
             programs: &programs,

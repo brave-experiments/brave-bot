@@ -448,6 +448,12 @@ pub struct Session {
     pub turns: usize,
     /// Tokens spent across the whole session.
     pub tokens: u64,
+    /// What each turn cost, by turn number.
+    ///
+    /// The session total answers "what has this cost me"; this answers "where did it go", which is
+    /// the question when one turn spent most of it. A total alone cannot distinguish a session of
+    /// twenty even turns from one turn that ran away, and those want different fixes.
+    spend: std::collections::BTreeMap<usize, u64>,
     /// How large the last request was, and the budget it is compacted at.
     ///
     /// `None` until a request has been measured, which is the honest reading: nothing has been
@@ -639,6 +645,7 @@ impl Session {
             tier: t!(status_free_tier).to_string(),
             turns: 0,
             tokens: 0,
+            spend: std::collections::BTreeMap::new(),
             occupancy: None,
             served: None,
             premium: None,
@@ -780,8 +787,14 @@ impl Session {
     /// The counter answers "what has this cost me", and that answer does not become smaller
     /// because the process restarted. Set rather than added to: this is a session being picked
     /// up, not a second one being merged into it.
-    pub fn restore_spend(&mut self, tokens: u64) {
+    pub fn restore_spend(&mut self, tokens: u64, by_turn: std::collections::BTreeMap<usize, u64>) {
         self.tokens = tokens;
+        self.spend = by_turn;
+    }
+
+    /// What each turn cost, by turn number, for writing the session down.
+    pub fn spend_by_turn(&self) -> &std::collections::BTreeMap<usize, u64> {
+        &self.spend
     }
 
     /// Begin again with nothing behind you.
@@ -801,6 +814,7 @@ impl Session {
         self.transcript.clear();
         self.turns = 0;
         self.tokens = 0;
+        self.spend.clear();
         self.occupancy = None;
         self.written = 0;
         self.todos.clear();
@@ -2135,6 +2149,9 @@ impl Session {
         // Accumulated across the session: the figure answers "what has this cost me", which is
         // about the session rather than the last turn.
         self.tokens += tokens;
+        // Added to rather than set, since a turn that compacted part way through has already put
+        // that cost here under the same number.
+        *self.spend.entry(self.turns).or_insert(0) += tokens;
     }
 
     /// Record a failure. The turn is over either way, so the session returns to idle.
@@ -2222,12 +2239,19 @@ impl Session {
     }
 
     /// Leave it again, adding what it cost to the session's total.
+    ///
+    /// Charged to the turn in flight, since `/compact` is asked for in the middle of one and its
+    /// cost is part of what that turn spent. Attributing it to no turn would lose it from the
+    /// per-turn figures while still counting it in the total, so the two would not add up.
     pub fn end_aside(&mut self, tokens: u64) {
         self.status = Status::Idle;
         self.started = None;
         self.phase = None;
         self.running = None;
         self.tokens += tokens;
+        if self.turns > 0 {
+            *self.spend.entry(self.turns).or_insert(0) += tokens;
+        }
     }
 
     pub fn note(&mut self, message: impl Into<String>) {
@@ -4892,13 +4916,72 @@ mod tests {
         #[test]
         fn a_resumed_session_carries_on_counting_what_it_has_spent() {
             let mut s = session();
-            s.restore_spend(4_200);
+            s.restore_spend(4_200, std::collections::BTreeMap::from([(1, 4_200)]));
             assert_eq!(s.tokens, 4_200);
 
             s.type_char('a');
             s.submit();
             s.complete("reply", Vec::new(), 800);
             assert_eq!(s.tokens, 5_000, "the turn's cost did not add to the total");
+        }
+
+        /// A total alone cannot tell an even session from one turn that ran away, and those want
+        /// different fixes. The breakdown is what distinguishes them.
+        #[test]
+        fn each_turn_records_what_it_cost_on_its_own() {
+            let mut s = session();
+
+            s.type_char('a');
+            s.submit();
+            s.complete("first", Vec::new(), 400);
+
+            s.type_char('b');
+            s.submit();
+            s.complete("second", Vec::new(), 1_600);
+
+            assert_eq!(
+                s.spend_by_turn(),
+                &std::collections::BTreeMap::from([(1, 400), (2, 1_600)])
+            );
+            assert_eq!(s.tokens, 2_000, "the breakdown and the total disagreed");
+        }
+
+        /// `/compact` happens in the middle of a turn, so its cost belongs to that turn. Charging
+        /// it to nothing would leave the breakdown adding up to less than the total.
+        #[test]
+        fn an_aside_is_charged_to_the_turn_it_interrupted() {
+            let mut s = session();
+
+            s.type_char('a');
+            s.submit();
+            s.complete("reply", Vec::new(), 400);
+
+            s.begin_aside();
+            s.end_aside(250);
+
+            assert_eq!(
+                s.spend_by_turn(),
+                &std::collections::BTreeMap::from([(1, 650)])
+            );
+            assert_eq!(s.tokens, 650, "the breakdown and the total disagreed");
+        }
+
+        /// Clearing begins a new session, and a new session has spent nothing. A breakdown left
+        /// behind would attribute the previous session's cost to this one's turns.
+        #[test]
+        fn clearing_forgets_what_each_turn_cost() {
+            let mut s = session();
+
+            s.type_char('a');
+            s.submit();
+            s.complete("reply", Vec::new(), 400);
+
+            s.clear();
+
+            assert!(
+                s.spend_by_turn().is_empty(),
+                "the breakdown outlived the session"
+            );
         }
 
         /// A trail for a turn the conversation does not have must not land on some other turn.

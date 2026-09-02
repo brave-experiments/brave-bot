@@ -69,6 +69,27 @@ pub struct Record {
     /// than about the process that happened to be running it.
     #[serde(default)]
     pub tokens: u64,
+    /// The model the server reported answering with, as of the last turn.
+    ///
+    /// What answered rather than what was asked for, since those differ: an endpoint may serve
+    /// something other than the name it was given, and the one that did the work is the one a
+    /// reader of this file needs. The name asked for is not kept, being a setting rather than a
+    /// fact about the session.
+    ///
+    /// `None` for a record written before this was kept, or one whose turns never reached a
+    /// server.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// What each turn cost, by turn number.
+    ///
+    /// The total says what the session cost; this says which turn cost it. Reading a session back
+    /// to find out why it was expensive, a total cannot tell twenty even turns from one that ran
+    /// away, and those are different problems.
+    ///
+    /// Empty for a record written before this was kept, which needs no question: the total is
+    /// still there and only the breakdown is missing.
+    #[serde(default)]
+    pub spend: BTreeMap<usize, u64>,
     /// The task list each turn worked to, by turn number.
     ///
     /// Kept per turn rather than as one list, because that is how the transcript shows it: the
@@ -333,6 +354,10 @@ pub struct Standing<'a> {
     pub conversation: &'a Snapshot,
     pub turns: usize,
     pub tokens: u64,
+    /// What each turn cost, by turn number.
+    pub spend: &'a BTreeMap<usize, u64>,
+    /// The model the server reported answering with, or `None` before a turn reached one.
+    pub model: Option<&'a str>,
     pub todos: &'a BTreeMap<usize, Vec<Row>>,
     pub trust: &'a TrustStore,
     pub programs: &'a TrustedPrograms,
@@ -471,6 +496,8 @@ impl Handle {
             updated: now(),
             turns: standing.turns,
             tokens: standing.tokens,
+            model: standing.model.map(str::to_string),
+            spend: standing.spend.clone(),
             todos: standing
                 .todos
                 .iter()
@@ -1118,6 +1145,8 @@ mod tests {
             updated: 1,
             turns: 0,
             tokens: 0,
+            model: None,
+            spend: BTreeMap::new(),
             todos: BTreeMap::new(),
             trust: None,
             programs: Vec::new(),

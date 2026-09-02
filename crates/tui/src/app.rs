@@ -1233,7 +1233,7 @@ fn event_loop(
             // than only for the turns this process ran.
             let recalled = crate::sessions::recall(workspace.root(), &record);
             session.replay(&conversation, &record.title, &recalled);
-            session.restore_spend(record.tokens);
+            session.restore_spend(record.tokens, record.spend.clone());
             // Said after the transcript, so it reads as a caveat on what was just shown: the work
             // it describes may not be in the tree the user is now looking at.
             if let Some(note) = crate::sessions::branch_note(
@@ -1386,6 +1386,8 @@ fn event_loop(
                         conversation: &conversation.snapshot(),
                         turns: session.turns,
                         tokens: session.tokens,
+                        spend: session.spend_by_turn(),
+                        model: session.served_model(),
                         todos: &session.todos_by_turn(),
                         trust: &trust,
                         programs: &programs,
@@ -1450,6 +1452,8 @@ fn event_loop(
                             conversation: &conversation.snapshot(),
                             turns: session.turns,
                             tokens: session.tokens,
+                            spend: session.spend_by_turn(),
+                            model: session.served_model(),
                             todos: &session.todos_by_turn(),
                             trust: &trust,
                             programs: &programs,
@@ -1479,6 +1483,8 @@ fn event_loop(
                         conversation: &conversation.snapshot(),
                         turns: session.turns,
                         tokens: session.tokens,
+                        spend: session.spend_by_turn(),
+                        model: session.served_model(),
                         todos: &session.todos_by_turn(),
                         trust: &trust,
                         programs: &programs,

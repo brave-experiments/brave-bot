@@ -132,6 +132,8 @@ fn a_session_is_named_once_there_is_a_record_to_name() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 1_200,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &a_program_list(),
@@ -167,6 +169,8 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 1_200,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &a_program_list(),
@@ -239,6 +243,8 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             conversation: &conversation.snapshot(),
             turns: 2,
             tokens: 3_400,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
             // Carried forward the way a live session carries it, so the assertion below is about
@@ -269,6 +275,8 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             conversation: &Conversation::new().snapshot(),
             turns: 1,
             tokens: 0,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
             programs: &TrustedPrograms::new(),
@@ -288,6 +296,8 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             conversation: &conversation.snapshot(),
             turns: 3,
             tokens: 5_600,
+            spend: &BTreeMap::from([(1, 1_200), (2, 900), (3, 3_500)]),
+            model: Some("claude-opus-4-8"),
             todos: &a_plan(),
             trust: &a_trust_map(),
             // Carried forward the way a live session carries it, so the assertion below is about
@@ -356,10 +366,32 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     let plainer = sessions::load(&elsewhere, &sessions::list(&elsewhere)[0].id).expect("loads");
     assert!(plainer.todo_rows().is_empty());
     assert_eq!(plainer.tokens, 0);
+    // Nor is one that never wrote a model or a breakdown: the total is still readable, and only
+    // the attribution is missing.
+    assert_eq!(plainer.model, None);
+    assert!(plainer.spend.is_empty());
 
     // What the session has spent comes back with it. The figure answers "what has this cost me",
     // and starting it again at zero understated a session by everything it had already spent.
     assert_eq!(record.tokens, 5_600, "the last save's total was not kept");
+
+    // Which turn spent it comes back too. A total alone cannot tell an even session from one turn
+    // that ran away, and reading a session back to find out why it was expensive, that is the
+    // question.
+    assert_eq!(
+        record.spend,
+        BTreeMap::from([(1, 1_200), (2, 900), (3, 3_500)]),
+        "the per-turn breakdown was not kept"
+    );
+    assert_eq!(
+        record.spend.values().sum::<u64>(),
+        record.tokens,
+        "the breakdown and the total disagreed"
+    );
+
+    // And which model answered. Without it a record read months later cannot say what produced
+    // it, so two sessions cannot be compared against each other.
+    assert_eq!(record.model.as_deref(), Some("claude-opus-4-8"));
 
     // A record from a newer build, or one truncated by a full disk, costs its own line in the
     // list and nothing more: it is not a reason to be unable to show the rest.
@@ -397,6 +429,8 @@ fn the_audit_keeps_the_time_each_event_happened() {
             conversation: &a_conversation().snapshot(),
             turns: 1,
             tokens: 0,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
@@ -456,6 +490,8 @@ fn renaming_a_session_rewrites_the_record_immediately() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 1_200,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
@@ -497,6 +533,8 @@ fn a_chosen_name_survives_the_next_turn() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 10,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
             programs: &TrustedPrograms::new(),
@@ -564,6 +602,8 @@ fn a_resumed_session_can_still_open_the_directory_it_added() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 10,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &BTreeMap::new(),
             trust: &trust,
             programs: &TrustedPrograms::new(),
@@ -626,6 +666,8 @@ fn a_directory_that_has_gone_since_is_reported_on_resume() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 10,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
             programs: &TrustedPrograms::new(),
@@ -674,6 +716,8 @@ fn a_manifest_run_is_recorded_and_cannot_be_resumed() {
             conversation: &conversation.snapshot(),
             turns: 1,
             tokens: 0,
+            spend: &BTreeMap::new(),
+            model: None,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
             programs: &TrustedPrograms::new(),

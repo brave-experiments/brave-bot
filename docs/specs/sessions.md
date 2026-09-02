@@ -4,6 +4,7 @@ title: Sessions and history
 status: normative
 governs:
   - crates/tui/src/sessions.rs
+  - crates/tui/src/state.rs
   - crates/tui/src/history.rs
   - crates/tui/src/store.rs
   - crates/cli/src/main.rs
@@ -173,6 +174,29 @@ what it produced, and still does not continue it.
 `verified-by: bravebot_tui::sessions::a_manifest_run_is_recorded_and_cannot_be_resumed`
 `verified-by: bravebot_tui::resume::a_manifest_session_cannot_be_resumed`
 `verified-by: bravebot_tui::resume::a_manifest_run_is_marked_in_the_list`
+
+<a id="SESSION-11"></a>
+### SESSION-11: the record says what answered, and what each turn cost
+
+The model the server reported answering with is written down, along with what each turn spent as
+well as the total. The breakdown adds up to the total, and a turn that compacted part way through
+is charged for that too, since it was asked for in the middle of that turn's work.
+
+The name recorded is the one that answered, not the one asked for: an endpoint may serve something
+other than the name it was given, and the record is an account of what happened. A record written
+before either was kept reads as no model and an empty breakdown, which is not the same as a
+session that cost nothing: the total is still there.
+
+**Why.** A transcript is read after the fact to find out why a session went the way it did, and
+both questions are unanswerable from a total alone. Twenty even turns and one turn that ran away
+come to the same figure and want different fixes. Two sessions cannot be compared at all without
+knowing which model produced each, and a global setting read afterwards is today's answer rather
+than the one in force at the time.
+
+`verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
+`verified-by: bravebot_tui::state::each_turn_records_what_it_cost_on_its_own`
+`verified-by: bravebot_tui::state::an_aside_is_charged_to_the_turn_it_interrupted`
+`verified-by: bravebot_tui::state::clearing_forgets_what_each_turn_cost`
 
 ## Known costs
 
