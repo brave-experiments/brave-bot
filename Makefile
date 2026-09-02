@@ -21,6 +21,7 @@ help:
 	@echo "  make locales        What each translation has, and what it is missing"
 	@echo "  make check-linux    The same checks on Linux, current stable toolchain"
 	@echo "  make fmt            Apply formatting"
+	@echo "  make aws-logout     End the AWS SSO session Bedrock turns sign in with"
 	@echo
 	@echo "Reproducible cross-builds (requires Docker):"
 	@echo "  make all-platforms  Every target below"
@@ -62,6 +63,25 @@ test:
 .PHONY: fmt
 fmt:
 	cargo fmt --all
+
+# The counterpart to the sign-in a Bedrock turn does for itself. Reaching for the same profile the
+# agent would, environment first and ~/.bravebot/settings.json underneath it, so a logout ends the
+# session the next turn would have used rather than whichever one the shell happens to name.
+.PHONY: aws-logout
+aws-logout:
+	@set -eu; \
+	settings="$$HOME/.bravebot/settings.json"; \
+	profile="$${AWS_PROFILE:-}"; \
+	if [ -z "$$profile" ] && [ -f "$$settings" ]; then \
+		profile="$$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("env", {}).get("AWS_PROFILE", ""))' "$$settings" 2>/dev/null || true)"; \
+	fi; \
+	if [ -n "$$profile" ]; then \
+		echo "signing out of $$profile"; \
+		aws sso logout --profile "$$profile"; \
+	else \
+		echo "signing out of the default profile"; \
+		aws sso logout; \
+	fi
 
 # Everything CI enforces, runnable locally before pushing.
 .PHONY: check
