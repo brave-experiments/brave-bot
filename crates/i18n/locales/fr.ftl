@@ -288,8 +288,12 @@ status-model-chosen = choisi avec /model
 status-model-default = la valeur par défaut configurée
 status-theme = Thème
 status-theme-chosen = choisi avec /theme
+status-served = Répondu par
+status-served-instead = servi à la place du modèle demandé
 status-endpoint = Adresse
-status-premium-configured = premium configuré
+status-premium-available = premium disponible, rien encore envoyé
+status-premium-in-use = premium, un jeton a été dépensé
+status-premium-not-spent = offre gratuite : aucun abonnement utilisé
 status-free-tier = offre gratuite seulement
 status-confinement = Confinement
 status-this-session = Cette session
@@ -442,6 +446,9 @@ session-vouched-for = { $path } approuvé pour cette session
 session-answered-already = déjà répondu : { $question }
 session-something-was-refused =
     un contrôle de la politique a refusé quelque chose pendant ce tour
+session-model-substituted =
+    { $asked } n'a pas été servi : l'adresse a répondu avec { $served }. Lancez
+    `bravebot doctor` si un abonnement était attendu.
 session-error = erreur : { $problem }
 session-no-output = aucune sortie
 

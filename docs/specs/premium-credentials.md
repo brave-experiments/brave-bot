@@ -8,6 +8,7 @@ governs:
   - crates/skus/src/store.rs
   - crates/aichat/src/lib.rs
   - crates/agent/src/subscription.rs
+  - crates/tui/src/status.rs
 ---
 
 ## Scope
@@ -128,6 +129,29 @@ only other symptom is the agent appearing to get worse for no reason.
 
 `verified-by: bravebot_agent::subscription::an_unreadable_batch_is_reported_and_an_absent_one_is_not`
 `verified-by: bravebot_agent::subscription::an_endpoint_in_no_environment_is_not_a_complaint`
+
+<a id="PREM-9"></a>
+### PREM-9: the tier reported is the one the last turn ran on, not the one the build was compiled with
+
+What `/status` says about the tier is what the last turn actually did. Before the first turn it says
+premium is available rather than claiming it is or is not in use.
+
+Where the server reports using a model other than the one requested, both are shown: the choice that
+was made and the model that actually answered. Said once when it starts happening rather than every
+turn. `automatic` resolving to a concrete model is not a substitution, since that is the server
+choosing per request, which is what `automatic` means.
+
+**Why.** Every build that knows a premium host would otherwise report itself as premium, which is a
+fact about compilation and not about any request. A session reported "premium configured" while ten
+consecutive requests went out on the free tier and were answered by a model a third the size, which
+then announced tool calls it never emitted and stalled the turn. A panel that cannot be trusted on
+this point is worse than one that omits it, and the substituted model is the half of PREM-8 a person
+is most likely to notice first.
+
+`verified-by: bravebot_tui::status::the_tier_reported_is_the_one_the_last_turn_actually_ran_on`
+`verified-by: bravebot_tui::status::a_session_with_no_turn_yet_does_not_claim_a_tier`
+`verified-by: bravebot_tui::status::a_substituted_model_is_reported_beside_the_one_asked_for`
+`verified-by: bravebot_tui::status::automatic_being_resolved_to_a_real_model_is_not_a_substitution`
 
 ## Requirements and limits
 

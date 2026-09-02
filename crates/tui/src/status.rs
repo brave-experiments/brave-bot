@@ -66,6 +66,17 @@ pub struct Facts<'a> {
     pub directory: &'a Path,
     pub added_directories: &'a [std::path::PathBuf],
     pub model: Option<&'a str>,
+    /// What the server reported using on the last turn, or `None` before one has run.
+    ///
+    /// Observed rather than configured, which is the whole point: the endpoint answers a model name
+    /// it will not serve by substituting a weaker one, so what was asked for does not establish what
+    /// answered.
+    pub served_model: Option<&'a str>,
+    /// Whether the last turn actually spent a subscription credential.
+    ///
+    /// `None` before any turn has run. Three states rather than a bool because "not yet known" is
+    /// not the same as "no", and reporting a guess as an observation is the bug this replaced.
+    pub premium: Option<bool>,
     pub theme: &'a str,
     pub config: &'a Config,
     pub confinement: &'a str,
@@ -111,17 +122,39 @@ pub fn report(facts: &Facts<'_>) -> Report {
             .with_note(t!(status_model_default)),
     });
 
+    // What actually answered, where that is not what was asked for. The endpoint substitutes a
+    // model it will not serve rather than refusing, so the line above can name Opus for a whole
+    // session that was answered by something else every turn. Reported beside it, since the two
+    // together are the fact and either alone is misleading.
+    if let Some(served) = facts.served_model.filter(|served| {
+        let asked = facts.model.unwrap_or(&facts.config.default_model);
+        // `automatic` is the server's choice by definition, so a concrete name coming back is the
+        // feature working rather than a substitution worth flagging.
+        asked != *served && asked != bravebot_config::DEFAULT_MODEL
+    }) {
+        lines.push(Line::new(t!(status_served), served).with_note(t!(status_served_instead)));
+    }
+
     lines.push(Line::new(t!(status_theme), facts.theme).with_note(t!(status_theme_chosen)));
 
     // The environment rather than the host. See the note at the top of this file.
+    //
+    // The note says which tier the last turn actually ran on, not whether this build knows a premium
+    // host. It used to say the latter, which is baked in at compile time and true of every build:
+    // a session whose subscription was never read still reported "premium configured" while every
+    // request went out on the free tier and came back answered by a weaker model. What a person
+    // wants from this line is which tier they are getting, and that is a fact about a request.
     lines.push(
-        Line::new(t!(status_endpoint), environment(&facts.config.endpoint)).with_note(match facts
-            .config
-            .premium_endpoint
-        {
-            Some(_) => t!(status_premium_configured),
-            None => t!(status_free_tier),
-        }),
+        Line::new(t!(status_endpoint), environment(&facts.config.endpoint)).with_note(
+            match (facts.config.premium_endpoint.is_some(), facts.premium) {
+                // Nothing has run yet, so nothing has been observed. Saying which tier is in use
+                // before a request has been made would be the same guess as before.
+                (true, None) => t!(status_premium_available),
+                (true, Some(true)) => t!(status_premium_in_use),
+                (true, Some(false)) => t!(status_premium_not_spent),
+                (false, _) => t!(status_free_tier),
+            },
+        ),
     );
 
     lines.push(Line::new(t!(status_confinement), facts.confinement));
@@ -265,6 +298,10 @@ mod tests {
             directory: Path::new("/tmp/project"),
             added_directories: &[],
             model: None,
+            // Nothing observed, which is what a session looks like before its first turn. Tests
+            // about the tier and the served model set these themselves.
+            served_model: None,
+            premium: None,
             theme: "brave",
             config,
             confinement: "kernel-enforced",
@@ -356,6 +393,88 @@ mod tests {
         let shown = rendered(&report(&facts(&config, &declined)));
         assert!(shown.contains("not trusted"), "{shown}");
         assert!(shown.contains("every write is shown"), "{shown}");
+    }
+
+    /// The bug this replaced. Every build knows a premium host, so reporting premium from the
+    /// configuration said "premium" for a session whose credentials were never read, while every
+    /// request went out on the free tier and came back answered by a weaker model. A status panel
+    /// that cannot be trusted on this point is worse than one that omits it.
+    #[test]
+    fn the_tier_reported_is_the_one_the_last_turn_actually_ran_on() {
+        let config = config_for(
+            "https://ai-chat.bsg.brave.com",
+            Some("https://ai-chat-premium.bsg.brave.com"),
+        );
+        let trust = trusting();
+
+        // A premium host is configured and a turn ran without spending anything. The old line said
+        // "premium configured" here, which is the sentence that hid a whole broken session.
+        let mut free = facts(&config, &trust);
+        free.premium = Some(false);
+        let shown = rendered(&report(&free));
+        assert!(shown.contains("no subscription was used"), "{shown}");
+        assert!(
+            !shown.contains("premium, a credential"),
+            "a free-tier turn was reported as premium: {shown}"
+        );
+
+        let mut premium = facts(&config, &trust);
+        premium.premium = Some(true);
+        let shown = rendered(&report(&premium));
+        assert!(shown.contains("a credential was spent"), "{shown}");
+    }
+
+    /// Before the first turn nothing has been observed, so the panel says premium is available
+    /// rather than claiming it is or is not in use. Claiming either would be the same guess the
+    /// configuration line used to make.
+    #[test]
+    fn a_session_with_no_turn_yet_does_not_claim_a_tier() {
+        let config = config_for(
+            "https://ai-chat.bsg.brave.com",
+            Some("https://ai-chat-premium.bsg.brave.com"),
+        );
+        let trust = trusting();
+        let shown = rendered(&report(&facts(&config, &trust)));
+        assert!(shown.contains("nothing sent yet"), "{shown}");
+    }
+
+    /// The endpoint answers a model name it will not serve by substituting a weaker one, with a 200
+    /// and an ordinary reply. So a panel that reports only what was asked for names a model that
+    /// never answered anything.
+    #[test]
+    fn a_substituted_model_is_reported_beside_the_one_asked_for() {
+        let config = config_for("https://ai-chat.bsg.brave.com", None);
+        let trust = trusting();
+
+        let mut substituted = facts(&config, &trust);
+        substituted.model = Some("claude-opus");
+        substituted.served_model = Some("qwen-14b-instruct");
+        let shown = rendered(&report(&substituted));
+        // Both halves: what was chosen, and what actually answered.
+        assert!(shown.contains("claude-opus"), "{shown}");
+        assert!(shown.contains("qwen-14b-instruct"), "{shown}");
+        assert!(shown.contains("served instead"), "{shown}");
+
+        // Served what was asked for: nothing to report, or the line would be on every session.
+        let mut honoured = facts(&config, &trust);
+        honoured.model = Some("claude-opus");
+        honoured.served_model = Some("claude-opus");
+        let shown = rendered(&report(&honoured));
+        assert!(!shown.contains("served instead"), "{shown}");
+    }
+
+    /// `automatic` is the server choosing per request, so a concrete name coming back is the feature
+    /// working rather than a substitution. Flagging it would put a warning on the default config.
+    #[test]
+    fn automatic_being_resolved_to_a_real_model_is_not_a_substitution() {
+        let config = config_for("https://ai-chat.bsg.brave.com", None);
+        let trust = trusting();
+        let mut automatic = facts(&config, &trust);
+        automatic.model = None;
+        automatic.served_model = Some("claude-3-haiku");
+
+        let shown = rendered(&report(&automatic));
+        assert!(!shown.contains("served instead"), "{shown}");
     }
 
     /// A chosen model and the configured default are different facts, and reporting one as the other

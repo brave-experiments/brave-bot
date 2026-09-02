@@ -449,6 +449,23 @@ pub struct Session {
     /// Not the same figure as [`Session::tokens`], which adds every round of every turn together
     /// and so says what the session has cost. This says how full the context is now.
     occupancy: Option<(u64, u64)>,
+    /// What the last turn actually asked for, and what the server answered with.
+    ///
+    /// `None` until a turn has run, which is the honest reading: whether premium is in use is not a
+    /// fact about the configuration, it is a fact about a request, and before the first one there is
+    /// nothing to report. Reporting the build's premium host instead said "premium configured" for a
+    /// whole session that never spent a credential.
+    ///
+    /// Both halves, because the interesting case is when they differ: the endpoint answers a model
+    /// name it will not serve by substituting a weaker one rather than by failing, so a session can
+    /// ask for Opus all day and be answered by something else with nothing said.
+    served: Option<(Option<String>, String)>,
+    /// Whether the last turn actually spent a subscription credential.
+    ///
+    /// `None` until a turn has run. Observed rather than derived from the configuration, which is
+    /// the same reasoning as [`Session::served`]: whether premium is in use is a fact about a
+    /// request, and every build knows a premium host whether or not one is ever reached.
+    premium: Option<bool>,
     /// Prompts already sent, for recall with the arrow keys.
     pub history: crate::history::History,
     /// What the mouse is sweeping over, or what it last swept over.
@@ -613,6 +630,8 @@ impl Session {
             turns: 0,
             tokens: 0,
             occupancy: None,
+            served: None,
+            premium: None,
             history: crate::history::History::new(),
             selection: None,
             copied: None,
@@ -2129,6 +2148,34 @@ impl Session {
     /// Record how full the context is, against the budget it is compacted at.
     pub fn measured(&mut self, used: u64, budget: u64) {
         self.occupancy = Some((used, budget));
+    }
+
+    /// Record what the last turn asked for, what the server answered with, and which tier it ran on.
+    pub fn served(&mut self, requested: Option<String>, served: impl Into<String>, premium: bool) {
+        self.served = Some((requested, served.into()));
+        self.premium = Some(premium);
+    }
+
+    /// Whether the last turn spent a subscription credential, or `None` before one has run.
+    pub fn premium(&self) -> Option<bool> {
+        self.premium
+    }
+
+    /// The model the server last reported using, or `None` before any turn has run.
+    pub fn served_model(&self) -> Option<&str> {
+        self.served.as_ref().map(|(_, served)| served.as_str())
+    }
+
+    /// The model the last turn asked for, where it named one and the server answered with something
+    /// else.
+    ///
+    /// `None` where they agree, so a caller has nothing to report on the ordinary path. Compared
+    /// exactly: both names come from the endpoint's own roster, so any difference between them is a
+    /// real one rather than a spelling.
+    pub fn substituted_model(&self) -> Option<&str> {
+        let (requested, served) = self.served.as_ref()?;
+        let requested = requested.as_deref()?;
+        (requested != served).then_some(requested)
     }
 
     /// How full the context is, as a percentage, or `None` where nothing has been measured.

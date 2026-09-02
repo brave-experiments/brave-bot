@@ -1358,6 +1358,8 @@ fn event_loop(
                     directory: workspace.root(),
                     added_directories: workspace.added_directories(),
                     model: session.model(),
+                    served_model: session.served_model(),
+                    premium: session.premium(),
                     theme: &theme,
                     config,
                     confinement: &session.confinement,
@@ -2298,6 +2300,28 @@ fn fold_outcome(
             // the same figure as the cost above: that adds every round together, this says how
             // full the context is now.
             session.measured(outcome.context_tokens, budget);
+
+            // What was asked for against what answered. The endpoint substitutes rather than
+            // refusing: a premium model requested without a credential comes back as whatever the
+            // free tier serves, with a 200 and a perfectly ordinary reply. So the only trace is
+            // this field, and a session that never compares them cannot tell a model it chose from
+            // one chosen for it.
+            //
+            // Said only when they differ, and only when the difference is new, since it would
+            // otherwise be a line on every turn for the rest of the session.
+            let already = session.substituted_model().is_some();
+            session.served(
+                session.model().map(str::to_string),
+                outcome.model.clone(),
+                outcome.premium,
+            );
+            if !already && let Some(asked) = session.substituted_model() {
+                session.note(t!(
+                    session_model_substituted,
+                    asked = asked,
+                    served = &outcome.model
+                ));
+            }
             // Carries forward any rule the turn recorded, so a path that received untrusted
             // data cannot be read back as trusted by the next turn, and any program the user
             // vouched for during it, so they are not asked about it again.

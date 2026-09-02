@@ -266,8 +266,13 @@ status-model-chosen = chosen with /model
 status-model-default = the configured default
 status-theme = Theme
 status-theme-chosen = chosen with /theme
+status-served = Answered by
+status-served-instead = served instead of the model asked for
 status-endpoint = Endpoint
-status-premium-configured = premium configured
+# Which tier the last turn actually ran on, not what this build was compiled knowing about.
+status-premium-available = premium available, nothing sent yet
+status-premium-in-use = premium, a credential was spent
+status-premium-not-spent = free tier: no subscription was used
 status-free-tier = free tier only
 status-confinement = Confinement
 status-this-session = This session
@@ -419,6 +424,11 @@ session-not-trusting = this directory is not trusted; every write will be shown 
 session-vouched-for = trusting { $path } for this session
 session-answered-already = answered already: { $question }
 session-something-was-refused = a policy gate refused something during that turn
+# The endpoint substitutes a model it will not serve rather than refusing, so without this a
+# session can ask for one model and be answered by another with nothing said.
+session-model-substituted =
+    { $asked } was not served: the endpoint answered with { $served }. Run `bravebot doctor` if a
+    subscription was expected.
 session-error = error: { $problem }
 session-no-output = no output
 
