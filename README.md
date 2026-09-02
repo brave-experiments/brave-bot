@@ -42,6 +42,8 @@ nothing is used for training. Local settings are stored in `~/.bravebot` on your
 [docs/development.md](docs/development.md) for cross-builds, configuration, and the conventions
 here.
 
+For the `.envrc` configuration, message bbondy.
+
 ## Credit
 
 [docs/credit.md](docs/credit.md).
