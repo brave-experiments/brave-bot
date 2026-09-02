@@ -127,6 +127,20 @@ impl<'a> Backend<'a> {
             .map_err(|failure| BedrockError::Credentials(failure).into())
     }
 
+    /// Whether the name a request carries and the name its reply reports are from the same roster.
+    ///
+    /// True for the aichat endpoint, which lists concrete models and answers with one of them, so a
+    /// difference is a substitution worth telling somebody about. False for Bedrock, where a request
+    /// may name an inference-profile ARN: that is a handle standing for whatever the profile resolves
+    /// to today, and the reply naming the model behind it is the indirection working. Compared anyway,
+    /// it would report a substitution on every single turn.
+    pub fn reports_the_model_it_was_asked_for(config: &Config, model: &str) -> bool {
+        !config
+            .bedrock
+            .as_ref()
+            .is_some_and(|bedrock| bedrock.offers(model))
+    }
+
     /// Whether [`Backend::sign_in_if_needed`] would do anything, without doing it.
     ///
     /// For an interface deciding whether to say something first. Asking separately rather than
@@ -317,6 +331,28 @@ mod tests {
         let config = Config::from_lookup(aichat_only).expect("configured");
         assert!(Backend::sign_in_if_needed(&config, "automatic").is_ok());
         assert!(Backend::sign_in_if_needed(&both_backends(), "claude-3-sonnet").is_ok());
+    }
+
+    /// The aichat endpoint lists concrete models and answers with one of them, so a name that comes
+    /// back different is a substitution somebody should be told about.
+    #[test]
+    fn a_brave_model_is_expected_to_be_the_one_reported() {
+        let config = Config::from_lookup(aichat_only).expect("configured");
+        assert!(Backend::reports_the_model_it_was_asked_for(
+            &config,
+            "claude-3-sonnet"
+        ));
+    }
+
+    /// An inference-profile ARN is a handle standing for whatever it resolves to, so the reply naming
+    /// a different model is that working rather than a substitution. Compared anyway, every turn on
+    /// Bedrock reported one.
+    #[test]
+    fn a_bedrock_arn_is_not_expected_to_be_the_name_that_comes_back() {
+        assert!(!Backend::reports_the_model_it_was_asked_for(
+            &both_backends(),
+            "opus-arn"
+        ));
     }
 
     /// The model decides, not the block. A Bedrock block adds a roster rather than diverting the

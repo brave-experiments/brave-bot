@@ -473,6 +473,12 @@ pub struct Session {
     /// name it will not serve by substituting a weaker one rather than by failing, so a session can
     /// ask for Opus all day and be answered by something else with nothing said.
     served: Option<(Option<String>, String)>,
+    /// Whether the two halves of [`Session::served`] are names from one roster.
+    ///
+    /// False where the request named an opaque handle standing for a model rather than a model, since
+    /// the reply then names something different every time and nothing is wrong. Recorded by the
+    /// caller, which knows which backend answered, rather than inferred from how a name is spelled.
+    served_names_are_comparable: bool,
     /// Whether the last turn actually spent a subscription credential.
     ///
     /// `None` until a turn has run. Observed rather than derived from the configuration, which is
@@ -648,6 +654,8 @@ impl Session {
             spend: std::collections::BTreeMap::new(),
             occupancy: None,
             served: None,
+            // Nothing has been served, so nothing has been compared. Set by the first turn.
+            served_names_are_comparable: true,
             premium: None,
             history: crate::history::History::new(),
             selection: None,
@@ -2184,9 +2192,19 @@ impl Session {
     }
 
     /// Record what the last turn asked for, what the server answered with, and which tier it ran on.
-    pub fn served(&mut self, requested: Option<String>, served: impl Into<String>, premium: bool) {
+    ///
+    /// `comparable` says whether the two names are drawn from one roster, and so whether a difference
+    /// between them means anything. The caller knows which backend answered; this cannot tell.
+    pub fn served(
+        &mut self,
+        requested: Option<String>,
+        served: impl Into<String>,
+        premium: bool,
+        comparable: bool,
+    ) {
         self.served = Some((requested, served.into()));
         self.premium = Some(premium);
+        self.served_names_are_comparable = comparable;
     }
 
     /// Whether the last turn spent a subscription credential, or `None` before one has run.
@@ -2203,11 +2221,19 @@ impl Session {
     /// else.
     ///
     /// `None` where they agree, so a caller has nothing to report on the ordinary path. Compared
-    /// exactly: both names come from the endpoint's own roster, so any difference between them is a
-    /// real one rather than a spelling.
+    /// exactly, which works because both names come from the same roster: what was asked for is a
+    /// name off a list the endpoint gave, and what answered is a name from the same list.
+    ///
+    /// Also `None` where the two were never comparable. A request may name an opaque handle instead
+    /// of a model, and a handle standing for a different name is the indirection working rather than a
+    /// substitution, so comparing them would put a warning on every turn. Whether they are comparable
+    /// is recorded by whoever knew which backend answered, rather than guessed at from the spelling.
     pub fn substituted_model(&self) -> Option<&str> {
         let (requested, served) = self.served.as_ref()?;
         let requested = requested.as_deref()?;
+        if !self.served_names_are_comparable {
+            return None;
+        }
         (requested != served).then_some(requested)
     }
 
@@ -2606,6 +2632,43 @@ fn along(line: &str, column: usize) -> usize {
 mod tests {
     use super::*;
     use bravebot_core::ask::Answer;
+
+    /// The endpoint substitutes rather than refusing, so a session that asked for one model and was
+    /// answered by another has to be told: nothing else in the reply says so.
+    #[test]
+    fn a_model_answered_by_a_different_one_is_reported_as_substituted() {
+        let mut session = Session::new("none");
+        session.choose_model("claude-opus".to_string());
+        session.served(Some("claude-opus".to_string()), "qwen-14b", false, true);
+        assert_eq!(session.substituted_model(), Some("claude-opus"));
+    }
+
+    /// A request may name a handle standing for a model rather than a model, and then the reply names
+    /// something different every single time. Reported, that is a warning on every turn about nothing
+    /// being wrong, which is how a real substitution stops being noticeable.
+    #[test]
+    fn a_request_whose_name_was_never_comparable_reports_no_substitution() {
+        let mut session = Session::new("none");
+        session.choose_model(
+            "arn:aws:bedrock:us-west-2:1:application-inference-profile/x".to_string(),
+        );
+        session.served(
+            Some("arn:aws:bedrock:us-west-2:1:application-inference-profile/x".to_string()),
+            "claude-sonnet-5",
+            false,
+            false,
+        );
+        assert_eq!(session.substituted_model(), None);
+    }
+
+    /// The ordinary path: asked for and answered by the same model, so there is nothing to say.
+    #[test]
+    fn a_model_answered_by_itself_is_not_a_substitution() {
+        let mut session = Session::new("none");
+        session.choose_model("claude-opus".to_string());
+        session.served(Some("claude-opus".to_string()), "claude-opus", false, true);
+        assert_eq!(session.substituted_model(), None);
+    }
 
     /// A needle is a run of characters, and finding it is finding those characters. Anything
     /// cleverer is a pattern language, and a pattern language here would be an interpreter

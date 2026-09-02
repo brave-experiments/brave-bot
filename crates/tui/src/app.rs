@@ -2348,6 +2348,12 @@ fn run_turn_animated(
         return Ok((conversation, fallback, fallback_programs, events));
     }
 
+    // Whether a difference between the model asked for and the one reported means anything is the
+    // backend's question. Answered here, where the configuration is in hand.
+    let comparable = bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(
+        config,
+        session.model().unwrap_or(&config.default_model),
+    );
     let (trust, programs) = fold_outcome(
         session,
         outcome,
@@ -2355,6 +2361,7 @@ fn run_turn_animated(
         fallback,
         fallback_programs,
         config.context_budget,
+        comparable,
     );
     Ok((conversation, trust, programs, events))
 }
@@ -2423,6 +2430,7 @@ fn fold_outcome(
     fallback: TrustStore,
     fallback_programs: TrustedPrograms,
     budget: u64,
+    comparable: bool,
 ) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
@@ -2453,6 +2461,7 @@ fn fold_outcome(
                 session.model().map(str::to_string),
                 outcome.model.clone(),
                 outcome.premium,
+                comparable,
             );
             if !already && let Some(asked) = session.substituted_model() {
                 session.note(t!(
