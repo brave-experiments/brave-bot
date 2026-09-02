@@ -7,6 +7,7 @@ governs:
   - crates/skus/src/profile.rs
   - crates/skus/src/store.rs
   - crates/aichat/src/lib.rs
+  - crates/agent/src/subscription.rs
 ---
 
 ## Scope
@@ -109,6 +110,24 @@ credentials, and a credential without a token is rejected on load.
 `verified-by: bravebot_skus::store::a_credential_without_a_token_is_rejected_on_load`
 `verified-by: bravebot_skus::store::an_entry_missing_its_order_is_reported_as_malformed`
 `verified-by: bravebot_skus::store::a_batch_survives_a_round_trip_through_the_stored_form`
+
+<a id="PREM-8"></a>
+### PREM-8: a stored subscription that cannot be read is reported rather than skipped
+
+Coming back empty has two causes and they are not the same fact. Nothing imported is the free tier
+working as intended and is said nothing about. A batch that **exists and could not be read**, because
+the keychain refused or another version wrote the entry, is reported to the person, naming the channel
+and the reason. An endpoint belonging to no environment, such as a local one, is the first case and
+not the second: no credential belongs near it by design.
+
+**Why.** The request then goes out on the free tier, where the endpoint answers a premium model name
+by **substituting** a weaker model rather than by failing, with a 200 and an ordinary reply. So a
+request that silently lost its credential still returns something that reads like an answer, and
+nothing on screen connects that to the keychain. The downgrade has to be said out loud, because its
+only other symptom is the agent appearing to get worse for no reason.
+
+`verified-by: bravebot_agent::subscription::an_unreadable_batch_is_reported_and_an_absent_one_is_not`
+`verified-by: bravebot_agent::subscription::an_endpoint_in_no_environment_is_not_a_complaint`
 
 ## Requirements and limits
 

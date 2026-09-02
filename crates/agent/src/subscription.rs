@@ -11,6 +11,49 @@
 use bravebot_aichat::{Subscription, SubscriptionCredential};
 use bravebot_skus::{Channel, DeviceError, Registration, StoreError};
 
+/// What looking for an imported subscription found.
+///
+/// Three answers rather than an `Option`, because the two ways of coming back empty want different
+/// treatment. Nothing imported is the free tier working as intended and deserves no words. A batch
+/// that exists and could not be read is a paid subscription not being spent, and the only symptom is
+/// a worse model, which nobody would think to attribute to the keychain.
+///
+/// No `Debug`, deliberately. One variant holds a wallet of live credentials, and the obvious
+/// debugging reflex of printing this would put them in a log. The same reasoning as
+/// [`bravebot_aichat::SubscriptionCredential`], which redacts for it.
+pub enum Discovery {
+    /// A batch is in hand and will be spent on this turn's requests.
+    Found(ImportedSubscription),
+    /// Nothing has been imported for this endpoint's environment. The ordinary free-tier case.
+    NothingImported,
+    /// Something is stored and could not be used, with a sentence naming which channel and why.
+    ///
+    /// Carries words rather than the error so a caller can report it without depending on
+    /// `bravebot_skus`, and because what a person needs here is the sentence, not the variant.
+    Refused(String),
+}
+
+impl Discovery {
+    /// The subscription, where one was found.
+    pub fn found(self) -> Option<ImportedSubscription> {
+        match self {
+            Self::Found(subscription) => Some(subscription),
+            _ => None,
+        }
+    }
+
+    /// What to tell the person watching, where there is anything worth saying.
+    ///
+    /// `None` for both of the cases that are working as intended: a subscription being spent needs
+    /// no explanation, and neither does a free-tier session that never had one.
+    pub fn complaint(&self) -> Option<&str> {
+        match self {
+            Self::Refused(detail) => Some(detail),
+            Self::Found(_) | Self::NothingImported => None,
+        }
+    }
+}
+
 /// How a new batch is obtained, as a function so a test can supply one without a network.
 type Register = fn(bravebot_skus::Environment, &str, &str) -> Result<Registration, DeviceError>;
 
@@ -33,18 +76,6 @@ pub struct ImportedSubscription {
 }
 
 impl ImportedSubscription {
-    /// Open `channel`'s imported batch, prompting for the keychain at most once.
-    pub fn new(channel: Channel) -> Option<Self> {
-        Some(Self {
-            wallet: bravebot_skus::store::Wallet::open(channel).ok()?,
-            now: current_timestamp,
-            remaining: None,
-            register: default_register,
-            new_request_id: bravebot_skus::new_request_id,
-            refilled: false,
-        })
-    }
-
     /// Spend from a batch that is already in hand, with no keychain behind it.
     ///
     /// Exists so the spending behaviour can be tested without a keychain. A test must never touch
@@ -78,15 +109,53 @@ impl ImportedSubscription {
     /// the SKU service do not divide the world the same way: a staging subscription is verified by
     /// the `brave.software` aichat host, confirmed against the live service, so requiring the names
     /// to agree would reject a credential that works.
-    pub fn discover(endpoint: &str) -> Option<Self> {
-        let production = is_production_endpoint(endpoint)?;
-        Channel::ALL
-            .into_iter()
-            .filter_map(Self::new)
-            .find(|subscription| {
-                (subscription.wallet.environment() == bravebot_skus::Environment::Production)
-                    == production
-            })
+    ///
+    /// Three answers rather than two, because "nothing is imported" and "something is imported and
+    /// could not be read" are different facts and only one of them is ordinary. Collapsed into
+    /// `None` they were indistinguishable, and the tier silently became the free one: a keychain
+    /// that refused, or a batch written by another version, cost the user the model they had chosen
+    /// and said nothing at all. What that looks like from the outside is the model getting worse for
+    /// no reason, which is the thing this module's own documentation promises never to do.
+    pub fn discover(endpoint: &str) -> Discovery {
+        // A host in neither camp, such as a local endpoint. No credential belongs anywhere near it,
+        // and that is a deliberate choice rather than a failure, so it reports as nothing imported.
+        let Some(production) = is_production_endpoint(endpoint) else {
+            return Discovery::NothingImported;
+        };
+
+        let mut refused: Option<String> = None;
+
+        for channel in Channel::ALL {
+            let wallet = match bravebot_skus::store::Wallet::open(channel) {
+                Ok(wallet) => wallet,
+                // The ordinary case: this channel was never imported. Not worth reporting, since
+                // most people have one channel and three of these on every run.
+                Err(StoreError::NotFound) => continue,
+                // Something is there and could not be used. Remembered rather than returned at
+                // once, because a later channel may still hold a batch that works, and a warning
+                // about a stale staging entry would be noise on a session that ran premium fine.
+                Err(e) => {
+                    refused.get_or_insert_with(|| format!("{}: {e}", channel.as_str()));
+                    continue;
+                }
+            };
+
+            if (wallet.environment() == bravebot_skus::Environment::Production) == production {
+                return Discovery::Found(Self {
+                    wallet,
+                    now: current_timestamp,
+                    remaining: None,
+                    register: default_register,
+                    new_request_id: bravebot_skus::new_request_id,
+                    refilled: false,
+                });
+            }
+        }
+
+        match refused {
+            Some(detail) => Discovery::Refused(detail),
+            None => Discovery::NothingImported,
+        }
     }
 
     /// How many credentials remained after the last one was spent.
@@ -237,6 +306,36 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The distinction the type exists for. Nothing imported is the free tier working as intended;
+    /// a batch that cannot be read is a paid subscription going unspent, and collapsing the two into
+    /// one empty answer is what made the downgrade silent.
+    ///
+    /// Stated over the two empty variants rather than by calling `discover`, which would read the
+    /// keychain and prompt whoever ran the suite. See [`ImportedSubscription::detached`].
+    #[test]
+    fn an_unreadable_batch_is_reported_and_an_absent_one_is_not() {
+        let absent = Discovery::NothingImported;
+        assert!(absent.complaint().is_none(), "the free tier is not a fault");
+        assert!(absent.found().is_none());
+
+        let refused = Discovery::Refused("nightly: the system keychain is unavailable".to_string());
+        let complaint = refused.complaint().expect("an unreadable batch says so");
+        // Which channel and why, since "premium is off" would leave nothing to act on.
+        assert!(complaint.contains("nightly"), "{complaint}");
+        assert!(complaint.contains("keychain"), "{complaint}");
+        assert!(refused.found().is_none(), "nothing to spend");
+    }
+
+    /// A local endpoint is in neither environment, so no credential is sent near it. That is a
+    /// deliberate choice rather than a failure, so it must not be reported as one: a warning on
+    /// every run against a local backend is a warning people learn to ignore.
+    #[test]
+    fn an_endpoint_in_no_environment_is_not_a_complaint() {
+        let discovery = ImportedSubscription::discover("http://127.0.0.1:8080");
+        assert!(discovery.complaint().is_none());
+        assert!(discovery.found().is_none());
+    }
 
     /// The timestamp is compared against windows the server wrote, so it has to be the same
     /// fixed-width shape rather than merely a correct instant.

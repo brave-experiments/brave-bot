@@ -521,10 +521,7 @@ pub fn run<S: Sink, C: Confirmer, R: Reporter>(
         ));
     }
 
-    let mut subscription = config
-        .premium_endpoint
-        .as_deref()
-        .and_then(crate::ImportedSubscription::discover);
+    let mut subscription = crate::turn::discover_subscription(config, reporter);
 
     // Owned here rather than inside either half, so a failure in either one still comes back
     // with everything that got as far as existing.
@@ -872,6 +869,9 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         clean: planning_was_clean,
     } = planned;
 
+    // Noted before the subscription is lent to the steps below, which consume it.
+    let premium = subscription.is_some();
+
     // The pre-execution routing lock. Every destination the plan will use goes in here, through
     // the gate that refuses anything not (T,pub), before a single byte has been read. A plan
     // that somehow arrived untrusted fails at this line even if it had passed everything above.
@@ -1014,6 +1014,7 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         tokens,
         output_tokens,
         context_tokens: 0,
+        premium,
         display: shown,
         notices: Vec::new(),
     })

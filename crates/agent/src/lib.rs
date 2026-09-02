@@ -30,6 +30,6 @@ pub use conversation::Conversation;
 pub use mode::Mode;
 pub use processor::ProcessorError;
 pub use report::{Activity, IgnoreReports, Reporter};
-pub use subscription::ImportedSubscription;
+pub use subscription::{Discovery, ImportedSubscription};
 pub use turn::{Outcome, Task, TurnError};
 pub use workspace::{Workspace, WorkspaceError};

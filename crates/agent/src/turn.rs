@@ -24,6 +24,7 @@ use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::reference::Presentation;
 use bravebot_core::trust::TrustStore;
 use bravebot_core::value::Labelled;
+use bravebot_i18n::t;
 use bravebot_net::Egress;
 use std::fmt;
 use std::path::PathBuf;
@@ -505,6 +506,12 @@ pub struct Outcome {
     /// ended, which is the only figure worth comparing against
     /// [`bravebot_config::Config::context_budget`].
     pub context_tokens: u64,
+    /// Whether this turn's requests went out on the premium tier.
+    ///
+    /// A fact about what happened rather than about the configuration. Every build that knows a
+    /// premium host used to report itself as premium, so a session whose credentials could not be
+    /// read said "premium" while being answered by whatever the free tier serves.
+    pub premium: bool,
     /// The reply, released for display while the policy was still open.
     pub(crate) display: String,
     /// What to tell the person watching about standing instructions and skills.
@@ -685,10 +692,7 @@ pub fn compact<S: Sink, R: Reporter>(
 
     reporter.phase(Phase::Compacting);
 
-    let mut subscription = config
-        .premium_endpoint
-        .as_deref()
-        .and_then(crate::ImportedSubscription::discover);
+    let mut subscription = discover_subscription(config, reporter);
     let mut chat = crate::processor::Chat {
         config,
         egress,
@@ -704,6 +708,27 @@ pub fn compact<S: Sink, R: Reporter>(
     let done = crate::compact::compact(&mut policy, &mut chat, conversation);
     policy.finish();
     done
+}
+
+/// Find the subscription this turn will spend, and say so where one could not be read.
+///
+/// Shared with [`crate::manifest`] rather than written twice, because the thing worth reporting is
+/// the same in both and a mode that skipped the line would be the silent downgrade again in one
+/// place.
+///
+/// A batch that exists and cannot be read is worth a line of its own. The request goes out on the
+/// free tier, the endpoint answers a premium model name with a weaker model rather than an error,
+/// and the only visible symptom is a worse answer. Nothing about that points at the keychain, so it
+/// has to be said outright.
+pub(crate) fn discover_subscription<R: Reporter>(
+    config: &Config,
+    reporter: &mut R,
+) -> Option<crate::ImportedSubscription> {
+    let discovery = crate::ImportedSubscription::discover(config.premium_endpoint.as_deref()?);
+    if let Some(problem) = discovery.complaint() {
+        reporter.notice(t!(subscription_unusable, problem = problem));
+    }
+    discovery.found()
 }
 
 /// The path a precommitted routing entry holds, which is trusted by construction.
@@ -941,12 +966,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     }
 
     // Premium is used when a subscription has been imported and this build knows the premium
-    // host, and is silently skipped otherwise. Discovery happens per turn so an import mid-session
-    // takes effect on the next one.
-    let mut subscription = config
-        .premium_endpoint
-        .as_deref()
-        .and_then(crate::ImportedSubscription::discover);
+    // host. Discovery happens per turn so an import mid-session takes effect on the next one.
+    //
+    // A batch that exists and could not be read is reported rather than skipped. It used to be
+    // silent, and the only symptom was the endpoint substituting a weaker model for the premium one
+    // that was asked for, which reads as the model getting worse for no reason: nobody attributes a
+    // worse answer to the keychain.
+    let mut subscription = discover_subscription(config, reporter);
 
     let offered = tools::available();
 
@@ -1480,6 +1506,9 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         tokens,
         output_tokens,
         context_tokens,
+        // Whether a credential was actually presented, which is what `route` decides from. A
+        // subscription that was found is one that will be spent on every round of this turn.
+        premium: subscription.is_some(),
         clean: policy.finish(),
         display,
         notices: notices.into_iter().map(|n| n.message).collect(),

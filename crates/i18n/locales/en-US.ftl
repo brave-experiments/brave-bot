@@ -118,6 +118,12 @@ leo-stored = stored { $count } credentials in the system keychain, valid through
 leo-browser-untouched =
     premium requests will now use them; the browser's own credentials were untouched
 
+# Said when a subscription is stored but could not be read. Worth a line because the request
+# then goes out on the free tier, where a premium model name is answered by a weaker model
+# rather than by an error, so the only symptom is a worse answer.
+subscription-unusable =
+    the imported subscription could not be used ({ $problem }), so this turn runs on the free tier
+
 
 ## Vouching for a directory, asked once when a session starts somewhere new
 
