@@ -177,3 +177,4 @@ colours is a weaker one. Text that sets no colour of its own is otherwise the te
 which under a light theme in a dark terminal is the path to unreadable.
 
 `verified-by: bravebot_tui::confirm::every_prompt_paints_the_themes_background_inside_its_border`
+`verified-by: bravebot_tui::trust_prompt::the_prompt_paints_the_themes_background_inside_its_border`

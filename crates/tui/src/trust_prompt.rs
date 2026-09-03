@@ -171,7 +171,10 @@ fn draw(frame: &mut ratatui::Frame, directory: &Path) {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(theme::brand_primary()))
-                    .title(format!(" {} ", t!(trust_directory_title))),
+                    .title(format!(" {} ", t!(trust_directory_title)))
+                    // The background as well as the border, because `Clear` empties the cells
+                    // under the panel without colouring them.
+                    .style(Style::default().bg(theme::background()).fg(theme::text())),
             )
             .wrap(Wrap { trim: false }),
         area,
@@ -203,6 +206,7 @@ fn centred(area: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
     fn rendered(directory: &str) -> String {
         let mut terminal = Terminal::new(TestBackend::new(72, 20)).expect("terminal");
@@ -237,6 +241,43 @@ mod tests {
             output.contains("Say no if you"),
             "no guidance on when to decline: {output}"
         );
+    }
+
+    /// `Clear` empties the cells under the panel without colouring them, so a prompt that styled
+    /// only its border is a hole in the palette: themed border, terminal-default everything else.
+    /// This is the first screen of a session and it grants standing permission over a whole tree,
+    /// so its chrome is the first thing that says the question is the system's own.
+    #[test]
+    fn the_prompt_paints_the_themes_background_inside_its_border() {
+        let _held = theme::exclusive();
+        let theme = theme::find("nord").expect("nord is built in");
+        theme::apply(&theme);
+        let painted = theme::background();
+
+        let mut terminal = Terminal::new(TestBackend::new(72, 20)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, Path::new("/home/me/project")))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        theme::apply_brave();
+
+        let inside = centred(*buffer.area());
+        // Every cell the border encloses, including the rows the prose did not reach: an unpainted
+        // row below the keys is the same hole as an unpainted one beside them.
+        for y in 1..inside.height - 1 {
+            for x in 1..inside.width - 1 {
+                let cell = &buffer[(inside.x + x, inside.y + y)];
+                assert_eq!(
+                    cell.bg, painted,
+                    "the cell at {x},{y} kept the terminal's own background"
+                );
+                assert_ne!(
+                    cell.fg,
+                    Color::Reset,
+                    "the cell at {x},{y} kept the terminal's own text colour"
+                );
+            }
+        }
     }
 
     #[test]
