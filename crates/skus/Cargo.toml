@@ -10,8 +10,20 @@ repository.workspace = true
 [dependencies]
 challenge-bypass-ristretto = { workspace = true }
 hmac = { workspace = true }
-keyring = { workspace = true }
+# Linked directly, rather than through the `keyring` crate's all-in-one `Entry`, because that
+# convenience API picks one backend at first use and has no way to fall back to a second. See
+# store.rs for why a Linux session with no Secret Service still needs one.
+keyring-core = "1"
 rand = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 ureq = { workspace = true }
+# `crypto-rust` matches what `keyring`'s own `v1` feature selects for this backend: no OpenSSL,
+# so cross-builds stay free of a C dependency.
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The fallback for a Linux session with no Secret Service (no desktop keyring daemon running,
+# common over plain SSH): the in-kernel keyring, reached through raw `keyctl` syscalls rather
+# than a C library, so it costs nothing in the cross-build container either.
+linux-keyutils-keyring-store = "1"

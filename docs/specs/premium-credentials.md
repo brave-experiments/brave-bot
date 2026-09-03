@@ -163,6 +163,26 @@ is most likely to notice first.
 `verified-by: bravebot_tui::status::a_substituted_model_is_reported_beside_the_one_asked_for`
 `verified-by: bravebot_tui::status::automatic_being_resolved_to_a_real_model_is_not_a_substitution`
 
+<a id="PREM-10"></a>
+### PREM-10: on Linux, a session with no Secret Service uses the kernel keyring instead
+
+The Secret Service is tried first. When opening it fails, credentials go to the kernel's own
+keyring instead, on Linux only: macOS has no equivalent gap, since Keychain Services needs no
+separate daemon behind it. Every store that was tried is named in the refusal reported under
+PREM-8, not only the last one, since the Secret Service and the kernel keyring fail for unrelated
+reasons and keeping only one hides why the other was skipped.
+
+**Why.** A plain SSH login has no desktop session behind it, so nothing ever registers the Secret
+Service on its D-Bus bus. Without a fallback, PREM-8 would report every session on such a machine
+as a downgrade to the free tier, with no fix short of installing and running a desktop keyring
+daemon by hand for a machine that has no desktop. The kernel keyring needs no daemon, answering
+only the syscalls the running kernel already provides. It does not survive a reboot, unlike the
+Secret Service, which is why it is tried second rather than first: a store that outlives a reboot
+is preferred wherever one is reachable at all.
+
+`verified-by: bravebot_skus::store::the_first_store_that_opens_is_the_one_used`
+`verified-by: bravebot_skus::store::every_failing_candidates_reason_is_kept`
+
 ## Requirements and limits
 
 - **macOS and Linux.** Windows is not supported.
@@ -171,5 +191,7 @@ is most likely to notice first.
   matching the environment the binary is configured for. Mismatching them returns 401.
 - Sign in to Leo in that Brave install first: a subscription that is not in the profile cannot be
   imported.
-- Importing and the first request of a session may ask for the keychain password (PREM-7).
+- Importing and the first request of a session may ask for the keychain password (PREM-7), except
+  on a Linux session with no Secret Service, where the kernel keyring holds it instead and asks
+  for nothing (PREM-10).
 - `bravebot doctor` reports how much is left.

@@ -1,9 +1,16 @@
 //! Keeping the imported credentials in the OS keychain.
 //!
 //! These are bearer secrets: whoever holds one can spend a request against the subscription. So
-//! they go to the platform's own secret store, macOS Keychain or the Secret Service on Linux,
-//! rather than to a file. A mode-0600 file would be readable by anything running as the user,
-//! including any program this agent is asked to run, and would sit in a backup afterwards.
+//! they go to the platform's own secret store rather than to a file. A mode-0600 file would be
+//! readable by anything running as the user, including any program this agent is asked to run,
+//! and would sit in a backup afterwards.
+//!
+//! On macOS that store is Keychain Services. On Linux it is ordinarily the Secret Service, but a
+//! session with no desktop keyring daemon running, such as a plain SSH login with no graphical
+//! session behind it, has no Secret Service to reach at all: nothing on that D-Bus session ever
+//! registers the name. There, the kernel's own keyring is used instead, which needs no daemon and
+//! nothing but the syscalls every Linux kernel already answers. See [`candidates`] for the order
+//! and [`StoreCandidate`] for why the choice is made once and kept.
 //!
 //! Each channel gets its own entry, so importing from Nightly does not overwrite what was
 //! imported from Stable.
@@ -15,6 +22,8 @@
 //! ready-made cookie value would mean replaying a spent credential on the second request.
 
 use crate::device::Registration;
+use keyring_core::CredentialStore;
+use std::sync::{Arc, OnceLock};
 
 /// The keychain service every entry is filed under.
 const SERVICE: &str = "bravebot";
@@ -153,13 +162,69 @@ impl From<Registration> for StoredCredentials {
     }
 }
 
-/// The keychain entry for a channel's credentials.
-fn entry(channel: crate::Channel) -> Result<keyring::Entry, StoreError> {
-    keyring::Entry::new(SERVICE, &format!("leo-premium-{}", channel.as_str())).map_err(|e| {
-        StoreError::Unavailable {
-            detail: e.to_string(),
+/// One credential store this crate knows how to open, named for the detail string a caller
+/// reports when it cannot be.
+///
+/// A `fn` pointer rather than a closure, so [`candidates`] needs no captured state and a test can
+/// substitute its own list, made of stand-ins that always succeed or always fail, without a real
+/// backend anywhere near it.
+type StoreCandidate = (
+    &'static str,
+    fn() -> keyring_core::Result<Arc<CredentialStore>>,
+);
+
+/// Every store worth trying, in the order they are tried.
+///
+/// The Secret Service is first, so a desktop session with one keeps using it exactly as before:
+/// nothing changes there. The kernel keyring is Linux-only and last, tried only once the Secret
+/// Service has already failed to open.
+fn candidates() -> Vec<StoreCandidate> {
+    let mut candidates: Vec<StoreCandidate> = vec![("the Secret Service", || {
+        zbus_secret_service_keyring_store::Store::new().map(|s| s as Arc<CredentialStore>)
+    })];
+    #[cfg(target_os = "linux")]
+    candidates.push(("the kernel keyring", || {
+        linux_keyutils_keyring_store::Store::new().map(|s| s as Arc<CredentialStore>)
+    }));
+    candidates
+}
+
+/// Try each candidate in order, keeping every failure's reason.
+///
+/// One reason alone would hide why the others were skipped, and on a session where none of them
+/// work, that is exactly what the person reading the warning needs.
+fn store_for(candidates: &[StoreCandidate]) -> Result<Arc<CredentialStore>, String> {
+    let mut reasons = Vec::new();
+    for (name, open) in candidates {
+        match open() {
+            Ok(store) => return Ok(store),
+            Err(e) => reasons.push(format!("{name}: {e}")),
         }
-    })
+    }
+    Err(reasons.join("; "))
+}
+
+/// The store this process uses, decided on first use and remembered for the rest of it.
+///
+/// Opening the Secret Service means a round trip over D-Bus, so deciding again on every call
+/// would repeat that for every credential this session ever spends. Nothing here can change
+/// mid-process anyway: a Secret Service that appears after the kernel keyring was already chosen
+/// would just leave two stores holding different halves of a batch.
+fn default_store() -> Result<Arc<CredentialStore>, StoreError> {
+    static STORE: OnceLock<Result<Arc<CredentialStore>, String>> = OnceLock::new();
+    STORE
+        .get_or_init(|| store_for(&candidates()))
+        .clone()
+        .map_err(|detail| StoreError::Unavailable { detail })
+}
+
+/// The keychain entry for a channel's credentials.
+fn entry(channel: crate::Channel) -> Result<keyring_core::Entry, StoreError> {
+    default_store()?
+        .build(SERVICE, &format!("leo-premium-{}", channel.as_str()), None)
+        .map_err(|e| StoreError::Unavailable {
+            detail: e.to_string(),
+        })
 }
 
 /// Write a batch to the keychain, replacing whatever was there.
@@ -181,7 +246,7 @@ pub fn save(channel: crate::Channel, credentials: &StoredCredentials) -> Result<
 pub fn load(channel: crate::Channel) -> Result<StoredCredentials, StoreError> {
     let raw = match entry(channel)?.get_password() {
         Ok(raw) => raw,
-        Err(keyring::Error::NoEntry) => return Err(StoreError::NotFound),
+        Err(keyring_core::Error::NoEntry) => return Err(StoreError::NotFound),
         Err(e) => {
             return Err(StoreError::Unavailable {
                 detail: e.to_string(),
@@ -332,7 +397,7 @@ pub struct Spent {
 /// Forget a channel's batch.
 pub fn clear(channel: crate::Channel) -> Result<(), StoreError> {
     match entry(channel)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
         Err(e) => Err(StoreError::Unavailable {
             detail: e.to_string(),
         }),
@@ -636,5 +701,50 @@ mod tests {
             decode(&raw).unwrap_err(),
             StoreError::Malformed { .. }
         ));
+    }
+
+    /// A store further down the list must never be reached once an earlier one opens: opening
+    /// the Secret Service is a D-Bus round trip, and this is the fallback order that lets a
+    /// desktop session keep using it exactly as before, never paying for the kernel keyring at
+    /// all.
+    #[test]
+    fn the_first_store_that_opens_is_the_one_used() {
+        fn always_fails() -> keyring_core::Result<Arc<CredentialStore>> {
+            Err(keyring_core::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("first store refused"),
+            )))
+        }
+        fn always_opens() -> keyring_core::Result<Arc<CredentialStore>> {
+            keyring_core::mock::Store::new().map(|s| s as Arc<CredentialStore>)
+        }
+        let candidates: Vec<StoreCandidate> =
+            vec![("first", always_fails), ("second", always_opens)];
+        store_for(&candidates).expect("the second candidate opened");
+    }
+
+    /// When nothing opens, every attempt's reason survives. The Secret Service and the kernel
+    /// keyring fail for unrelated causes, and keeping only the last one would send whoever reads
+    /// the warning chasing the wrong fix.
+    #[test]
+    fn every_failing_candidates_reason_is_kept() {
+        fn refused() -> keyring_core::Result<Arc<CredentialStore>> {
+            Err(keyring_core::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("no secret service"),
+            )))
+        }
+        fn also_refused() -> keyring_core::Result<Arc<CredentialStore>> {
+            Err(keyring_core::Error::PlatformFailure(Box::new(
+                std::io::Error::other("keyctl denied"),
+            )))
+        }
+        let candidates: Vec<StoreCandidate> = vec![
+            ("the Secret Service", refused),
+            ("the kernel keyring", also_refused),
+        ];
+        let reasons = store_for(&candidates).unwrap_err();
+        assert!(reasons.contains("the Secret Service"), "{reasons}");
+        assert!(reasons.contains("no secret service"), "{reasons}");
+        assert!(reasons.contains("the kernel keyring"), "{reasons}");
+        assert!(reasons.contains("keyctl denied"), "{reasons}");
     }
 }
