@@ -1432,6 +1432,7 @@ mod tests {
     /// The detail is drawn dimmed, so the eye lands on the options rather than the explanations.
     #[test]
     fn a_detail_is_drawn_dimmer_than_its_label() {
+        let _held = theme::exclusive();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
         let question = prompt(false);
         let asking = one(&question);

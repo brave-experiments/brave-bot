@@ -171,6 +171,7 @@ mod tests {
 
     #[test]
     fn a_highlight_covers_the_selection_and_nothing_else() {
+        let _held = theme::exclusive();
         let mut buffer = screen(&["hello there"]);
         let mut selection = Selection::started_at(0, 6);
         selection.extend_to(0, 11);

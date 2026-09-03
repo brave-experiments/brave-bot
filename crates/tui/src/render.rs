@@ -3106,6 +3106,7 @@ mod tests {
     /// colours and only the background says what is selected.
     #[test]
     fn a_selection_is_drawn_over_whatever_it_covers() {
+        let _held = theme::exclusive();
         let mut session = Session::new("kernel-enforced");
         session.begin_selection(0, 0);
         session.extend_selection(0, 5);
@@ -3687,6 +3688,7 @@ mod tests {
     /// it in the same ink said that the trust answer was quarantined content.
     #[test]
     fn a_system_note_is_not_drawn_in_the_ink_that_marks_untrusted_content() {
+        let _held = theme::exclusive();
         let mut session = Session::new("none");
         session.note("trusting /tmp/x");
 

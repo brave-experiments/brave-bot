@@ -345,6 +345,7 @@ mod tests {
 
     #[test]
     fn preview_puts_the_cursor_theme_in_force_and_cancel_restores() {
+        let _held = theme::exclusive();
         theme::apply_brave();
         let mut picker = Picker::new(offered(), theme::BRAVE);
         handle_key(&mut picker, KeyCode::Down, KeyModifiers::NONE);

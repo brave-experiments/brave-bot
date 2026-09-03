@@ -89,6 +89,19 @@ impl Theme {
 static LIGHT: AtomicBool = AtomicBool::new(false);
 static SENSED: AtomicBool = AtomicBool::new(false);
 
+/// Claim the theme for one test, until the returned guard is dropped.
+///
+/// The theme in force is one per process and every test in a binary shares it, so a test that puts
+/// one in force otherwise decides what a test running beside it draws in. Held by the tests that
+/// read a colour as well as the ones that change it: the reader is the half that fails.
+#[cfg(test)]
+pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn current() -> &'static Mutex<(String, Palette)> {
     static CURRENT: OnceLock<Mutex<(String, Palette)>> = OnceLock::new();
     CURRENT.get_or_init(|| Mutex::new((BRAVE.to_string(), brave_palette(false))))
@@ -818,6 +831,7 @@ mod tests {
     /// Pins the kind and not the value, so the shade stays somebody's to choose.
     #[test]
     fn a_note_is_a_shade_and_not_a_slot_a_terminal_repaints() {
+        let _held = exclusive();
         apply_brave();
         assert!(
             matches!(note(), Color::Rgb(..)),
@@ -834,6 +848,7 @@ mod tests {
     /// looks like. Pinning the kind keeps a named colour from returning under a different spelling.
     #[test]
     fn brand_primary_is_a_shade_and_not_a_slot_a_terminal_repaints() {
+        let _held = exclusive();
         apply_brave();
         assert!(
             matches!(brand_primary(), Color::Rgb(..)),
@@ -884,6 +899,7 @@ mod tests {
     /// Under `brave`, finished stays a named slot so it reads against the person's terminal.
     #[test]
     fn brave_keeps_named_slots_for_the_terminals_own_meanings() {
+        let _held = exclusive();
         apply_brave();
         assert_eq!(ok(), Color::Green);
         assert_eq!(fail(), Color::Red);
@@ -896,6 +912,7 @@ mod tests {
     /// collapse finished into failed.
     #[test]
     fn a_named_theme_paints_its_own_background_and_inks() {
+        let _held = exclusive();
         let theme = find("nord").expect("nord is built in");
         apply(&theme);
         assert!(paints_background());
