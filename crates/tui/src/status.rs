@@ -221,9 +221,9 @@ pub fn report(facts: &Facts<'_>) -> Report {
 /// What can be said about the tier before a request has settled it.
 ///
 /// The configuration and nothing else, which is why the premium wording stops short of claiming a
-/// credential will be spent: knowing that means reading the keychain, and the keychain prompts for a
-/// password on macOS. A dialog on every session opened, before anybody has typed anything, is how
-/// people are trained to approve dialogs without reading them.
+/// credential will be spent. A stored batch may still be expired, exhausted, or issued for another
+/// environment, and which of those holds is settled by a request rather than by looking. Reading the
+/// file at startup would license a firmer claim than the file supports.
 ///
 /// Shared with the opening screen rather than written twice, so the line drawn at startup and the
 /// line `/status` shows an hour later cannot drift apart.
@@ -443,9 +443,8 @@ mod tests {
     /// because both take it from here. Two copies of this wording would be two things to keep true,
     /// and the one that drifted would be the one nobody re-reads.
     ///
-    /// Neither reads the keychain. Naming the real tier means opening it, which prompts for a
-    /// password on macOS, and a dialog on every session opened is how people are trained to approve
-    /// dialogs unread.
+    /// Neither reads the store. A batch on disk may be expired, exhausted, or for the wrong
+    /// environment, so its presence is not the tier: only a request settles that.
     #[test]
     fn the_opening_line_and_the_panel_say_the_same_thing_before_a_turn_runs() {
         let premium = config_for(

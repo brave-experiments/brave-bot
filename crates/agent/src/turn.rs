@@ -742,8 +742,8 @@ pub fn compact<S: Sink, R: Reporter>(
 ///
 /// A batch that exists and cannot be read is worth a line of its own. The request goes out on the
 /// free tier, the endpoint answers a premium model name with a weaker model rather than an error,
-/// and the only visible symptom is a worse answer. Nothing about that points at the keychain, so it
-/// has to be said outright.
+/// and the only visible symptom is a worse answer. Nothing about that points at the credential
+/// store, so it has to be said outright.
 pub(crate) fn discover_subscription<R: Reporter>(
     config: &Config,
     reporter: &mut R,
@@ -995,7 +995,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // A batch that exists and could not be read is reported rather than skipped. It used to be
     // silent, and the only symptom was the endpoint substituting a weaker model for the premium one
     // that was asked for, which reads as the model getting worse for no reason: nobody attributes a
-    // worse answer to the keychain.
+    // worse answer to an unreadable credential file.
     let mut subscription = discover_subscription(config, reporter);
 
     let offered = tools::available();

@@ -440,9 +440,9 @@ pub struct Session {
     /// What the configuration says about the tier, drawn beside the confinement on the opening
     /// screen.
     ///
-    /// The configuration rather than the credentials, because naming the real tier means reading the
-    /// keychain and the keychain prompts. See [`crate::status::configured_tier`]. What was actually
-    /// spent is settled by the first turn.
+    /// The configuration rather than the credentials, because a stored batch may be expired or for
+    /// the wrong environment, so its presence would not settle the tier. See
+    /// [`crate::status::configured_tier`]. What was actually spent is settled by the first turn.
     pub tier: String,
     /// How many turns have been submitted, which picks the indicator's word.
     pub turns: usize,

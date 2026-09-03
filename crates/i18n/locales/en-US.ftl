@@ -101,7 +101,7 @@ doctor-settings-names = { $names }
 doctor-settings-absent = no settings.json
 doctor-leo = leo
 doctor-subscription =
-    { $channel } subscription imported, { $unspent } of { $total } credentials unspent
+    { $environment } subscription imported, { $unspent } of { $total } credentials unspent
 doctor-confinement = confinement { $level }
 # How much confinement was actually achieved. The sandbox reports which of the three it got and
 # the interface is what names it, because bravebot-sandbox holds no words for a person.
@@ -122,11 +122,11 @@ leo-no-premium-endpoint =
 leo-set-and-rebuild = set { $variable } and rebuild
 leo-unknown-channel = unknown channel: { $channel }
 leo-expected-channel = expected one of: stable, beta, nightly, development
-leo-forgotten = forgot the { $channel } subscription
+leo-forgotten = forgot the imported subscription
 leo-looking = looking for a Leo subscription in Brave { $channel }
 leo-found = found a { $environment } subscription: { $order }
 leo-registering = registering this install as a new device
-leo-stored = stored { $count } credentials in the system keychain, valid through { $expiry }
+leo-stored = stored { $count } credentials in { $path }, valid through { $expiry }
 leo-browser-untouched =
     premium requests will now use them; the browser's own credentials were untouched
 

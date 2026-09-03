@@ -1,6 +1,6 @@
 //! Spending imported Leo Premium credentials on a turn's requests.
 //!
-//! The adapter between the keychain and the chat client. It lives here rather than in either
+//! The adapter between the credential store and the chat client. It lives here rather than in either
 //! because a credential is single-use: the client has to ask for one per request, and the store
 //! has to record each as spent, so something has to sit between them and hold the channel.
 //!
@@ -9,14 +9,14 @@
 //! the error names the fix (re-import, or unset the premium endpoint).
 
 use bravebot_aichat::{Subscription, SubscriptionCredential};
-use bravebot_skus::{Channel, DeviceError, Registration, StoreError};
+use bravebot_skus::{DeviceError, Registration, StoreError};
 
 /// What looking for an imported subscription found.
 ///
 /// Three answers rather than an `Option`, because the two ways of coming back empty want different
 /// treatment. Nothing imported is the free tier working as intended and deserves no words. A batch
 /// that exists and could not be read is a paid subscription not being spent, and the only symptom is
-/// a worse model, which nobody would think to attribute to the keychain.
+/// a worse model, which nobody would think to attribute to the credential store.
 ///
 /// No `Debug`, deliberately. One variant holds a wallet of live credentials, and the obvious
 /// debugging reflex of printing this would put them in a log. The same reasoning as
@@ -26,7 +26,7 @@ pub enum Discovery {
     Found(ImportedSubscription),
     /// Nothing has been imported for this endpoint's environment. The ordinary free-tier case.
     NothingImported,
-    /// Something is stored and could not be used, with a sentence naming which channel and why.
+    /// Something is stored and could not be used, with a sentence saying why and what to do.
     ///
     /// Carries words rather than the error so a caller can report it without depending on
     /// `bravebot_skus`, and because what a person needs here is the sentence, not the variant.
@@ -57,10 +57,10 @@ impl Discovery {
 /// How a new batch is obtained, as a function so a test can supply one without a network.
 type Register = fn(bravebot_skus::Environment, &str, &str) -> Result<Registration, DeviceError>;
 
-/// Spends credentials from the keychain, one per request.
+/// Spends imported credentials, one per request.
 ///
-/// The batch is opened once and spent from memory, so a session prompts for the keychain at most
-/// once rather than on every model round. See [`bravebot_skus::store::Wallet`].
+/// The batch is read once and spent from memory, so a session touches the store at most once
+/// rather than on every model round. See [`bravebot_skus::store::Wallet`].
 pub struct ImportedSubscription {
     wallet: bravebot_skus::store::Wallet,
     /// The clock, as an injectable function so a test need not wait for a real date.
@@ -76,11 +76,10 @@ pub struct ImportedSubscription {
 }
 
 impl ImportedSubscription {
-    /// Spend from a batch that is already in hand, with no keychain behind it.
+    /// Spend from a batch that is already in hand, with no file behind it.
     ///
-    /// Exists so the spending behaviour can be tested without a keychain. A test must never touch
-    /// one: it would prompt whoever ran it, and in CI there is nobody to answer, so the run would
-    /// hang or fail on a machine difference rather than on the code.
+    /// Exists so the spending behaviour can be tested without touching the real store, which would
+    /// overwrite the credentials of whoever ran the suite.
     #[cfg(test)]
     fn detached(batch: bravebot_skus::StoredCredentials) -> Self {
         Self {
@@ -99,11 +98,10 @@ impl ImportedSubscription {
         }
     }
 
-    /// An imported batch usable against `endpoint`.
+    /// The imported batch, if it can be spent against `endpoint`.
     ///
-    /// A credential only verifies against the issuer that signed it, so with both a production and
-    /// a non-production subscription imported, taking whichever came first would send the wrong one
-    /// and read as an invalid credential.
+    /// A credential only verifies against the issuer that signed it, so a batch imported for another
+    /// deployment is refused here rather than sent and rejected as invalid by the server.
     ///
     /// The pairing is production or not, rather than an exact environment match. The aichat hosts and
     /// the SKU service do not divide the world the same way: a staging subscription is verified by
@@ -112,8 +110,8 @@ impl ImportedSubscription {
     ///
     /// Three answers rather than two, because "nothing is imported" and "something is imported and
     /// could not be read" are different facts and only one of them is ordinary. Collapsed into
-    /// `None` they were indistinguishable, and the tier silently became the free one: a keychain
-    /// that refused, or a batch written by another version, cost the user the model they had chosen
+    /// `None` they were indistinguishable, and the tier silently became the free one: an unreadable
+    /// file, or a batch written by another version, cost the user the model they had chosen
     /// and said nothing at all. What that looks like from the outside is the model getting worse for
     /// no reason, which is the thing this module's own documentation promises never to do.
     pub fn discover(endpoint: &str) -> Discovery {
@@ -123,39 +121,33 @@ impl ImportedSubscription {
             return Discovery::NothingImported;
         };
 
-        let mut refused: Option<String> = None;
+        let wallet = match bravebot_skus::store::Wallet::open() {
+            Ok(wallet) => wallet,
+            // The ordinary free-tier case: nothing has been imported.
+            Err(StoreError::NotFound) => return Discovery::NothingImported,
+            Err(e) => return Discovery::Refused(e.to_string()),
+        };
 
-        for channel in Channel::ALL {
-            let wallet = match bravebot_skus::store::Wallet::open(channel) {
-                Ok(wallet) => wallet,
-                // The ordinary case: this channel was never imported. Not worth reporting, since
-                // most people have one channel and three of these on every run.
-                Err(StoreError::NotFound) => continue,
-                // Something is there and could not be used. Remembered rather than returned at
-                // once, because a later channel may still hold a batch that works, and a warning
-                // about a stale staging entry would be noise on a session that ran premium fine.
-                Err(e) => {
-                    refused.get_or_insert_with(|| format!("{}: {e}", channel.as_str()));
-                    continue;
-                }
-            };
-
-            if (wallet.environment() == bravebot_skus::Environment::Production) == production {
-                return Discovery::Found(Self {
-                    wallet,
-                    now: current_timestamp,
-                    remaining: None,
-                    register: default_register,
-                    new_request_id: bravebot_skus::new_request_id,
-                    refilled: false,
-                });
-            }
+        // A credential only verifies against the deployment that signed it, so one imported from a
+        // channel this build does not talk to cannot be spent. Reported rather than passed over: it
+        // is a paid subscription going unused, and the remedy is importing from the matching
+        // channel, which nobody would guess from a turn that quietly got worse.
+        if (wallet.environment() == bravebot_skus::Environment::Production) != production {
+            return Discovery::Refused(format!(
+                "the imported subscription is for {}, which this endpoint does not accept; \
+                 run `bravebot import-leo-creds` from the matching Brave channel",
+                wallet.environment().as_str()
+            ));
         }
 
-        match refused {
-            Some(detail) => Discovery::Refused(detail),
-            None => Discovery::NothingImported,
-        }
+        Discovery::Found(Self {
+            wallet,
+            now: current_timestamp,
+            remaining: None,
+            register: default_register,
+            new_request_id: bravebot_skus::new_request_id,
+            refilled: false,
+        })
     }
 
     /// How many credentials remained after the last one was spent.
@@ -312,18 +304,19 @@ mod tests {
     /// one empty answer is what made the downgrade silent.
     ///
     /// Stated over the two empty variants rather than by calling `discover`, which would read the
-    /// keychain and prompt whoever ran the suite. See [`ImportedSubscription::detached`].
+    /// real store of whoever ran the suite. See [`ImportedSubscription::detached`].
     #[test]
     fn an_unreadable_batch_is_reported_and_an_absent_one_is_not() {
         let absent = Discovery::NothingImported;
         assert!(absent.complaint().is_none(), "the free tier is not a fault");
         assert!(absent.found().is_none());
 
-        let refused = Discovery::Refused("nightly: the system keychain is unavailable".to_string());
+        let refused =
+            Discovery::Refused("nightly: the stored credentials could not be read".to_string());
         let complaint = refused.complaint().expect("an unreadable batch says so");
         // Which channel and why, since "premium is off" would leave nothing to act on.
         assert!(complaint.contains("nightly"), "{complaint}");
-        assert!(complaint.contains("keychain"), "{complaint}");
+        assert!(complaint.contains("could not be read"), "{complaint}");
         assert!(refused.found().is_none(), "nothing to spend");
     }
 
@@ -509,7 +502,7 @@ mod tests {
         subscription.register = |_, _, _| Ok(fresh_registration());
         subscription.next_credential().expect("refilled");
 
-        // Detached, so the flush cannot have written to a keychain; what matters is that the new
+        // Detached, so the flush cannot have written to a file; what matters is that the new
         // batch is in hand and spendable.
         assert!(subscription.remaining().is_some());
     }

@@ -93,43 +93,72 @@ of a batch is refused. A moment outside every validity window yields no credenti
 
 A session that spends nothing never writes, and a detached batch has nowhere to write.
 
-**Why.** The store lives in the system keychain, so a write can prompt for a password. Writing
-when nothing changed would ask the user for nothing.
+**Why.** A whole batch is hundreds of credentials and one is spent per model request, so writing
+per spend would rewrite the file several times a turn to change one boolean.
 
 `verified-by: bravebot_skus::store::spending_does_not_write_until_asked_to`
 `verified-by: bravebot_skus::store::a_session_that_spends_nothing_never_writes`
 `verified-by: bravebot_skus::store::a_detached_batch_has_nowhere_to_write`
 
 <a id="PREM-7"></a>
-### PREM-7: credentials live in the system keychain, and each channel is stored separately
+### PREM-7: credentials live in one mode-0600 file under `~/.bravebot`
 
-Not in a file. A malformed or empty entry is reported as such rather than treated as absent
-credentials, and a credential without a token is rejected on load.
+One file, not one per channel: a person has one subscription however many Brave builds they have
+installed, so importing from Nightly replaces what was imported from Stable rather than sitting
+beside it. The channel names where to read the order id from, which is a fact about the machine's
+browsers rather than about the agent. `--forget` therefore takes no channel.
 
-`verified-by: bravebot_skus::store::each_channel_is_stored_separately`
+The file is created 0600 before anything is written to it, and is still 0600 after a re-import over
+an existing file. With no `HOME` there is nowhere a secret belongs, and that is reported rather than
+guessed at. `--forget` removes the file and is not an error when there is nothing to remove.
+
+A malformed or empty file is reported as such rather than treated as absent credentials, and a
+credential without a token is rejected on load.
+
+**Why not the keychain.** It was the keychain, and that was wrong on both halves of the trade. The
+browser these are imported from keeps the same secret unencrypted in `skus.state` and
+`brave.ai_chat.premium_credential_cache`, with no OSCrypt anywhere in brave-core's `components/skus`
+or `components/ai_chat`, so a keychain here guarded a copy of something already readable in the file
+the copy came from. Nor did it hold against the threat it was written for, a program `run` launches
+reading the file: those are deliberately unconfined ([RUN-10](tools/run.md#RUN-10)), and the AWS
+credentials that sign every model request are cached by the `aws` CLI in plain 0600 JSON, so anything
+that can read a file here can already take the larger secret. What it did cost was availability: the
+keychain crate builds one Linux backend, the D-Bus Secret Service, so a machine reached over SSH with
+no desktop session had no store to open and every such user was silently on the free tier.
+
+`verified-by: bravebot_skus::store::importing_again_replaces_the_previous_batch`
+`verified-by: bravebot_skus::store::a_batch_written_to_the_file_is_read_back`
+`verified-by: bravebot_skus::store::the_file_is_not_readable_by_anyone_else`
+`verified-by: bravebot_skus::store::the_file_lives_in_the_users_own_directory`
+`verified-by: bravebot_skus::store::no_home_directory_is_reported_rather_than_guessed`
+`verified-by: bravebot_skus::store::forgetting_removes_the_file_and_is_repeatable`
 `verified-by: bravebot_skus::store::an_empty_entry_is_reported_as_absent_rather_than_malformed`
 `verified-by: bravebot_skus::store::a_batch_that_is_not_json_is_reported_as_malformed`
+`verified-by: bravebot_skus::store::a_file_that_is_not_json_is_reported_when_loaded`
 `verified-by: bravebot_skus::store::a_credential_without_a_token_is_rejected_on_load`
 `verified-by: bravebot_skus::store::an_entry_missing_its_order_is_reported_as_malformed`
 `verified-by: bravebot_skus::store::a_batch_survives_a_round_trip_through_the_stored_form`
 
 <a id="PREM-8"></a>
-### PREM-8: a stored subscription that cannot be read is reported rather than skipped
+### PREM-8: a stored subscription that cannot be used is reported rather than skipped
 
 Coming back empty has two causes and they are not the same fact. Nothing imported is the free tier
-working as intended and is said nothing about. A batch that **exists and could not be read**, because
-the keychain refused or another version wrote the entry, is reported to the person, naming the channel
-and the reason. An endpoint belonging to no environment, such as a local one, is the first case and
-not the second: no credential belongs near it by design.
+working as intended and is said nothing about. A batch that **exists and cannot be spent** is reported
+to the person, with the reason and what to do about it. That covers a file that could not be read,
+one another version wrote, and one imported for an environment this endpoint does not accept, since a
+credential only verifies against the deployment that signed it. An endpoint belonging to no
+environment, such as a local one, is the first case and not the second: no credential belongs near it
+by design.
 
 **Why.** The request then goes out on the free tier, where the endpoint answers a premium model name
 by **substituting** a weaker model rather than by failing, with a 200 and an ordinary reply. So a
 request that silently lost its credential still returns something that reads like an answer, and
-nothing on screen connects that to the keychain. The downgrade has to be said out loud, because its
-only other symptom is the agent appearing to get worse for no reason.
+nothing on screen connects that to the credential store. The downgrade has to be said out loud,
+because its only other symptom is the agent appearing to get worse for no reason.
 
 `verified-by: bravebot_agent::subscription::an_unreadable_batch_is_reported_and_an_absent_one_is_not`
 `verified-by: bravebot_agent::subscription::an_endpoint_in_no_environment_is_not_a_complaint`
+`verified-by: bravebot_agent::home::a_subscription_imported_for_another_environment_is_reported`
 
 <a id="PREM-9"></a>
 ### PREM-9: the tier reported is the one the last turn ran on, not the one the build was compiled with
@@ -138,10 +167,9 @@ What `/status` says about the tier is what the last turn actually did. Before th
 premium is available rather than claiming it is or is not in use.
 
 The opening screen draws the tier beside the confinement, from the configuration, in the same words
-`/status` uses before a turn has run. It does **not** read the keychain: naming the real tier means
-opening it, which prompts for a password, and a dialog on every session opened before anybody has
-typed anything is how people are trained to approve dialogs unread. A pane too narrow for the
-wordmark still reports both.
+`/status` uses before a turn has run. It does **not** read the credential store: a stored batch may
+be expired, exhausted, or issued for another environment, so finding one would not settle the tier
+either. A pane too narrow for the wordmark still reports both.
 
 Where the server reports using a model other than the one requested, both are shown: the choice that
 was made and the model that actually answered. Said once when it starts happening rather than every
@@ -165,11 +193,15 @@ is most likely to notice first.
 
 ## Requirements and limits
 
-- **macOS and Linux.** Windows is not supported.
+- **macOS and Linux**, including a machine with no desktop session, since nothing here needs one.
+  Windows is not supported: the store is a Unix-mode file (PREM-7) and no browser profile is located
+  for it.
 - The build must know the premium host. Without it premium is unavailable (PREM-2).
 - A credential only works against the deployment that issued it, so import from the Brave channel
-  matching the environment the binary is configured for. Mismatching them returns 401.
+  matching the environment the binary is configured for. A mismatch is refused before a request is
+  made, rather than sent and answered with a 401 (PREM-8).
 - Sign in to Leo in that Brave install first: a subscription that is not in the profile cannot be
   imported.
-- Importing and the first request of a session may ask for the keychain password (PREM-7).
+- The stored batch is a bearer secret in a file the user owns (PREM-7). It is not encrypted at rest,
+  which is what the browser does with the same secret, and anything running as the user can read it.
 - `bravebot doctor` reports how much is left.

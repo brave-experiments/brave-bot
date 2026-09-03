@@ -147,9 +147,8 @@ fn mark_row(row: &str) -> Line<'static> {
 /// at all and the second how far down it floats. A terminal too short for the padding gets none.
 ///
 /// `tier` says whether this build can reach the premium host, and is deliberately about the
-/// configuration rather than about the credentials: naming the real tier would mean reading the
-/// keychain, which prompts for a password on macOS, and a dialog on every session opened before
-/// anybody has typed anything is how people learn to approve dialogs without reading them. What was
+/// configuration rather than about the credentials: a batch on disk may be expired, exhausted, or
+/// issued for another environment, so finding one would not settle the tier either. What was
 /// actually spent is settled by the first turn, which says so if it could not spend anything, and by
 /// `/status` afterwards.
 ///

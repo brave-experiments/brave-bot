@@ -1,12 +1,36 @@
-//! Keeping the imported credentials in the OS keychain.
+//! Keeping the imported credentials in a mode-0600 file under `~/.bravebot`.
 //!
-//! These are bearer secrets: whoever holds one can spend a request against the subscription. So
-//! they go to the platform's own secret store, macOS Keychain or the Secret Service on Linux,
-//! rather than to a file. A mode-0600 file would be readable by anything running as the user,
-//! including any program this agent is asked to run, and would sit in a backup afterwards.
+//! # One batch, whichever channel it came from
 //!
-//! Each channel gets its own entry, so importing from Nightly does not overwrite what was
-//! imported from Stable.
+//! There is a single file, so importing from Nightly replaces what was imported from Stable. The
+//! channel says where to *read the order id from*, which is a fact about the machine's browsers, not
+//! about the agent: one person's subscription is one subscription however many Brave builds they
+//! have installed, and every import registers this same install as a device against it.
+//!
+//! Keeping one per channel implied a choice the user never made. It also meant a stale batch from a
+//! channel long since uninstalled sat there being reported, and a re-import after switching channels
+//! left the old file to be picked up by whichever load happened to reach it first.
+//!
+//! # Why not the OS keychain
+//!
+//! These are bearer secrets, so the keychain looks like the obvious home for them, and it was that
+//! for a while. It was the wrong call on both halves of the trade.
+//!
+//! The browser these are imported from keeps the same secret in a plain preference. `skus.state`
+//! and `brave.ai_chat.premium_credential_cache` are unencrypted JSON in the profile, and nothing
+//! under brave-core's `components/skus` or `components/ai_chat` references OSCrypt for them. So a
+//! keychain here guarded a copy of something already readable in the file the copy came from.
+//!
+//! Nor does it hold against the threat it was written for, which was a program `run` launches
+//! reading the file. Those are deliberately unconfined (RUN-10), and the AWS credentials that sign
+//! every model request are cached by the `aws` CLI in plain 0600 JSON, so anything able to read a
+//! file here can already take the larger secret. Guarding the smaller one behind the keychain
+//! bought a password dialog, not a boundary: [`Wallet`] holds the whole decrypted batch in memory
+//! for the session either way.
+//!
+//! What it did cost was availability. The keychain crate builds one Linux backend, the D-Bus
+//! Secret Service, so a machine reached over SSH with no desktop session had no store to open at
+//! all and every such user was silently on the free tier.
 //!
 //! # Why the whole batch is stored, not one cookie
 //!
@@ -15,17 +39,21 @@
 //! ready-made cookie value would mean replaying a spent credential on the second request.
 
 use crate::device::Registration;
+use std::path::PathBuf;
 
-/// The keychain service every entry is filed under.
-const SERVICE: &str = "bravebot";
+/// The directory inside the user's home the file is kept in.
+const DIRECTORY: &str = ".bravebot";
+
+/// The file itself. One, not one per channel: see the module documentation.
+const FILE: &str = "leo-premium.json";
 
 #[derive(Debug)]
 pub enum StoreError {
-    /// Nothing has been imported for this channel yet.
+    /// Nothing has been imported yet.
     NotFound,
-    /// The keychain refused, or is unavailable.
-    Unavailable { detail: String },
-    /// The entry exists but is not what this version writes.
+    /// The file exists and could not be read or written.
+    Unusable { detail: String },
+    /// The file exists but is not what this version writes.
     Malformed { detail: String },
     /// Every credential valid now has been spent.
     Exhausted,
@@ -40,8 +68,8 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no imported Leo subscription found"),
-            Self::Unavailable { detail } => {
-                write!(f, "the system keychain is unavailable: {detail}")
+            Self::Unusable { detail } => {
+                write!(f, "the stored credentials could not be read: {detail}")
             }
             Self::Malformed { detail } => {
                 write!(f, "the stored credentials are unusable: {detail}")
@@ -62,8 +90,8 @@ impl std::error::Error for StoreError {}
 
 /// A signed credential batch, as stored.
 ///
-/// Serialised as JSON rather than a bespoke encoding because the keychain holds an opaque string
-/// either way, and a readable shape is one less thing to get wrong when the format changes.
+/// Serialised as JSON rather than a bespoke encoding because a readable shape is one less thing to
+/// get wrong when the format changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredCredentials {
     /// The order the batch belongs to, so a re-import can refresh in place.
@@ -153,38 +181,58 @@ impl From<Registration> for StoredCredentials {
     }
 }
 
-/// The keychain entry for a channel's credentials.
-fn entry(channel: crate::Channel) -> Result<keyring::Entry, StoreError> {
-    keyring::Entry::new(SERVICE, &format!("leo-premium-{}", channel.as_str())).map_err(|e| {
-        StoreError::Unavailable {
-            detail: e.to_string(),
-        }
-    })
-}
-
-/// Write a batch to the keychain, replacing whatever was there.
-pub fn save(channel: crate::Channel, credentials: &StoredCredentials) -> Result<(), StoreError> {
-    let encoded = encode(credentials);
-    entry(channel)?
-        .set_password(&encoded)
-        .map_err(|e| StoreError::Unavailable {
-            detail: e.to_string(),
-        })
-}
-
-/// Read a channel's batch.
+/// The file holding the imported credentials.
 ///
-/// Blocks for as long as the keychain takes, including while a password dialog waits to be
-/// answered. There is no timeout: the answer to "may this read the credential" is the user's to
-/// give, and abandoning the question would only turn it into a failure that looks like something
-/// else. If this appears to hang, a dialog is waiting, possibly behind another window.
-pub fn load(channel: crate::Channel) -> Result<StoredCredentials, StoreError> {
-    let raw = match entry(channel)?.get_password() {
+/// `HOME` is read directly rather than through a dependency, for the same reason and with the same
+/// absence of a fallback as everywhere else it is resolved: inventing a directory would put a
+/// bearer secret somewhere the user never chose.
+pub fn path() -> Result<PathBuf, StoreError> {
+    let home = std::env::var_os("HOME").filter(|home| !home.is_empty());
+    let Some(home) = home else {
+        return Err(StoreError::Unusable {
+            detail: "no HOME is set, so there is nowhere to keep credentials".to_string(),
+        });
+    };
+    Ok(PathBuf::from(home).join(DIRECTORY).join(FILE))
+}
+
+/// Write the batch, replacing whatever was there.
+///
+/// Created 0600 before anything is written to it, rather than written and then chmod'ed: the other
+/// order leaves the secret world-readable for the moment in between.
+pub fn save(credentials: &StoredCredentials) -> Result<(), StoreError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = path()?;
+    let unusable = |detail: String| StoreError::Unusable { detail };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| unusable(format!("{}: {e}", parent.display())))?;
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| unusable(format!("{}: {e}", path.display())))?;
+
+    file.write_all(encode(credentials).as_bytes())
+        .map_err(|e| unusable(format!("{}: {e}", path.display())))
+}
+
+/// Read the batch.
+pub fn load() -> Result<StoredCredentials, StoreError> {
+    let path = path()?;
+    let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(keyring::Error::NoEntry) => return Err(StoreError::NotFound),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(StoreError::NotFound),
         Err(e) => {
-            return Err(StoreError::Unavailable {
-                detail: e.to_string(),
+            return Err(StoreError::Unusable {
+                detail: format!("{}: {e}", path.display()),
             });
         }
     };
@@ -193,16 +241,12 @@ pub fn load(channel: crate::Channel) -> Result<StoredCredentials, StoreError> {
 
 /// A batch held open for a session, spending from memory.
 ///
-/// # Why this is not read per request
+/// # Why this is not read and written per request
 ///
-/// Reading the keychain prompts the user on macOS, and a credential is spent on *every* model
-/// request, so touching the keychain per spend asks for a password several times per task. That is
-/// worse than it sounds: prompts that often train a person to approve them without reading, which
-/// costs more security than the per-use check was buying.
-///
-/// So the batch is read once, spent from memory, and the spent markers are written back when the
-/// session ends or when [`Wallet::flush`] is called. The exposure is unchanged: a decrypted
-/// credential was already in this process's memory the moment it was read.
+/// A credential is spent on *every* model request, and a batch is hundreds of them, so writing the
+/// whole file per spend would rewrite the same few hundred kilobytes several times a turn to change
+/// one boolean. The batch is read once, spent from memory, and the markers are written back when
+/// the session ends or when [`Wallet::flush`] is called.
 ///
 /// The failure mode is losing spend markers if the process dies, which means a credential that was
 /// presented is still recorded as unspent. That is deliberately the direction to fail in: a batch
@@ -210,31 +254,30 @@ pub fn load(channel: crate::Channel) -> Result<StoredCredentials, StoreError> {
 /// (recording a spend that never happened) is what runs the batch down for no benefit.
 pub struct Wallet {
     batch: StoredCredentials,
-    /// Where a flush writes to, or `None` for a detached batch that must never be written.
+    /// Where a flush writes, or `None` for a detached batch that must never be written.
     ///
-    /// Holding the destination rather than deciding at flush time is what makes a detached wallet
-    /// safe: there is no channel to write to, so no code path, including [`Drop`], can reach the
-    /// keychain. A boolean would leave a real destination sitting there for a later edit to use.
-    destination: Option<crate::Channel>,
+    /// Resolved when the wallet is opened rather than at flush time, which is what makes a detached
+    /// wallet safe: there is no path to write to, so no code path, including [`Drop`], can reach the
+    /// filesystem. A boolean would leave a real destination sitting there for a later edit to use.
+    destination: Option<PathBuf>,
     /// Whether anything has been spent since the last write.
     dirty: bool,
 }
 
 impl Wallet {
-    /// Read a channel's batch, prompting at most once.
-    pub fn open(channel: crate::Channel) -> Result<Self, StoreError> {
+    /// Read the batch, reading the file at most once.
+    pub fn open() -> Result<Self, StoreError> {
         Ok(Self {
-            batch: load(channel)?,
-            destination: Some(channel),
+            batch: load()?,
+            destination: Some(path()?),
             dirty: false,
         })
     }
 
-    /// Hold a batch that is already in hand, with no keychain behind it.
+    /// Hold a batch that is already in hand, with no file behind it.
     ///
     /// For tests, including those in crates above this one, which is why it is public. A test must
-    /// never touch the real keychain: it would prompt whoever ran it, and in CI there is nobody to
-    /// answer, so the run would fail on a machine difference rather than on the code.
+    /// never write to the real store: it would overwrite the credentials of whoever ran it.
     ///
     /// The result is detached, so spending and flushing behave normally but nothing is ever
     /// written, not even by [`Drop`].
@@ -293,13 +336,13 @@ impl Wallet {
 
     /// Write the spent markers back, if any.
     ///
-    /// A no-op when nothing was spent, so an idle session never touches the keychain and never
-    /// prompts, and a no-op for a detached batch, which has nowhere to write.
+    /// A no-op when nothing was spent, so an idle session never writes at all, and a no-op for a
+    /// detached batch, which has nowhere to write.
     pub fn flush(&mut self) -> Result<(), StoreError> {
-        let Some(channel) = self.destination.filter(|_| self.dirty) else {
+        if self.destination.is_none() || !self.dirty {
             return Ok(());
-        };
-        save(channel, &self.batch)?;
+        }
+        save(&self.batch)?;
         self.dirty = false;
         Ok(())
     }
@@ -329,12 +372,15 @@ pub struct Spent {
     pub remaining: usize,
 }
 
-/// Forget a channel's batch.
-pub fn clear(channel: crate::Channel) -> Result<(), StoreError> {
-    match entry(channel)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(StoreError::Unavailable {
-            detail: e.to_string(),
+/// Forget the imported batch.
+pub fn clear() -> Result<(), StoreError> {
+    let path = path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        // Already absent is the outcome asked for, not a failure.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(StoreError::Unusable {
+            detail: format!("{}: {e}", path.display()),
         }),
     }
 }
@@ -440,6 +486,51 @@ fn decode(raw: &str) -> Result<StoredCredentials, StoreError> {
 mod tests {
     use super::*;
 
+    /// One lock for the whole file, not one per test.
+    ///
+    /// `HOME` is process-wide and these tests run in threads of one process, so every test that
+    /// touches it contends for the same thing. A mutex declared inside each function would be a
+    /// different mutex, and two tests would then see each other's home.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Point `HOME` at a scratch directory, so no test can read or write the developer's own
+    /// credentials.
+    fn with_temp_home<T>(name: &str, body: impl FnOnce() -> T) -> T {
+        let dir = std::env::temp_dir().join(format!("bravebot-skus-{name}"));
+        with_home(Some(dir), body)
+    }
+
+    fn with_no_home<T>(body: impl FnOnce() -> T) -> T {
+        with_home(None, body)
+    }
+
+    fn with_home<T>(dir: Option<PathBuf>, body: impl FnOnce() -> T) -> T {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        if let Some(dir) = &dir {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir_all(dir).expect("scratch home");
+        }
+
+        let previous = std::env::var_os("HOME");
+        // SAFETY: single-threaded within the lock, and restored before returning.
+        match &dir {
+            Some(dir) => unsafe { std::env::set_var("HOME", dir) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let result = body();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        if let Some(dir) = &dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        result
+    }
+
     fn batch() -> StoredCredentials {
         StoredCredentials {
             order_id: "aaaaaaaa-1111-4222-8333-444444444444".to_string(),
@@ -465,8 +556,8 @@ mod tests {
         }
     }
 
-    /// The reason Wallet exists: spending must not touch the keychain, because a credential is
-    /// spent per model request and prompting that often is what drove the design.
+    /// The reason Wallet exists: spending must not write, because a credential is spent per model
+    /// request and each write rewrites the whole batch.
     ///
     /// Asserted through the dirty flag, which is what decides whether a write happens at all.
     #[test]
@@ -482,7 +573,7 @@ mod tests {
     }
 
     /// A session that spends nothing must never write, so opening the agent and not using premium
-    /// does not prompt for the keychain at all.
+    /// leaves the stored batch untouched.
     #[test]
     fn a_session_that_spends_nothing_never_writes() {
         let mut wallet = Wallet::detached(batch());
@@ -490,9 +581,9 @@ mod tests {
         assert!(!wallet.dirty);
     }
 
-    /// A detached batch must have no keychain destination at all, which is what lets these tests
-    /// run in CI: there is nobody to answer a password prompt there, so a test that could reach the
-    /// real keychain would hang or fail on a machine difference rather than on the code.
+    /// A detached batch must have no destination at all, which is what lets these tests run
+    /// anywhere: a test that could reach the real store would overwrite the credentials of whoever
+    /// ran it.
     #[test]
     fn a_detached_batch_has_nowhere_to_write() {
         let mut wallet = Wallet::detached(batch());
@@ -544,12 +635,118 @@ mod tests {
         assert_eq!(decode(&encode(&batch())).unwrap(), batch());
     }
 
-    /// Each channel keeps its own entry, so importing from Nightly must not overwrite Stable.
+    /// One subscription means one stored batch: importing from another channel must replace what
+    /// was there, not sit beside it. Two files meant a stale batch from an uninstalled channel kept
+    /// being reported, and a load picking whichever it reached first.
     #[test]
-    fn each_channel_is_stored_separately() {
-        let stable = format!("leo-premium-{}", crate::Channel::Stable.as_str());
-        let nightly = format!("leo-premium-{}", crate::Channel::Nightly.as_str());
-        assert_ne!(stable, nightly);
+    fn importing_again_replaces_the_previous_batch() {
+        with_temp_home("replace", || {
+            save(&batch()).expect("a write");
+
+            // A second import, as switching channels produces: same order, different tokens.
+            let mut second = batch();
+            second.credentials[0].unblinded = "from-the-other-channel".to_string();
+            save(&second).expect("a second write");
+
+            let loaded = load().expect("a read");
+            assert_eq!(loaded, second, "the newer import must win");
+            assert_eq!(
+                loaded.credentials.len(),
+                second.credentials.len(),
+                "the batches must not have accumulated"
+            );
+        });
+    }
+
+    /// The point of moving off the keychain: a batch must survive a write and read back with no
+    /// secret store involved, on a machine with no desktop session.
+    #[test]
+    fn a_batch_written_to_the_file_is_read_back() {
+        with_temp_home("roundtrip", || {
+            assert!(matches!(load(), Err(StoreError::NotFound)));
+
+            save(&batch()).expect("a write");
+            assert_eq!(load().expect("a read"), batch());
+        });
+    }
+
+    /// The file holds a bearer secret, so it must not be readable by other users on the machine.
+    /// Checked on the real file rather than trusted from the open flags, since an existing file
+    /// keeps its own mode and the truncating reopen is the easy way to lose this.
+    #[test]
+    fn the_file_is_not_readable_by_anyone_else() {
+        with_temp_home("mode", || {
+            use std::os::unix::fs::PermissionsExt;
+
+            save(&batch()).expect("a write");
+            // Written twice: the second open finds the file already there, which is the case that
+            // would silently keep a wider mode set by something else.
+            save(&batch()).expect("a second write");
+
+            let path = path().expect("a home");
+            let mode = std::fs::metadata(&path)
+                .expect("the file")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "group or other can reach {}",
+                path.display()
+            );
+        });
+    }
+
+    /// Discarding an import must remove the secret from disk, and asking twice is not an error:
+    /// `--forget` on a machine that never imported is a request that is already satisfied.
+    #[test]
+    fn forgetting_removes_the_file_and_is_repeatable() {
+        with_temp_home("forget", || {
+            save(&batch()).expect("a write");
+            let path = path().expect("a home");
+            assert!(path.exists());
+
+            clear().expect("a clear");
+            assert!(!path.exists(), "the secret is still on disk");
+            clear().expect("clearing nothing is not an error");
+        });
+    }
+
+    /// The store is under the user's own directory, not the working directory, so credentials do
+    /// not depend on where the agent was started from.
+    #[test]
+    fn the_file_lives_in_the_users_own_directory() {
+        with_temp_home("location", || {
+            let path = path().expect("a home");
+            let home = std::env::var("HOME").expect("a home");
+            assert!(path.starts_with(&home), "{}", path.display());
+            assert!(path.starts_with(PathBuf::from(&home).join(DIRECTORY)));
+        });
+    }
+
+    /// With no home there is nowhere a secret belongs, and inventing one would write it somewhere
+    /// the user never chose. Reported rather than treated as nothing imported, since a paid
+    /// subscription silently unused is what PREM-8 exists to prevent.
+    #[test]
+    fn no_home_directory_is_reported_rather_than_guessed() {
+        with_no_home(|| {
+            assert!(matches!(path(), Err(StoreError::Unusable { .. })));
+            assert!(matches!(load(), Err(StoreError::Unusable { .. })));
+        });
+    }
+
+    /// A file holding something another version wrote must be reported, not read as absent: the
+    /// remedy is re-importing, and treating it as absent would drop the user to the free tier
+    /// without a word.
+    #[test]
+    fn a_file_that_is_not_json_is_reported_when_loaded() {
+        with_temp_home("garbage", || {
+            let path = path().expect("a home");
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
+            std::fs::write(&path, "not json at all").expect("a write");
+
+            assert!(matches!(load(), Err(StoreError::Malformed { .. })));
+        });
     }
 
     /// A credential is single-use, so the one presented must be valid *now*: a batch covers

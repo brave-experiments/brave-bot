@@ -679,10 +679,12 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
     // Stable is what someone importing without saying which install means.
     let channel = channel.unwrap_or(bravebot_skus::Channel::Stable);
 
+    // There is one stored batch, so forgetting takes no channel: naming one would suggest
+    // `--forget nightly` leaves a stable import in place, and it does not.
     if forget {
-        return match bravebot_skus::store::clear(channel) {
+        return match bravebot_skus::store::clear() {
             Ok(()) => {
-                println!("{}", t!(leo_forgotten, channel = channel.as_str()));
+                println!("{}", t!(leo_forgotten));
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -751,12 +753,30 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         .unwrap_or("unknown")
         .to_string();
 
-    if let Err(err) = bravebot_skus::store::save(channel, &credentials) {
+    if let Err(err) = bravebot_skus::store::save(&credentials) {
         eprintln!("{err}");
         return ExitCode::FAILURE;
     }
 
-    println!("{}", t!(leo_stored, count = count, expiry = last));
+    // Named so the user knows where the secret went: it is an ordinary file now, and one they may
+    // want to inspect, exclude from a backup, or delete by hand.
+    let where_stored = match bravebot_skus::store::path() {
+        Ok(path) => path.display().to_string(),
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!(
+        "{}",
+        t!(
+            leo_stored,
+            count = count,
+            path = where_stored,
+            expiry = last
+        )
+    );
     println!("{}", t!(leo_browser_untouched));
     ExitCode::SUCCESS
 }
@@ -896,22 +916,22 @@ fn detail(name: impl AsRef<str>, value: impl AsRef<str>) {
     println!("{}", aligned(name, value, DETAIL));
 }
 
-/// Report which channels have an imported subscription, and how much of it is left.
+/// Report the imported subscription, and how much of it is left.
 ///
-/// Counts only: a credential is a bearer secret, so none of it is printed.
+/// Counts only: a credential is a bearer secret, so none of it is printed. The environment rather
+/// than the channel it came from, because that is what decides whether the batch can be spent
+/// against the endpoint this build talks to, and it is what the file records.
 fn report_subscription() {
-    for channel in bravebot_skus::Channel::ALL {
-        if let Ok(stored) = bravebot_skus::store::load(channel) {
-            fact(
-                t!(doctor_leo),
-                t!(
-                    doctor_subscription,
-                    channel = channel.as_str(),
-                    unspent = stored.remaining(),
-                    total = stored.credentials.len()
-                ),
-            );
-        }
+    if let Ok(stored) = bravebot_skus::store::load() {
+        fact(
+            t!(doctor_leo),
+            t!(
+                doctor_subscription,
+                environment = stored.environment.as_str(),
+                unspent = stored.remaining(),
+                total = stored.credentials.len()
+            ),
+        );
     }
 }
 

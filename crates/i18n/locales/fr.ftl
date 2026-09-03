@@ -115,7 +115,7 @@ doctor-settings-names = { $names }
 doctor-settings-absent = aucun settings.json
 doctor-leo = leo
 doctor-subscription =
-    abonnement { $channel } importé, { $unspent } identifiants sur { $total } non dépensés
+    abonnement { $environment } importé, { $unspent } identifiants sur { $total } non dépensés
 doctor-confinement = confinement { $level }
 confinement-kernel = imposé par le noyau
 confinement-partial = partiel
@@ -135,13 +135,12 @@ leo-no-premium-endpoint =
 leo-set-and-rebuild = définissez { $variable } et recompilez
 leo-unknown-channel = canal inconnu : { $channel }
 leo-expected-channel = attendu parmi : stable, beta, nightly, development
-leo-forgotten = abonnement { $channel } oublié
+leo-forgotten = abonnement importé oublié
 leo-looking = recherche d'un abonnement Leo dans Brave { $channel }
 leo-found = abonnement { $environment } trouvé : { $order }
 leo-registering = enregistrement de cette installation comme nouvel appareil
 leo-stored =
-    { $count } identifiants enregistrés dans le trousseau du système, valables jusqu'au
-    { $expiry }
+    { $count } identifiants enregistrés dans { $path }, valables jusqu'au { $expiry }
 leo-browser-untouched =
     les requêtes premium les utiliseront désormais ; les identifiants du navigateur n'ont
     pas été touchés

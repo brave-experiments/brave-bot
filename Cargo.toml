@@ -21,7 +21,6 @@ hmac = "0.12"
 # Secret storage for the imported subscription credentials. Default features only:
 # the sync-secret-service backend would pull in C libdbus and break the cross-builds,
 # whereas the default zbus backend is pure Rust on every target here.
-keyring = "4"
 landlock = "0.4"
 libc = "0.2"
 # Pinned to the major version challenge-bypass-ristretto takes its RNG traits from, so

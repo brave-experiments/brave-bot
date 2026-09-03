@@ -881,7 +881,7 @@ fn unparseable_frames_do_not_lose_the_reply() {
     assert_eq!(completion.content.declassify(&proof), "still here");
 }
 
-/// A stub subscription handing out one credential, so routing can be tested without a keychain.
+/// A stub subscription handing out one credential, so routing can be tested without a real store.
 struct StubSubscription {
     remaining: usize,
 }

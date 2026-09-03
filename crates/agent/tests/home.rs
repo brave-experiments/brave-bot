@@ -84,3 +84,41 @@ fn an_empty_home_is_treated_as_no_home_at_all() {
     }
     assert_eq!(found, None, "an empty home was joined onto anyway");
 }
+
+/// A batch imported from the wrong channel must be reported, not passed over in silence.
+///
+/// A credential only verifies against the deployment that signed it, so a staging batch cannot be
+/// spent against the production endpoint. Skipping it quietly is the silent downgrade PREM-8 exists
+/// to prevent: the request goes out on the free tier, the endpoint answers a premium model name with
+/// a weaker model rather than an error, and the subscription the user is paying for goes unused with
+/// nothing on screen to connect the two.
+#[test]
+fn a_subscription_imported_for_another_environment_is_reported() {
+    with_temp_home("environment-mismatch", |_| {
+        let batch = bravebot_skus::StoredCredentials {
+            order_id: "aaaaaaaa-1111-4222-8333-444444444444".to_string(),
+            environment: bravebot_skus::Environment::Staging,
+            item_id: "b7114ccc-b3a5-4951-9a5d-8b7a28731111".to_string(),
+            issuer: "brave.com?sku=brave-leo-premium".to_string(),
+            credentials: vec![bravebot_skus::store::Credential {
+                unblinded: "token".to_string(),
+                valid_from: "2026-08-22T00:00:00".to_string(),
+                valid_to: "2099-08-23T00:00:00".to_string(),
+                spent: false,
+                rfc: true,
+            }],
+        };
+        bravebot_skus::store::save(&batch).expect("a write into the scratch home");
+
+        let discovery =
+            bravebot_agent::ImportedSubscription::discover("https://ai-chat.bsg.brave.com");
+
+        let complaint = discovery
+            .complaint()
+            .expect("a staging batch cannot be spent on production, and must say so");
+        // Which environment it holds and what to do, since "premium is off" leaves nothing to act on.
+        assert!(complaint.contains("staging"), "{complaint}");
+        assert!(complaint.contains("import-leo-creds"), "{complaint}");
+        assert!(discovery.found().is_none(), "nothing spendable");
+    });
+}
