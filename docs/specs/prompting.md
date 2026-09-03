@@ -163,3 +163,17 @@ question.
 `verified-by: bravebot_tui::remote_confirm::a_dropped_answer_channel_answers_no_question`
 `verified-by: bravebot_tui::remote_confirm::a_refusal_travels_back_too`
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
+
+<a id="PROMPT-10"></a>
+### PROMPT-10: a prompt's own chrome is wholly the theme's
+
+Every cell a prompt's border encloses carries the theme's background and its text colour, whatever
+is drawn over them. A prompt that painted only its border is a hole in the palette, since clearing
+the cells under a panel empties them without colouring them.
+
+**Why.** The boundary between what the system is asking and what somebody else's bytes say is what
+a person reads when they answer, and a frame half in the theme and half in the terminal's own
+colours is a weaker one. Text that sets no colour of its own is otherwise the terminal's default,
+which under a light theme in a dark terminal is the path to unreadable.
+
+`verified-by: bravebot_tui::confirm::every_prompt_paints_the_themes_background_inside_its_border`

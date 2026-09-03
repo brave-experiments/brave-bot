@@ -17,7 +17,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
@@ -163,17 +163,7 @@ fn answer_for(key: KeyEvent) -> Option<Response> {
 /// prompt asked nothing and the answer went to a screen that never showed what it was for.
 fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 {
     let area = centred(frame.area());
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::brand_primary()))
-        .title(format!(" {} ", t!(write_title)));
-    // Before the body rather than after it, because the hunks are laid out against the width they
-    // will be drawn at: a margin decided without knowing the width is a margin the first wrapped
-    // row escapes.
-    let inside = block.inner(area);
+    let inside = panel(frame, area, theme::brand_primary(), t!(write_title));
 
     let (verb, colour) = match request.intent {
         Intent::Create => (t!(write_create), theme::ok()),
@@ -284,8 +274,6 @@ fn draw(frame: &mut ratatui::Frame, request: &WriteRequest, scroll: u16) -> u16 
             Style::default().fg(theme::muted()),
         ),
     ]);
-
-    frame.render_widget(block, area);
 
     // One row for the keys, the rest for the diff. Split before the body is laid out, so the
     // question keeps its row whatever the body turns out to be.
@@ -432,7 +420,7 @@ pub fn ask_run<B: Backend>(terminal: &mut Terminal<B>, request: &RunRequest) -> 
 /// exactly the argv the endorsement will be bound to.
 fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u16 {
     let area = centred(frame.area());
-    frame.render_widget(Clear, area);
+    let inside = panel(frame, area, theme::accent(), t!(run_title));
 
     let mut lines = vec![
         Line::from(vec![
@@ -584,14 +572,6 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     ]);
     let keys = Line::from(key_spans);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::accent()))
-        .title(format!(" {} ", t!(run_title)));
-    let inside = block.inner(area);
-    frame.render_widget(block, area);
-
     // One row for the keys, the rest for the stages, split before the body is laid out so the
     // question keeps its row whatever the body turns out to be.
     let rows = Layout::default()
@@ -680,16 +660,7 @@ pub fn ask_output<B: Backend>(terminal: &mut Terminal<B>, request: &OutputReques
 /// than the box becomes several rows.
 fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16) -> u16 {
     let area = centred(frame.area());
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::brand_primary()))
-        .title(format!(" {} ", t!(output_title)));
-    // Before the body, because the output is laid out against the width it will be drawn at. A
-    // command's output is untrimmed, so reaching the wrap point takes nothing unusual.
-    let inside = block.inner(area);
+    let inside = panel(frame, area, theme::brand_primary(), t!(output_title));
 
     let marked = Style::default().fg(theme::running());
     let margin = Span::styled("┃ ", marked);
@@ -766,8 +737,6 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
         ),
     ]);
 
-    frame.render_widget(block, area);
-
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -827,15 +796,7 @@ pub fn ask_vouch<B: Backend>(terminal: &mut Terminal<B>, request: &VouchRequest)
 /// read, because that is exactly what it is until this question is answered.
 fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -> u16 {
     let area = centred(frame.area());
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::ok()))
-        .title(format!(" {} ", t!(vouch_title)));
-    // Before the body, because the preview is laid out against the width it will be drawn at.
-    let inside = block.inner(area);
+    let inside = panel(frame, area, theme::ok(), t!(vouch_title));
 
     let marked = Style::default().fg(theme::running());
     let margin = Span::styled("┃ ", marked);
@@ -903,8 +864,6 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
         ),
     ]);
 
-    frame.render_widget(block, area);
-
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -927,6 +886,31 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     frame.render_widget(Paragraph::new(keys), rows[1]);
 
     furthest
+}
+
+/// Draw the outer box of a prompt, and return the area inside its border.
+///
+/// The theme's own background as well as its border, because `Clear` empties cells without
+/// colouring them: a panel that painted only its border would be a hole in the palette, with the
+/// themed transcript still drawn around it, and the boundary between what the system is asking and
+/// what somebody else's bytes say is exactly what a person is reading when they answer. The text
+/// colour comes with it, so a span that sets none of its own is the theme's rather than the
+/// terminal's.
+fn panel(frame: &mut ratatui::Frame, area: Rect, border: Color, title: &str) -> Rect {
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(format!(" {title} "))
+        .style(Style::default().bg(theme::background()).fg(theme::text()));
+    // Measured before the block is handed over, because the bodies are laid out against the width
+    // they will be drawn at: a margin decided without knowing the width is a margin the first
+    // wrapped row escapes.
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+    inside
 }
 
 /// A centred box, sized to the terminal but never larger than it.
@@ -1570,6 +1554,103 @@ mod tests {
         });
 
         assert_marked_on_every_row(&drawn, "PADDING");
+    }
+
+    /// `Clear` empties cells without colouring them, so a panel that painted only its border came
+    /// out as a hole in the palette: themed border, terminal-default everything else, with the
+    /// themed transcript still drawn around it. These four screens are the only place a person
+    /// authorises anything, and the frame around untrusted content is what they read when they
+    /// decide, so it has to be wholly the theme's.
+    ///
+    /// All four, because the panel they share is only shared until somebody adds a fifth.
+    #[test]
+    fn every_prompt_paints_the_themes_background_inside_its_border() {
+        let write = request("fn main() {}", None);
+        let run = a_run(false);
+        let output = an_output("Darwin\n");
+        let vouch = VouchRequest {
+            path: "notes.md".into(),
+            preview: "some contents".into(),
+            truncated: false,
+        };
+
+        let _held = theme::exclusive();
+        let theme = theme::find("nord").expect("nord is built in");
+        theme::apply(&theme);
+        let painted = theme::background();
+        assert!(
+            theme::paints_background(),
+            "the theme under test leaves the terminal's own background alone"
+        );
+
+        // Collected while the theme is in force and asserted after it is put back, so a failing
+        // assertion does not leave nord behind for whatever runs next.
+        let unpainted = [
+            (
+                "write",
+                unpainted_cell(painted, |frame| {
+                    draw(frame, &write, 0);
+                }),
+            ),
+            (
+                "run",
+                unpainted_cell(painted, |frame| {
+                    draw_run(frame, &run, 0);
+                }),
+            ),
+            (
+                "output",
+                unpainted_cell(painted, |frame| {
+                    draw_output(frame, &output, 0);
+                }),
+            ),
+            (
+                "vouch",
+                unpainted_cell(painted, |frame| {
+                    draw_vouch(frame, &vouch, 0);
+                }),
+            ),
+        ];
+        theme::apply_brave();
+
+        for (name, cell) in unpainted {
+            assert_eq!(
+                cell, None,
+                "the {name} prompt left a cell inside its border in the terminal's own colours"
+            );
+        }
+    }
+
+    /// The first cell inside a prompt's border that is not the theme's, or `None` when every one
+    /// of them is.
+    ///
+    /// Every enclosed cell rather than a sample, including the rows the body did not reach: an
+    /// unpainted row below the keys is the same hole in the palette as an unpainted one beside them.
+    fn unpainted_cell(
+        background: Color,
+        draw_it: impl FnOnce(&mut ratatui::Frame),
+    ) -> Option<(u16, u16, Color, Color)> {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        let mut draw_it = Some(draw_it);
+        terminal
+            .draw(|frame| {
+                if let Some(draw_it) = draw_it.take() {
+                    draw_it(frame);
+                }
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let inside = centred(*buffer.area());
+        (1..inside.height - 1)
+            .flat_map(|y| (1..inside.width - 1).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let cell = buffer
+                    .cell((inside.x + x, inside.y + y))
+                    .expect("a cell inside the border");
+                (cell.bg != background || cell.fg == Color::Reset)
+                    .then_some((x, y, cell.bg, cell.fg))
+            })
     }
 
     /// The cheapest surface to see the defect on: the preview of a file nobody has vouched for is
