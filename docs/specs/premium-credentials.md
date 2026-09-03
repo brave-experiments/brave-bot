@@ -172,6 +172,9 @@ separate daemon behind it. Every store that was tried is named in the refusal re
 PREM-8, not only the last one, since the Secret Service and the kernel keyring fail for unrelated
 reasons and keeping only one hides why the other was skipped.
 
+Before the kernel keyring is opened, this process joins a fresh, anonymous session keyring of its
+own, rather than keeping whatever it inherited.
+
 **Why.** A plain SSH login has no desktop session behind it, so nothing ever registers the Secret
 Service on its D-Bus bus. Without a fallback, PREM-8 would report every session on such a machine
 as a downgrade to the free tier, with no fix short of installing and running a desktop keyring
@@ -179,6 +182,17 @@ daemon by hand for a machine that has no desktop. The kernel keyring needs no da
 only the syscalls the running kernel already provides. It does not survive a reboot, unlike the
 Secret Service, which is why it is tried second rather than first: a store that outlives a reboot
 is preferred wherever one is reachable at all.
+
+The session join exists because the credential this backend actually stores in lives in the
+kernel's *persistent* keyring, kept by UID and unaffected by any of this, but reaching it means
+linking it into a session keyring, and a process inherits that from whatever started it, back to
+the login that opened the shell. A `tmux` server outlives the SSH connection that started it by
+design, and every process inside it keeps running after that connection drops, but the session
+keyring it inherited does not: the kernel revokes it the moment that login ends, and from then on
+every attempt to reach the persistent keyring through it fails, reporting a revoked key that has
+nothing to do with whether the credentials are actually still there. Joining a new one first
+costs nothing when the inherited one was already fine, and is the difference between working and
+not the moment it was not.
 
 `verified-by: bravebot_skus::store::the_first_store_that_opens_is_the_one_used`
 `verified-by: bravebot_skus::store::every_failing_candidates_reason_is_kept`

@@ -27,3 +27,7 @@ zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] 
 # common over plain SSH): the in-kernel keyring, reached through raw `keyctl` syscalls rather
 # than a C library, so it costs nothing in the cross-build container either.
 linux-keyutils-keyring-store = "1"
+# For the one syscall `linux-keyutils-keyring-store` does not make itself: joining a fresh
+# session keyring before it links the persistent keyring into the one this process inherited.
+# See `join_a_fresh_session_keyring` in store.rs.
+libc = { workspace = true }

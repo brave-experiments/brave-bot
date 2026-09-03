@@ -173,6 +173,42 @@ type StoreCandidate = (
     fn() -> keyring_core::Result<Arc<CredentialStore>>,
 );
 
+/// Join a fresh, anonymous session keyring for this process before the kernel keyring is
+/// touched at all.
+///
+/// A process inherits its session keyring from whatever started it, all the way back to the
+/// login that opened this session's shell. If that login has since logged out, which happens
+/// the moment an SSH connection drops even though a `tmux` server outlives it and every process
+/// inside it keeps running, the kernel revokes the session keyring it inherited. Every attempt
+/// to reach the persistent keyring through it then fails with `KeyRevoked`, even though the
+/// persistent keyring itself, kept by UID rather than by session, was never touched: `keyctl
+/// get_persistent @s` from a shell in exactly this state still names the same keyring it always
+/// has, once asked to link into a session keyring that still works.
+///
+/// Joining a new one here is the standard fix, and it costs nothing to always do: it replaces
+/// only this process's own session keyring, is invisible to whatever shell started it, and a
+/// session keyring that was fine already is simply replaced by another fine one.
+#[cfg(target_os = "linux")]
+fn join_a_fresh_session_keyring() {
+    const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
+    // SAFETY: a null name always creates a new anonymous session keyring rather than joining or
+    // creating a named one, and the call touches nothing but this process's own keyring
+    // attachment. The result is not checked: this is a best-effort improvement on whatever
+    // session keyring the process already had, and if it somehow fails, the candidate below
+    // fails exactly as it would have without this call, with a `KeyRevoked` or similar detail
+    // that says so.
+    unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            KEYCTL_JOIN_SESSION_KEYRING,
+            0u64,
+            0u64,
+            0u64,
+            0u64,
+        );
+    }
+}
+
 /// Every store worth trying, in the order they are tried.
 ///
 /// The Secret Service is first, so a desktop session with one keeps using it exactly as before:
@@ -184,6 +220,7 @@ fn candidates() -> Vec<StoreCandidate> {
     })];
     #[cfg(target_os = "linux")]
     candidates.push(("the kernel keyring", || {
+        join_a_fresh_session_keyring();
         linux_keyutils_keyring_store::Store::new().map(|s| s as Arc<CredentialStore>)
     }));
     candidates
