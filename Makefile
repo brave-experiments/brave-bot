@@ -12,7 +12,7 @@ help:
 	@echo "bravebot $(VERSION)"
 	@echo
 	@echo "Development:"
-	@echo "  make init           Link agents/ into .claude/ and .bravebot/, install hooks"
+	@echo "  make init           Configure bravebot, Claude Code and Codex; install hooks"
 	@echo "  make hooks          Point git at the checked-in pre-commit hook"
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"
@@ -39,9 +39,9 @@ help:
 	@echo "  make clean          Remove build output"
 
 # agents/ is the checked-in source of truth for skills and AGENTS.md, and no tool reads
-# it: Claude Code looks under .claude/ and bravebot under .bravebot/ and the workspace
-# root. This creates the symlinks that bridge them. The links are gitignored, so a fresh
-# clone needs it once, and it is idempotent, so re-running costs nothing.
+# it: each tool looks under its own discovery paths. This creates the symlinks that
+# bridge them. The links are gitignored, so a fresh clone needs it once, and it is
+# idempotent, so re-running costs nothing.
 .PHONY: init
 init: hooks
 	python3 agents/setup.py link

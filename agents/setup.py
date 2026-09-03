@@ -3,11 +3,13 @@
 
 The source of truth is `agents/`: versioned, reviewed, and named for no particular
 vendor. No tool reads it. Claude Code discovers skills, slash commands and subagents
-under `.claude/`, and bravebot discovers skills under `.bravebot/skills` and its
-instructions from `AGENTS.md` at the workspace root. This script bridges the two by
-creating one symlink per entry, so a skill is written once and both tools see it:
+under `.claude/`; Codex discovers skills under `.agents/skills`; and bravebot discovers
+skills under `.bravebot/skills` and its instructions from `AGENTS.md` at the workspace
+root. This script bridges them by creating one symlink per entry, so a skill is written
+once and every tool sees it:
 
     .claude/skills/<name>    ->  agents/skills/<name>
+    .agents/skills/<name>    ->  agents/skills/<name>
     .bravebot/skills/<name>  ->  agents/skills/<name>
     .claude/CLAUDE.md        ->  agents/AGENTS.md
     AGENTS.md                ->  agents/AGENTS.md
@@ -47,17 +49,16 @@ _IS_WINDOWS = os.name == 'nt'
 # One source directory fans out to one link per child, rather than linking the directory
 # itself, so a discovery dir can also hold entries this repo does not own.
 #
-# bravebot reads skills only (crates/agent/src/skills.rs). Slash commands and subagents
-# are Claude Code concepts, so a `commands/` or `agents/` directory here has nowhere to
-# go for bravebot and is simply not linked for it.
+# bravebot and Codex read skills only. Slash commands and subagents in this tree are
+# Claude Code concepts, so a `commands/` or `agents/` directory has nowhere else to go.
 _FANOUT = [
-    ('skills', ['.claude/skills', '.bravebot/skills']),
+    ('skills', ['.claude/skills', '.agents/skills', '.bravebot/skills']),
     ('commands', ['.claude/commands']),
     ('agents', ['.claude/agents']),
 ]
 
-# The one instructions file, under the name each tool looks for. bravebot reads it from
-# the workspace root (crates/agent/src/preamble.rs); Claude Code reads `.claude/CLAUDE.md`.
+# The one instructions file, under the name each tool looks for. bravebot and Codex read
+# it from the workspace root; Claude Code reads `.claude/CLAUDE.md`.
 _FILES = [
     ('AGENTS.md', ['.claude/CLAUDE.md', 'AGENTS.md']),
 ]
@@ -161,7 +162,7 @@ def link(_args) -> bool:
             ok = False
 
     if changed:
-        _log('Linked %d path(s) from agents/ into .claude/ and .bravebot/', changed)
+        _log('Linked %d path(s) from agents/ into agent discovery paths.', changed)
     return ok
 
 
