@@ -1030,9 +1030,16 @@ impl Session {
     ///
     /// Everything that puts a whole line in the box goes through here, so no path can leave the
     /// caret pointing into a line that is no longer there.
+    ///
+    /// The list of keys goes with it, for the same reason and in the same one place. It is not part
+    /// of the line and cannot be rewritten with it, but it stands over the box, and a list left up
+    /// over a line that arrived under it belongs to a press two prompts ago. Several callers took it
+    /// down themselves and the ones that did not were the ones a person reached mid-turn: recalling
+    /// an earlier prompt, and a stopped turn handing its prompt back.
     fn set_input(&mut self, line: impl Into<String>) {
         self.input = line.into();
         self.caret = self.input.len();
+        self.shortcuts = false;
     }
 
     /// Whether the line has more than one line in it, which is what gives Up and Down something
@@ -1850,11 +1857,9 @@ impl Session {
             self.history.leave();
             self.set_input(String::new());
             // The mode goes with the line. Escape means "never mind this", and leaving the marker
-            // behind would arm the next thing typed as a command.
+            // behind would arm the next thing typed as a command. The list of keys goes with the
+            // line too, which is settled where the line is written.
             self.shell = false;
-            // And so does the list of keys: Escape takes down whatever is up, and on an empty line
-            // the list is the only thing there is to take down.
-            self.shortcuts = false;
         }
     }
 
@@ -2087,7 +2092,6 @@ impl Session {
         // The box is about to be rewritten, so the things standing over it that belong to the line
         // it held go, exactly as they do for anything else that writes a whole line.
         self.history.leave();
-        self.shortcuts = false;
         self.completion = 0;
 
         let mut lines = Vec::new();
@@ -4270,6 +4274,36 @@ mod tests {
         s.recall_older();
 
         assert!(s.submit().is_none(), "a second turn started mid-flight");
+    }
+
+    /// A list left up over a line that arrived under it belongs to a press two prompts ago. Every
+    /// path that writes a whole line takes it down, and these two are the ones a person reaches
+    /// while a turn is in flight: asking for the keys, then recalling a prompt or stopping the turn.
+    #[test]
+    fn a_line_that_arrives_under_the_list_takes_the_list_down() {
+        let mut recalled = session();
+        for c in "first".chars() {
+            recalled.type_char(c);
+        }
+        recalled.submit().expect("submitted");
+        recalled.type_char('?');
+        assert!(recalled.shortcuts, "the list did not come up");
+
+        recalled.recall_older();
+        assert_eq!(recalled.input, "first");
+        assert!(!recalled.shortcuts, "the list stands over a recalled line");
+
+        let mut stopped = session();
+        for c in "first".chars() {
+            stopped.type_char(c);
+        }
+        stopped.submit().expect("submitted");
+        stopped.type_char('?');
+        assert!(stopped.shortcuts, "the list did not come up");
+
+        stopped.restore("first".to_string());
+        assert_eq!(stopped.input, "first");
+        assert!(!stopped.shortcuts, "the list stands over a stopped prompt");
     }
 
     mod todos {

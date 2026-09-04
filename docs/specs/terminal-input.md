@@ -361,6 +361,11 @@ afterwards. A second `?` takes the list down, as does Escape or typing anything 
 empty line, since a `?` in a sentence is the punctuation somebody is asking a question with, and in
 shell mode it is a glob for the shell to expand.
 
+**A line arriving in the box takes the list down**, whichever path put it there: recall, a stashed
+line coming back, the queue coming back, an editor, or a stopped turn handing its prompt back. The
+list stands over the box, so one left up over a line that arrived under it belongs to a press two
+prompts ago.
+
 The list is not a completion. There is nothing in it to choose, so Tab and the arrows go on meaning
 what they mean everywhere else while it is up.
 
@@ -383,6 +388,7 @@ lets the line fit a terminal eighty wide whole.
 `verified-by: bravebot_tui::app::a_question_mark_in_shell_mode_is_a_glob`
 `verified-by: bravebot_tui::app::typing_takes_the_list_down`
 `verified-by: bravebot_tui::app::escape_takes_the_list_down`
+`verified-by: bravebot_tui::state::a_line_that_arrives_under_the_list_takes_the_list_down`
 `verified-by: bravebot_tui::render::a_question_mark_lists_every_shortcut`
 `verified-by: bravebot_tui::render::the_shortcuts_are_not_something_to_complete`
 `verified-by: bravebot_tui::render::the_shortcuts_use_fewer_rows_where_the_width_allows`
