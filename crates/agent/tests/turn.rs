@@ -926,27 +926,34 @@ fn time_spent_waiting_for_an_approval_is_not_charged_to_the_tool() {
     }
 
     let scratch = Scratch::new("timing-stalled");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("vendor/page.txt"), "from the web\n").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
     let (endpoint, _received) = serve_sequence(vec![
-        tool_request_2(
-            "write_file",
-            r#"{"path":"out.txt","contents":"written body"}"#,
-        ),
+        tool_request_2("read_file", r#"{"path":"vendor/page.txt"}"#),
+        tool_request_2("write_file", r#"{"path":"out.txt","contents_ref":"ref:1"}"#),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    let task = Task::new("write out.txt");
-    let outcome = turn::run(
+    // Untrusted bytes into a trusted path, which is a write somebody still reviews. Ordinary work
+    // is silent, and a silent write would leave nobody to wait for.
+    let mut trust = bravebot_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("vendor");
+
+    let task = Task::new("copy vendor/page.txt into out.txt").without_vetting();
+    let outcome = turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut SlowlyApproves,
         &mut sink,
+        trust,
     )
     .expect("turn runs");
 
@@ -961,8 +968,8 @@ fn time_spent_waiting_for_an_approval_is_not_charged_to_the_tool() {
         timing.tools_ms < 100,
         "the approval wait was charged to the tool as well: {timing:?}"
     );
-    // Two rounds went to a local server, so this is small but real, and it must not have swallowed
-    // the wait either.
+    // Three rounds went to a local server, so this is small but real, and it must not have
+    // swallowed the wait either.
     assert!(
         timing.inference_ms < 120,
         "the approval wait was charged to the model: {timing:?}"
@@ -2977,9 +2984,6 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
             &mut self,
             _request: &bravebot_agent::WriteRequest,
         ) -> bravebot_agent::Decision {
-            self.asked
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.cancel.cancel();
             bravebot_agent::Decision::Approve
         }
 
@@ -2987,7 +2991,10 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
             &mut self,
             _request: &bravebot_agent::RunRequest,
         ) -> bravebot_agent::RunDecision {
-            bravebot_agent::RunDecision::reject()
+            self.asked
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.cancel.cancel();
+            bravebot_agent::RunDecision::approve()
         }
 
         fn confirm_read_output(
@@ -3008,11 +3015,19 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
     let scratch = Scratch::new("cancel-tool");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    // Two writes in one round. No trust map, so each is reviewed, and the first review cancels.
+    // Two runs in one round. Nobody has vouched for either program, so each is reviewed, and the
+    // first review cancels. A run rather than a write because a write of the turn's own trusted
+    // output into a place the user opened is not reviewed at all.
     let (endpoint, _received) = serve_sequence(vec![
         two_tool_requests(
-            ("write_file", r#"{"path":"first.txt","contents":"one"}"#),
-            ("write_file", r#"{"path":"second.txt","contents":"two"}"#),
+            (
+                "run",
+                r#"{"pipeline":[{"program":"touch","args":["first.txt"]}]}"#,
+            ),
+            (
+                "run",
+                r#"{"pipeline":[{"program":"touch","args":["second.txt"]}]}"#,
+            ),
         ),
         reply_with("done"),
     ]);
@@ -3044,12 +3059,10 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
     assert_eq!(
         asked.load(std::sync::atomic::Ordering::Relaxed),
         1,
-        "the second write was still reviewed after cancellation"
+        "the second run was still reviewed after cancellation"
     );
-    assert!(
-        scratch.path.join("first.txt").exists(),
-        "the approved write did not happen"
-    );
+    // The stop lands inside the first review, so not even the run it approved goes ahead. What
+    // the count above pins is the part that matters: the second call was never put to anybody.
     assert!(
         !scratch.path.join("second.txt").exists(),
         "a tool ran after the turn was cancelled"

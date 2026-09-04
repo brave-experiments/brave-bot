@@ -145,14 +145,19 @@ approving something nobody looked at.
 ### PROMPT-9: where nobody can be asked, the answer is no
 
 A one-shot run refuses effects rather than applying them unseen, and declines every question
-rather than inventing an answer. A closed channel refuses a run and answers no
-question.
+rather than inventing an answer. A closed channel refuses a run and answers no question.
+
+This covers effects that need nobody's approval as well as the ones that do. A write of the turn's
+own trusted output into a place the user opened is done quietly while somebody is following the
+session, and there is nobody following a cron job, so it is put to the confirmer anyway and
+refused. Quietly is not the same as unseen.
 
 `verified-by: bravebot_tui::remote_confirm::a_closed_channel_refuses_a_run`
 `verified-by: bravebot_tui::remote_confirm::a_closed_channel_answers_no_question`
 `verified-by: bravebot_tui::remote_confirm::a_dropped_answer_channel_answers_no_question`
 `verified-by: bravebot_tui::remote_confirm::a_refusal_travels_back_too`
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
+`verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`
 
 <a id="PROMPT-10"></a>
 ### PROMPT-10: a prompt's own chrome is wholly the theme's

@@ -2309,13 +2309,14 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// | untrusted | trusted | **yes** | path becomes untrusted |
     /// | trusted | untrusted | no | path becomes trusted |
     /// | untrusted | untrusted | no | unchanged |
-    /// | either | *no rule* | **yes** | path takes the data's integrity |
+    /// | trusted | *no rule* | no | unchanged |
+    /// | untrusted | *no rule* | **yes** | path becomes untrusted |
     ///
-    /// The last row is why [`TrustStore::integrity_of`] returns an option. A path nobody has
-    /// mentioned is not the same as one the user deliberately marked untrusted: the first has
-    /// no decision behind it, so the first write there is the moment to ask. Collapsing the two
-    /// would mean that declining to trust anything at startup produced a session that never
-    /// asked about anything, which is the opposite of what declining means.
+    /// Most paths have no rule, because content trust is per file and a file only gets one when
+    /// something has read it. So the unmentioned rows are the ordinary case rather than the
+    /// exception, and what decides them is the data: bytes the turn derived from nothing an
+    /// attacker touched are ordinary work, and bytes from somewhere nobody vouched for landing on
+    /// a person's disk are the one write worth stopping for.
     ///
     /// Writing *trusted* data never needs asking. For data to be trusted the turn must have
     /// observed nothing untrusted, so there is no attacker-influenced byte in it, and the
@@ -2342,8 +2343,12 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         }
 
         let (needed, reason) = match self.trust.integrity_of(path) {
-            // Nobody has said anything about this path, so the first write is the moment to ask.
-            None => (true, "a path nobody has vouched for either way"),
+            // Nobody has said anything about this path, and the data holds no byte an attacker
+            // influenced. Writing it is ordinary work in a place the user opened.
+            None if data_trusted => (false, "trusted data to a path in a place the user opened"),
+            // Nobody has said anything, and the data came from somewhere nobody vouched for. This
+            // is the one write worth stopping for: bytes from outside landing on their disk.
+            None => (true, "untrusted data to a path nobody has vouched for"),
             // The one irreversible case: a trusted path is about to stop being trusted.
             Some(Integrity::Trusted) if !data_trusted => (
                 true,
@@ -4687,11 +4692,11 @@ mod tests {
         assert_eq!(policy.trust().rules().count(), before);
     }
 
-    /// A path nobody has mentioned is not the same as one deliberately marked untrusted: there
-    /// is no decision behind it, so the first write there is the moment to ask. Without this,
-    /// declining to trust anything at startup would produce a session that never asked.
+    /// Most paths have no rule, since content trust is per file. So what decides an unmentioned
+    /// destination is the data: work the turn derived from nothing an attacker touched happens
+    /// quietly, and bytes from somewhere nobody vouched for landing on a person's disk are shown.
     #[test]
-    fn an_unvouched_path_prompts_either_way() {
+    fn an_unvouched_path_is_shown_only_for_untrusted_data() {
         let mut sink = RecordingSink::new();
         let mut policy = Policy::begin(
             routing_with("task", "edit"),
@@ -4701,7 +4706,7 @@ mod tests {
         )
         .expect("policy");
 
-        assert!(policy.write_needs_approval("a.rs", Label::trusted_public(), Destination::Named));
+        assert!(!policy.write_needs_approval("a.rs", Label::trusted_public(), Destination::Named));
         assert!(policy.write_needs_approval("a.rs", Label::untrusted_public(), Destination::Named));
     }
 

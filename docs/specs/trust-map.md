@@ -96,11 +96,16 @@ Every row is normative. A write matching a row does exactly what that row says a
 | untrusted | trusted | **yes** | that path becomes untrusted |
 | trusted | untrusted | no | that path becomes trusted |
 | untrusted | untrusted | no | unchanged |
-| either | never mentioned | **yes** | that path takes the data's trust |
+| trusted | never mentioned | no | unchanged |
+| untrusted | never mentioned | **yes** | that path becomes untrusted |
 
-A prompt asks one question and only this one: **may this path stop being trusted?** That is the
-only consequence a later step cannot undo, since a path recorded as untrusted can no longer be
-examined or edited.
+A prompt asks one question and only this one: **may these bytes land on your disk?** Every row that
+asks is a row where the data came from somewhere nobody vouched for.
+
+The table says when a write is shown, not whether it happens. Where nobody is following the session
+at all, a one-shot run or a cron job, every write is put to the confirmer whatever the table says
+and refused there, because an effect nobody will ever see is applied unseen. Quietly is not the
+same as unseen.
 
 **Why writing trusted data never asks.** Trusted data means the turn observed nothing untrusted,
 so it holds no byte an attacker influenced, and the destination only ever gains trust. There is
@@ -111,14 +116,17 @@ Untrusted bytes are anything derived from the web or from a file outside a trust
 into a trusted tree and read back as trusted they would launder injected text into trusted input,
 and the map would become a bypass for the gate it exists to support.
 
-**Why a path nobody has mentioned asks either way.** It differs from one deliberately marked
-untrusted: the first has no decision behind it, so the first write there is the moment to ask.
+**Why a path nobody has mentioned is decided by the data.** Most paths have no rule, because
+content trust is per file and a file only gets one when something has read it, so this is the
+ordinary case rather than the exception. Trusted data means the turn observed nothing an attacker
+influenced, and writing it into a place the user opened is the work they asked for. Untrusted data
+landing on their disk is the one write worth stopping for.
 
 `verified-by: bravebot_core::policy::trusted_data_into_a_trusted_path_is_silent_and_changes_nothing`
 `verified-by: bravebot_core::policy::untrusted_data_into_a_trusted_path_prompts_and_distrusts_the_path`
 `verified-by: bravebot_core::policy::trusted_data_into_an_untrusted_path_is_silent_and_trusts_the_path`
 `verified-by: bravebot_core::policy::untrusted_data_into_an_untrusted_path_is_silent_and_changes_nothing`
-`verified-by: bravebot_core::policy::an_unvouched_path_prompts_either_way`
+`verified-by: bravebot_core::policy::an_unvouched_path_is_shown_only_for_untrusted_data`
 `verified-by: bravebot_core::policy::a_file_written_with_untrusted_data_reads_back_untrusted`
 
 <a id="TRUST-5"></a>

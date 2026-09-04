@@ -1674,7 +1674,10 @@ fn write_file<S: Sink, C: Confirmer>(
         );
     }
 
-    if policy.write_needs_approval(&proposed_path, body_label, destination) {
+    // A write nobody needs to approve still goes past the confirmer where nobody is there to
+    // watch it happen: an effect in a one-shot run is applied unseen or not at all.
+    if policy.write_needs_approval(&proposed_path, body_label, destination) || !confirmer.watching()
+    {
         let request = WriteRequest {
             intent,
             existing: existing.clone(),
@@ -1825,7 +1828,10 @@ fn edit_file<S: Sink, C: Confirmer>(
         body.clone().declassify(&proof)
     };
 
-    if policy.write_needs_approval(&proposed_path, body_label, destination) {
+    // A write nobody needs to approve still goes past the confirmer where nobody is there to
+    // watch it happen: an effect in a one-shot run is applied unseen or not at all.
+    if policy.write_needs_approval(&proposed_path, body_label, destination) || !confirmer.watching()
+    {
         let request = WriteRequest {
             path: proposed_path.clone(),
             contents: shown.clone(),

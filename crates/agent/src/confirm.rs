@@ -260,6 +260,19 @@ pub enum Decision {
 /// written out at every implementation rather than inherited from a trait an implementor never
 /// read.
 pub trait Confirmer {
+    /// Whether a person is there to see what happens.
+    ///
+    /// Not the same question as whether a write needs approving. A write of trusted data into a
+    /// place the user opened needs nobody's permission and is done quietly, which is right while
+    /// somebody is watching the session and wrong when the process is a cron job: an effect
+    /// nobody will ever see is refused rather than applied unseen.
+    ///
+    /// True by default, because every implementation that can draw a prompt has somebody in front
+    /// of it. The one that cannot says so.
+    fn watching(&self) -> bool {
+        true
+    }
+
     /// Ask about a write. Implementations must default to refusal when they cannot ask.
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision;
 
@@ -304,6 +317,10 @@ pub trait Confirmer {
 pub struct Unattended;
 
 impl Confirmer for Unattended {
+    fn watching(&self) -> bool {
+        false
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
     }
@@ -491,6 +508,13 @@ impl<'a, C: Confirmer> Timed<'a, C> {
 }
 
 impl<C: Confirmer> Confirmer for Timed<'_, C> {
+    /// Answered by the confirmer underneath, never by the wrapper. Timing a question does not put
+    /// somebody in front of the screen, and the default would turn an unattended run into one that
+    /// writes unseen.
+    fn watching(&self) -> bool {
+        self.inner.watching()
+    }
+
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
         self.timing(|inner| inner.confirm_write(request))
     }
@@ -656,6 +680,15 @@ mod tests {
         let mut timed = Timed::new(&mut refusing);
         assert_eq!(timed.confirm_write(&a_write()), Decision::Reject);
         assert!(timed.ask_user(&a_series()).is_empty());
+    }
+
+    /// A write nobody has to approve is still applied only where somebody would see it, so the
+    /// wrapper reporting itself as watched would let an unattended run write unseen.
+    #[test]
+    fn wrapping_an_unattended_run_leaves_nobody_watching() {
+        let mut unattended = Unattended;
+        let timed = Timed::new(&mut unattended);
+        assert!(!timed.watching());
     }
 
     /// Nobody is there, so nothing is answered. Saying nothing rather than a decline per
