@@ -46,7 +46,7 @@ transcript back does not depend on remembering the session.
 <a id="VIEW-3"></a>
 ### VIEW-3: untrusted content is shown on purpose, inside a margin it cannot forge
 
-Showing it is deliberate and not a leak. Filenames out of a quarantined listing, the first lines of
+Showing it is deliberate and not a leak. Filenames out of a listing the planner may not read, the first lines of
 a file nobody vouched for, what a processor produced, the body of every write: all of it reaches
 the person watching, because an agent that will not say which file it is working on has protected
 nobody. It is the planner that may not read untrusted content, and a terminal is not a planner's
@@ -63,7 +63,7 @@ a bar of its own. Leaving the break to the paragraph the block is drawn in is th
 omitting the margin: the continuation starts at column 0, which is untrusted content outside the
 block, positioned wherever the content's own padding chose to put it. Nothing is dropped to make a
 line fit. The block's heading is laid out the same way and for the same reason, since the origin
-named in it can be a filename read out of a quarantined listing.
+named in it can be a filename read out of a listing the planner may not read.
 
 Every control character is replaced with a visible glyph on the way to the screen, in the heading
 as well as the content. Replaced rather than dropped, since a character silently removed is one the
@@ -230,7 +230,7 @@ name is the one that does not say so. The row is drawn empty rather than dropped
 nothing to add, so the list does not shift under the cursor as it moves.
 
 **Why.** A full-screen list hides the thing a theme is for. The same centred-panel shape the write
-and trust prompts already use keeps the person oriented, and putting the session behind the panel
+and run prompts already use keeps the person oriented, and putting the session behind the panel
 is what makes previewing honest. A name is where a person looks first for what a theme will do, and
 `brave` names who it is from rather than that it follows their terminal, which is the one thing on
 this list that is not read off the name.

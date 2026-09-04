@@ -80,7 +80,7 @@ the planner is not allowed to read, so it is handed the reference instead of the
 `routing` marks the part of a call that decides where it lands, as opposed to the part that is
 merely carried.
 
-Reading a file in a trusted directory, where the content reaches the model:
+Reading a file a checker has already cleared, where the content reaches the model:
 
 ```
 ok      precommit: routing fields ["task"] fixed before any observation

@@ -90,8 +90,8 @@ about. Where the planner said nothing and there was more than one
 input, the answer belongs nowhere and may be written nowhere.
 
 **Why.** This is not a label rule and cannot be one. Every gate passed when a planner wrote a
-game's HTML into a Python script, because the destination was a path it named and a person
-approved it.
+game's HTML into a Python script, because the destination was a path it named and nothing about
+the labels said otherwise.
 
 `verified-by: none`
 
@@ -141,8 +141,8 @@ processor in a subprocess would confine the wrong thing.
 
 - **An untrusted file's contents reach the backend.** A processor is a model call, so working on
   a file nobody vouched for sends it where before it would have stayed on the machine. The
-  destination is the one a trusted directory has always sent its files to. What is new is only
-  that the reader holds nothing.
+  destination is the one the planner's own context has always gone to. What is new is only that
+  the reader holds nothing.
 - **One approval per candidate, not per change.** Where several files could be the one, each is
   read into its own slot, transformed with the same instruction, and written back to the path it
   came from. A file the processor left alone is written back byte for byte, and still costs an

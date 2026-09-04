@@ -20,13 +20,17 @@ A one-shot run has nobody to ask, and most of what makes it different follows fr
 ### CLI-1: where nobody can be asked, nothing is approved
 
 Effects are refused rather than applied unseen, and the planner's own questions are declined
-rather than answered on the user's behalf.
+rather than answered on the user's behalf. Every write is put to the confirmer here, including the
+ones an interactive session does quietly, and refused there.
 
 **Why.** The alternative to a person is not a default, it is a guess made in their name. The
-planner is told a reply came from a person, so inventing one would be worse than not asking.
+planner is told a reply came from a person, so inventing one would be worse than not asking. A
+write of the turn's own trusted output is done quietly while somebody is following the session,
+and quietly is not the same as unseen: there is nobody following a cron job.
 
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
 `verified-by: bravebot_agent::turn::a_refused_write_does_not_happen`
+`verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`
 
 <a id="CLI-2"></a>
 ### CLI-2: stdin is read only when it is not a terminal
@@ -113,3 +117,16 @@ is all that remains of a document nobody can see. The plan never shares stdout w
 `verified-by: bravebot_cli::main::an_unknown_mode_is_refused_rather_than_guessed`
 `verified-by: bravebot_cli::main::a_failed_plan_is_printed_beside_the_reply`
 `verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`
+
+<a id="CLI-9"></a>
+### CLI-9: `--disable-vetting` quarantines rather than offering anything to a checker
+
+A file nobody vouched for is normally offered to an isolated checker before a turn is refused its
+contents. This turns that off, and then such a file is simply quarantined and the turn works
+through a reference as it would have anyway.
+
+**Why.** A checker is a model call, so it costs a request and reaches the network. A run that must
+make no call it was not asked to make needs a way to say so, and telling whether a verdict was what
+made a difference needs the same switch.
+
+`verified-by: bravebot_agent::turn::vetting_can_be_turned_off_and_then_nothing_is_offered_to_a_checker`

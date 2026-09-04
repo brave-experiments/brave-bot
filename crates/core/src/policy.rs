@@ -2393,8 +2393,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         }
 
         match actual {
-            Integrity::Untrusted => self.trust.distrust(path),
-            Integrity::Trusted => self.trust.trust(path),
+            Integrity::Untrusted => self.trust.record(path, crate::trust::Provenance::Fetched),
+            Integrity::Trusted => self.trust.record(path, crate::trust::Provenance::Written),
         }
 
         self.allow(
@@ -2442,7 +2442,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             if self.trust.integrity_of(path).is_some() {
                 continue;
             }
-            self.trust.trust(path);
+            self.trust.record(path, crate::trust::Provenance::Standing);
             self.allow(
                 "trust",
                 format!("{path} trusted: the user's own standing instructions for this project"),
@@ -2468,7 +2468,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Always the exact path, never its parent: a verdict is about the file that was read, and
     /// nothing was read about its siblings.
     pub fn trust_after_vetting(&mut self, path: &str) {
-        self.trust.trust(path);
+        self.trust.record(path, crate::trust::Provenance::Vetted);
         self.allow(
             "trust",
             format!(
@@ -2479,7 +2479,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     }
 
     pub fn vouch_for_named_path(&mut self, path: &str) {
-        self.trust.trust(path);
+        self.trust.record(path, crate::trust::Provenance::Vouched);
         self.allow(
             "trust",
             format!("{path} trusted: the user named it in their own line"),

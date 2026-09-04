@@ -31,6 +31,80 @@
 
 use crate::label::Integrity;
 use std::collections::BTreeMap;
+use std::fmt;
+
+/// How a path came by its standing.
+///
+/// The integrity is what a rule means; this is why it says so, and the integrity is derived from
+/// it rather than stored beside it. A record that kept both could disagree with itself, and the
+/// question a person asks days later is never "was this trusted" on its own: it is "why is the
+/// agent allowed to read this", and only one of these two answers that.
+///
+/// The web's first-party and third-party distinction is the same shape. What decides is where
+/// something came from, not what it looks like once it has arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// A person named the path themselves: `@path`, a file dropped on the window.
+    Vouched,
+    /// The user's own standing instructions for this project, recorded when the session opened.
+    Standing,
+    /// An isolated checker read the whole file and found nothing addressed to whoever reads it.
+    Vetted,
+    /// This agent wrote the file, out of data the turn already held and nothing else.
+    Written,
+    /// Bytes from somewhere nobody vouched for landed here: a fetch, a program's output, a pipe.
+    Fetched,
+    /// Somebody said no, or something withdrew it.
+    Withheld,
+}
+
+impl Provenance {
+    /// What this origin makes the content worth.
+    ///
+    /// The whole of the mapping, in one place, so no caller decides it twice. Everything a person
+    /// or a checker stood behind is readable; everything that arrived from outside is not.
+    pub fn integrity(self) -> Integrity {
+        match self {
+            Self::Vouched | Self::Standing | Self::Vetted | Self::Written => Integrity::Trusted,
+            Self::Fetched | Self::Withheld => Integrity::Untrusted,
+        }
+    }
+
+    /// The word this is written down as, in a session record and on a status line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Vouched => "vouched",
+            Self::Standing => "standing",
+            Self::Vetted => "vetted",
+            Self::Written => "written",
+            Self::Fetched => "fetched",
+            Self::Withheld => "withheld",
+        }
+    }
+
+    /// Read a word back. An unrecognised one is [`Provenance::Withheld`], which is the reading
+    /// that grants nothing: a record written by a build that knew a word this one does not must
+    /// not be read as permission.
+    ///
+    /// Deliberately not `FromStr`, which is fallible by signature. There is no failing case here:
+    /// every word maps to something, and the something an unknown word maps to is the whole point.
+    pub fn of_word(word: &str) -> Self {
+        match word {
+            "vouched" => Self::Vouched,
+            "standing" => Self::Standing,
+            "vetted" => Self::Vetted,
+            "written" => Self::Written,
+            "fetched" => Self::Fetched,
+            _ => Self::Withheld,
+        }
+    }
+}
+
+impl fmt::Display for Provenance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// A user's decisions about which paths are trustworthy.
 ///
@@ -38,11 +112,14 @@ use std::collections::BTreeMap;
 /// That is the right default: trust has to be granted, never assumed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustStore {
-    /// Normalised path prefix → whether that subtree is trusted.
+    /// Normalised path prefix → where that subtree's standing came from.
+    ///
+    /// Provenance rather than integrity, because integrity is a function of it and a record
+    /// holding both could disagree with itself.
     ///
     /// A `BTreeMap` rather than a hash map so iteration order is deterministic, which keeps
     /// the audit trail reproducible.
-    rules: BTreeMap<String, Integrity>,
+    rules: BTreeMap<String, Provenance>,
 }
 
 impl TrustStore {
@@ -50,17 +127,32 @@ impl TrustStore {
         Self::default()
     }
 
-    /// Record that `path` and everything beneath it is trusted.
-    pub fn trust(&mut self, path: &str) {
-        self.rules.insert(normalise(path), Integrity::Trusted);
+    /// Record where `path` and everything beneath it came by its standing.
+    ///
+    /// The one way a rule enters the map. What the rule then means is
+    /// [`Provenance::integrity`] and is not stored.
+    pub fn record(&mut self, path: &str, provenance: Provenance) {
+        self.rules.insert(normalise(path), provenance);
     }
 
-    /// Record that `path` and everything beneath it is untrusted.
-    ///
-    /// Used both for an explicit user decision and for the automatic marking that happens
-    /// when untrusted bytes are written somewhere.
+    /// Record that a person named `path` themselves.
+    pub fn trust(&mut self, path: &str) {
+        self.record(path, Provenance::Vouched);
+    }
+
+    /// Record that `path` and everything beneath it is not to be read.
     pub fn distrust(&mut self, path: &str) {
-        self.rules.insert(normalise(path), Integrity::Untrusted);
+        self.record(path, Provenance::Withheld);
+    }
+
+    /// Where the longest matching rule says this path's standing came from.
+    pub fn provenance_of(&self, path: &str) -> Option<Provenance> {
+        let path = normalise(path);
+        self.rules
+            .iter()
+            .filter(|(prefix, _)| covers(prefix, &path))
+            .max_by_key(|(prefix, _)| specificity(prefix))
+            .map(|(_, provenance)| *provenance)
     }
 
     /// The integrity of `path`, by the longest matching rule.
@@ -69,12 +161,7 @@ impl TrustStore {
     /// returns an option rather than defaulting so a caller cannot silently confuse "the
     /// user vouched for this" with "nobody has said".
     pub fn integrity_of(&self, path: &str) -> Option<Integrity> {
-        let path = normalise(path);
-        self.rules
-            .iter()
-            .filter(|(prefix, _)| covers(prefix, &path))
-            .max_by_key(|(prefix, _)| specificity(prefix))
-            .map(|(_, integrity)| *integrity)
+        self.provenance_of(path).map(Provenance::integrity)
     }
 
     /// Whether `path` is trusted. Anything not covered by a rule is not.
@@ -94,7 +181,14 @@ impl TrustStore {
     pub fn rules(&self) -> impl Iterator<Item = (&str, Integrity)> {
         self.rules
             .iter()
-            .map(|(prefix, integrity)| (prefix.as_str(), *integrity))
+            .map(|(prefix, provenance)| (prefix.as_str(), provenance.integrity()))
+    }
+
+    /// The rules with where each came from, for a record and for a status line.
+    pub fn origins(&self) -> impl Iterator<Item = (&str, Provenance)> {
+        self.rules
+            .iter()
+            .map(|(prefix, provenance)| (prefix.as_str(), *provenance))
     }
 }
 
@@ -376,5 +470,60 @@ mod tests {
             !store.is_trusted("/Users/me/notes/todo.md"),
             "a differently spelled path became a second rule"
         );
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    /// The map records an origin and the integrity follows from it, so no caller decides twice
+    /// and no record can disagree with itself.
+    #[test]
+    fn what_a_rule_means_is_derived_from_where_it_came_from() {
+        let mut store = TrustStore::new();
+        store.record("AGENTS.md", Provenance::Standing);
+        store.record("notes.md", Provenance::Vetted);
+        store.record("out.json", Provenance::Written);
+        store.record("page.html", Provenance::Fetched);
+        store.record("vendor", Provenance::Withheld);
+
+        assert!(store.is_trusted("AGENTS.md"));
+        assert!(store.is_trusted("notes.md"));
+        assert!(store.is_trusted("out.json"));
+        assert!(!store.is_trusted("page.html"));
+        assert!(!store.is_trusted("vendor/lib.js"));
+
+        assert_eq!(store.provenance_of("notes.md"), Some(Provenance::Vetted));
+        assert_eq!(store.provenance_of("page.html"), Some(Provenance::Fetched));
+    }
+
+    /// A word from a newer build must not be read as permission by an older one. Every unknown
+    /// origin lands on the reading that grants nothing.
+    #[test]
+    fn an_origin_this_build_does_not_know_grants_nothing() {
+        for word in ["", "TRUSTED", "vouched-ish", "some-future-origin"] {
+            assert_eq!(
+                Provenance::of_word(word),
+                Provenance::Withheld,
+                "{word:?} was read as something"
+            );
+            assert_eq!(Provenance::of_word(word).integrity(), Integrity::Untrusted);
+        }
+    }
+
+    /// The words round-trip, or a record written by this build is read back differently by it.
+    #[test]
+    fn every_origin_is_written_down_and_read_back_as_itself() {
+        for provenance in [
+            Provenance::Vouched,
+            Provenance::Standing,
+            Provenance::Vetted,
+            Provenance::Written,
+            Provenance::Fetched,
+            Provenance::Withheld,
+        ] {
+            assert_eq!(Provenance::of_word(provenance.as_str()), provenance);
+        }
     }
 }

@@ -45,6 +45,6 @@ pub use pure::{Filter, is_pure_filter};
 pub use reference::{Presentation, Reference};
 pub use slot::{Measured, SlotError, SlotId, SlotReader, SlotStore, SlotWriter};
 pub use todo::{Item as TodoItem, List as TodoList, Status as TodoStatus};
-pub use trust::TrustStore;
+pub use trust::{Provenance, TrustStore};
 pub use value::{Declassification, Labelled};
 pub use vet::{Verdict, VetSpec};

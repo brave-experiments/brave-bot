@@ -17,8 +17,8 @@ guards:
 
 ## Scope
 
-Which paths a user has vouched for, every way a rule enters that record, what a write does to
-it, and how long an answer lasts. It does not cover what a label means once assigned, which is
+Which paths a user has vouched for, every way a rule enters that record, where each rule came
+from, what a write does to it, and how long an answer lasts. It does not cover what a label means once assigned, which is
 [labels.md](labels.md), nor what may be released to whom, which is [routing.md](routing.md), nor
 `~/.bravebot`, which the map does not govern (TRUST-11).
 
@@ -298,6 +298,26 @@ nobody left to ask.
 `verified-by: bravebot_agent::turn::a_workspace_agents_file_is_obeyed_without_anybody_vouching_for_it`
 `verified-by: bravebot_agent::turn::an_untrusted_directory_is_not_reported_as_a_refusal`
 `verified-by: bravebot_agent::turn::opening_a_session_does_not_undo_what_a_write_recorded`
+
+<a id="TRUST-14"></a>
+### TRUST-14: a rule records where it came from, and what it means is derived from that
+
+Every rule in the map carries its origin: a person named the path, the session opened with it, a
+checker cleared the file, this agent wrote it out of what the turn already had, bytes from outside
+landed there, or somebody withheld it. Whether the content is readable is a function of that origin
+and is not stored beside it.
+
+The origin survives being written down and read back, and one a build does not recognise grants
+nothing. `/status` shows it, so a rule a checker wrote can be told from one a person wrote.
+
+**Why derived rather than stored.** A record holding both could disagree with itself, and the
+question worth answering later is never "was this trusted" on its own but "why is the agent allowed
+to read this". The same shape as first-party and third-party on the web: what decides is where
+something came from, not what it looks like once it has arrived.
+
+`verified-by: bravebot_core::trust::what_a_rule_means_is_derived_from_where_it_came_from`
+`verified-by: bravebot_core::trust::an_origin_this_build_does_not_know_grants_nothing`
+`verified-by: bravebot_tui::sessions::where_a_rule_came_from_survives_the_record`
 
 ## Known costs
 
