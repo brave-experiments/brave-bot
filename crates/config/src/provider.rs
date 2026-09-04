@@ -8,6 +8,29 @@
 //! What this does not hold is a resolved credential. A token is named, by the variables in `env` or
 //! by `options.apiKey`, and read when a request needs signing.
 
+/// The endpoints known by the name a provider block gives them.
+///
+/// Here because the other tool resolves this from a registry it fetches, and a block copied out of it
+/// therefore names an endpoint nowhere. Requiring `baseURL` of such a block is requiring a field that
+/// tool does not, which is the one thing the borrowed shape is supposed to rule out.
+///
+/// Compiled in rather than fetched, and that is not an optimisation. This value is where a bearer
+/// credential gets sent, so a service that could edit it could redirect somebody's token by answering
+/// a request; see [routing.md](../../../docs/specs/routing.md). A table in the binary is a
+/// destination somebody reviewed.
+///
+/// Short on purpose. An id that is not here is served by naming `baseURL`, which always works, so the
+/// cost of an absent entry is a line of configuration rather than a broken gateway.
+const KNOWN_ENDPOINTS: &[(&str, &str)] = &[("openrouter", "https://openrouter.ai/api/v1")];
+
+/// The endpoint compiled in for `id`, where there is one.
+fn known_endpoint(id: &str) -> Option<&'static str> {
+    KNOWN_ENDPOINTS
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, url)| *url)
+}
+
 /// The context window a gateway model is assumed to have, in prompt tokens.
 ///
 /// `limit.context` is optional, because opencode does not require it and a window is a property of
@@ -78,9 +101,9 @@ impl Provider {
     /// Empty where the block is absent or shaped differently, on the same footing as the rest of the
     /// file: a half-typed settings file must not stop a session.
     ///
-    /// A provider with no `baseURL` is dropped. Unlike a missing window there is nothing to assume:
-    /// with no host there is no request to build, and inventing one produces failures far from the
-    /// mistake.
+    /// A provider whose endpoint is neither stated nor known is dropped. Unlike a missing window
+    /// there is nothing to assume: with no host there is no request to build, and inventing one
+    /// produces failures far from the mistake.
     pub fn all(root: &serde_json::Map<String, serde_json::Value>) -> Vec<Self> {
         let Some(serde_json::Value::Object(block)) = root.get("provider") else {
             return Vec::new();
@@ -104,7 +127,10 @@ impl Provider {
             .and_then(|options| options.get("baseURL"))
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
-            .filter(|url| !url.is_empty())?;
+            .filter(|url| !url.is_empty())
+            // A stated endpoint wins, so a block pointing a known name at a proxy or a private
+            // deployment reaches the host it named rather than the one compiled in.
+            .or_else(|| known_endpoint(id))?;
 
         Some(Self {
             id: id.to_string(),
@@ -364,6 +390,27 @@ mod tests {
         ] {
             assert!(parsed(text).is_empty(), "{text:?} was offered");
         }
+    }
+
+    /// The case the block is copied for. The other tool resolves an endpoint for a name it knows, so
+    /// a block that names one and nothing else is complete there and has to be complete here.
+    #[test]
+    fn a_known_provider_name_supplies_its_own_endpoint() {
+        let provider = one(r#"{"provider": {"openrouter": {
+                "options": {"apiKey": "a-token"}
+            }}}"#);
+        assert_eq!(provider.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(provider.token(|_| None).as_deref(), Some("a-token"));
+    }
+
+    /// A known name pointed somewhere else reaches where it was pointed. Otherwise the table would
+    /// override the one field that says, unambiguously, which host to use.
+    #[test]
+    fn a_stated_endpoint_beats_the_one_compiled_in() {
+        let provider = one(r#"{"provider": {"openrouter": {
+                "options": {"baseURL": "https://proxy.example.invalid/v1"}
+            }}}"#);
+        assert_eq!(provider.base_url, "https://proxy.example.invalid/v1");
     }
 
     /// A trailing slash on the endpoint would otherwise produce a double slash in the path, which

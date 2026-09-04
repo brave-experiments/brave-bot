@@ -263,6 +263,11 @@ would refuse a block it accepts, so either one costs exactly the property the bo
 Reading past an unknown field is what makes a copy work, which is why it is the deliberate behaviour
 and not a shortcoming.
 
+Optionality is the part of the shape easiest to take and then quietly not honour. That tool resolves a
+gateway's endpoint and its roster from a registry it fetches, so its blocks leave both out and the
+commonest one names a credential and nothing else. Requiring either field here refuses a block it
+accepts as surely as adding a field would.
+
 `verified-by: bravebot_config::provider::a_provider_block_is_read`
 `verified-by: bravebot_config::provider::a_model_entry_may_be_empty`
 `verified-by: bravebot_config::provider::fields_this_crate_does_not_know_are_read_past`
@@ -331,6 +336,32 @@ one a variable holds.
 `verified-by: bravebot_config::provider::a_token_written_into_the_file_is_still_read`
 `verified-by: bravebot_config::provider::a_provider_with_nothing_holding_a_token_has_none`
 `verified-by: bravebot_agent::backend::a_gateway_with_nothing_holding_a_token_refuses_the_request`
+
+<a id="BACKEND-17"></a>
+### BACKEND-17: a gateway named by a name this system knows needs no endpoint written down
+
+A block naming a gateway this system already knows an endpoint for reaches it without stating one. An
+endpoint the block does state is where its requests go regardless. Where neither holds, the entry
+configures no service.
+
+The set of known names is compiled in. Nothing is fetched to resolve one, and no service is asked what
+its own endpoint is.
+
+**Why.** The tool this block's shape is borrowed from resolves an endpoint from a registry it fetches,
+so a block copied out of it names one nowhere and requiring the field refuses a block that tool
+accepts. That is exactly the property the borrowing exists for, and the shape is worth nothing if the
+commonest block copied still has to be edited.
+
+Compiled in rather than fetched because this value is where a bearer credential is sent. A service that
+could decide it could have somebody's token by answering a request, which is the one thing a
+destination may never be derived from, so the table is one somebody reviewed and shipped. Keeping it
+short costs nothing: an absent name is served by writing the endpoint, so the price of not knowing a
+gateway is a line of configuration rather than an unreachable service. A stated endpoint winning is
+what keeps a known name usable against a proxy or a private deployment.
+
+`verified-by: bravebot_config::provider::a_known_provider_name_supplies_its_own_endpoint`
+`verified-by: bravebot_config::provider::a_stated_endpoint_beats_the_one_compiled_in`
+`verified-by: bravebot_config::provider::a_provider_without_a_base_url_is_not_offered`
 
 ## Known costs
 
