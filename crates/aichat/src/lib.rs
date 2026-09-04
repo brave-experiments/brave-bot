@@ -145,6 +145,12 @@ pub struct AichatClient<'a> {
 /// had to find it to know whether the request can be sent at all.
 struct Gateway<'a> {
     provider: &'a bravebot_config::provider::Provider,
+    /// What this gateway calls the model, which is the name the request carries.
+    ///
+    /// Resolved by whoever chose the gateway, because the name a request arrives with may be
+    /// qualified by the provider's own id to say which service was meant, and that qualified form is
+    /// one the gateway has never heard of.
+    model: String,
     token: String,
 }
 
@@ -165,13 +171,19 @@ impl<'a> AichatClient<'a> {
     /// the provider offers. Nothing here re-decides that, and a token is required rather than
     /// optional because an unauthenticated request to a gateway is one that fails at the far end for
     /// a reason nothing local could explain.
+    ///
+    /// `model` is what this gateway calls it, taken rather than derived for the same reason the token
+    /// is: the caller resolved the provider and the name together, and deriving one of them again
+    /// here would be a second place for the two to disagree.
     pub fn for_gateway(
         mut self,
         provider: &'a bravebot_config::provider::Provider,
+        model: impl Into<String>,
         token: impl Into<String>,
     ) -> Self {
         self.gateway = Some(Gateway {
             provider,
+            model: model.into(),
             token: token.into(),
         });
         self
@@ -231,6 +243,11 @@ impl<'a> AichatClient<'a> {
     /// settings file, which is the person's own configuration surface, so they are trusted exactly as
     /// far as a variable they exported would be. A key the request already set wins, because a
     /// configuration must not rewrite the model or the messages a turn built.
+    ///
+    /// The model is the exception, and the one field a gateway rewrites. A request may name it
+    /// qualified by the provider id, which is how it says which service is meant and is a name that
+    /// service does not know. Done here because this is the only place a gateway is branched on, so
+    /// the qualified form cannot reach the wire by some path that forgot to strip it.
     fn prepare(&mut self, request: &ChatRequest) -> Result<Request, ChatError> {
         let encode = |value: &serde_json::Value| {
             serde_json::to_vec(value).map_err(|e| ChatError::Encode(e.to_string()))
@@ -239,11 +256,17 @@ impl<'a> AichatClient<'a> {
         if let Some(gateway) = self.gateway.as_ref() {
             let mut body =
                 serde_json::to_value(request).map_err(|e| ChatError::Encode(e.to_string()))?;
+            if let Some(object) = body.as_object_mut() {
+                object.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(gateway.model.clone()),
+                );
+            }
             if let (Some(object), Some(options)) = (
                 body.as_object_mut(),
                 gateway
                     .provider
-                    .model(&request.model)
+                    .model(&gateway.model)
                     .and_then(|model| model.options.as_ref()),
             ) {
                 for (key, value) in options {
@@ -659,6 +682,44 @@ mod tests {
             .map(|(_, value)| value.as_str())
     }
 
+    /// The name a request carries says which service is meant, and the id in front of it is this
+    /// crate's own filing. Sent as it stands, the gateway is asked for a model it has never heard of.
+    #[test]
+    fn only_the_name_the_gateway_knows_reaches_it() {
+        let config = config();
+        let egress = Egress::new();
+        let provider = provider(r#"{"z-ai/glm-4.6": {}}"#);
+        let http = AichatClient::new(&config, &egress)
+            .for_gateway(&provider, "z-ai/glm-4.6", "a-token")
+            .prepare(&request("openrouter/z-ai/glm-4.6"))
+            .expect("prepared");
+
+        assert_eq!(
+            body(&http).get("model"),
+            Some(&serde_json::json!("z-ai/glm-4.6"))
+        );
+    }
+
+    /// The options belong to the model the gateway knows, so they have to be looked up under that
+    /// name. Looked up under the qualified one they are silently never applied.
+    #[test]
+    fn a_qualified_name_still_finds_the_options_its_model_configured() {
+        let config = config();
+        let egress = Egress::new();
+        let provider = provider(
+            r#"{"z-ai/glm-4.6": {"options": {"provider": {"order": ["amazon-bedrock"]}}}}"#,
+        );
+        let http = AichatClient::new(&config, &egress)
+            .for_gateway(&provider, "z-ai/glm-4.6", "a-token")
+            .prepare(&request("openrouter/z-ai/glm-4.6"))
+            .expect("prepared");
+
+        assert_eq!(
+            body(&http).get("provider"),
+            Some(&serde_json::json!({"order": ["amazon-bedrock"]}))
+        );
+    }
+
     /// A gateway is reached at its own host with its own credential. Signing it as though it were
     /// Brave's endpoint would send a bearer service to a service that has never heard of one.
     #[test]
@@ -667,7 +728,7 @@ mod tests {
         let egress = Egress::new();
         let provider = provider(r#"{"z-ai/glm-4.6": {}}"#);
         let http = AichatClient::new(&config, &egress)
-            .for_gateway(&provider, "a-token")
+            .for_gateway(&provider, "z-ai/glm-4.6", "a-token")
             .prepare(&request("z-ai/glm-4.6"))
             .expect("prepared");
 
@@ -712,7 +773,7 @@ mod tests {
             }}}"#,
         );
         let http = AichatClient::new(&config, &egress)
-            .for_gateway(&provider, "a-token")
+            .for_gateway(&provider, "anthropic/claude-sonnet-4.5", "a-token")
             .prepare(&request("anthropic/claude-sonnet-4.5"))
             .expect("prepared");
 
@@ -738,7 +799,7 @@ mod tests {
             r#"{"m": {"options": {"model": "something/else", "messages": [], "stream": true}}}"#,
         );
         let http = AichatClient::new(&config, &egress)
-            .for_gateway(&provider, "a-token")
+            .for_gateway(&provider, "m", "a-token")
             .prepare(&request("m"))
             .expect("prepared");
 
@@ -761,7 +822,7 @@ mod tests {
         let provider =
             provider(r#"{"z-ai/glm-4.6": {"limit": {"context": 131072, "output": 8192}}}"#);
         let http = AichatClient::new(&config, &egress)
-            .for_gateway(&provider, "a-token")
+            .for_gateway(&provider, "z-ai/glm-4.6", "a-token")
             .prepare(&request("z-ai/glm-4.6"))
             .expect("prepared");
 

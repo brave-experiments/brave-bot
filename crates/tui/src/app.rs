@@ -1820,7 +1820,10 @@ fn provider_models(
         .models
         .iter()
         .map(|model| bravebot_aichat::models::Model {
-            key: model.id.clone(),
+            // Qualified by the provider's own id, because the key is what a choice is remembered as
+            // and what later selects a backend. The same slug may be reachable through more than one
+            // service, and the bare name says nothing about which was picked.
+            key: format!("{}/{}", provider.id, model.id),
             display_name: t!(
                 picker_model_gateway,
                 model = model.id.as_str(),
@@ -2473,11 +2476,16 @@ fn run_turn_animated(
     }
 
     // Whether a difference between the model asked for and the one reported means anything is the
-    // backend's question. Answered here, where the configuration is in hand.
-    let comparable = bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(
-        config,
-        session.model().unwrap_or(&config.default_model),
-    );
+    // backend's question, and so is which name the service was actually asked for: a gateway is
+    // asked for the part of a qualified name that it knows the model by. Answered here, where the
+    // configuration is in hand.
+    let chosen = session.model().unwrap_or(&config.default_model);
+    let asked = Asked {
+        name: bravebot_agent::backend::Backend::name_as_asked(config, chosen),
+        comparable: bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(
+            config, chosen,
+        ),
+    };
     let (trust, programs) = fold_outcome(
         session,
         outcome,
@@ -2485,7 +2493,7 @@ fn run_turn_animated(
         fallback,
         fallback_programs,
         config.context_budget,
-        comparable,
+        asked,
     );
     Ok((conversation, trust, programs, events))
 }
@@ -2546,6 +2554,17 @@ fn is_ctrl_c(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'))
 }
 
+/// What the last turn asked its backend for, for comparing against what answered.
+///
+/// The two travel together because either alone is misleading: a name means nothing without knowing
+/// whether it is comparable to a reply at all.
+struct Asked {
+    /// The name the service was actually sent, which for a gateway is not the name a session holds.
+    name: String,
+    /// Whether that name and the one a reply reports are drawn from one roster.
+    comparable: bool,
+}
+
 /// Fold a finished turn into the session.
 fn fold_outcome(
     session: &mut Session,
@@ -2554,7 +2573,7 @@ fn fold_outcome(
     fallback: TrustStore,
     fallback_programs: TrustedPrograms,
     budget: u64,
-    comparable: bool,
+    asked: Asked,
 ) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
@@ -2587,10 +2606,10 @@ fn fold_outcome(
             // otherwise be a line on every turn for the rest of the session.
             let already = session.substituted_model().is_some();
             session.served(
-                session.model().map(str::to_string),
+                session.model().map(|_| asked.name),
                 outcome.model.clone(),
                 outcome.premium,
-                comparable,
+                asked.comparable,
             );
             if !already && let Some(asked) = session.substituted_model() {
                 session.note(t!(
@@ -2858,11 +2877,17 @@ mod tests {
     /// A gateway's roster is what the file named and nothing else. Asking the gateway would list
     /// hundreds of models across upstreams nobody configured, and would cost a round trip on a path
     /// that has to work offline.
+    ///
+    /// Each key is qualified by the provider's own id, which is what makes a remembered choice say
+    /// which service it was for.
     #[test]
     fn only_the_gateway_models_the_file_named_are_offered() {
         let models = provider_models(&gateway(r#"{"z-ai/glm-4.6": {}, "moonshot/kimi-k2": {}}"#));
         let keys: Vec<&str> = models.iter().map(|m| m.key.as_str()).collect();
-        assert_eq!(keys, ["moonshot/kimi-k2", "z-ai/glm-4.6"]);
+        assert_eq!(
+            keys,
+            ["openrouter/moonshot/kimi-k2", "openrouter/z-ai/glm-4.6"]
+        );
     }
 
     /// The same model may be reachable more than one way, billed and credentialled differently, and
@@ -2899,7 +2924,7 @@ mod tests {
             r#"{"anthropic/claude-sonnet-4.5": {"limit": {"context": 1000000, "output": 64000}}}"#,
         ));
         assert_eq!(
-            advertised_window(&models, Some("anthropic/claude-sonnet-4.5")),
+            advertised_window(&models, Some("openrouter/anthropic/claude-sonnet-4.5")),
             Some(1_000_000)
         );
     }
@@ -2911,7 +2936,7 @@ mod tests {
     fn a_gateway_model_with_no_stated_window_still_carries_one() {
         let models = provider_models(&gateway(r#"{"z-ai/glm-4.6": {}}"#));
         assert_eq!(
-            advertised_window(&models, Some("z-ai/glm-4.6")),
+            advertised_window(&models, Some("openrouter/z-ai/glm-4.6")),
             Some(bravebot_config::provider::CONTEXT_WINDOW)
         );
     }
@@ -2937,7 +2962,11 @@ mod tests {
         let keys: Vec<&str> = roster.iter().map(|m| m.key.as_str()).collect();
         assert_eq!(
             keys,
-            ["opus-arn", "z-ai/glm-4.6", bravebot_config::DEFAULT_MODEL]
+            [
+                "opus-arn",
+                "openrouter/z-ai/glm-4.6",
+                bravebot_config::DEFAULT_MODEL
+            ]
         );
     }
 
@@ -2949,7 +2978,7 @@ mod tests {
         let roster = combined(configured, Err("the endpoint is unreachable".into()))
             .expect("the gateway models survive");
         assert_eq!(roster.len(), 1);
-        assert_eq!(roster[0].key, "z-ai/glm-4.6");
+        assert_eq!(roster[0].key, "openrouter/z-ai/glm-4.6");
     }
 
     /// A model chosen in an earlier session is read back off disk, and the window that came with it

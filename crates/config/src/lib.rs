@@ -400,16 +400,36 @@ impl Config {
         }
     }
 
-    /// The gateway offering `model`, if one does.
+    /// The gateway serving `model`, and the name to ask it for.
     ///
-    /// The model names the service, so this is the whole of how a request reaches a gateway. Where
-    /// two providers list the same model string there is no fact left to break the tie, and the first
-    /// wins: an arbitrary answer to a configuration that asked an unanswerable question, reported by
-    /// `doctor` rather than resolved here.
-    pub fn provider_for(&self, model: &str) -> Option<&provider::Provider> {
+    /// The model names the service, so this is the whole of how a request reaches a gateway. Two
+    /// spellings reach one:
+    ///
+    /// - `openrouter/z-ai/glm-4.6`, the provider's own id and then the name that gateway knows the
+    ///   model by. Split at the first separator only, because the remainder is the gateway's to
+    ///   spell and most of them contain one.
+    /// - the gateway's bare name, where the block listed it. Kept because a name chosen before this
+    ///   crate qualified anything is still sitting in `~/.bravebot/model`.
+    ///
+    /// A qualified name is tried first. It is the one spelling that says which service is meant, so
+    /// a bare name that two blocks both list resolves to the first of them while a qualified one
+    /// cannot be ambiguous at all.
+    ///
+    /// The returned name is what goes on the wire. A gateway has never heard of the id this crate
+    /// files it under, so returning them together is what stops the qualified form reaching it.
+    pub fn provider_for<'name>(
+        &self,
+        model: &'name str,
+    ) -> Option<(&provider::Provider, &'name str)> {
+        if let Some((id, wire)) = model.split_once('/').filter(|(_, wire)| !wire.is_empty())
+            && let Some(provider) = self.providers.iter().find(|provider| provider.id == id)
+        {
+            return Some((provider, wire));
+        }
         self.providers
             .iter()
             .find(|provider| provider.offers(model))
+            .map(|provider| (provider, model))
     }
 
     /// Whether the Brave backend can be reached at all.
@@ -692,6 +712,63 @@ mod tests {
         assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
         // Taken only once that model is the one in force, which is what picking it does.
         assert!(config.adopt_window(Some(1_000_000)));
+    }
+
+    /// A gateway configured for the tests below, offering one model the block names.
+    fn with_a_gateway(models: &str) -> Config {
+        let settings = Settings::parse(&format!(
+            r#"{{"provider": {{"openrouter": {{
+                "options": {{"baseURL": "https://openrouter.example.invalid/api/v1"}},
+                "models": {models}
+            }}}}}}"#
+        ));
+        let mut config = Config::from_lookup(complete_env).expect("configured");
+        config.providers = settings.providers().to_vec();
+        config
+    }
+
+    /// The name says which service is meant, which is what lets a gateway offer a model it did not
+    /// have to be configured with. Only the part after the id reaches the gateway: the id is this
+    /// crate's own filing, and no service has heard of it.
+    #[test]
+    fn a_name_qualified_by_a_provider_id_names_the_gateway_and_the_model_separately() {
+        let config = with_a_gateway("{}");
+        let (provider, wire) = config
+            .provider_for("openrouter/z-ai/glm-4.6")
+            .expect("a gateway");
+        assert_eq!(provider.id, "openrouter");
+        assert_eq!(wire, "z-ai/glm-4.6");
+    }
+
+    /// A name chosen before this crate qualified anything is still sitting in `~/.bravebot/model`, so
+    /// a bare name the block lists has to keep reaching the gateway that lists it.
+    #[test]
+    fn a_bare_name_the_block_lists_still_finds_its_gateway() {
+        let config = with_a_gateway(r#"{"z-ai/glm-4.6": {}}"#);
+        let (provider, wire) = config.provider_for("z-ai/glm-4.6").expect("a gateway");
+        assert_eq!(provider.id, "openrouter");
+        assert_eq!(wire, "z-ai/glm-4.6");
+    }
+
+    /// The other two rosters share this name space. A Brave slug carries no separator and a Bedrock
+    /// ARN's leading segment is no provider's id, so neither is claimed by a gateway that was asked
+    /// about a name belonging to somebody else.
+    #[test]
+    fn a_name_no_gateway_was_configured_for_reaches_no_gateway() {
+        let config = with_a_gateway(r#"{"z-ai/glm-4.6": {}}"#);
+        for name in [
+            "claude-3-sonnet",
+            DEFAULT_MODEL,
+            "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc",
+            "moonshot/kimi-k2",
+            "openrouter/",
+            "openrouter",
+        ] {
+            assert!(
+                config.provider_for(name).is_none(),
+                "{name:?} reached a gateway"
+            );
+        }
     }
 
     /// The exception: with no Brave credentials, `automatic` names a backend that cannot be reached at

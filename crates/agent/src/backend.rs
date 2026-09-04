@@ -103,6 +103,12 @@ pub enum Backend<'a> {
     Gateway {
         config: &'a Config,
         provider: &'a bravebot_config::provider::Provider,
+        /// What this gateway calls the model, which is the name it is asked for.
+        ///
+        /// Carried because a request may name the model as `openrouter/z-ai/glm-4.6`, which says
+        /// which service is meant and is a name that service has never heard of. Resolved once,
+        /// where the provider is found, so no later step has to know the difference.
+        wire_model: String,
         egress: &'a Egress,
         cancel: Option<Cancel>,
     },
@@ -126,10 +132,11 @@ impl<'a> Backend<'a> {
                 cancel: None,
             };
         }
-        if let Some(provider) = config.provider_for(model) {
+        if let Some((provider, wire_model)) = config.provider_for(model) {
             return Self::Gateway {
                 config,
                 provider,
+                wire_model: wire_model.to_string(),
                 egress,
                 cancel: None,
             };
@@ -181,6 +188,22 @@ impl<'a> Backend<'a> {
             .bedrock
             .as_ref()
             .is_some_and(|bedrock| bedrock.offers(model))
+    }
+
+    /// The name the service was actually asked for, given the name a session holds.
+    ///
+    /// The two differ for a gateway, where a session may hold `openrouter/z-ai/glm-4.6` so that the
+    /// name says which service is meant, while the request carries the part after the id because that
+    /// is what the gateway knows the model by. Everywhere else the name is sent as it stands.
+    ///
+    /// For comparing against the name a reply reports. Without it every gateway turn looks like a
+    /// substitution: the qualified name went in, a bare one came back, and nothing about that is the
+    /// service answering with a different model.
+    pub fn name_as_asked(config: &Config, model: &str) -> String {
+        match config.provider_for(model) {
+            Some((_, wire)) => wire.to_string(),
+            None => model.to_string(),
+        }
     }
 
     /// Whether [`Backend::sign_in_if_needed`] would do anything, without doing it.
@@ -255,10 +278,11 @@ impl<'a> Backend<'a> {
             Self::Gateway {
                 config,
                 provider,
+                wire_model,
                 egress,
                 cancel,
             } => {
-                let mut client = gateway_client(config, provider, egress)?;
+                let mut client = gateway_client(config, provider, wire_model, egress)?;
                 if let Some(cancel) = cancel {
                     client = client.with_cancel(cancel.clone());
                 }
@@ -304,10 +328,11 @@ impl<'a> Backend<'a> {
             Self::Gateway {
                 config,
                 provider,
+                wire_model,
                 egress,
                 cancel,
             } => {
-                let mut client = gateway_client(config, provider, egress)?;
+                let mut client = gateway_client(config, provider, wire_model, egress)?;
                 if let Some(cancel) = cancel {
                     client = client.with_cancel(cancel.clone());
                 }
@@ -325,6 +350,7 @@ impl<'a> Backend<'a> {
 fn gateway_client<'a>(
     config: &'a Config,
     provider: &'a bravebot_config::provider::Provider,
+    wire_model: &str,
     egress: &'a Egress,
 ) -> Result<AichatClient<'a>, BackendError> {
     let token = provider
@@ -332,7 +358,7 @@ fn gateway_client<'a>(
         .ok_or_else(|| BackendError::NoGatewayToken {
             provider: provider.display_name().to_string(),
         })?;
-    Ok(AichatClient::new(config, egress).for_gateway(provider, token))
+    Ok(AichatClient::new(config, egress).for_gateway(provider, wire_model, token))
 }
 
 #[cfg(test)]
@@ -439,8 +465,8 @@ mod tests {
     fn a_gateway_with_nothing_holding_a_token_refuses_the_request() {
         let config = with_a_gateway();
         let egress = Egress::new();
-        let provider = config.provider_for("z-ai/glm-4.6").expect("offered");
-        let failure = gateway_client(&config, provider, &egress)
+        let (provider, wire) = config.provider_for("z-ai/glm-4.6").expect("offered");
+        let failure = gateway_client(&config, provider, wire, &egress)
             .err()
             .expect("refused");
         assert!(matches!(failure, BackendError::NoGatewayToken { .. }));

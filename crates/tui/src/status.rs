@@ -133,10 +133,19 @@ pub fn report(facts: &Facts<'_>) -> Report {
     // session that was answered by something else every turn. Reported beside it, since the two
     // together are the fact and either alone is misleading.
     if let Some(served) = facts.served_model.filter(|served| {
-        let asked = facts.model.unwrap_or(&facts.config.default_model);
+        let chosen = facts.model.unwrap_or(&facts.config.default_model);
+        // Against the name the service was asked for, not the one a session holds. A gateway is
+        // asked for the part of a qualified name it knows the model by, and an inference-profile ARN
+        // stands for whatever it resolves to today: compared as held, either would report a
+        // substitution on every turn.
+        let asked = bravebot_agent::backend::Backend::name_as_asked(facts.config, chosen);
+        let comparable = bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(
+            facts.config,
+            chosen,
+        );
         // `automatic` is the server's choice by definition, so a concrete name coming back is the
         // feature working rather than a substitution worth flagging.
-        asked != *served && asked != bravebot_config::DEFAULT_MODEL
+        comparable && asked != *served && asked != bravebot_config::DEFAULT_MODEL
     }) {
         lines.push(Line::new(t!(status_served), served).with_note(t!(status_served_instead)));
     }
@@ -543,6 +552,37 @@ mod tests {
         honoured.served_model = Some("claude-opus");
         let shown = rendered(&report(&honoured));
         assert!(!shown.contains("served instead"), "{shown}");
+    }
+
+    /// A gateway answers under the name it knows the model by, while a session holds that name
+    /// qualified by the provider's id. Compared as held, the two never match and every gateway
+    /// session reports a substitution that did not happen.
+    #[test]
+    fn a_gateway_answering_under_its_own_name_is_not_a_substitution() {
+        let mut config = config_for("https://ai-chat.bsg.brave.com", None);
+        let serde_json::Value::Object(root) = serde_json::from_str(
+            r#"{"provider": {"openrouter": {
+                "options": {"baseURL": "https://openrouter.example.invalid/api/v1"}
+            }}}"#,
+        )
+        .expect("json") else {
+            panic!("not an object");
+        };
+        config.providers = bravebot_config::provider::Provider::all(&root);
+        let trust = trusting();
+
+        let mut gateway = facts(&config, &trust);
+        gateway.model = Some("openrouter/z-ai/glm-4.6");
+        gateway.served_model = Some("z-ai/glm-4.6");
+        let shown = rendered(&report(&gateway));
+        assert!(!shown.contains("served instead"), "{shown}");
+
+        // A gateway that really did answer with a different model still says so.
+        let mut elsewhere = facts(&config, &trust);
+        elsewhere.model = Some("openrouter/z-ai/glm-4.6");
+        elsewhere.served_model = Some("moonshot/kimi-k2");
+        let shown = rendered(&report(&elsewhere));
+        assert!(shown.contains("served instead"), "{shown}");
     }
 
     /// `automatic` is the server choosing per request, so a concrete name coming back is the feature

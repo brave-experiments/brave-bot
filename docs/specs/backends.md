@@ -363,6 +363,37 @@ what keeps a known name usable against a proxy or a private deployment.
 `verified-by: bravebot_config::provider::a_stated_endpoint_beats_the_one_compiled_in`
 `verified-by: bravebot_config::provider::a_provider_without_a_base_url_is_not_offered`
 
+<a id="BACKEND-18"></a>
+### BACKEND-18: a model name may say which gateway is meant, and only the rest of it is sent
+
+A name selecting a gateway model may carry the gateway's own identifier ahead of the name that
+gateway knows the model by, separated once. The identifier selects the service; only the remainder is
+sent to it, and it is also what a reply's name is compared against. A name no configured gateway
+claims reaches the service that does recognise it, as before.
+
+**Why.** One model is reachable through more than one service, billed and credentialled differently,
+and a bare name cannot say which was chosen. That mattered less while a gateway served only what a
+settings file listed, because the file was the record of the choice. It decides correctness once a
+roster is discovered rather than written down, since then nothing local can say which service a bare
+name belonged to and a remembered choice would silently change service.
+
+Sending only the remainder is what makes the qualified form usable at all: it is this system's own
+filing, and the service has never heard of it. Comparing against the remainder too, because a reply
+naming the model the gateway knows is the request working, and comparing against the qualified form
+would report a substitution on every gateway turn. That is the same reasoning already applied to a
+handle standing for whatever it resolves to.
+
+Splitting once, rather than at every separator, because the remainder is the gateway's to spell and
+most of those names contain one. A name whose leading segment matches no configured gateway is not a
+qualified name at all, which is what keeps the other rosters' spellings out of this.
+
+`verified-by: bravebot_config::lib::a_name_qualified_by_a_provider_id_names_the_gateway_and_the_model_separately`
+`verified-by: bravebot_config::lib::a_bare_name_the_block_lists_still_finds_its_gateway`
+`verified-by: bravebot_config::lib::a_name_no_gateway_was_configured_for_reaches_no_gateway`
+`verified-by: bravebot_aichat::lib::only_the_name_the_gateway_knows_reaches_it`
+`verified-by: bravebot_aichat::lib::a_qualified_name_still_finds_the_options_its_model_configured`
+`verified-by: bravebot_tui::status::a_gateway_answering_under_its_own_name_is_not_a_substitution`
+
 ## Known costs
 
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that
