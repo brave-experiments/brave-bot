@@ -414,6 +414,12 @@ pub struct Task {
     /// fine. So the interface passes `None`, and an unattended run passes
     /// [`MAX_TOOL_ROUNDS`], where nothing else can end a loop.
     pub rounds: Option<usize>,
+    /// Whether a file the planner may not read is offered to a checker before it is quarantined.
+    ///
+    /// On by default, because the alternative is an agent that cannot read the project it was
+    /// started in. Off is for a run that must make no call it was not asked to make, and for
+    /// telling whether a verdict was what made a difference.
+    pub vetting: bool,
 }
 
 /// An image on its way into a prompt, before it has been encoded for the wire.
@@ -446,7 +452,14 @@ impl Task {
             // and a default cannot know whether anybody is, so the default is the one that is
             // wrong in the cheaper direction.
             rounds: Some(MAX_TOOL_ROUNDS),
+            vetting: true,
         }
+    }
+
+    /// Quarantine what nobody vouched for rather than offering it to a checker.
+    pub fn without_vetting(mut self) -> Self {
+        self.vetting = false;
+        self
     }
 
     pub fn with_file(mut self, path: impl Into<String>) -> Self {
@@ -1299,6 +1312,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         cancel: Some(cancel),
                     },
                     cancel,
+                    vetting: task.vetting,
                 },
                 &mut asking,
                 reporter,

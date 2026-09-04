@@ -15,7 +15,7 @@ answer grants, and what one answer must never be taken for. `ask_user`, where th
 a question, is [tools/ask-user.md](tools/ask-user.md) and is a different thing: these prompts are the system asking
 permission.
 
-There are five: the startup trust question, a read of a file nobody vouched for, a write or edit, a
+There are four: the startup trust question, a write or edit, a
 run, and reading what a run printed.
 
 ## What every prompt owes the reader
@@ -67,7 +67,7 @@ than dropped, as it is for any long body.
 `verified-by: bravebot_tui::confirm::output_is_drawn_inside_the_margin_it_cannot_forge`
 `verified-by: bravebot_tui::confirm::a_wrapped_output_line_is_marked_on_every_row_it_reaches`
 `verified-by: bravebot_tui::confirm::a_wrapped_untrusted_hunk_is_marked_on_every_row_it_reaches`
-`verified-by: bravebot_tui::confirm::a_wrapped_vouch_preview_is_marked_on_every_row_it_reaches`
+`verified-by: bravebot_tui::confirm::a_wrapped_output_preview_is_marked_on_every_row_it_reaches`
 
 <a id="PROMPT-4"></a>
 ### PROMPT-4: a review stays legible, or says it could not

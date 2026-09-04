@@ -168,40 +168,42 @@ session.
 
 ## The ways a rule is written
 
-Each grants exactly one thing and grants it because a person made a gesture, never because
-anything inspected content. TRUST-7 is the first. Two more write a rule the same way and have
+Each grants exactly one thing. All but one grant it because a person made a gesture; the exception
+is TRUST-8, which is the only rule in this map written on the strength of something having read the
+content, and it says what that costs. TRUST-7 is the first. Two more write a rule the same way and have
 specs of their own: naming a file is [naming-files.md](naming-files.md), and dropping one on the
 window is [dropping.md](dropping.md).
 
 <a id="TRUST-8"></a>
-### TRUST-8: a quarantined read offers the same rule, at the moment it bites
+### TRUST-8: a read of a file nobody vouched for asks a checker, not a person
 
-When a turn reads a file nobody has vouched for, the user is shown the path and the first lines of
-it and asked whether to trust it. Yes writes exactly the rule `@` would have written. Asked once
-per path per turn, and only where the read is quarantined. Declining leaves the file as it was and
-the turn carries on with a reference.
+When a turn is about to be refused a file's contents, the whole file is offered to an isolated
+checker. A clean verdict writes exactly the rule `@` would have written, for that path and no
+other, and the read proceeds as any read of a vouched-for path does. Anything else leaves the file
+quarantined and the turn carries on with a reference. Recorded once per path, so a file is offered
+at most once however many times it is read.
 
-```
-╭ let the model read this file? ────────────────────────────╮
-│Trust game.js                                              │
-│                                                           │
-│  the model cannot read this file, so it is working blind  │
-│  on it. Vouching lets it read this file for the rest of   │
-│  this session, here and in every later read.              │
-│                                                           │
-│┃ const SPEED = 100;                                       │
-│                                                           │
-│  y trust it    n leave it quarantined    ctrl-c stop      │
-╰───────────────────────────────────────────────────────────╯
-```
+The whole file or nothing. A verdict about the first page of a file is a verdict about a document
+nobody has, and a file too large to hand over in one piece gets no verdict.
 
-**Why.** This is the map's own decision offered where it matters, not a second route to trusting
-content, so a yes stays consistent for every later read. It exists because of a session that did
-not have it: asked to fix a bug in a game it could not read, the model pointed an isolated
-processor at the file, wrote the answer back unseen, and finished by saying it could not confirm
-any of what it had done. One prompt would have let it read the file.
+A run may turn this off, and then a file nobody vouched for is simply quarantined.
 
-`verified-by: none`
+**Why.** The question this replaces was a y/n in front of the person watching, once per path,
+arriving while they waited for work to happen, about a file they already knew was in their own
+project. It was answered yes almost every time, which is what a prompt looks like when it is a toll
+rather than a decision. What it protected against is real, so it is still checked; what changed is
+who does the checking.
+
+The cost is that the grant is no longer a person's. Every other rule in this map comes from a
+gesture no attacker can cause; this one is a model's opinion of bytes an attacker may have written,
+so an attacker who owns a file gets to try. What that buys them is in
+[vetting.md](vetting.md), which owns the checker itself.
+
+`verified-by: bravebot_agent::turn::a_file_nobody_vouched_for_is_shown_once_a_checker_has_read_it`
+`verified-by: bravebot_agent::turn::a_file_a_checker_will_not_clear_stays_quarantined`
+`verified-by: bravebot_agent::turn::a_file_already_trusted_is_not_offered_to_a_checker`
+`verified-by: bravebot_agent::turn::a_file_is_offered_to_a_checker_once_and_not_again_after_it_passes`
+`verified-by: bravebot_agent::turn::vetting_can_be_turned_off_and_then_nothing_is_offered_to_a_checker`
 
 <a id="TRUST-9"></a>
 ### TRUST-9: `/add-dir` makes a directory both reachable and trusted, for the session

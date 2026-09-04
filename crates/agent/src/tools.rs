@@ -588,6 +588,8 @@ pub struct Tools<'a> {
     pub chat: Chat<'a>,
     /// The turn's stop token, so a slow program does not have to be waited out.
     pub cancel: &'a bravebot_core::cancel::Cancel,
+    /// Whether a file nobody vouched for is offered to a checker before it is quarantined.
+    pub vetting: bool,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -876,12 +878,6 @@ pub(crate) fn tally(n: usize, one: &str, many: &str) -> String {
 /// Unchanged lines kept around each run of changes, so a hunk can be read in context.
 const DIFF_CONTEXT: usize = 3;
 
-/// How many lines of a quarantined file are shown when offering to vouch for it.
-///
-/// Enough to tell what the file is, not so much that the prompt becomes a document nobody reads.
-/// The decision being asked for is about the path, not about these lines.
-const VOUCH_PREVIEW: usize = 20;
-
 /// What a write did, for the person watching: a line saying how much changed, and the hunks
 /// themselves where showing them is worth the room.
 ///
@@ -989,7 +985,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     reporter.tool_started(Activity::running(verb, target.clone()));
 
     let produced = match name.as_str() {
-        "read_file" => read_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
+        "read_file" => read_file(policy, tools, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
@@ -1088,14 +1084,13 @@ fn references_in(arguments: &Value) -> Labelled<String> {
     )
 }
 
-fn read_file<S: Sink, C: Confirmer>(
+fn read_file<S: Sink>(
     policy: &mut Policy<'_, S>,
-    workspace: &Workspace,
-    slots: &SlotStore,
-    confirmer: &mut C,
+    tools: &mut Tools<'_>,
     arguments: &Value,
 ) -> Produced {
-    let found = match path_argument(policy, "read_file", Purpose::Read, slots, arguments) {
+    let workspace = tools.workspace;
+    let found = match path_argument(policy, "read_file", Purpose::Read, tools.slots, arguments) {
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
@@ -1130,34 +1125,20 @@ fn read_file<S: Sink, C: Confirmer>(
 
     let (proposed_path, _) = proposed.into_parts_for_decoding();
 
-    // The trust question, put where it bites rather than only at startup. A file is quarantined
-    // because nobody vouched for it, and that is the user's decision to make: they are shown the
-    // path and the first lines of it and can vouch on the spot, after which this read and every
-    // later one sees the file. A yes writes the same rule `@` and the startup question write, so
-    // nothing here is a second route to trusting content.
+    // The trust question, answered rather than asked. A file nobody vouched for used to put a
+    // y/n in front of the person watching, once per path per turn, and the answer was nearly
+    // always yes: the question arrives while somebody is waiting for work to happen, about a file
+    // they already know is in their own project. A prompt answered that way is not a decision, it
+    // is a toll.
     //
-    // Asked once per path per turn, and only for a path that is quarantined, so a planner retrying
-    // a read does not put the same question up twice.
-    if policy.should_offer_vouch(&proposed_path) {
-        let (preview, truncated) = match workspace.peek_for_review(&proposed_path) {
-            Some(body) => {
-                let head: Vec<&str> = body.lines().take(VOUCH_PREVIEW).collect();
-                let truncated = body.lines().count() > head.len();
-                (head.join("\n"), truncated)
-            }
-            // Nothing to show means nothing to vouch about: a path that cannot be read is reported
-            // by the read below, not turned into a question.
-            None => (String::new(), false),
-        };
-        if !preview.is_empty() {
-            let request = crate::confirm::VouchRequest {
-                path: proposed_path.clone(),
-                preview,
-                truncated,
-            };
-            if confirmer.confirm_vouch(&request) == Decision::Approve {
-                policy.vouch_for_named_path(&proposed_path);
-            }
+    // So a checker reads it instead. It gets the whole file, holds no capabilities, and answers
+    // one of two words. A clean verdict writes the same rule the person's yes would have written,
+    // and the read below then takes its label from the map exactly as every read always has.
+    // Anything else leaves the file quarantined, which is where it already was.
+    if tools.vetting && policy.read_is_quarantined(&proposed_path) {
+        let verdict = vet_before_reading(policy, tools, &path, &proposed_path);
+        if verdict == Some(bravebot_core::vet::Verdict::Safe) {
+            policy.trust_after_vetting(&proposed_path);
         }
     }
 
@@ -1207,6 +1188,36 @@ fn read_file<S: Sink, C: Confirmer>(
         }
         Err(e) => problem(format!("error: {e}")),
     }
+}
+
+/// Offer one whole file to an isolated checker, before deciding whether the planner may read it.
+///
+/// The whole file or nothing. A verdict about the first page of a file is a verdict about a
+/// document nobody has, and the injected line is as likely to be at the bottom as at the top.
+/// A file too large to hand over in one piece therefore gets no verdict, and stays quarantined.
+///
+/// `None` where no verdict was reached at all: the file could not be read, the call failed, or
+/// the checker was stopped. Every one of those leaves the file exactly as it was, which is the
+/// direction this fails in.
+fn vet_before_reading<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    path: &Labelled<String>,
+    shown: &str,
+) -> Option<bravebot_core::vet::Verdict> {
+    // Read at the label the trust map gives it, which is the label the spec is about to be fixed
+    // against. The bytes are never in a variable this function can examine.
+    let content = tools.workspace.read(policy, path).ok()?;
+
+    let origin = format!("an isolated checker over {shown}");
+    // Nothing to tell it about what to expect: the planner did not ask for this call and has said
+    // nothing about the file. The narrower question is the one that can always be asked.
+    let spec = policy
+        .before_vet(&origin, shown, content.label(), None)
+        .ok()?;
+
+    let done = crate::vet::run(policy, &mut tools.chat, &content, &spec).ok()?;
+    Some(done.verdict)
 }
 
 /// The text a slot holds for a file, read at the moment something needs it.
@@ -3302,10 +3313,6 @@ mod tests {
                 &mut self,
                 _request: &crate::confirm::OutputRequest,
             ) -> Decision {
-                Decision::Reject
-            }
-
-            fn confirm_vouch(&mut self, _request: &crate::confirm::VouchRequest) -> Decision {
                 Decision::Reject
             }
 

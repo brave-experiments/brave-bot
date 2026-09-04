@@ -56,6 +56,7 @@ cli-option-file = Inclure un fichier de l'espace de travail comme contexte (rép
 cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord
 cli-option-print = Non interactif. Lit l'entrée redirigée comme contexte en quarantaine
 cli-option-trace = Afficher le journal d'audit
+cli-option-disable-vetting = Mettre en quarantaine ce que personne n'a approuvé au lieu de le soumettre à un contrôleur
 cli-option-help = Afficher ce message
 cli-option-version = Afficher la version
 

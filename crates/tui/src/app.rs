@@ -1020,6 +1020,7 @@ pub fn run(
     workspace: &Workspace,
     confinement: String,
     start: Start,
+    vetting: bool,
 ) -> io::Result<Option<String>> {
     let mut stdout = io::stdout();
     take_over_terminal(&mut stdout)?;
@@ -1043,7 +1044,14 @@ pub fn run(
         // still arrives here, loading its empty conversation as a turn would continue a run
         // that cannot be continued.
         Some(Start::Resuming(record)) if record.manifest.is_some() => Ok(None),
-        Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
+        Some(start) => event_loop(
+            &mut terminal,
+            config,
+            workspace,
+            confinement,
+            start,
+            vetting,
+        ),
         // Leaving at the picker resumed nothing and started nothing, so there is nothing to say
         // about picking anything up.
         None => Ok(None),
@@ -1266,6 +1274,7 @@ fn event_loop(
     workspace: &Workspace,
     confinement: String,
     start: Start,
+    vetting: bool,
 ) -> io::Result<Option<String>> {
     // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
     // the turns after it must see one. The primary root never changes, so nothing keyed on it
@@ -1514,6 +1523,7 @@ fn event_loop(
                         conversation,
                         trust,
                         programs,
+                        vetting,
                     )?;
 
                     // Written after each turn rather than at the end, because the end may never
@@ -2114,6 +2124,7 @@ fn run_turn_animated(
     conversation: Conversation,
     trust: TrustStore,
     programs: TrustedPrograms,
+    vetting: bool,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
     // The prompt is in the transcript by now, and drawn before anything that might take a moment:
     // a check that has to run the AWS CLI holds the frame for as long as the process takes, and
@@ -2153,6 +2164,9 @@ fn run_turn_animated(
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string));
+    if !vetting {
+        task = task.without_vetting();
+    }
     for file in crate::entries::referenced(&sent) {
         task = task.with_file(file);
     }
@@ -2290,18 +2304,6 @@ fn run_turn_animated(
                     cancel.cancel();
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
-            }
-            crate::remote_confirm::ToMain::Vouch(request) => {
-                let answer = crate::confirm::ask_vouch(terminal, &request);
-                if answer == crate::confirm::Answer::Interrupt {
-                    cancel.cancel();
-                }
-                if answer == crate::confirm::Answer::Approve {
-                    // Said on the transcript because it is a standing decision the user will not
-                    // otherwise see recorded anywhere until they ask for /status.
-                    session.note(t!(session_vouched_for, path = &request.path));
-                }
-                let _ = answer_tx.send(crate::remote_confirm::Reply::Vouch(answer.decision()));
             }
             crate::remote_confirm::ToMain::Ask(asking) => {
                 // A planner that loops back over the same decision should not make the user

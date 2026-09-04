@@ -8,7 +8,7 @@
 //! event all resolve to refusal.
 
 use bravebot_agent::confirm::{
-    Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
+    Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, WriteRequest,
 };
 use bravebot_agent::diff::Change;
 use bravebot_core::ask::{Answer as UserAnswer, Asking};
@@ -49,10 +49,6 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
 
     fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
         ask_output(self.terminal, request).decision()
-    }
-
-    fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
-        ask_vouch(self.terminal, request).decision()
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<UserAnswer> {
@@ -761,133 +757,6 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
     furthest
 }
 
-/// Draw the offer to vouch for a quarantined file, and wait for an answer.
-pub fn ask_vouch<B: Backend>(terminal: &mut Terminal<B>, request: &VouchRequest) -> Answer {
-    let mut scroll = 0u16;
-    loop {
-        let mut most = 0u16;
-        if terminal
-            .draw(|frame| most = draw_vouch(frame, request, scroll))
-            .is_err()
-        {
-            return Answer::Reject;
-        }
-
-        match event::read() {
-            // Presses only: asking for disambiguated keys reports releases too, and a release
-            // taken for a press approves whatever the press had just approved, twice.
-            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
-            Ok(TermEvent::Key(key)) => match answer_for(key) {
-                Some(Response::Answer(answer)) => return answer,
-                Some(Response::Scroll(by)) => {
-                    scroll = scroll.saturating_add_signed(by).min(most);
-                }
-                None => continue,
-            },
-            Ok(_) => continue,
-            Err(_) => return Answer::Reject,
-        }
-    }
-}
-
-/// Draw the vouch offer, returning how far it can be scrolled.
-///
-/// The preview carries the same margin bar as everything else the model has not been allowed to
-/// read, because that is exactly what it is until this question is answered.
-fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -> u16 {
-    let area = centred(frame.area());
-    let inside = panel(frame, area, theme::ok(), t!(vouch_title));
-
-    let marked = Style::default().fg(theme::running());
-    let margin = Span::styled("┃ ", marked);
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", t!(vouch_verb)),
-                Style::default()
-                    .fg(theme::ok())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                request.path.clone(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-    ];
-    lines.extend(indented(
-        t!(vouch_explained),
-        Style::default().fg(theme::muted()),
-        inside.width as usize,
-    ));
-    lines.push(Line::raw(""));
-
-    for line in request.preview.lines() {
-        lines.extend(marked_rows(
-            &margin,
-            &[Span::raw(line.to_string())],
-            inside.width as usize,
-        ));
-    }
-    if request.truncated {
-        lines.extend(marked_rows(
-            &margin,
-            &[Span::styled("…", Style::default().fg(theme::muted()))],
-            inside.width as usize,
-        ));
-    }
-
-    let keys = Line::from(vec![
-        Span::styled(
-            "  y",
-            Style::default()
-                .fg(theme::ok())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(" {}    ", t!(vouch_yes))),
-        Span::styled(
-            "n",
-            Style::default()
-                .fg(theme::fail())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(" {}    ", t!(vouch_no))),
-        Span::styled(
-            "ctrl-c",
-            Style::default()
-                .fg(theme::muted())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" {}", t!(stop_the_turn)),
-            Style::default().fg(theme::muted()),
-        ),
-    ]);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inside);
-
-    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let drawn = body.line_count(rows[0].width) as u16;
-    let furthest = drawn.saturating_sub(rows[0].height);
-    let offset = scroll.min(furthest);
-    frame.render_widget(body.scroll((offset, 0)), rows[0]);
-
-    let mut keys = keys;
-    if furthest > 0 {
-        let below = furthest - offset;
-        keys.push_span(Span::styled(
-            scroll_hint(below),
-            Style::default().fg(theme::ok()),
-        ));
-    }
-    frame.render_widget(Paragraph::new(keys), rows[1]);
-
-    furthest
-}
-
 /// Draw the outer box of a prompt, and return the area inside its border.
 ///
 /// The theme's own background as well as its border, because `Clear` empties cells without
@@ -1433,22 +1302,22 @@ mod tests {
     /// translation would start hard against the border and read as part of the body.
     #[test]
     fn explanatory_prose_keeps_its_indent_on_every_row_it_wraps_to() {
-        let request = VouchRequest {
-            path: "notes.md".into(),
-            preview: "some contents".into(),
-            truncated: false,
+        let request = OutputRequest {
+            command: "ls".into(),
+            output: "some contents".into(),
+            reference: "ref:0".into(),
         };
         // Narrow enough that the sentence cannot fit on one row.
         let drawn = rows_of(52, 24, |frame| {
-            draw_vouch(frame, &request, 0);
+            draw_output(frame, &request, 0);
         });
 
         let wrapped: Vec<&String> = drawn
             .iter()
             .filter(|row| {
-                row.contains("working blind")
-                    || row.contains("rest of this session")
-                    || row.contains("later read")
+                row.contains("has not seen this")
+                    || row.contains("in its context")
+                    || row.contains("act on it")
             })
             .collect();
         assert!(
@@ -1562,17 +1431,12 @@ mod tests {
     /// authorises anything, and the frame around untrusted content is what they read when they
     /// decide, so it has to be wholly the theme's.
     ///
-    /// All four, because the panel they share is only shared until somebody adds a fifth.
+    /// All three, because the panel they share is only shared until somebody adds a fourth.
     #[test]
     fn every_prompt_paints_the_themes_background_inside_its_border() {
         let write = request("fn main() {}", None);
         let run = a_run(false);
         let output = an_output("Darwin\n");
-        let vouch = VouchRequest {
-            path: "notes.md".into(),
-            preview: "some contents".into(),
-            truncated: false,
-        };
 
         let _held = theme::exclusive();
         let theme = theme::find("nord").expect("nord is built in");
@@ -1602,12 +1466,6 @@ mod tests {
                 "output",
                 unpainted_cell(painted, |frame| {
                     draw_output(frame, &output, 0);
-                }),
-            ),
-            (
-                "vouch",
-                unpainted_cell(painted, |frame| {
-                    draw_vouch(frame, &vouch, 0);
                 }),
             ),
         ];
@@ -1653,17 +1511,17 @@ mod tests {
             })
     }
 
-    /// The cheapest surface to see the defect on: the preview of a file nobody has vouched for is
-    /// drawn at whatever width the terminal happens to be.
+    /// The cheapest surface to see the defect on: output nobody has vouched for is drawn at
+    /// whatever width the terminal happens to be.
     #[test]
-    fn a_wrapped_vouch_preview_is_marked_on_every_row_it_reaches() {
-        let request = VouchRequest {
-            path: "longline.txt".into(),
-            preview: format!("{}\u{2503} trust me", "PADDING ".repeat(10)),
-            truncated: false,
+    fn a_wrapped_output_preview_is_marked_on_every_row_it_reaches() {
+        let request = OutputRequest {
+            command: "cat longline.txt".into(),
+            output: format!("{}\u{2503} trust me", "PADDING ".repeat(10)),
+            reference: "ref:0".into(),
         };
         let drawn = rows_of(60, 24, |frame| {
-            draw_vouch(frame, &request, 0);
+            draw_output(frame, &request, 0);
         });
 
         assert_marked_on_every_row(&drawn, "PADDING");

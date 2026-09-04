@@ -104,17 +104,23 @@ cannot be another call's input.
 `verified-by: bravebot_core::policy::what_a_checker_said_is_labelled_by_taint_over_the_input`
 
 <a id="VET-6"></a>
-### VET-6: a verdict changes no label
+### VET-6: a verdict never relabels anything, and `vet_content` grants nothing at all
 
-A pass does not make the content trusted, does not open the slot, and does not let the planner
-read what it could not read before. The content is exactly as quarantined afterwards as it was
-first.
+A verdict is not written onto the value it was about. Nothing carries a label upward, and the
+answer a planner gets from asking about a reference leaves that reference exactly as unreadable as
+it was.
 
-**Why.** A label is provenance, and a verdict is an opinion about bytes. Letting the second
-overwrite the first is the laundering the whole system is built to refuse, and it would be
-laundering by a model reading attacker-controlled text.
+Where a verdict does decide something, it decides it the way a person's approval of a program's
+output does: by establishing a **new** label from provenance the policy layer tracked, never by
+raising an old one. There is one such place, the read of a file nobody vouched for, and it is
+[trust-map.md](trust-map.md).
+
+**Why.** A label is provenance and a verdict is an opinion about bytes. Writing the second over the
+first would be laundering; recording that a check happened, and labelling what comes afterwards
+from that record, is the same move every other grant in the trust map makes.
 
 `verified-by: bravebot_agent::turn::a_clean_verdict_leaves_the_content_exactly_as_unreadable`
+`verified-by: bravebot_agent::turn::a_file_a_checker_will_not_clear_stays_quarantined`
 
 ## Known costs
 

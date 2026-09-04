@@ -175,13 +175,6 @@ pub struct Policy<'sink, S: Sink> {
     trust: TrustStore,
     /// Which programs the user has stopped being asked about, by resolved path.
     programs: crate::programs::TrustedPrograms,
-    /// Paths this turn has already offered to the user to vouch for.
-    ///
-    /// Turn-scoped, and deliberately not recorded anywhere longer-lived. A yes goes into the trust
-    /// map and needs no remembering; a no is worth honouring for the rest of the turn so a planner
-    /// retrying a read does not put the same question up twice, but it is not a standing refusal
-    /// and the next turn may ask again.
-    vouch_asked: std::collections::BTreeSet<String>,
     /// The integrity of every observation this turn has made, met together.
     ///
     /// Starts trusted, since the task is the user's own words, and drops to untrusted the moment
@@ -247,7 +240,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             denials: 0,
             trust: TrustStore::new(),
             programs: crate::programs::TrustedPrograms::new(),
-            vouch_asked: std::collections::BTreeSet::new(),
             context: Integrity::Trusted,
         })
     }
@@ -322,27 +314,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The programs vouched for, including any this turn recorded.
     pub fn programs(&self) -> &crate::programs::TrustedPrograms {
         &self.programs
-    }
-
-    /// Whether the user should be offered the chance to vouch for this path.
-    ///
-    /// True once per path per turn, and only where the path is quarantined and so the offer would
-    /// change something. Records the asking, so a planner retrying a read does not put the same
-    /// question up twice.
-    ///
-    /// This offers the trust map's own decision at the moment it bites. It is not a second route
-    /// to trusting content: what a yes writes is a rule in the map, the same rule `@` and the
-    /// startup question write, so the answer stays consistent for every later read of that path.
-    pub fn should_offer_vouch(&mut self, path: &str) -> bool {
-        if !self.read_is_quarantined(path) || self.vouch_asked.contains(path) {
-            return false;
-        }
-        self.vouch_asked.insert(path.to_string());
-        self.allow(
-            "approval",
-            format!("{path}: quarantined, so the user is offered the chance to vouch for it"),
-        );
-        true
     }
 
     /// Record that the user vouched for this exact command, its side effects and its output.
@@ -2390,6 +2361,34 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Always the exact path, never its parent. Naming one file says nothing about its siblings,
     /// and a rule on the file is more specific than any rule on the tree around it, so a
     /// referenced file is trusted inside a directory nobody vouched for.
+    /// Record that an isolated checker read the whole of this file and found nothing in it
+    /// addressed to whoever reads it.
+    ///
+    /// **Not a relabel, and not laundering.** The bytes in the file keep whatever they were; what
+    /// happens here is that a rule is written, and the next read of the path takes its label from
+    /// the map as every read always has. It is the same move
+    /// [`Policy::read_output`] makes when a person reads a program's output and vouches for it: a
+    /// new label established by provenance the policy layer tracked, rather than an old one
+    /// carried upward.
+    ///
+    /// What differs from every other grant in the map is who made it. Naming a file, dropping one,
+    /// and adding a directory are all a person's gesture, and no attacker can cause one. This one
+    /// is a model's opinion of bytes an attacker may have written, so an attacker who owns a file
+    /// gets to try. What that costs is [vetting.md](../../../docs/specs/vetting.md).
+    ///
+    /// Always the exact path, never its parent: a verdict is about the file that was read, and
+    /// nothing was read about its siblings.
+    pub fn trust_after_vetting(&mut self, path: &str) {
+        self.trust.trust(path);
+        self.allow(
+            "trust",
+            format!(
+                "{path} trusted: an isolated checker read the whole file and found nothing \
+                 addressed to its reader"
+            ),
+        );
+    }
+
     pub fn vouch_for_named_path(&mut self, path: &str) {
         self.trust.trust(path);
         self.allow(
