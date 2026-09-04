@@ -227,7 +227,14 @@ impl StoredManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredRule {
     pub path: String,
+    /// What the rule means. Written for a build that predates provenance and reads this back.
     pub integrity: String,
+    /// Where the rule came from: vouched, standing, vetted, written, fetched, withheld.
+    ///
+    /// Absent in a record written before origins were kept, and then the integrity is all there
+    /// is to go on.
+    #[serde(default)]
+    pub provenance: Option<String>,
 }
 
 /// The word for a trusted rule. Anything else reads as untrusted.
@@ -276,11 +283,15 @@ impl Record {
         let rules = self.trust.as_ref()?;
         let mut trust = TrustStore::new();
         for rule in rules {
-            if rule.integrity == TRUSTED {
-                trust.trust(&rule.path);
-            } else {
-                trust.distrust(&rule.path);
-            }
+            // The word for where it came from where the record has one. Without it there is only
+            // what the rule meant, and the honest reading of a trusted rule whose origin nobody
+            // wrote down is that a person put it there, which is what every rule was then.
+            let provenance = match &rule.provenance {
+                Some(word) => bravebot_core::trust::Provenance::of_word(word),
+                None if rule.integrity == TRUSTED => bravebot_core::trust::Provenance::Vouched,
+                None => bravebot_core::trust::Provenance::Withheld,
+            };
+            trust.record(&rule.path, provenance);
         }
         Some(trust)
     }
@@ -520,14 +531,17 @@ impl Handle {
             trust: Some(
                 standing
                     .trust
-                    .rules()
-                    .map(|(path, integrity)| StoredRule {
+                    .origins()
+                    .map(|(path, provenance)| StoredRule {
                         path: path.to_string(),
-                        integrity: match integrity {
+                        // Both, though one is a function of the other: a build that predates
+                        // origins reads the word it knows and gets the same answer.
+                        integrity: match provenance.integrity() {
                             Integrity::Trusted => TRUSTED,
                             Integrity::Untrusted => UNTRUSTED,
                         }
                         .to_string(),
+                        provenance: Some(provenance.as_str().to_string()),
                     })
                     .collect(),
             ),
@@ -1089,6 +1103,8 @@ mod tests {
 
     /// Whatever a record says that this build does not recognise, the answer is untrusted. A
     /// hand edit or a newer build's word lands in the safe direction, as everything else does.
+    /// Records written before origins were kept have no provenance word, so the integrity is all
+    /// there is to read.
     #[test]
     fn an_unrecognised_integrity_in_a_record_reads_as_untrusted() {
         for word in ["", "TRUSTED", "trusted-ish", "yes"] {
@@ -1096,6 +1112,7 @@ mod tests {
             record.trust = Some(vec![StoredRule {
                 path: ".".to_string(),
                 integrity: word.to_string(),
+                provenance: None,
             }]);
             let map = record.trust_map().expect("a map was recorded");
             assert!(
@@ -1103,6 +1120,59 @@ mod tests {
                 "{word:?} was read as trusted"
             );
         }
+    }
+
+    /// Where a rule came from survives being written down, and an origin this build does not
+    /// recognise grants nothing.
+    ///
+    /// The word is what a person reads back off a record days later to answer "why is the agent
+    /// allowed to read this", and it is what the integrity is derived from, so a newer build's
+    /// word must not be read as permission by an older one.
+    #[test]
+    fn where_a_rule_came_from_survives_the_record() {
+        let mut record = a_record();
+        record.trust = Some(vec![
+            StoredRule {
+                path: "AGENTS.md".to_string(),
+                integrity: "trusted".to_string(),
+                provenance: Some("standing".to_string()),
+            },
+            StoredRule {
+                path: "notes.md".to_string(),
+                integrity: "trusted".to_string(),
+                provenance: Some("vetted".to_string()),
+            },
+            StoredRule {
+                path: "fetched.json".to_string(),
+                integrity: "untrusted".to_string(),
+                provenance: Some("fetched".to_string()),
+            },
+            StoredRule {
+                path: "from-the-future.txt".to_string(),
+                integrity: "trusted".to_string(),
+                provenance: Some("some-word-this-build-does-not-know".to_string()),
+            },
+        ]);
+
+        let map = record.trust_map().expect("a map was recorded");
+        assert_eq!(
+            map.provenance_of("AGENTS.md"),
+            Some(bravebot_core::trust::Provenance::Standing)
+        );
+        assert_eq!(
+            map.provenance_of("notes.md"),
+            Some(bravebot_core::trust::Provenance::Vetted)
+        );
+        assert_eq!(
+            map.provenance_of("fetched.json"),
+            Some(bravebot_core::trust::Provenance::Fetched)
+        );
+        assert!(map.is_trusted("notes.md"));
+        assert!(!map.is_trusted("fetched.json"));
+        assert!(
+            !map.is_trusted("from-the-future.txt"),
+            "an origin this build does not know was read as permission"
+        );
     }
 
     /// The rule the whole map turns on has to survive being written down: a path a write marked
@@ -1114,10 +1184,12 @@ mod tests {
             StoredRule {
                 path: String::new(),
                 integrity: "trusted".to_string(),
+                provenance: None,
             },
             StoredRule {
                 path: "src/fetched.json".to_string(),
                 integrity: "untrusted".to_string(),
+                provenance: None,
             },
         ]);
 

@@ -1427,7 +1427,7 @@ fn write<S: Sink, C: Confirmer>(
         Intent::Create
     };
 
-    if policy.write_needs_approval(&path, body_label, Destination::Named) {
+    if policy.write_needs_approval(&path, body_label, Destination::Named) || !confirmer.watching() {
         let request = WriteRequest {
             intent,
             existing: existing.clone(),

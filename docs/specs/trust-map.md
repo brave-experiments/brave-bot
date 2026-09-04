@@ -5,7 +5,6 @@ status: normative
 governs:
   - crates/core/src/trust.rs
   - crates/core/src/policy.rs
-  - crates/tui/src/trust_prompt.rs
   - crates/tui/src/sessions.rs
   - crates/tui/src/dropped.rs
   - crates/agent/src/workspace.rs
@@ -18,21 +17,21 @@ guards:
 
 ## Scope
 
-Which paths a user has vouched for, every way a rule enters that record, what a write does to
-it, and how long an answer lasts. It does not cover what a label means once assigned, which is
+Which paths a user has vouched for, every way a rule enters that record, where each rule came
+from, what a write does to it, and how long an answer lasts. It does not cover what a label means once assigned, which is
 [labels.md](labels.md), nor what may be released to whom, which is [routing.md](routing.md), nor
 `~/.bravebot`, which the map does not govern (TRUST-11).
 
 ## The record
 
 <a id="TRUST-1"></a>
-### TRUST-1: nothing is trusted until it is granted
+### TRUST-1: nothing is trusted until a rule says so
 
-An empty map trusts no path. Trust is granted by a person and never inferred from silence, from
-a path's shape, or from anything a model or a file said.
+An empty map trusts no path, and a path's shape grants nothing. Every rule in the map was written
+by one of the ways listed below, and each of those says what it grants and on what.
 
-**Why.** This is what makes declining at startup mean something. A default of trusted would make
-the answer decorative.
+A session does not open empty. It opens with the two paths holding the user's standing instructions
+for the project and nothing else, which is TRUST-13.
 
 `verified-by: bravebot_core::trust::an_empty_store_trusts_nothing`
 
@@ -97,11 +96,16 @@ Every row is normative. A write matching a row does exactly what that row says a
 | untrusted | trusted | **yes** | that path becomes untrusted |
 | trusted | untrusted | no | that path becomes trusted |
 | untrusted | untrusted | no | unchanged |
-| either | never mentioned | **yes** | that path takes the data's trust |
+| trusted | never mentioned | no | unchanged |
+| untrusted | never mentioned | **yes** | that path becomes untrusted |
 
-A prompt asks one question and only this one: **may this path stop being trusted?** That is the
-only consequence a later step cannot undo, since a path recorded as untrusted can no longer be
-examined or edited.
+A prompt asks one question and only this one: **may these bytes land on your disk?** Every row that
+asks is a row where the data came from somewhere nobody vouched for.
+
+The table says when a write is shown, not whether it happens. Where nobody is following the session
+at all, a one-shot run or a cron job, every write is put to the confirmer whatever the table says
+and refused there, because an effect nobody will ever see is applied unseen. Quietly is not the
+same as unseen.
 
 **Why writing trusted data never asks.** Trusted data means the turn observed nothing untrusted,
 so it holds no byte an attacker influenced, and the destination only ever gains trust. There is
@@ -112,16 +116,17 @@ Untrusted bytes are anything derived from the web or from a file outside a trust
 into a trusted tree and read back as trusted they would launder injected text into trusted input,
 and the map would become a bypass for the gate it exists to support.
 
-**Why a path nobody has mentioned asks either way.** It differs from one deliberately marked
-untrusted: the first has no decision behind it, so the first write there is the moment to ask.
-This is also what makes declining at startup meaningful, since with nothing vouched for every
-write is shown.
+**Why a path nobody has mentioned is decided by the data.** Most paths have no rule, because
+content trust is per file and a file only gets one when something has read it, so this is the
+ordinary case rather than the exception. Trusted data means the turn observed nothing an attacker
+influenced, and writing it into a place the user opened is the work they asked for. Untrusted data
+landing on their disk is the one write worth stopping for.
 
 `verified-by: bravebot_core::policy::trusted_data_into_a_trusted_path_is_silent_and_changes_nothing`
 `verified-by: bravebot_core::policy::untrusted_data_into_a_trusted_path_prompts_and_distrusts_the_path`
 `verified-by: bravebot_core::policy::trusted_data_into_an_untrusted_path_is_silent_and_trusts_the_path`
 `verified-by: bravebot_core::policy::untrusted_data_into_an_untrusted_path_is_silent_and_changes_nothing`
-`verified-by: bravebot_core::policy::an_unvouched_path_prompts_either_way`
+`verified-by: bravebot_core::policy::an_unvouched_path_is_shown_only_for_untrusted_data`
 `verified-by: bravebot_core::policy::a_file_written_with_untrusted_data_reads_back_untrusted`
 
 <a id="TRUST-5"></a>
@@ -140,82 +145,95 @@ fetched page into a project nobody may edit.
 <a id="TRUST-6"></a>
 ### TRUST-6: the map belongs to the session, not the directory
 
-Every session start asks, whatever any earlier session in that directory answered. `/clear` begins
-a session and therefore asks. `--resume` does not ask, and restores the map from the record of the
-session chosen; a record from before maps were kept has none, and is asked about.
+A session begins with the opening rules and nothing an earlier session in that directory
+accumulated. `/clear` begins a session and therefore begins again. `--resume` restores the map from
+the record of the session chosen; a record from before maps were kept has none and opens as a fresh
+one does.
 
-**Why.** The question grants standing permission. Honouring last week's answer grants it on behalf
-of a user who was never asked, and trust assumed from silence is not trust granted. A resume is not
-an exception: the answer honoured is the one that session's own user gave, and it carries the rules
-that session's writes recorded, which is what stops a resumed turn reading back a file an earlier
-turn of the same session poisoned.
+**Why.** Every rule beyond the opening two is standing permission that something earned during a
+session: a file a checker cleared, a path a person named, a directory they opened. Carrying those
+into next week's session would grant them on behalf of a user who was there for none of it. A
+resume is not an exception: the rules honoured are the ones that session accumulated, which is what
+stops a resumed turn reading back a file an earlier turn of the same session poisoned.
 
 `verified-by: bravebot_tui::sessions::a_record_that_predates_the_map_has_none_rather_than_an_empty_one`
 `verified-by: bravebot_tui::sessions::a_distrusted_path_inside_a_trusted_tree_survives_the_record`
 `verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
 
 <a id="TRUST-7"></a>
-### TRUST-7: the startup question covers the whole workspace, and declining trusts nothing
+### TRUST-7: withdrawn, replaced by TRUST-13
 
-At startup the user is asked whether they trust the working directory. Yes writes a rule covering
-the tree. Declining writes nothing, so every write is shown. Leaving at the question starts no
-session.
+There was a question at startup: whether the user trusted the working directory, with yes writing a
+rule over the whole tree. It is gone, replaced by TRUST-13, and nothing asks in its place. A directory is somewhere to
+work, not a statement about every file in it, and the question could only be answered by somebody
+who had read none of them.
 
-`verified-by: bravebot_tui::trust_prompt::trusting_covers_the_whole_workspace`
-`verified-by: bravebot_tui::trust_prompt::declining_trusts_nothing`
-`verified-by: bravebot_tui::trust_prompt::leaving_starts_no_session`
-`verified-by: bravebot_tui::trust_prompt::ctrl_c_leaves_rather_than_answering_the_question`
+What each half of it became: the tree-wide content grant is gone entirely, and per-file content
+trust is now TRUST-8's business; the two paths a session still opens trusting are TRUST-13.
+
+`verified-by: by-construction (nothing asks at startup, and no code remains that could)`
 
 ## The ways a rule is written
 
-Each grants exactly one thing and grants it because a person made a gesture, never because
-anything inspected content. TRUST-7 is the first. Two more write a rule the same way and have
-specs of their own: naming a file is [naming-files.md](naming-files.md), and dropping one on the
-window is [dropping.md](dropping.md).
+Each grants exactly one thing. All but one grant it because a person made a gesture; the exception
+is TRUST-8, which is the only rule in this map written on the strength of something having read the
+content, and it says what that costs. TRUST-13 is the first, and is the only one written before
+anything has happened. Two more write a rule the same way and have specs of their own: naming a
+file is [naming-files.md](naming-files.md), and dropping one on the window is
+[dropping.md](dropping.md).
 
 <a id="TRUST-8"></a>
-### TRUST-8: a quarantined read offers the same rule, at the moment it bites
+### TRUST-8: a read of a file nobody vouched for asks a checker, not a person
 
-When a turn reads a file nobody has vouched for, the user is shown the path and the first lines of
-it and asked whether to trust it. Yes writes exactly the rule `@` would have written. Asked once
-per path per turn, and only where the read is quarantined. Declining leaves the file as it was and
-the turn carries on with a reference.
+When a turn is about to be refused a file's contents, whether for a read or to locate the passage
+an edit names, the whole file is offered to an isolated checker. A clean verdict writes exactly the rule `@` would have written, for that path and no
+other, and the read proceeds as any read of a vouched-for path does. Anything else leaves the file
+quarantined and the turn carries on with a reference. Recorded once per path, so a file is offered
+at most once however many times it is read.
 
-```
-╭ let the model read this file? ────────────────────────────╮
-│Trust game.js                                              │
-│                                                           │
-│  the model cannot read this file, so it is working blind  │
-│  on it. Vouching lets it read this file for the rest of   │
-│  this session, here and in every later read.              │
-│                                                           │
-│┃ const SPEED = 100;                                       │
-│                                                           │
-│  y trust it    n leave it quarantined    ctrl-c stop      │
-╰───────────────────────────────────────────────────────────╯
-```
+The whole file or nothing. A verdict about the first page of a file is a verdict about a document
+nobody has, and a file too large to hand over in one piece gets no verdict.
 
-**Why.** This is the map's own decision offered where it matters, not a second route to trusting
-content, so a yes stays consistent for every later read. It exists because of a session that did
-not have it: asked to fix a bug in a game it could not read, the model pointed an isolated
-processor at the file, wrote the answer back unseen, and finished by saying it could not confirm
-any of what it had done. One prompt would have let it read the file.
+A run may turn this off, and then a file nobody vouched for is simply quarantined.
 
-`verified-by: none`
+**Why.** The question this replaces was a y/n in front of the person watching, once per path,
+arriving while they waited for work to happen, about a file they already knew was in their own
+project. It was answered yes almost every time, which is what a prompt looks like when it is a toll
+rather than a decision. What it protected against is real, so it is still checked; what changed is
+who does the checking.
+
+The cost is that the grant is no longer a person's. Every other rule in this map comes from a
+gesture no attacker can cause; this one is a model's opinion of bytes an attacker may have written,
+so an attacker who owns a file gets to try. What that buys them is in
+[vetting.md](vetting.md), which owns the checker itself.
+
+`verified-by: bravebot_agent::turn::a_file_nobody_vouched_for_is_shown_once_a_checker_has_read_it`
+`verified-by: bravebot_agent::turn::a_file_nobody_vouched_for_can_be_edited_once_a_checker_has_read_it`
+`verified-by: bravebot_agent::turn::a_file_a_checker_will_not_clear_stays_quarantined`
+`verified-by: bravebot_agent::turn::a_file_already_trusted_is_not_offered_to_a_checker`
+`verified-by: bravebot_agent::turn::a_file_is_offered_to_a_checker_once_and_not_again_after_it_passes`
+`verified-by: bravebot_agent::turn::vetting_can_be_turned_off_and_then_nothing_is_offered_to_a_checker`
 
 <a id="TRUST-9"></a>
-### TRUST-9: `/add-dir` makes a directory both reachable and trusted, for the session
+### TRUST-9: `/add-dir` makes a directory reachable, for the session
 
-`/add-dir ~/notes` records an absolute rule (TRUST-3) that does two things together: the directory
-becomes reachable, since an absolute path is otherwise refused whatever the map says, and it is
-recorded as trusted. It lasts the session, `--resume` carries both halves, and `/clear` closes it.
-A directory already inside the project is refused. A directory a resume cannot open again, because
-it has moved or gone, is said so rather than passed over.
+`/add-dir ~/notes` records the directory as somewhere paths may resolve to. An absolute path is
+otherwise refused whatever any rule says, so opening one is what makes it addressable at all, and
+that is the whole of the grant. It lasts the session, `--resume` reopens it, and `/clear` closes
+it. A directory already inside the project is refused. A directory a resume cannot open again,
+because it has moved or gone, is said so rather than passed over.
 
-**Why.** Either half alone is no use, one leaving a rule about files nothing can open and the other
-leaving a directory that prompts on every edit. It closes with the session for the reason every
-other answer here does (TRUST-6): leaving a tree reachable once nothing vouches for it would
-outlive the answer that allowed it.
+The files in it are content nobody has vouched for, exactly like the files in the project, and each
+is read the way any of those is.
+
+**Why it grants no content trust.** It used to grant both together, on the reasoning that a
+directory left reachable but not trusted would prompt on every edit. That reasoning is gone: an
+ordinary write is not shown any more, and what a file is worth is asked per file. What is left is
+the part a person actually did, which is name a place, and naming a place is not reading what is
+in it.
+
+**Why it closes with the session.** Leaving a tree reachable once the session that opened it is
+over would outlive the answer that allowed it.
 
 `verified-by: bravebot_agent::workspace::a_file_in_an_added_directory_is_readable_by_its_absolute_path`
 `verified-by: bravebot_agent::workspace::closing_added_directories_makes_them_unreachable_again`
@@ -223,8 +241,6 @@ outlive the answer that allowed it.
 `verified-by: bravebot_agent::turn::a_turn_can_read_a_file_in_an_added_directory`
 `verified-by: bravebot_tui::sessions::a_resumed_session_can_still_open_the_directory_it_added`
 `verified-by: bravebot_tui::sessions::a_directory_that_has_gone_since_is_reported_on_resume`
-
-## Boundaries
 
 <a id="TRUST-10"></a>
 ### TRUST-10: no rule extends reach; reading, writing and listing stay confined
@@ -261,9 +277,66 @@ remembered.
 `verified-by: bravebot_tui::status::an_added_directory_is_reported`
 `verified-by: bravebot_tui::status::every_trust_rule_is_listed_however_many_there_are`
 
+<a id="TRUST-13"></a>
+### TRUST-13: a session opens by trusting the user's standing instructions, and nothing else
+
+Two paths, written before any turn runs: `AGENTS.md` and `.bravebot/skills`. Written whether or not
+either exists, since a rule is about a path rather than about what was there when it was made, and
+a file written mid-session is read by the turn after it.
+
+A **default, never an override.** A rule already covering one of those paths stays: a write that
+poisoned the file and recorded it, or a person who said no, both knew more than a session start
+does.
+
+Not the working directory, whose files are TRUST-8's business. Not `.bravebot` whole, where a
+repository may drop anything and only the skills directory is ever read as an instruction.
+
+**Why.** These two are the files the user wrote in order to be obeyed. A session that treated them
+as content nobody vouched for would ignore the very thing it was told to follow, and there is
+nobody left to ask.
+
+`verified-by: bravebot_agent::turn::a_workspace_agents_file_is_obeyed_without_anybody_vouching_for_it`
+`verified-by: bravebot_agent::turn::an_untrusted_directory_is_not_reported_as_a_refusal`
+`verified-by: bravebot_agent::turn::opening_a_session_does_not_undo_what_a_write_recorded`
+
+<a id="TRUST-14"></a>
+### TRUST-14: a rule records where it came from, and what it means is derived from that
+
+Every rule in the map carries its origin: a person named the path, the session opened with it, a
+checker cleared the file, this agent wrote it out of what the turn already had, bytes from outside
+landed there, or somebody withheld it. Whether the content is readable is a function of that origin
+and is not stored beside it.
+
+The origin survives being written down and read back, and one a build does not recognise grants
+nothing. `/status` shows it, so a rule a checker wrote can be told from one a person wrote.
+
+**Why derived rather than stored.** A record holding both could disagree with itself, and the
+question worth answering later is never "was this trusted" on its own but "why is the agent allowed
+to read this". The same shape as first-party and third-party on the web: what decides is where
+something came from, not what it looks like once it has arrived.
+
+`verified-by: bravebot_core::trust::what_a_rule_means_is_derived_from_where_it_came_from`
+`verified-by: bravebot_core::trust::an_origin_this_build_does_not_know_grants_nothing`
+`verified-by: bravebot_tui::sessions::where_a_rule_came_from_survives_the_record`
+
 ## Known costs
 
 Accepted deliberately. Do not "fix" one without changing this spec first.
+
+- **A project's own `AGENTS.md` steers the agent from the first turn, whoever wrote it.** TRUST-13
+  writes that rule before anything has read a byte of the file, so cloning a repository and
+  starting a session in it puts that repository's standing instructions into the system prompt.
+  Standing instructions are the highest-privilege content in the system: they are not data the
+  planner weighs, they are the rules it works by, and nothing downstream re-examines them.
+
+  This is the sharpest edge in the whole map and it is deliberate. The alternative was to put the
+  file through the same checker every other file goes through, which would have caught the case
+  and cost a call at the start of every session. What is accepted instead is that a repository you
+  have not read is a repository you are taking instructions from.
+
+  `bravebot_agent::turn::a_workspace_agents_file_is_obeyed_without_anybody_vouching_for_it` is
+  written to fail if this ever stops being true, with the payload spelled out, so the exposure is
+  visible in the suite rather than only here. Read it before changing this.
 
 - **A fresh session forgets what an earlier one poisoned.** The rule that untrusted data marks
   its destination untrusted holds within a session and
@@ -272,16 +345,13 @@ Accepted deliberately. Do not "fix" one without changing this spec first.
   for the directory. The alternative is a per-directory map, which is a directory that trusts
   itself. If a file holds content you do not trust, the answer is to say no to the directory, or
   to not leave it there.
-- **A file another process drops into a trusted directory is trusted.** TRUST-2 makes the rule
-  about the path, so `npm install`, `git pull`, an editor, a background daemon, or a program the
-  agent was allowed to run can all put a file inside a vouched-for tree and it will be read as
-  trusted. TRUST-5 only fires on writes this system performs, so it never sees these.
+- **A file another process rewrites after it was cleared stays cleared.** TRUST-2 makes a rule
+  about the path rather than about the bytes that were there when it was written, so `npm install`,
+  `git pull`, an editor, a background daemon, or a program the agent was allowed to run can all
+  replace a file a checker has already passed, and it is read as trusted afterwards. TRUST-5 only
+  fires on writes this system performs, so it never sees these.
 
   This is not an oversight and cannot be closed by watching the filesystem: by the time anything
-  noticed, the question would be whether to distrust a file the user may have created themselves,
-  and asking that on every change would make the map useless. What vouching for a directory means
-  is a standing statement about that place, not about a set of files.
-
-  The practical consequence is worth saying plainly: trusting a directory trusts what lands in it,
-  so a tree that a build or a dependency manager writes into is a tree you are vouching for
-  ahead of time.
+  noticed, the question would be whether to distrust a file the user may have edited themselves,
+  and asking that on every change would make the map useless. It is narrower than it was, since a
+  clearance covers one file rather than a whole tree, but it is the same hole.

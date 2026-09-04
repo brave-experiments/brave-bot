@@ -180,9 +180,16 @@ what catches it.
 
 ## Known costs
 
-- **Two places in the policy layer do look at untrusted bytes in order to decide something.** The
-  clauses above say nothing may, so these are exceptions, and they are written down rather than
-  left to be found.
+- **Three places in the policy layer do look at untrusted bytes in order to decide something.**
+  The clauses above say nothing may, so these are exceptions, and they are written down rather
+  than left to be found.
+
+  The third is reading a verdict out of what a checker answered about a piece of quarantined
+  content, which is [vetting.md](vetting.md) and analysed there. The search is for text the driver
+  wrote, what comes out is one of two words the driver wrote, and an answer holding neither of them
+  fails. It is the only one of the three whose result reaches the planner's context, and that is
+  its cost rather than an aside: one bit per call, about content the planner still cannot read,
+  deciding nothing on its own.
 
   The first is splitting a processor's answer. A processor hands back a single piece of text that
   holds two things: a remark meant for the person watching, and the document to be written. It

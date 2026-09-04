@@ -175,13 +175,6 @@ pub struct Policy<'sink, S: Sink> {
     trust: TrustStore,
     /// Which programs the user has stopped being asked about, by resolved path.
     programs: crate::programs::TrustedPrograms,
-    /// Paths this turn has already offered to the user to vouch for.
-    ///
-    /// Turn-scoped, and deliberately not recorded anywhere longer-lived. A yes goes into the trust
-    /// map and needs no remembering; a no is worth honouring for the rest of the turn so a planner
-    /// retrying a read does not put the same question up twice, but it is not a standing refusal
-    /// and the next turn may ask again.
-    vouch_asked: std::collections::BTreeSet<String>,
     /// The integrity of every observation this turn has made, met together.
     ///
     /// Starts trusted, since the task is the user's own words, and drops to untrusted the moment
@@ -247,7 +240,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             denials: 0,
             trust: TrustStore::new(),
             programs: crate::programs::TrustedPrograms::new(),
-            vouch_asked: std::collections::BTreeSet::new(),
             context: Integrity::Trusted,
         })
     }
@@ -322,27 +314,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The programs vouched for, including any this turn recorded.
     pub fn programs(&self) -> &crate::programs::TrustedPrograms {
         &self.programs
-    }
-
-    /// Whether the user should be offered the chance to vouch for this path.
-    ///
-    /// True once per path per turn, and only where the path is quarantined and so the offer would
-    /// change something. Records the asking, so a planner retrying a read does not put the same
-    /// question up twice.
-    ///
-    /// This offers the trust map's own decision at the moment it bites. It is not a second route
-    /// to trusting content: what a yes writes is a rule in the map, the same rule `@` and the
-    /// startup question write, so the answer stays consistent for every later read of that path.
-    pub fn should_offer_vouch(&mut self, path: &str) -> bool {
-        if !self.read_is_quarantined(path) || self.vouch_asked.contains(path) {
-            return false;
-        }
-        self.vouch_asked.insert(path.to_string());
-        self.allow(
-            "approval",
-            format!("{path}: quarantined, so the user is offered the chance to vouch for it"),
-        );
-        true
     }
 
     /// Record that the user vouched for this exact command, its side effects and its output.
@@ -446,6 +417,59 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// A listing or a search touches many files, so it is trusted only if *every* path it
     /// visited is. One untrusted file among them taints the whole result, which is the correct
+    /// Label the names in a listing of a place the user opened.
+    ///
+    /// **Names, not contents.** A listing is a fact about a place rather than a claim about
+    /// anything in it, and every path one can return is inside the working directory or a
+    /// directory the user named, because that is the whole of what confinement means. What is
+    /// inside those files is a separate question, asked per file, and this answers none of it.
+    ///
+    /// So the absence of a rule is not a reason to withhold a name. Only a path somebody
+    /// deliberately marked untrusted is, and then the whole listing is: saying "don't look here"
+    /// covers the names as well as the contents, and a listing is one value.
+    ///
+    /// This is what a directory grant is: somewhere you may look. It used to treat an unmentioned
+    /// path as untrusted, which meant a listing of a project was trusted only if every file in it
+    /// had already been vouched for, and with per-file content trust the planner could not learn
+    /// one filename in its own working directory and guessed at globs instead.
+    ///
+    /// **Known cost.** A filename is content too, and one written to read like an instruction
+    /// reaches the planner. That is the price of the planner being able to see where it is
+    /// working. It is bounded: a name is short, it arrives among other names, and nothing about it
+    /// decides where an effect lands.
+    pub fn observe_listing<'p>(
+        &mut self,
+        capability: Capability,
+        paths: impl IntoIterator<Item = &'p str>,
+    ) -> Gated<Label> {
+        let base = capability.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: format!("'{capability}' produces no observation to label"),
+        })?;
+
+        let mut integrity = Integrity::Trusted;
+        let mut visited = 0usize;
+        let mut withheld = 0usize;
+        for path in paths {
+            visited += 1;
+            if self.trust.integrity_of(path) == Some(Integrity::Untrusted) {
+                withheld += 1;
+                integrity = Integrity::Untrusted;
+            }
+        }
+
+        let label = Label::new(integrity, base.confidentiality);
+        self.sink.emit(Event::Observed { capability, label });
+        self.allow(
+            "trust",
+            match withheld {
+                0 => format!("{visited} name(s) in a place the user opened"),
+                _ => format!("{visited} name(s), {withheld} of them under a path marked untrusted"),
+            },
+        );
+        Ok(label)
+    }
+
     /// reading: the result is a function of all of them.
     pub fn observe_paths<'p>(
         &mut self,
@@ -1629,6 +1653,163 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Declassification::authorise("carried into an isolated processor")
     }
 
+    /// Fix what one vetting call may look at, before it exists.
+    ///
+    /// The same shape as fixing a processor and for the same reason: what a reader of
+    /// quarantined content is allowed to see is decided here rather than by the code that runs
+    /// it. One subject, an optional expectation, and the label of what will be read, all settled
+    /// before any byte of the content is touched.
+    ///
+    /// The subject is the driver's own name for what is being vetted, a reference or a path, and
+    /// is routing in both cases. The expectation is the planner's own words and must be public.
+    /// It is not routing: a vetting call has nowhere to route anything to, no tool, no path and
+    /// no output but a word. It is read here rather than carried, the same relaxation an
+    /// instruction to a processor gets, and on the same two facts: the operation changes nothing,
+    /// and what it can reach was fixed by this call rather than by the value.
+    pub fn before_vet(
+        &mut self,
+        id: &str,
+        subject: &str,
+        input_label: Label,
+        expected: Option<&Labelled<String>>,
+    ) -> Gated<crate::vet::VetSpec> {
+        let expected = match expected {
+            Some(expected) => {
+                let label = expected.label();
+                if !label.is_public() {
+                    return Err(self.deny(
+                        "vet",
+                        Principle::Confinement,
+                        format!(
+                            "{id}: what the content was expected to be is {label} and private \
+                             content must not become one; say what you are expecting rather than \
+                             pasting what was read"
+                        ),
+                    ));
+                }
+                // Read, not carried: see the note above on why an expectation is not routing.
+                // Public was checked a line ago, so nothing private is being opened.
+                let (expected, _) = expected.clone().into_parts_for_decoding();
+                Some(expected)
+            }
+            None => None,
+        };
+
+        let spec = crate::vet::VetSpec::new(id, subject, expected, input_label);
+        self.allow(
+            "vet",
+            format!(
+                "{}, with no tools, no memory and nothing to produce but a verdict",
+                spec.describe()
+            ),
+        );
+        Ok(spec)
+    }
+
+    /// Assemble a vetting call's input from the content its spec was built for.
+    ///
+    /// Runs here because the driver may not hold the bytes in a form it could read. What comes
+    /// back is still wrapped, at the label the spec fixed, so the driver can hand it to the model
+    /// call and nothing else.
+    ///
+    /// Refuses content at a different label than the spec was built for. The label decides what
+    /// the answer may be used for, so a spec built against one and filled from another would be a
+    /// verdict about bytes nobody fixed a label for.
+    ///
+    /// The content is fenced with the subject's name. That is for the checker's benefit, not for
+    /// safety: content can contain the fence text, and nothing here depends on it not doing so. A
+    /// checker talked into ignoring the fence has still been asked one question and can still
+    /// answer it only with a word.
+    pub fn compose_vet_input(
+        &mut self,
+        spec: &crate::vet::VetSpec,
+        content: &Labelled<String>,
+    ) -> Gated<Labelled<String>> {
+        if content.label() != spec.input_label() {
+            return Err(self.deny(
+                "vet",
+                Principle::Confinement,
+                format!(
+                    "{}: the spec was built for {} and the content is {}",
+                    spec.id(),
+                    spec.input_label(),
+                    content.label()
+                ),
+            ));
+        }
+
+        let subject = spec.subject();
+        let proof = Declassification::authorise("assembled into a vetting call's input");
+        let mut body = String::new();
+        body.push_str(&format!("--- begin {subject} (the content to vet) ---\n"));
+        body.push_str(&content.clone().declassify(&proof));
+        body.push_str(&format!("\n--- end {subject} ---\n"));
+
+        self.allow(
+            "vet",
+            format!("{}: input assembled inside the kernel", spec.id()),
+        );
+        Ok(Labelled::new(body, spec.input_label()))
+    }
+
+    /// Authorise handing a vetting call's input to the model call its spec describes.
+    ///
+    /// The destination is the same endpoint the planner's own context already goes to, so this
+    /// releases nothing to anywhere new. What is new is that these bytes go there without the
+    /// planner or the driver reading them.
+    pub fn authorise_vet_input(&mut self, spec: &crate::vet::VetSpec) -> Declassification {
+        self.allow(
+            "vet",
+            format!("{}: input carried into the isolated checker", spec.id()),
+        );
+        Declassification::authorise("carried into an isolated checker")
+    }
+
+    /// Read a verdict out of what a checker answered, and keep the rest for a person.
+    ///
+    /// **A branch on untrusted bytes, deliberately.** The reply is tainted by what it read, and
+    /// this searches it for one of two literals written in the driver's own source. It is the
+    /// same shape as splitting a processor's answer, and it is narrowed the same way: the search
+    /// is for driver-authored text, the result is one of two driver-authored words, and an answer
+    /// holding neither word is a refusal to say anything good about the content.
+    ///
+    /// The reply itself is not returned to the planner. It goes back wrapped at the label of what
+    /// was read, to be shown to the person watching and to nobody else, exactly as a processor's
+    /// remark is.
+    pub fn read_verdict(
+        &mut self,
+        spec: &crate::vet::VetSpec,
+        reply: Labelled<String>,
+    ) -> (crate::vet::Verdict, Labelled<String>) {
+        let tainted = crate::label::taint_all([spec.input_label(), reply.label()]);
+        // `taint_all` only meets integrity down and joins confidentiality up, so this is a
+        // degradation by construction and the fallback cannot be reached.
+        let reply = reply
+            .relabel(tainted)
+            .expect("taint over the input can only degrade the reply's label");
+
+        let label = reply.label();
+        let proof = Declassification::authorise("read for a verdict");
+        let text = reply.declassify(&proof);
+
+        // Unsafe first, so an answer saying both words says the worse of them, and an answer
+        // saying neither says it too. The one direction a checker's confusion may fail in is
+        // towards telling the planner that content it cannot read is content it cannot trust.
+        let verdict = if text.contains(crate::vet::Verdict::UNSAFE) {
+            crate::vet::Verdict::Unsafe
+        } else if text.contains(crate::vet::Verdict::SAFE) {
+            crate::vet::Verdict::Safe
+        } else {
+            crate::vet::Verdict::Unsafe
+        };
+
+        self.allow(
+            "vet",
+            format!("{}: the verdict is {}", spec.id(), verdict.as_str()),
+        );
+        (verdict, Labelled::new(text, label))
+    }
+
     /// Label what a processor produced, from what went into it.
     ///
     /// **Not a relabel.** The transport labels a reply pessimistically because it knows nothing
@@ -2128,13 +2309,14 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// | untrusted | trusted | **yes** | path becomes untrusted |
     /// | trusted | untrusted | no | path becomes trusted |
     /// | untrusted | untrusted | no | unchanged |
-    /// | either | *no rule* | **yes** | path takes the data's integrity |
+    /// | trusted | *no rule* | no | unchanged |
+    /// | untrusted | *no rule* | **yes** | path becomes untrusted |
     ///
-    /// The last row is why [`TrustStore::integrity_of`] returns an option. A path nobody has
-    /// mentioned is not the same as one the user deliberately marked untrusted: the first has
-    /// no decision behind it, so the first write there is the moment to ask. Collapsing the two
-    /// would mean that declining to trust anything at startup produced a session that never
-    /// asked about anything, which is the opposite of what declining means.
+    /// Most paths have no rule, because content trust is per file and a file only gets one when
+    /// something has read it. So the unmentioned rows are the ordinary case rather than the
+    /// exception, and what decides them is the data: bytes the turn derived from nothing an
+    /// attacker touched are ordinary work, and bytes from somewhere nobody vouched for landing on
+    /// a person's disk are the one write worth stopping for.
     ///
     /// Writing *trusted* data never needs asking. For data to be trusted the turn must have
     /// observed nothing untrusted, so there is no attacker-influenced byte in it, and the
@@ -2161,8 +2343,12 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         }
 
         let (needed, reason) = match self.trust.integrity_of(path) {
-            // Nobody has said anything about this path, so the first write is the moment to ask.
-            None => (true, "a path nobody has vouched for either way"),
+            // Nobody has said anything about this path, and the data holds no byte an attacker
+            // influenced. Writing it is ordinary work in a place the user opened.
+            None if data_trusted => (false, "trusted data to a path in a place the user opened"),
+            // Nobody has said anything, and the data came from somewhere nobody vouched for. This
+            // is the one write worth stopping for: bytes from outside landing on their disk.
+            None => (true, "untrusted data to a path nobody has vouched for"),
             // The one irreversible case: a trusted path is about to stop being trusted.
             Some(Integrity::Trusted) if !data_trusted => (
                 true,
@@ -2207,8 +2393,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         }
 
         match actual {
-            Integrity::Untrusted => self.trust.distrust(path),
-            Integrity::Trusted => self.trust.trust(path),
+            Integrity::Untrusted => self.trust.record(path, crate::trust::Provenance::Fetched),
+            Integrity::Trusted => self.trust.record(path, crate::trust::Provenance::Written),
         }
 
         self.allow(
@@ -2233,8 +2419,67 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Always the exact path, never its parent. Naming one file says nothing about its siblings,
     /// and a rule on the file is more specific than any rule on the tree around it, so a
     /// referenced file is trusted inside a directory nobody vouched for.
+    /// Record the rules a session starts with, before any turn has run.
+    ///
+    /// The user's own standing instructions for this project: the file that says how work is done
+    /// here, and the directory holding the skills they wrote. Both are theirs, both are read as
+    /// instructions rather than as data, and a session that treated them as content nobody
+    /// vouched for would ignore the very files the user wrote to be obeyed.
+    ///
+    /// Two paths and no more. Not the working directory, whose files are what a checker is for,
+    /// and not `.bravebot` whole, which is where a repository may drop anything it likes and where
+    /// only the skills directory is ever read as instructions.
+    ///
+    /// Written whether or not the files exist. A rule is about a path rather than about what was
+    /// there when it was made, sources are resolved afresh every turn, and an `AGENTS.md` written
+    /// during a session is read by the turn after it.
+    pub fn bootstrap(&mut self, paths: &[&str]) {
+        for path in paths {
+            // A default, never an override. A rule already covering the path was put there by
+            // something that knew more than this does: a write that poisoned the file and recorded
+            // it, or a person who said no. Re-trusting on the next turn would undo both, and the
+            // first of those is the round trip the whole map exists to close.
+            if self.trust.integrity_of(path).is_some() {
+                continue;
+            }
+            self.trust.record(path, crate::trust::Provenance::Standing);
+            self.allow(
+                "trust",
+                format!("{path} trusted: the user's own standing instructions for this project"),
+            );
+        }
+    }
+
+    /// Record that an isolated checker read the whole of this file and found nothing in it
+    /// addressed to whoever reads it.
+    ///
+    /// **Not a relabel, and not laundering.** The bytes in the file keep whatever they were; what
+    /// happens here is that a rule is written, and the next read of the path takes its label from
+    /// the map as every read always has. It is the same move
+    /// [`Policy::read_output`] makes when a person reads a program's output and vouches for it: a
+    /// new label established by provenance the policy layer tracked, rather than an old one
+    /// carried upward.
+    ///
+    /// What differs from every other grant in the map is who made it. Naming a file, dropping one,
+    /// and adding a directory are all a person's gesture, and no attacker can cause one. This one
+    /// is a model's opinion of bytes an attacker may have written, so an attacker who owns a file
+    /// gets to try. What that costs is [vetting.md](../../../docs/specs/vetting.md).
+    ///
+    /// Always the exact path, never its parent: a verdict is about the file that was read, and
+    /// nothing was read about its siblings.
+    pub fn trust_after_vetting(&mut self, path: &str) {
+        self.trust.record(path, crate::trust::Provenance::Vetted);
+        self.allow(
+            "trust",
+            format!(
+                "{path} trusted: an isolated checker read the whole file and found nothing \
+                 addressed to its reader"
+            ),
+        );
+    }
+
     pub fn vouch_for_named_path(&mut self, path: &str) {
-        self.trust.trust(path);
+        self.trust.record(path, crate::trust::Provenance::Vouched);
         self.allow(
             "trust",
             format!("{path} trusted: the user named it in their own line"),
@@ -4447,11 +4692,11 @@ mod tests {
         assert_eq!(policy.trust().rules().count(), before);
     }
 
-    /// A path nobody has mentioned is not the same as one deliberately marked untrusted: there
-    /// is no decision behind it, so the first write there is the moment to ask. Without this,
-    /// declining to trust anything at startup would produce a session that never asked.
+    /// Most paths have no rule, since content trust is per file. So what decides an unmentioned
+    /// destination is the data: work the turn derived from nothing an attacker touched happens
+    /// quietly, and bytes from somewhere nobody vouched for landing on a person's disk are shown.
     #[test]
-    fn an_unvouched_path_prompts_either_way() {
+    fn an_unvouched_path_is_shown_only_for_untrusted_data() {
         let mut sink = RecordingSink::new();
         let mut policy = Policy::begin(
             routing_with("task", "edit"),
@@ -4461,7 +4706,7 @@ mod tests {
         )
         .expect("policy");
 
-        assert!(policy.write_needs_approval("a.rs", Label::trusted_public(), Destination::Named));
+        assert!(!policy.write_needs_approval("a.rs", Label::trusted_public(), Destination::Named));
         assert!(policy.write_needs_approval("a.rs", Label::untrusted_public(), Destination::Named));
     }
 
@@ -5268,6 +5513,176 @@ mod tests {
             .resolve("write_file", &SlotId::new("ref:nope"), &slots)
             .expect_err("an unknown reference must be refused");
     }
+    mod vetting {
+        use super::*;
+
+        fn policy_for(sink: &mut RecordingSink) -> Policy<'_, RecordingSink> {
+            Policy::begin(
+                routing_with("task", "vet it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                sink,
+            )
+            .expect("policy")
+        }
+
+        fn expectation() -> Labelled<String> {
+            Labelled::new(
+                "the release notes for version 2".to_string(),
+                Label::untrusted_public(),
+            )
+        }
+
+        fn content(text: &str) -> Labelled<String> {
+            Labelled::new(text.to_string(), Label::untrusted_public())
+        }
+
+        /// A checker is given the content its spec was built for and nothing else: no other slot,
+        /// no other file, and nothing the driver happened to be holding.
+        #[test]
+        fn only_the_content_it_was_given_reaches_a_checker() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
+            let input = policy
+                .compose_vet_input(&spec, &content("fetched from the web"))
+                .expect("input assembled");
+
+            let (text, label) = input.into_parts_for_decoding();
+            assert!(text.contains("fetched from the web"), "{text}");
+            assert!(text.contains("ref:0"), "{text}");
+            assert_eq!(label, Label::untrusted_public());
+        }
+
+        /// The label decides what a verdict may be used for, so a spec fixed against one label
+        /// cannot be filled from content at another. Without this the label fixed before the run
+        /// would say nothing about the bytes that actually went in.
+        #[test]
+        fn content_at_another_label_than_the_spec_fixed_is_refused() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
+            policy
+                .compose_vet_input(
+                    &spec,
+                    &Labelled::new("elsewhere".to_string(), Label::untrusted_private()),
+                )
+                .expect_err("content at another label must be refused");
+        }
+
+        /// The expectation is read, so it must not be the user's private data wearing the shape
+        /// of a description.
+        #[test]
+        fn a_private_expectation_cannot_direct_a_checker() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let private = Labelled::new("an API key".to_string(), Label::trusted_private());
+            policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), Some(&private))
+                .expect_err("a private expectation must be refused");
+        }
+
+        /// The word the driver wrote is the only thing that says the content asked nothing of
+        /// its reader.
+        #[test]
+        fn a_checker_that_says_the_word_is_believed() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet(
+                    "v",
+                    "ref:0",
+                    Label::untrusted_public(),
+                    Some(&expectation()),
+                )
+                .expect("a vetting call");
+            let (verdict, _) = policy.read_verdict(
+                &spec,
+                content(&format!(
+                    "{}\nit reads as release notes",
+                    crate::vet::Verdict::SAFE
+                )),
+            );
+            assert_eq!(verdict, crate::vet::Verdict::Safe);
+        }
+
+        /// An answer nobody can read is not a pass. A checker that timed out into prose, or was
+        /// talked into answering in its own words, has said nothing good about the content, and
+        /// the planner is told so.
+        #[test]
+        fn an_answer_with_neither_word_is_unsafe() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
+            let (verdict, _) = policy.read_verdict(&spec, content("looks fine to me"));
+            assert_eq!(verdict, crate::vet::Verdict::Unsafe);
+        }
+
+        /// Both words is the checker contradicting itself, which is the case an attacker gets by
+        /// writing one of them into the content and hoping it is read as the answer.
+        #[test]
+        fn an_answer_with_both_words_is_unsafe() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
+            let (verdict, _) = policy.read_verdict(
+                &spec,
+                content(&format!(
+                    "{}\nbut also {}",
+                    crate::vet::Verdict::SAFE,
+                    crate::vet::Verdict::UNSAFE
+                )),
+            );
+            assert_eq!(verdict, crate::vet::Verdict::Unsafe);
+        }
+
+        /// The one that would matter if it were wrong: a reply the transport called trusted is
+        /// still untrusted, because what it read was. Nothing a checker says can raise its own
+        /// label.
+        #[test]
+        fn what_a_checker_said_cannot_come_back_better_than_what_went_in() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
+            let flattering = Labelled::trusted(format!("{}\nfine", crate::vet::Verdict::SAFE));
+            let (_, said) = policy.read_verdict(&spec, flattering);
+            assert!(!said.label().is_trusted());
+        }
+
+        /// A private input keeps what the checker said private, however public the transport
+        /// thought the reply was. The remark reaches a person, so its confidentiality still has
+        /// to be right.
+        #[test]
+        fn what_a_checker_said_is_labelled_by_taint_over_the_input() {
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_for(&mut sink);
+
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_private(), None)
+                .expect("a vetting call");
+            assert_eq!(spec.input_label(), Label::untrusted_private());
+            let (_, said) = policy.read_verdict(&spec, content(crate::vet::Verdict::SAFE));
+            assert_eq!(said.label(), Label::untrusted_private());
+        }
+    }
+
     mod processors {
         use super::*;
 

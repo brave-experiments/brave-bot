@@ -62,3 +62,22 @@ the planner's decisions from the user's.
 
 `verified-by: bravebot_core::policy::a_model_proposal_can_be_promoted_for_a_confined_read`
 `verified-by: bravebot_core::policy::a_read_and_a_write_leave_different_trails`
+
+<a id="READ-5"></a>
+### READ-5: what a slot holds is the file, not a reader's view of it
+
+The caps in READ-2 bound what reaches a context or a screen. They do not apply to the copy taken
+for a processor or a write, which is read whole, byte for byte, with no line dropped, no long line
+shortened, and no note about either appended.
+
+**Why.** A slot's contents are written back over the file they came from, so every shaping the
+pager does for a reader is destruction here. Nobody is placed to catch it: the planner may not read
+the file, the processor is handed the shortened copy as though it were the whole, and what comes
+back replaces the original. The two reads exist for different audiences and only one of them has a
+budget to keep.
+
+`verified-by: bravebot_agent::workspace::the_whole_of_a_file_is_read_without_the_pagers_shaping`
+`verified-by: bravebot_agent::workspace::a_whole_read_keeps_the_files_own_ending`
+`verified-by: bravebot_agent::workspace::a_whole_read_of_a_binary_file_is_refused`
+`verified-by: bravebot_agent::turn::a_long_quarantined_file_reaches_a_processor_whole`
+`verified-by: bravebot_agent::turn::a_quarantined_file_with_a_long_line_reaches_a_processor_intact`

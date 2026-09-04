@@ -1020,6 +1020,7 @@ pub fn run(
     workspace: &Workspace,
     confinement: String,
     start: Start,
+    vetting: bool,
 ) -> io::Result<Option<String>> {
     let mut stdout = io::stdout();
     take_over_terminal(&mut stdout)?;
@@ -1043,7 +1044,14 @@ pub fn run(
         // still arrives here, loading its empty conversation as a turn would continue a run
         // that cannot be continued.
         Some(Start::Resuming(record)) if record.manifest.is_some() => Ok(None),
-        Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
+        Some(start) => event_loop(
+            &mut terminal,
+            config,
+            workspace,
+            confinement,
+            start,
+            vetting,
+        ),
         // Leaving at the picker resumed nothing and started nothing, so there is nothing to say
         // about picking anything up.
         None => Ok(None),
@@ -1266,6 +1274,7 @@ fn event_loop(
     workspace: &Workspace,
     confinement: String,
     start: Start,
+    vetting: bool,
 ) -> io::Result<Option<String>> {
     // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
     // the turns after it must see one. The primary root never changes, so nothing keyed on it
@@ -1335,12 +1344,8 @@ fn event_loop(
         }
     };
 
-    // Settled once, before any turn. Nothing means the user left at the question, and a session
-    // they never agreed to have must not begin behind it.
-    let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), inherited_trust)
-    else {
-        return Ok(left_behind(&stored));
-    };
+    // Settled once, before any turn.
+    let mut trust = opening_trust(&mut session, workspace.root(), inherited_trust);
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
@@ -1411,7 +1416,7 @@ fn event_loop(
                 needs_draw = true;
             }
             Action::AddDirectory(directory) => {
-                add_directory(&mut session, &mut workspace, &mut trust, &directory);
+                add_directory(&mut session, &mut workspace, &directory);
             }
             Action::Rename(name) => {
                 if name.is_empty() {
@@ -1484,11 +1489,7 @@ fn event_loop(
                 // context and the directories opened under it go too, since opening one is a grant
                 // and leaving it reachable with nothing vouching for it would outlive its answer.
                 workspace.close_added_directories();
-                let Some(fresh) = opening_trust(terminal, &mut session, workspace.root(), None)
-                else {
-                    return Ok(left_behind(&stored));
-                };
-                trust = fresh;
+                trust = opening_trust(&mut session, workspace.root(), None);
                 // A new session vouches for no program, on the same reasoning as the map: the
                 // list is a standing permission, and this begins a session that was never asked.
                 programs = TrustedPrograms::new();
@@ -1514,6 +1515,7 @@ fn event_loop(
                         conversation,
                         trust,
                         programs,
+                        vetting,
                     )?;
 
                     // Written after each turn rather than at the end, because the end may never
@@ -1589,12 +1591,16 @@ fn event_loop(
 /// Session-scoped on purpose. `docs/specs/trust-map.md` is explicit that trust is not sticky per directory,
 /// so a later session starts without this and is asked again. It does survive `--resume`, since
 /// that restores the map its own user gave.
-fn add_directory(
-    session: &mut Session,
-    workspace: &mut Workspace,
-    trust: &mut TrustStore,
-    directory: &str,
-) {
+/// Open another directory to work in.
+///
+/// Reachability and nothing else. An absolute path outside the project is refused whatever any
+/// rule says, so opening one is what makes it addressable at all, and that is the whole of the
+/// grant: the files in it are content nobody has vouched for, exactly like the files in the
+/// project, and a checker reads each one when a turn needs it.
+///
+/// It used to record the directory as trusted content as well, which vouched for every file in a
+/// tree the user had done no more than name.
+fn add_directory(session: &mut Session, workspace: &mut Workspace, directory: &str) {
     if directory.is_empty() {
         session.note(t!(session_add_dir_needs_a_path));
         return;
@@ -1607,7 +1613,6 @@ fn add_directory(
     match workspace.add_directory(&expanded) {
         Ok(added) => {
             let shown = added.display().to_string();
-            trust.trust(&shown);
             session.note(t!(session_directory_added, directory = shown));
         }
         Err(error) => session.note(t!(
@@ -1841,40 +1846,28 @@ fn set_theme(session: &mut Session, name: &str) {
 
 /// The trust map the session starts with, or nothing if the user asked to leave.
 ///
-/// A fresh session always asks, whatever any session in this directory answered before. The
-/// question grants standing permission, and a launch that skipped it because someone said yes
-/// last week would be granting that permission on behalf of a user who was never asked, which is
-/// trust assumed from silence rather than granted.
+/// The rules a session opens with.
 ///
-/// Resuming is the one case that does not ask, and it is not an exception to that: the map comes
-/// out of the record of the very session being picked up, so the answer being honoured is the one
-/// its own user gave. It carries the rules that session's writes recorded too, which is what stops
-/// a resumed turn reading back a file an earlier turn poisoned. A record from before the map was
-/// kept has none, and is asked about.
+/// A fresh one opens with none. Nothing about the working directory is trusted content: the
+/// project's own files are what a checker reads, and the two paths holding the user's standing
+/// instructions are recorded by the turn itself rather than here, so every entry point gets them
+/// and not just this one.
+///
+/// Resuming carries the map out of the record of the session being picked up, rules its writes
+/// recorded and all, which is what stops a resumed turn reading back a file an earlier turn of
+/// that session poisoned.
 fn opening_trust(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
     root: &std::path::Path,
     inherited: Option<TrustStore>,
-) -> Option<TrustStore> {
-    // Said only when resuming. On a fresh start the user has just answered the question and does
-    // not need telling where the answer came from.
-    let (trust, inherited) = match inherited {
-        Some(trust) => (trust, true),
-        None => (crate::trust_prompt::ask(terminal, root)?, false),
-    };
-
-    if !trust.is_trusted(".") {
-        session.note(t!(session_not_trusting));
-        return Some(trust);
+) -> TrustStore {
+    match inherited {
+        Some(trust) => {
+            session.note(t!(session_trusting_as_left, directory = root.display()));
+            trust
+        }
+        None => TrustStore::new(),
     }
-    let where_it_is = root.display();
-    session.note(if inherited {
-        t!(session_trusting_as_left, directory = where_it_is)
-    } else {
-        t!(session_trusting, directory = where_it_is)
-    });
-    Some(trust)
 }
 
 /// Run a command the user typed in shell mode, redrawing while it runs.
@@ -2114,6 +2107,7 @@ fn run_turn_animated(
     conversation: Conversation,
     trust: TrustStore,
     programs: TrustedPrograms,
+    vetting: bool,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
     // The prompt is in the transcript by now, and drawn before anything that might take a moment:
     // a check that has to run the AWS CLI holds the frame for as long as the process takes, and
@@ -2153,6 +2147,9 @@ fn run_turn_animated(
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string));
+    if !vetting {
+        task = task.without_vetting();
+    }
     for file in crate::entries::referenced(&sent) {
         task = task.with_file(file);
     }
@@ -2290,18 +2287,6 @@ fn run_turn_animated(
                     cancel.cancel();
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
-            }
-            crate::remote_confirm::ToMain::Vouch(request) => {
-                let answer = crate::confirm::ask_vouch(terminal, &request);
-                if answer == crate::confirm::Answer::Interrupt {
-                    cancel.cancel();
-                }
-                if answer == crate::confirm::Answer::Approve {
-                    // Said on the transcript because it is a standing decision the user will not
-                    // otherwise see recorded anywhere until they ask for /status.
-                    session.note(t!(session_vouched_for, path = &request.path));
-                }
-                let _ = answer_tx.send(crate::remote_confirm::Reply::Vouch(answer.decision()));
             }
             crate::remote_confirm::ToMain::Ask(asking) => {
                 // A planner that loops back over the same decision should not make the user

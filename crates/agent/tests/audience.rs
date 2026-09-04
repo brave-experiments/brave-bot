@@ -14,11 +14,12 @@
 use std::path::Path;
 
 /// The modules whose every string is read by the model rather than by a person.
-const PLANNER_FACING: [&str; 5] = [
+const PLANNER_FACING: [&str; 6] = [
     "src/tools.rs",
     "src/preamble.rs",
     "src/compact.rs",
     "src/processor.rs",
+    "src/vet.rs",
     "src/programs.rs",
 ];
 

@@ -101,7 +101,7 @@ as though a person had just said them.
 
 `verified-by: bravebot_agent::turn::the_preamble_is_not_stored_in_the_conversation`
 `verified-by: bravebot_agent::turn::a_trusted_workspace_agents_file_reaches_the_system_prompt`
-`verified-by: bravebot_agent::turn::an_untrusted_workspace_agents_file_never_reaches_the_system_prompt`
+`verified-by: bravebot_agent::turn::a_workspace_agents_file_is_obeyed_without_anybody_vouching_for_it`
 
 <a id="INSTR-6"></a>
 ### INSTR-6: a source that is not there is not an error

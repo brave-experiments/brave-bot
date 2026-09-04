@@ -364,20 +364,7 @@ impl Workspace {
         };
         let label = policy.observe_path(Capability::FileRead, &relative)?;
 
-        let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {
-            path: relative.clone(),
-            detail: e.to_string(),
-        })?;
-
-        // Named as binary rather than surfacing a decoding error. "stream did not contain
-        // valid UTF-8" is an implementation detail that leaves a reader unable to tell a
-        // binary file from a corrupt one.
-        if looks_binary(&raw) {
-            return Err(WorkspaceError::Binary { path: relative });
-        }
-        let contents = String::from_utf8(raw).map_err(|_| WorkspaceError::Binary {
-            path: relative.clone(),
-        })?;
+        let contents = text_at(&resolved, &relative)?;
 
         Ok(Labelled::new(contents, label))
     }
@@ -537,6 +524,22 @@ impl Workspace {
             long_lines,
             ends_with_newline: contents.ends_with('\n'),
         })
+    }
+
+    /// The whole of a text file, shaped by nothing.
+    ///
+    /// [`Workspace::page`] exists to bound what reaches a screen or a context, so it stops at a
+    /// line count, shortens any line past a limit, and adds a note saying it did. All three are
+    /// right for a reader and wrong for a copy about to be written back over the original: a
+    /// quarantined file goes into a slot, comes out as a processor's answer, and replaces the
+    /// file it came from. Shaped on the way in, the shaping is what gets written, and nobody is
+    /// placed to notice, because the planner may not read either version.
+    ///
+    /// Byte for byte, including the last newline, so a file that is returned unchanged is
+    /// unchanged.
+    pub fn whole(&self, relative: &str) -> Result<String, WorkspaceError> {
+        let resolved = self.resolve(relative)?;
+        text_at(&resolved, relative)
     }
 
     /// What a deferred read must know before it can put off reading: how big the file is, and
@@ -741,6 +744,28 @@ const MAX_MATCH_LINE: usize = 500;
 /// A turn re-sends the whole message history each round, so the cost of one oversized read
 /// is paid repeatedly. These bound a page rather than the file: the rest stays reachable by
 /// asking for a later offset.
+/// The text of one already-resolved file, or a refusal naming it as binary.
+///
+/// Named as binary rather than surfacing a decoding error: "stream did not contain valid UTF-8"
+/// is an implementation detail that leaves a reader unable to tell a binary file from a corrupt
+/// one. Shared so the gated read and the unshaped one cannot disagree about what counts as text.
+fn text_at(resolved: &std::path::Path, relative: &str) -> Result<String, WorkspaceError> {
+    let raw = std::fs::read(resolved).map_err(|e| WorkspaceError::Io {
+        path: relative.to_string(),
+        detail: e.to_string(),
+    })?;
+
+    if looks_binary(&raw) {
+        return Err(WorkspaceError::Binary {
+            path: relative.to_string(),
+        });
+    }
+
+    String::from_utf8(raw).map_err(|_| WorkspaceError::Binary {
+        path: relative.to_string(),
+    })
+}
+
 const MAX_PAGE_LINES: usize = 500;
 const MAX_LINE: usize = 2_000;
 
@@ -934,9 +959,11 @@ impl Workspace {
         let _ = self.walk_filtered(&root, glob.as_deref(), &mut found)?;
         found.sort();
 
-        // Labelled after the walk, because which paths were visited is not known before it. A
-        // listing is trusted only if every path in it is.
-        let label = policy.observe_paths(Capability::FileRead, found.iter().map(String::as_str))?;
+        // The names of files in a place the user opened, which is what opening one grants. Not
+        // the meet over their contents: what is in each of them is asked per file, when a turn
+        // needs it.
+        let label =
+            policy.observe_listing(Capability::FileRead, found.iter().map(String::as_str))?;
 
         // `walk` collects one entry past the cap so reaching it is detectable. Which
         // entries survive is down to traversal order, so a truncated listing is a sample

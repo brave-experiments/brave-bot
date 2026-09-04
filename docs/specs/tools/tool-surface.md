@@ -27,6 +27,7 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 | [`write_file`](write-file.md) | `path`, `path_ref`, `contents_ref` | `contents` | confirmation |
 | [`edit_file`](edit-file.md) | `path`, `path_ref`, `replace_all` | `old_text`, `new_text` | confirmation |
 | [`spawn_processor`](spawn-processor.md) | `reads`, `about` | `instruction` | a reference |
+| [`vet_content`](vet-content.md) | `content_ref` | `expected` | a verdict |
 | [`run`](run.md) | every stage's program and arguments | standard input | a reference |
 | [`read_output`](read-output.md) | the reference naming the result | none | the bytes, if a person allows it |
 | [`load_skill`](load-skill.md) | `name` | none | the skill's text |

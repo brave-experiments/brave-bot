@@ -15,7 +15,6 @@
 //! program's own arithmetic. No model reads any of it.
 
 use bravebot_config::Config;
-use bravebot_core::label::Integrity;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::trust::TrustStore;
 use bravebot_i18n::t;
@@ -210,7 +209,7 @@ pub fn report(facts: &Facts<'_>) -> Report {
 
     // Last because it is the part that grows. What a write recorded is the thing nothing else
     // reports: a file an earlier turn marked untrusted is invisible until it refuses to be read.
-    let rules: Vec<(&str, Integrity)> = facts.trust.rules().collect();
+    let rules: Vec<(&str, bravebot_core::trust::Provenance)> = facts.trust.origins().collect();
     if rules.is_empty() {
         lines.push(Line::new(t!(status_trust), t!(status_nothing_vouched_for)));
     } else {
@@ -218,12 +217,20 @@ pub fn report(facts: &Facts<'_>) -> Report {
             t!(status_trust),
             t!(count_rules, count = rules.len()),
         ));
-        for (path, integrity) in rules.iter() {
+        // What it means and where it came from together. Which of the two a person wants depends
+        // on why they opened this list, and the second is the one nothing else reports: a rule a
+        // checker wrote and a rule they wrote themselves read identically until it says so.
+        for (path, provenance) in rules.iter() {
             let shown = if path.is_empty() { "." } else { path };
-            lines.push(match integrity {
-                Integrity::Trusted => Line::new("", shown).with_note(t!(status_trusted)),
-                Integrity::Untrusted => Line::new("", shown).with_note(t!(status_untrusted)),
-            });
+            let note = match provenance {
+                bravebot_core::trust::Provenance::Vouched => t!(status_origin_vouched),
+                bravebot_core::trust::Provenance::Standing => t!(status_origin_standing),
+                bravebot_core::trust::Provenance::Vetted => t!(status_origin_vetted),
+                bravebot_core::trust::Provenance::Written => t!(status_origin_written),
+                bravebot_core::trust::Provenance::Fetched => t!(status_origin_fetched),
+                bravebot_core::trust::Provenance::Withheld => t!(status_origin_withheld),
+            };
+            lines.push(Line::new("", shown).with_note(note));
         }
     }
 

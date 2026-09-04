@@ -42,6 +42,12 @@ fn main() -> ExitCode {
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
         Some("-p" | "--print" | "--mode" | "--file" | "--trace") => run_task(&args),
+        // The only flag that means something to both an interactive session and a one-shot run,
+        // so it is the only one that can lead either.
+        Some("--disable-vetting") if args.len() == 1 => {
+            interactive_with(bravebot_tui::app::Start::Fresh, false)
+        }
+        Some("--disable-vetting") => run_task(&args),
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
@@ -112,6 +118,7 @@ fn print_help() {
         ("--mode <mode>", t!(cli_option_mode)),
         ("-p, --print", t!(cli_option_print)),
         ("--trace", t!(cli_option_trace)),
+        ("--disable-vetting", t!(cli_option_disable_vetting)),
         ("-h, --help", t!(cli_option_help)),
         ("-V, --version", t!(cli_option_version)),
     ] {
@@ -127,15 +134,17 @@ struct Invocation {
     mode: Mode,
     trace: bool,
     print: bool,
+    vetting: bool,
 }
 
-/// Parse `<prompt> [--file path]... [--mode name] [--trace] [-p]`.
+/// Parse `<prompt> [--file path]... [--mode name] [--trace] [-p] [--disable-vetting]`.
 fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     let mut prompt = String::new();
     let mut files = Vec::new();
     let mut mode = Mode::default();
     let mut trace = false;
     let mut print = false;
+    let mut vetting = true;
     let mut index = 0;
 
     while index < args.len() {
@@ -161,6 +170,10 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
                 trace = true;
                 index += 1;
             }
+            "--disable-vetting" => {
+                vetting = false;
+                index += 1;
+            }
             "-p" | "--print" => {
                 print = true;
                 index += 1;
@@ -179,6 +192,7 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
         mode,
         trace,
         print,
+        vetting,
     })
 }
 
@@ -196,6 +210,7 @@ fn run_task(args: &[String]) -> ExitCode {
         mode,
         trace,
         print,
+        vetting,
     } = invocation;
 
     // Read before the emptiness check below, since `cat notes.md | bravebot -p` is a complete
@@ -244,6 +259,9 @@ fn run_task(args: &[String]) -> ExitCode {
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
         .with_model(bravebot_tui::store::load_model());
+    if !vetting {
+        task = task.without_vetting();
+    }
     for file in files {
         task = task.with_file(file);
     }
@@ -593,6 +611,10 @@ fn resume_named(id: &str) -> ExitCode {
 }
 
 fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
+    interactive_with(start, true)
+}
+
+fn interactive_with(start: bravebot_tui::app::Start, vetting: bool) -> ExitCode {
     let mut config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
@@ -616,7 +638,7 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
         Err(_) => named(bravebot_sandbox::policy::ConfinementLevel::None),
     };
 
-    match bravebot_tui::app::run(&mut config, &workspace, confinement, start) {
+    match bravebot_tui::app::run(&mut config, &workspace, confinement, start, vetting) {
         // Printed after the terminal is handed back, so it survives on the screen the person is
         // left looking at rather than going onto the alternate screen with everything else. A
         // session is worth resuming far more often than anybody thinks to write its name down

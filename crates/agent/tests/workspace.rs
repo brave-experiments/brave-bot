@@ -352,10 +352,41 @@ fn list_enumerates_files_recursively() {
         .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect("list succeeds");
 
-    // Filenames come from the user's tree, so they are untrusted content too.
+    // The names of files in a place the user opened, which is what opening one grants. What is
+    // inside each of them is a separate question, asked per file.
+    assert_eq!(listing.label(), Label::trusted_private());
+}
+
+/// Saying "do not look here" covers the names as well as the contents.
+///
+/// The one thing that still withholds a filename, now that an unmentioned path no longer does. A
+/// listing is one value, so a single path under an untrusted rule takes the whole of it down,
+/// which is the safe direction: the alternative is a listing that silently omits entries.
+#[test]
+fn a_listing_covering_a_path_marked_untrusted_withholds_every_name() {
+    let scratch = Scratch::new("list-withheld");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("README.md"), "readme").unwrap();
+    std::fs::write(scratch.path.join("vendor/lib.js"), "//").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
+    trust.distrust("vendor");
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy")
+    .with_trust(trust);
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .expect("list succeeds");
+
     assert_eq!(listing.label(), Label::untrusted_private());
-    let files = listing.into_trusted().unwrap_err();
-    assert_eq!(files.label(), Label::untrusted_private());
 }
 
 /// Version control and build directories would swamp a listing.
@@ -383,7 +414,7 @@ fn list_skips_noise_directories() {
         .expect("list succeeds");
     let rendered = format!("{listing:?}");
     // Debug shows only the label, never contents, so assert via the count instead.
-    assert!(rendered.contains("(U,priv)"));
+    assert!(rendered.contains("(T,priv)"));
     assert!(policy.finish());
 }
 
@@ -2001,4 +2032,63 @@ fn a_directory_cannot_be_attached() {
         )
         .expect_err("a directory must not attach");
     assert!(matches!(error, WorkspaceError::Invalid { .. }));
+}
+
+/// What a slot holds is the file, not a reader's view of it.
+///
+/// The pager's three shapings are all destruction here, because a slot's contents are written
+/// back over the file they came from: the lines past its cap would be dropped, a long line
+/// rewritten, and its note about having done both appended as though the file ended that way.
+#[test]
+fn the_whole_of_a_file_is_read_without_the_pagers_shaping() {
+    let scratch = Scratch::new("read-unshaped");
+    let long_line = "x".repeat(5_000);
+    let body: String = (1..=1_200)
+        .map(|n| {
+            if n == 3 {
+                format!("{long_line}\n")
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect();
+    std::fs::write(scratch.path.join("big.txt"), &body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let whole = workspace.whole("big.txt").expect("read succeeds");
+
+    assert_eq!(whole, body, "the file did not come back byte for byte");
+    assert_eq!(whole.lines().count(), 1_200);
+    assert!(!whole.contains("line truncated"));
+    assert!(!whole.contains("continue with offset"));
+}
+
+/// A file that ends without a newline must come back without one, or every file that goes
+/// through a slot grows a byte the next diff reports.
+#[test]
+fn a_whole_read_keeps_the_files_own_ending() {
+    let scratch = Scratch::new("read-whole-ending");
+    std::fs::write(scratch.path.join("none.txt"), "no trailing newline").unwrap();
+    std::fs::write(scratch.path.join("one.txt"), "trailing newline\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    assert_eq!(
+        workspace.whole("none.txt").expect("read"),
+        "no trailing newline"
+    );
+    assert_eq!(
+        workspace.whole("one.txt").expect("read"),
+        "trailing newline\n"
+    );
+}
+
+/// Binary files are refused here exactly as a paged read refuses them, or the unshaped path
+/// would become a way to put arbitrary bytes into a slot.
+#[test]
+fn a_whole_read_of_a_binary_file_is_refused() {
+    let scratch = Scratch::new("read-whole-binary");
+    std::fs::write(scratch.path.join("blob.bin"), [0u8, 1, 2, 0, 255]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    assert!(workspace.whole("blob.bin").is_err());
 }

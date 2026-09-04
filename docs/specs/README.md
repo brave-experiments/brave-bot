@@ -14,8 +14,9 @@ that functionality matches specs. Bugs are posted for any problems found.
 |---|---|---|---|
 | [labels.md](labels.md) | `LABEL` | 9 | the lattice, taint, who may read what, and how a first label is assigned |
 | [routing.md](routing.md) | `ROUTE` | 7 | where an effect may land and what may decide it |
-| [trust-map.md](trust-map.md) | `TRUST` | 12 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
+| [trust-map.md](trust-map.md) | `TRUST` | 13 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |
+| [vetting.md](vetting.md) | `VET` | 6 | asking whether quarantined content is what it was supposed to be |
 | [turns.md](turns.md) | `TURN` | 2 | how long a turn may go on, and what happens when it does not stop |
 | [prompting.md](prompting.md) | `PROMPT` | 10 | every moment the system stops and puts something to a human, and what an answer grants |
 | [naming-files.md](naming-files.md) | `NAME` | 7 | writing `@path` in a prompt: what it puts into the turn and what it vouches for |
@@ -24,7 +25,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [shell-mode.md](shell-mode.md) | `SHELL` | 5 | the `!` prompt: a line the user typed, and why the planner can never reach it |
 | [skills.md](skills.md) | `SKILL` | 9 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
 | [instructions.md](instructions.md) | `INSTR` | 7 | which instruction files are looked for, where, in what order, and where what they say ends up |
-| [cli.md](cli.md) | `CLI` | 8 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
+| [cli.md](cli.md) | `CLI` | 9 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
 | [manifest.md](manifest.md) | `MANIFEST` | 9 | plan the whole run first, then execute it with no model in the control path |
 | [terminal-input.md](terminal-input.md) | `INPUT` | 18 | what the user types into: the box, the keys, and where a terminal's own limits show through |
 | [commands.md](commands.md) | `CMD` | 7 | a line beginning with `/`: where one may come from, when a line is one, and what it does to the line |
@@ -50,12 +51,13 @@ the routing-versus-content split they share.
 | Spec | Id | Clauses | Tool |
 |---|---|---|---|
 | [tools/tool-surface.md](tools/tool-surface.md) | `TOOL` | 3 | the surface every tool shares |
-| [tools/read-file.md](tools/read-file.md) | `READ` | 4 | `read_file` |
+| [tools/read-file.md](tools/read-file.md) | `READ` | 5 | `read_file` |
 | [tools/list-files.md](tools/list-files.md) | `LIST` | 4 | `list_files` |
 | [tools/search.md](tools/search.md) | `SEARCH` | 4 | `search` |
 | [tools/write-file.md](tools/write-file.md) | `WRITE` | 4 | `write_file` |
 | [tools/edit-file.md](tools/edit-file.md) | `EDIT` | 3 | `edit_file` |
 | [tools/spawn-processor.md](tools/spawn-processor.md) | `SPAWN` | 3 | `spawn_processor` |
+| [tools/vet-content.md](tools/vet-content.md) | `VETC` | 3 | `vet_content` |
 | [tools/run.md](tools/run.md) | `RUN` | 12 | `run` |
 | [tools/read-output.md](tools/read-output.md) | `OUTPUT` | 2 | `read_output` |
 | [tools/load-skill.md](tools/load-skill.md) | `LOAD` | 3 | `load_skill` |

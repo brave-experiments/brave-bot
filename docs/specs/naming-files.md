@@ -48,8 +48,8 @@ trusted inside a `vendor` marked untrusted, and the rest of that directory stays
 <a id="NAME-3"></a>
 ### NAME-3: the rule outlives the read
 
-The file can be edited afterwards, which is usually the point of naming it. Naming one also works
-in a directory declined at startup.
+The file can be edited afterwards, which is usually the point of naming it, and the rule says a
+person stood behind it rather than a checker having cleared it.
 
 `verified-by: none`
 

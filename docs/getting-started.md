@@ -71,11 +71,23 @@ everywhere; the letters a question is answered with, `y` and `n`; and the audit 
 record rather than prose. Nothing the model is sent changes with your language either, so
 switching it changes what you read and never what the agent does.
 
-## Trusted directories
+## What is trusted, and how it gets that way
 
-At startup you are asked whether you trust the working directory. **Trust it** and ordinary work
-proceeds without a prompt for every edit. **Decline** and nothing is trusted, so every write is
-shown to you first.
+Nothing asks you anything at startup. The directory you started in is somewhere to work: the agent
+can list it and write in it, and that says nothing about what is in any of its files.
+
+A file becomes readable when something stands behind it. Usually that is a checker: the first time
+a turn needs a file nobody has vouched for, the whole of it goes to an isolated model with no
+tools and no memory, which answers only whether the content is what it was said to be and whether
+it carries anything addressed to whoever reads it. A clean verdict is recorded for that file and
+the turn carries on. Anything else leaves the file quarantined, and the agent works on it through
+a reference without ever being shown it.
+
+You can also stand behind a file yourself by naming it with `@path` or dropping it on the window,
+which skips the check.
+
+`--disable-vetting` turns the checker off, and then a file nobody vouched for is simply
+quarantined. `/status` lists every rule in force and where each came from.
 
 The rules, and every other way a path comes to be trusted, are in
 [specs/trust-map.md](specs/trust-map.md).
@@ -95,9 +107,11 @@ Write the subject in the imperative. Explain why in the body, never what.
 ```
 
 Only the name and the description are put in front of the model, which loads the body when the
-task calls for it. Your own `~/.bravebot` is trusted for being yours; a project's `AGENTS.md`
-and `.bravebot/skills` are read through the trust map, so they load when you vouched for the
-directory and are left out when you did not. See [specs/skills.md](specs/skills.md).
+task calls for it. Your own `~/.bravebot` is trusted for being yours, and a project's `AGENTS.md`
+and `.bravebot/skills` are recorded when a session opens, so they load without your being asked.
+That last part cuts both ways: standing instructions in a repository you cloned are still standing
+instructions, so read them the way you would read its build script. See
+[specs/skills.md](specs/skills.md).
 
 ## Configuration
 

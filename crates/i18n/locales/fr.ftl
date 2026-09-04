@@ -56,6 +56,7 @@ cli-option-file = Inclure un fichier de l'espace de travail comme contexte (rép
 cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord
 cli-option-print = Non interactif. Lit l'entrée redirigée comme contexte en quarantaine
 cli-option-trace = Afficher le journal d'audit
+cli-option-disable-vetting = Mettre en quarantaine ce que personne n'a approuvé au lieu de le soumettre à un contrôleur
 cli-option-help = Afficher ce message
 cli-option-version = Afficher la version
 
@@ -152,17 +153,6 @@ subscription-unusable =
 
 ## Approuver un répertoire, demandé une fois quand une session démarre ailleurs
 
-trust-directory-title = faire confiance à ce répertoire ?
-trust-directory-question = Approuver
-trust-directory-explained =
-    Les fichiers d'ici seront lus comme fiables, et les modifications qui leur sont
-    apportées ne vous seront pas montrées une par une. Répondez non si ce code n'est pas
-    le vôtre.
-trust-directory-regardless =
-    Dans tous les cas, tout ce qui vient du web ou d'un fichier non fiable vous est encore
-    montré avant d'être écrit.
-trust-directory-yes = lui faire confiance
-trust-directory-no = me demander à chaque écriture
 quit = quitter
 
 
@@ -318,6 +308,12 @@ status-trust = Confiance
 status-nothing-vouched-for = rien d'approuvé
 status-trusted = fiable
 status-untrusted = non fiable
+status-origin-vouched = fiable : vous l'avez nommé
+status-origin-standing = fiable : vos instructions pour ce projet
+status-origin-vetted = fiable : un contrôleur l'a lu
+status-origin-written = fiable : écrit à partir de ce que cette session avait déjà
+status-origin-fetched = non fiable : des octets venus de l'extérieur ont atterri ici
+status-origin-withheld = non fiable : retenu
 status-programs = Programmes
 status-every-run-is-asked = chaque exécution vous est soumise
 status-trusted-commands = Commandes fiables
@@ -459,9 +455,6 @@ session-theme-set = thème { $theme }
 session-no-such-theme = aucun thème nommé { $theme } ; essayez /theme pour la liste
 session-trusting = { $directory } approuvé
 session-trusting-as-left = { $directory } approuvé (comme cette session l'avait laissé)
-session-not-trusting =
-    ce répertoire n'est pas approuvé ; chaque écriture vous sera montrée
-session-vouched-for = { $path } approuvé pour cette session
 session-answered-already = déjà répondu : { $question }
 session-something-was-refused =
     un contrôle de la politique a refusé quelque chose pendant ce tour
@@ -519,6 +512,7 @@ verb-write-file = Écrire
 verb-edit-file = Modifier
 verb-todo-write = Planifier
 verb-spawn-processor = Processeur isolé
+verb-vet-content = Contrôler
 verb-load-skill = Compétence
 verb-ask-user = Demander
 verb-run = Exécuter

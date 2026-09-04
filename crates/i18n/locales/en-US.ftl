@@ -46,6 +46,7 @@ cli-option-file = Include a workspace file as context (repeatable)
 cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
+cli-option-disable-vetting = Quarantine what nobody vouched for rather than offering it to a checker
 cli-option-help = Show this message
 cli-option-version = Show the version
 
@@ -139,16 +140,6 @@ subscription-unusable =
 
 ## Vouching for a directory, asked once when a session starts somewhere new
 
-trust-directory-title = trust this directory?
-trust-directory-question = Trust
-trust-directory-explained =
-    Files here will be read as trusted, and edits to them will not be shown to you one by
-    one. Say no if you did not write this code.
-trust-directory-regardless =
-    Either way, anything derived from the web or from an untrusted file is still shown
-    before it is written.
-trust-directory-yes = trust it
-trust-directory-no = ask me about every write
 quit = quit
 
 
@@ -305,6 +296,14 @@ status-trust = Trust
 status-nothing-vouched-for = nothing vouched for
 status-trusted = trusted
 status-untrusted = untrusted
+# Where a rule came from, shown beside what it means, so a person reading the list back can tell
+# a decision they made from one something else made for them.
+status-origin-vouched = trusted: you named it
+status-origin-standing = trusted: your instructions for this project
+status-origin-vetted = trusted: a checker read it
+status-origin-written = trusted: written from what this session already had
+status-origin-fetched = untrusted: bytes from outside landed here
+status-origin-withheld = untrusted: withheld
 status-programs = Programs
 status-every-run-is-asked = every run is put to you
 status-trusted-commands = Trusted commands
@@ -448,8 +447,6 @@ session-theme-set = theme { $theme }
 session-no-such-theme = no theme named { $theme }; try /theme for the list
 session-trusting = trusting { $directory }
 session-trusting-as-left = trusting { $directory } (as this session left it)
-session-not-trusting = this directory is not trusted; every write will be shown to you
-session-vouched-for = trusting { $path } for this session
 session-answered-already = answered already: { $question }
 session-something-was-refused = a policy gate refused something during that turn
 # The endpoint substitutes a model it will not serve rather than refusing, so without this a
@@ -512,6 +509,7 @@ verb-todo-write = Plan
 # tools, no memory and one round, and a person watching a line go by should not have to
 # remember which of the verbs meant that.
 verb-spawn-processor = Isolated processor
+verb-vet-content = Vet
 verb-load-skill = Skill
 verb-ask-user = Ask
 verb-run = Run
