@@ -417,6 +417,59 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// A listing or a search touches many files, so it is trusted only if *every* path it
     /// visited is. One untrusted file among them taints the whole result, which is the correct
+    /// Label the names in a listing of a place the user opened.
+    ///
+    /// **Names, not contents.** A listing is a fact about a place rather than a claim about
+    /// anything in it, and every path one can return is inside the working directory or a
+    /// directory the user named, because that is the whole of what confinement means. What is
+    /// inside those files is a separate question, asked per file, and this answers none of it.
+    ///
+    /// So the absence of a rule is not a reason to withhold a name. Only a path somebody
+    /// deliberately marked untrusted is, and then the whole listing is: saying "don't look here"
+    /// covers the names as well as the contents, and a listing is one value.
+    ///
+    /// This is what a directory grant is: somewhere you may look. It used to treat an unmentioned
+    /// path as untrusted, which meant a listing of a project was trusted only if every file in it
+    /// had already been vouched for, and with per-file content trust the planner could not learn
+    /// one filename in its own working directory and guessed at globs instead.
+    ///
+    /// **Known cost.** A filename is content too, and one written to read like an instruction
+    /// reaches the planner. That is the price of the planner being able to see where it is
+    /// working. It is bounded: a name is short, it arrives among other names, and nothing about it
+    /// decides where an effect lands.
+    pub fn observe_listing<'p>(
+        &mut self,
+        capability: Capability,
+        paths: impl IntoIterator<Item = &'p str>,
+    ) -> Gated<Label> {
+        let base = capability.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: format!("'{capability}' produces no observation to label"),
+        })?;
+
+        let mut integrity = Integrity::Trusted;
+        let mut visited = 0usize;
+        let mut withheld = 0usize;
+        for path in paths {
+            visited += 1;
+            if self.trust.integrity_of(path) == Some(Integrity::Untrusted) {
+                withheld += 1;
+                integrity = Integrity::Untrusted;
+            }
+        }
+
+        let label = Label::new(integrity, base.confidentiality);
+        self.sink.emit(Event::Observed { capability, label });
+        self.allow(
+            "trust",
+            match withheld {
+                0 => format!("{visited} name(s) in a place the user opened"),
+                _ => format!("{visited} name(s), {withheld} of them under a path marked untrusted"),
+            },
+        );
+        Ok(label)
+    }
+
     /// reading: the result is a function of all of them.
     pub fn observe_paths<'p>(
         &mut self,

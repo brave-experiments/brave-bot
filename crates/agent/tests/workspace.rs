@@ -352,10 +352,41 @@ fn list_enumerates_files_recursively() {
         .list(&mut policy, &Labelled::trusted(".".to_string()), None)
         .expect("list succeeds");
 
-    // Filenames come from the user's tree, so they are untrusted content too.
+    // The names of files in a place the user opened, which is what opening one grants. What is
+    // inside each of them is a separate question, asked per file.
+    assert_eq!(listing.label(), Label::trusted_private());
+}
+
+/// Saying "do not look here" covers the names as well as the contents.
+///
+/// The one thing that still withholds a filename, now that an unmentioned path no longer does. A
+/// listing is one value, so a single path under an untrusted rule takes the whole of it down,
+/// which is the safe direction: the alternative is a listing that silently omits entries.
+#[test]
+fn a_listing_covering_a_path_marked_untrusted_withholds_every_name() {
+    let scratch = Scratch::new("list-withheld");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("README.md"), "readme").unwrap();
+    std::fs::write(scratch.path.join("vendor/lib.js"), "//").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
+    trust.distrust("vendor");
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy")
+    .with_trust(trust);
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .expect("list succeeds");
+
     assert_eq!(listing.label(), Label::untrusted_private());
-    let files = listing.into_trusted().unwrap_err();
-    assert_eq!(files.label(), Label::untrusted_private());
 }
 
 /// Version control and build directories would swamp a listing.
@@ -383,7 +414,7 @@ fn list_skips_noise_directories() {
         .expect("list succeeds");
     let rendered = format!("{listing:?}");
     // Debug shows only the label, never contents, so assert via the count instead.
-    assert!(rendered.contains("(U,priv)"));
+    assert!(rendered.contains("(T,priv)"));
     assert!(policy.finish());
 }
 

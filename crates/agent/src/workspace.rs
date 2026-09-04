@@ -959,9 +959,11 @@ impl Workspace {
         let _ = self.walk_filtered(&root, glob.as_deref(), &mut found)?;
         found.sort();
 
-        // Labelled after the walk, because which paths were visited is not known before it. A
-        // listing is trusted only if every path in it is.
-        let label = policy.observe_paths(Capability::FileRead, found.iter().map(String::as_str))?;
+        // The names of files in a place the user opened, which is what opening one grants. Not
+        // the meet over their contents: what is in each of them is asked per file, when a turn
+        // needs it.
+        let label =
+            policy.observe_listing(Capability::FileRead, found.iter().map(String::as_str))?;
 
         // `walk` collects one entry past the cap so reaching it is detectable. Which
         // entries survive is down to traversal order, so a truncated listing is a sample
