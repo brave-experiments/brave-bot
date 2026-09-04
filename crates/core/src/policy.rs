@@ -175,6 +175,11 @@ pub struct Policy<'sink, S: Sink> {
     trust: TrustStore,
     /// Which programs the user has stopped being asked about, by resolved path.
     programs: crate::programs::TrustedPrograms,
+    /// Rules the user wrote in advance about what to ask them about.
+    ///
+    /// Consulted at the gates that ask, and nowhere else. Empty is the state a session with no
+    /// settings file is in, and means every gate behaves as it did before rules existed.
+    permissions: crate::permissions::Permissions,
     /// Paths this turn has already offered to the user to vouch for.
     ///
     /// Turn-scoped, and deliberately not recorded anywhere longer-lived. A yes goes into the trust
@@ -247,6 +252,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             denials: 0,
             trust: TrustStore::new(),
             programs: crate::programs::TrustedPrograms::new(),
+            permissions: crate::permissions::Permissions::new(),
             vouch_asked: std::collections::BTreeSet::new(),
             context: Integrity::Trusted,
         })
@@ -322,6 +328,71 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The programs vouched for, including any this turn recorded.
     pub fn programs(&self) -> &crate::programs::TrustedPrograms {
         &self.programs
+    }
+
+    /// Install the rules a person wrote in advance about what to ask them about.
+    ///
+    /// They decide prompts and refusals, never labels and never reach. See
+    /// [`crate::permissions`] for what an allow rule deliberately does not grant.
+    pub fn with_permissions(mut self, permissions: crate::permissions::Permissions) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    /// The rules in force.
+    pub fn permissions(&self) -> &crate::permissions::Permissions {
+        &self.permissions
+    }
+
+    /// Refuse an action a `deny` rule covers, before anything is opened or started.
+    ///
+    /// Checked first at each gate, so a denied path is never read and a denied program never runs.
+    /// The other two lists decide a prompt and are consulted where the prompt is; this one decides
+    /// whether there is anything to prompt about.
+    ///
+    /// `what` is a routing value: a path, or a stage's argv. Never content.
+    fn refuse_if_denied(
+        &mut self,
+        gate: &'static str,
+        decision: crate::permissions::Decision,
+        what: &str,
+    ) -> Gated<()> {
+        if decision == crate::permissions::Decision::Ruled(crate::permissions::Ruling::Deny) {
+            return Err(self.deny(
+                gate,
+                Principle::Capability,
+                format!("a deny rule in the settings file covers {what}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse a read a `deny` rule covers.
+    ///
+    /// Reads are otherwise ungated, since a read changes nothing and stays inside the workspace.
+    /// A deny rule is the one thing that stops one, which is what makes it able to say a file is
+    /// off limits rather than merely unvouched for.
+    pub fn before_read(&mut self, path: &str) -> Gated<()> {
+        let decision = self
+            .permissions
+            .for_path(crate::permissions::Subject::Read, path);
+        self.refuse_if_denied("read", decision, path)
+    }
+
+    /// Refuse a write a `deny` rule covers.
+    ///
+    /// Both families are consulted: a path nothing may read is a path nothing may replace either,
+    /// so a `Read` deny rule stops a write to it. Claude Code does the same, and the reason is
+    /// that a file whose contents are off limits is not protected if it can be overwritten.
+    pub fn before_write(&mut self, path: &str) -> Gated<()> {
+        for subject in [
+            crate::permissions::Subject::Edit,
+            crate::permissions::Subject::Read,
+        ] {
+            let decision = self.permissions.for_path(subject, path);
+            self.refuse_if_denied("write", decision, path)?;
+        }
+        Ok(())
     }
 
     /// Whether the user should be offered the chance to vouch for this path.
@@ -1317,8 +1388,12 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         let promised = deferred.label();
 
         // The reading happens now, so the capability must be held now rather than only when the
-        // slot was reserved.
+        // slot was reserved. A rule is checked here for the same reason: this is where the bytes are
+        // actually fetched, and a deferred read arrives without having passed the gate a read the
+        // planner named passes. Without it a denied file could be opened by naming a reference to
+        // it, which is that file under another spelling.
         self.before_capability(Capability::FileRead)?;
+        self.before_read(&path)?;
         let current = self.observe_path(Capability::FileRead, &path)?;
         let label = crate::label::taint_all([promised, current]);
 
@@ -2160,6 +2235,27 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             return true;
         }
 
+        // A rule the user wrote in advance answers before the table below, which is what a rule
+        // is for. It cannot reach the case above: nothing a pattern says can put a path in front
+        // of somebody, and that prompt is the only place a reference's path is ever seen.
+        match self
+            .permissions
+            .for_path(crate::permissions::Subject::Edit, path)
+        {
+            crate::permissions::Decision::Ruled(ruling) => {
+                let needed = ruling != crate::permissions::Ruling::Allow;
+                self.allow(
+                    "approval",
+                    format!(
+                        "{path}: a rule in the settings file says {ruling}, {}",
+                        if needed { "asking" } else { "no prompt" }
+                    ),
+                );
+                return needed;
+            }
+            crate::permissions::Decision::Unmatched => {}
+        }
+
         let (needed, reason) = match self.trust.integrity_of(path) {
             // Nobody has said anything about this path, so the first write is the moment to ask.
             None => (true, "a path nobody has vouched for either way"),
@@ -2289,6 +2385,26 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             return true;
         }
 
+        // A rule the user wrote in advance, consulted after the confidentiality question above
+        // and before the vouched list. It answers the prompt only: whatever it says, the output
+        // keeps the label `before_run` gives it, which is untrusted unless a person vouched for
+        // every stage. A pattern covers commands nobody has read, so it cannot carry the claim
+        // that what they print is trustworthy.
+        match self.permissions.for_pipeline(&self.stage_lines(pipeline)) {
+            crate::permissions::Decision::Ruled(ruling) => {
+                let needed = ruling != crate::permissions::Ruling::Allow;
+                self.allow(
+                    "approval",
+                    format!(
+                        "a rule in the settings file says {ruling} for this pipeline, {}",
+                        if needed { "asking" } else { "no prompt" }
+                    ),
+                );
+                return needed;
+            }
+            crate::permissions::Decision::Unmatched => {}
+        }
+
         if self.every_stage_vouched(pipeline, resolved) {
             self.allow(
                 "approval",
@@ -2304,6 +2420,42 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 .to_string(),
         );
         true
+    }
+
+    /// Each stage as one line, for a rule to match against.
+    ///
+    /// The argv joined by single spaces, which is the shape a rule is written in: somebody writes
+    /// `Bash(git diff *)` having in mind what they would type. Deliberately not
+    /// [`crate::command::Stage::display`], whose quoting exists to make a rendering reversible for
+    /// a person about to approve it; matching against that would mean a rule had to anticipate the
+    /// quoting, so `Bash(grep foo *)` would miss an argument with a space in it.
+    ///
+    /// Argv, so no rule can be evaded by the shell quoting that has no shell here. A stage cannot
+    /// smuggle a second command into an argument, because an argument is never re-split.
+    fn stage_lines(&self, pipeline: &crate::command::Pipeline) -> Vec<String> {
+        pipeline
+            .stages
+            .iter()
+            .map(|stage| {
+                std::iter::once(stage.program.as_str())
+                    .chain(stage.args.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    /// Refuse a pipeline a `deny` rule covers, before anything is started.
+    ///
+    /// Every stage is checked, so a denied program cannot be hidden in the middle of a pipeline
+    /// whose ends look ordinary.
+    pub fn before_run_rules(&mut self, pipeline: &crate::command::Pipeline) -> Gated<()> {
+        let lines = self.stage_lines(pipeline);
+        for line in &lines {
+            let decision = self.permissions.for_command(line);
+            self.refuse_if_denied("run", decision, line)?;
+        }
+        Ok(())
     }
 
     /// Whether every stage of the pipeline is a command the user vouched for, argv and all.
@@ -3728,6 +3880,20 @@ mod tests {
         crate::programs::Command::new(program, args.iter().map(|a| a.to_string()).collect())
     }
 
+    /// Rules as a settings file would have carried them, with every rule required to parse: a
+    /// test whose rule was silently dropped would pass by matching nothing.
+    fn permissions(deny: &[&str], ask: &[&str], allow: &[&str]) -> crate::permissions::Permissions {
+        let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (permissions, rejected) = crate::permissions::Permissions::parse(
+            &owned(deny),
+            &owned(ask),
+            &owned(allow),
+            &crate::permissions::Anchors::none(),
+        );
+        assert!(rejected.is_empty(), "a rule in this test did not parse");
+        permissions
+    }
+
     /// Nothing establishes that a program changed nothing, so a command nobody has vouched for is
     /// put to a person however innocuous it looks.
     #[test]
@@ -3794,6 +3960,143 @@ mod tests {
         assert!(
             policy.run_needs_approval(&a_pipeline(), &["/opt/homebrew/bin/git".to_string()]),
             "an assertion followed the name rather than the program"
+        );
+    }
+
+    /// The whole of what an allow rule buys: the prompt stops for a command matching a pattern
+    /// the user wrote down in advance.
+    #[test]
+    fn a_rule_the_user_wrote_in_advance_answers_the_run_prompt() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&[], &[], &["Bash(git log *)"]));
+        assert!(!policy.run_needs_approval(&a_pipeline(), &["/usr/bin/git".to_string()]));
+    }
+
+    /// The line an allow rule must not cross. A pattern covers commands nobody has read, so it
+    /// cannot carry the claim that what they print is trustworthy: that claim is what pressing `a`
+    /// at a prompt makes, about one command a person had in front of them. If a rule could make
+    /// output trusted, one line in a settings file would turn fetched bytes into routing.
+    #[test]
+    fn an_allow_rule_stops_the_prompt_and_does_not_trust_what_the_command_prints() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&[], &[], &["Bash(curl *)"]));
+        let pipeline = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "curl",
+            vec!["https://example.com".into()],
+        )]);
+        let resolved = ["/usr/bin/curl".to_string()];
+
+        assert!(!policy.run_needs_approval(&pipeline, &resolved));
+        policy.endorse_run(&pipeline);
+        let label = policy
+            .before_run(&pipeline, &resolved)
+            .expect("the run was allowed");
+        assert!(
+            !label.is_trusted(),
+            "a settings-file rule made a program's output trusted"
+        );
+    }
+
+    /// The prompt no rule may answer. A path known only through a reference is nowhere a person
+    /// can see it until the approval puts it there, and the endorsement is minted for the path they
+    /// saw, so nothing a pattern says can stand in for having looked.
+    #[test]
+    fn a_reference_named_write_asks_whatever_a_rule_says() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&[], &[], &["Edit(notes/**)"]));
+        // The same path, allowed by the same rule, differs only in how it was named.
+        assert!(!policy.write_needs_approval(
+            "notes/out.txt",
+            Label::trusted_public(),
+            Destination::Named
+        ));
+        assert!(
+            policy.write_needs_approval(
+                "notes/out.txt",
+                Label::trusted_public(),
+                Destination::Reference
+            ),
+            "a rule answered for a path nobody had seen"
+        );
+    }
+
+    /// A deny rule refuses rather than asks, and refuses before the program starts.
+    #[test]
+    fn a_denied_program_does_not_run_at_all() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&["Bash(curl *)"], &[], &[]));
+        let pipeline = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "curl",
+            vec!["https://example.com".into()],
+        )]);
+        assert!(policy.before_run_rules(&pipeline).is_err());
+    }
+
+    /// A denied stage in the middle of an ordinary-looking pipeline is still denied.
+    #[test]
+    fn a_denied_stage_cannot_hide_between_two_permitted_ones() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&["Bash(curl *)"], &[], &[]));
+        let pipeline = crate::command::Pipeline::new(vec![
+            crate::command::Stage::new("git", vec!["log".into()]),
+            crate::command::Stage::new("curl", vec!["-T".into(), "-".into()]),
+            crate::command::Stage::new("sed", vec!["-n".into(), "1,10p".into()]),
+        ]);
+        assert!(policy.before_run_rules(&pipeline).is_err());
+    }
+
+    /// An argument is never re-split, so a rule cannot be evaded by putting a second command
+    /// inside one. There is no shell here to do the splitting, which is what makes this hold.
+    #[test]
+    fn a_denied_program_cannot_be_smuggled_inside_an_argument() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&["Bash(curl *)"], &[], &[]));
+        // A stage whose argv contains the text of a denied command is one program with an odd
+        // argument, not two programs, and the rule is about the program it actually runs.
+        let pipeline = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "echo",
+            vec!["curl https://example.com".into()],
+        )]);
+        assert!(policy.before_run_rules(&pipeline).is_ok());
+        // And the reverse: the rule catches the program however its arguments are shaped.
+        let real = crate::command::Pipeline::new(vec![crate::command::Stage::new(
+            "curl",
+            vec!["a b".into()],
+        )]);
+        assert!(policy.before_run_rules(&real).is_err());
+    }
+
+    /// An ask rule puts a command a person would otherwise not have been asked about back in
+    /// front of them, which is what makes it worth writing.
+    #[test]
+    fn an_ask_rule_asks_about_a_command_already_vouched_for() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&[], &["Bash(git *)"], &[]));
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+        assert!(
+            policy.run_needs_approval(&a_pipeline(), &["/usr/bin/git".to_string()]),
+            "an ask rule did not override a standing permission"
+        );
+    }
+
+    /// Private input asks whatever the rules say, for the same reason it asks whatever is vouched
+    /// for: a rule about which commands may run is not consent to hand one the user's own data.
+    #[test]
+    fn private_input_asks_even_for_a_command_a_rule_allows() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&[], &[], &["Bash(git log *)"]));
+        let pipeline = a_pipeline().with_stdin(Label::trusted_private());
+        assert!(
+            policy.run_needs_approval(&pipeline, &["/usr/bin/git".to_string()]),
+            "a settings-file rule released private data with no prompt"
         );
     }
 

@@ -1260,6 +1260,7 @@ fn path_argument<S: Sink>(
         (None, None) => Err("error: one of 'path' or 'path_ref' is required".to_string()),
         (Some(path), None) => {
             let shown = path.clone().into_parts_for_decoding().0;
+            refuse_denied_path(policy, purpose, &shown)?;
             Ok(PathArgument {
                 path,
                 destination: Destination::Named,
@@ -1286,6 +1287,13 @@ fn path_argument<S: Sink>(
                     Labelled::new(path, bravebot_core::label::Label::untrusted_public())
                 }
             };
+            // A rule covers the file, not the spelling of it. A path that arrived through a
+            // reference is the same file as one the planner typed, so the rule that would have
+            // refused the second refuses the first. The path itself stays out of the refusal:
+            // what goes back to the planner names the reference, as it does everywhere else.
+            let resolved = path.clone().into_parts_for_decoding().0;
+            refuse_denied_path(policy, purpose, &resolved)
+                .map_err(|_| denied_by_rule(&slot.to_string()))?;
             Ok(PathArgument {
                 path,
                 destination: Destination::Reference,
@@ -1293,6 +1301,33 @@ fn path_argument<S: Sink>(
             })
         }
     }
+}
+
+/// Refuse a path a `deny` rule covers, before the file is opened.
+///
+/// Both what the call will do and what it may see are asked about: a read consults the `Read`
+/// rules, and an effect consults `Edit` and `Read` both, because a file nothing may read is not
+/// protected if it can be overwritten.
+fn refuse_denied_path<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    purpose: Purpose,
+    path: &str,
+) -> Result<(), String> {
+    let refused = match purpose {
+        Purpose::Read => policy.before_read(path),
+        Purpose::Effect => policy.before_write(path),
+    };
+    refused.map_err(|_| denied_by_rule(path))
+}
+
+/// What the planner is told when a rule refused. Says the rule is the reason and that retrying is
+/// not the answer, because a planner told only "refused" tries the same call again.
+fn denied_by_rule(shown: &str) -> String {
+    format!(
+        "refused: a deny rule in the user's settings covers {shown}, so nothing here can \
+         reach it. Do not retry, and do not look for another way to the same file: work \
+         without it, or say in your reply what you needed it for."
+    )
 }
 
 /// What a call is going to do with the path it asked for.
@@ -1408,6 +1443,15 @@ fn list_files<S: Sink>(
         Ok(d) => d,
         Err(denial) => return problem(format!("refused: {denial}")),
     };
+
+    // The directory a listing would walk. A rule that keeps a tree from being read keeps it from
+    // being enumerated too: the names in a directory are what is in it.
+    {
+        let (named, _) = directory.clone().into_parts_for_decoding();
+        if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &named) {
+            return problem(refusal);
+        }
+    }
 
     // A filter only narrows a confined, non-destructive read, so it is promotable on the
     // same terms as the directory itself.
@@ -2053,6 +2097,15 @@ fn run<S: Sink, C: Confirmer>(
     }
     let pipeline = bravebot_core::Pipeline::new(stages);
 
+    // Before the programs are even looked for. A rule refusing a command is a statement that it
+    // does not run, and there is nothing to resolve, show or approve once it has been made.
+    if let Err(denial) = policy.before_run_rules(&pipeline) {
+        return problem(format!(
+            "refused: {denial}. Do not retry, and do not look for another program that would \
+             do the same thing: say in your reply what you needed it for."
+        ));
+    }
+
     // Resolved once, before anyone is asked. What the person is shown, what the trusted list
     // records, and what executes are then the same value, so `$PATH` changing afterwards cannot
     // put a different binary behind an approval.
@@ -2559,6 +2612,15 @@ fn search<S: Sink>(
         Ok(d) => d,
         Err(denial) => return problem(format!("refused: {denial}")),
     };
+
+    // The directory a search would walk, on the same footing as a listing: a match quotes the
+    // line it was found on, so searching a tree is reading it.
+    {
+        let (named, _) = directory.clone().into_parts_for_decoding();
+        if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &named) {
+            return problem(refusal);
+        }
+    }
 
     let include = match argument(arguments, "include") {
         Some(proposed) => match policy.promote_confined_read("search", "include", &proposed) {

@@ -44,6 +44,31 @@ const MAX_BYTES: u64 = 64 * 1024;
 pub struct Settings {
     env: BTreeMap<String, String>,
     scrub: Vec<String>,
+    permissions: PermissionLists,
+}
+
+/// The `permissions` block, as text, exactly as the file spelled it.
+///
+/// Rule text rather than parsed rules, because reading a rule needs to know where the settings
+/// file sits and where home is, and this crate is where the file was found rather than where a
+/// rule is matched. The kernel owns the rule language; this hands it the lines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionLists {
+    pub deny: Vec<String>,
+    pub ask: Vec<String>,
+    pub allow: Vec<String>,
+    /// Directories a file says to make reachable, alongside the working directory.
+    pub additional_directories: Vec<String>,
+}
+
+impl PermissionLists {
+    /// Whether the block said anything.
+    pub fn is_empty(&self) -> bool {
+        self.deny.is_empty()
+            && self.ask.is_empty()
+            && self.allow.is_empty()
+            && self.additional_directories.is_empty()
+    }
 }
 
 impl Settings {
@@ -93,6 +118,7 @@ impl Settings {
         Self {
             env,
             scrub: scrub_list(&root),
+            permissions: permission_lists(&root),
         }
     }
 
@@ -103,7 +129,12 @@ impl Settings {
 
     /// Whether the file set anything at all.
     pub fn is_empty(&self) -> bool {
-        self.env.is_empty() && self.scrub.is_empty()
+        self.env.is_empty() && self.scrub.is_empty() && self.permissions.is_empty()
+    }
+
+    /// The rule text and added directories the `permissions` block carried.
+    pub fn permissions(&self) -> &PermissionLists {
+        &self.permissions
     }
 
     /// Variables this file says to keep from a program the agent runs, beyond the built-in set.
@@ -140,6 +171,41 @@ fn scrub_list(root: &serde_json::Map<String, serde_json::Value>) -> Vec<String> 
         .iter()
         .filter_map(|name| match name {
             serde_json::Value::String(name) if !name.trim().is_empty() => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `permissions` block: three lists of rule text, and the directories to open.
+///
+/// Strings only, and a malformed entry is dropped rather than refused, on the same footing as
+/// everything else here. A rule that is not a string cannot be matched against anything, and
+/// refusing the file over one would take away the rules that were readable.
+///
+/// `defaultMode` is read by nothing yet. A file setting it is not an error and not a warning here:
+/// [`Settings::parse`] reads what the file says and reports it, and which modes exist is a
+/// question for whoever consults them.
+fn permission_lists(root: &serde_json::Map<String, serde_json::Value>) -> PermissionLists {
+    let Some(serde_json::Value::Object(block)) = root.get("permissions") else {
+        return PermissionLists::default();
+    };
+    PermissionLists {
+        deny: strings(block, "deny"),
+        ask: strings(block, "ask"),
+        allow: strings(block, "allow"),
+        additional_directories: strings(block, "additionalDirectories"),
+    }
+}
+
+/// One array of non-empty strings out of a block, or empty for every other shape.
+fn strings(block: &serde_json::Map<String, serde_json::Value>, name: &str) -> Vec<String> {
+    let Some(serde_json::Value::Array(entries)) = block.get(name) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
             _ => None,
         })
         .collect()
@@ -281,6 +347,84 @@ mod tests {
                 "{text:?} named something"
             );
         }
+    }
+
+    /// The block a person copies out of `~/.claude/settings.json`, read without being rewritten
+    /// first, which is the whole reason this file has the shape it has.
+    #[test]
+    fn a_permissions_block_is_read() {
+        let settings = Settings::parse(
+            r#"{
+              "permissions": {
+                "defaultMode": "acceptEdits",
+                "allow": ["Bash(git diff *)", "Bash(npm test *)"],
+                "ask": ["Bash(git push *)"],
+                "deny": ["Read(./.env)", "Read(./.env.*)"],
+                "additionalDirectories": ["../shared"]
+              }
+            }"#,
+        );
+        let permissions = settings.permissions();
+        assert_eq!(permissions.allow, ["Bash(git diff *)", "Bash(npm test *)"]);
+        assert_eq!(permissions.ask, ["Bash(git push *)"]);
+        assert_eq!(permissions.deny, ["Read(./.env)", "Read(./.env.*)"]);
+        assert_eq!(permissions.additional_directories, ["../shared"]);
+        assert!(!settings.is_empty());
+    }
+
+    /// Each list stands alone. A file that only refuses things configures no backend and grants
+    /// nothing, and reading it must not depend on the other lists being there.
+    #[test]
+    fn one_list_is_read_without_the_others() {
+        let settings = Settings::parse(r#"{"permissions": {"deny": ["Read(./.env)"]}}"#);
+        let permissions = settings.permissions();
+        assert_eq!(permissions.deny, ["Read(./.env)"]);
+        assert!(permissions.allow.is_empty());
+        assert!(permissions.ask.is_empty());
+        assert!(!settings.is_empty());
+    }
+
+    /// A rule is a string. An entry that is not one cannot be matched against anything, and
+    /// dropping it keeps the rules that were readable rather than losing the file over one.
+    #[test]
+    fn an_entry_that_is_not_a_rule_is_left_out() {
+        let settings = Settings::parse(
+            r#"{"permissions": {"deny": ["Read(./.env)", 1, true, null, "", "  ", []]}}"#,
+        );
+        assert_eq!(settings.permissions().deny, ["Read(./.env)"]);
+    }
+
+    /// Every shape that is not a block of lists reads as no rules at all, on the same footing as
+    /// the rest of this file: a half-typed settings file must not stop a session.
+    #[test]
+    fn a_malformed_permissions_block_carries_no_rules() {
+        for text in [
+            r#"{"permissions": {}}"#,
+            r#"{"permissions": []}"#,
+            r#"{"permissions": "deny everything"}"#,
+            r#"{"permissions": {"deny": "Read(./.env)"}}"#,
+            r#"{"permissions": {"deny": {}}}"#,
+            r#"{"permissions": {"unknown": ["Read(./.env)"]}}"#,
+            r#"{"deny": ["Read(./.env)"]}"#,
+        ] {
+            assert!(
+                Settings::parse(text).permissions().is_empty(),
+                "{text:?} carried a rule"
+            );
+        }
+    }
+
+    /// The blocks are independent of each other. A file that configures a backend and says nothing
+    /// about permissions has no rules, and the reverse.
+    #[test]
+    fn the_permissions_block_and_the_env_block_do_not_need_each_other() {
+        let settings = Settings::parse(r#"{"permissions": {"deny": ["Bash"]}}"#);
+        assert_eq!(settings.get("AWS_REGION"), None);
+        assert_eq!(settings.permissions().deny, ["Bash"]);
+
+        let settings = Settings::parse(r#"{"env": {"AWS_REGION": "us-west-2"}}"#);
+        assert!(settings.permissions().is_empty());
+        assert_eq!(settings.get("AWS_REGION"), Some("us-west-2"));
     }
 
     /// `doctor` reports which names a file set. It must not report what they were: on some

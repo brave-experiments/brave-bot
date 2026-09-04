@@ -65,6 +65,7 @@ rules here.
 | what a label is, who may read what, how one is assigned | [labels.md](docs/specs/labels.md) |
 | where an effect may land and what may decide it | [routing.md](docs/specs/routing.md) |
 | which paths a person vouched for, and what a write records | [trust-map.md](docs/specs/trust-map.md) |
+| rules written in advance about what to ask about or refuse | [permissions.md](docs/specs/permissions.md) |
 | the one component that reads untrusted content | [processors.md](docs/specs/processors.md) |
 | a tool's arguments, refusals, or results | [tools/](docs/specs/tools/tool-surface.md) |
 | why the planner has no shell, and what `run` may do | [shell-mode.md](docs/specs/shell-mode.md), [run.md](docs/specs/tools/run.md) |

@@ -14,6 +14,7 @@ use bravebot_agent::conversation::Conversation;
 use bravebot_agent::turn::{self, PastedImage, Task};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
+use bravebot_core::permissions::Permissions;
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::trust::TrustStore;
 use bravebot_i18n::t;
@@ -1342,6 +1343,29 @@ fn event_loop(
         return Ok(left_behind(&stored));
     };
 
+    // The rules the user wrote in advance, read once for the session: a person editing the file
+    // mid-session is describing the next one, and rules that changed halfway through a turn would
+    // be the harder thing to explain. Every turn below is given these.
+    let settings = bravebot_config::Settings::load();
+    let (permissions, rejected) = bravebot_agent::permissions::from_settings(
+        &settings,
+        bravebot_agent::home::directory().as_deref(),
+    );
+    // Said out loud, because a rule that parses as nothing is a rule somebody believes is in
+    // force. A misspelled deny rule reads as protection that is not there.
+    for problem in &rejected {
+        session.note(t!(
+            session_permission_rule_ignored,
+            problem = problem.to_string()
+        ));
+    }
+    // Named after the startup question, so a directory a file asked for is opened on the same
+    // terms as one typed at `/add-dir`, and after the person has agreed to the workspace at all.
+    for directory in bravebot_agent::permissions::additional_directories(&settings) {
+        let named = against_workspace(workspace.root(), directory);
+        add_directory(&mut session, &mut workspace, &mut trust, &named);
+    }
+
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
     // transcript the queue outruns the drawing and the highlight trails seconds behind the
@@ -1514,6 +1538,7 @@ fn event_loop(
                         conversation,
                         trust,
                         programs,
+                        &permissions,
                     )?;
 
                     // Written after each turn rather than at the end, because the end may never
@@ -1615,6 +1640,18 @@ fn add_directory(
             directory = directory,
             problem = error
         )),
+    }
+}
+
+/// The name a settings file gave a directory, as an absolute path.
+///
+/// A relative name means a path under the workspace, which is what `../shared` in a settings file
+/// says: the file is about a project, and the directory it wants is next to that project rather
+/// than next to wherever the agent happened to be started from.
+fn against_workspace(root: &std::path::Path, directory: &str) -> String {
+    match std::path::Path::new(directory).is_absolute() {
+        true => directory.to_string(),
+        false => root.join(directory).display().to_string(),
     }
 }
 
@@ -2114,6 +2151,7 @@ fn run_turn_animated(
     conversation: Conversation,
     trust: TrustStore,
     programs: TrustedPrograms,
+    permissions: &Permissions,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
     // The prompt is in the transcript by now, and drawn before anything that might take a moment:
     // a check that has to run the AWS CLI holds the frame for as long as the process takes, and
@@ -2152,7 +2190,8 @@ fn run_turn_animated(
     let mut task = Task::new(&sent)
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
-        .with_model(session.model().map(str::to_string));
+        .with_model(session.model().map(str::to_string))
+        .with_permissions(permissions.clone());
     for file in crate::entries::referenced(&sent) {
         task = task.with_file(file);
     }
@@ -5591,5 +5630,49 @@ mod tests {
 
         handle_key(&mut session, key(KeyCode::Char('b')));
         assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::None);
+    }
+
+    /// A directory a settings file named is opened and vouched for by the same route `/add-dir`
+    /// takes, so neither has a way in that the other lacks. A relative name means a path under the
+    /// workspace, which is what `../shared` in a file about a project says.
+    #[test]
+    fn a_settings_file_directory_is_opened_and_trusted_like_one_typed() {
+        let root = std::env::temp_dir().join("bravebot-settings-dir-test");
+        let outside = root.join("shared");
+        let project = root.join("project");
+        std::fs::create_dir_all(&outside).expect("scratch");
+        std::fs::create_dir_all(&project).expect("scratch");
+
+        let mut workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+        let mut trust = TrustStore::new();
+
+        // Named the way a settings file names it, relative to the project.
+        let named = against_workspace(workspace.root(), "../shared");
+        add_directory(&mut session, &mut workspace, &mut trust, &named);
+
+        // Both halves, since either alone is useless: reach without trust asks about every write
+        // there, and trust without reach is a rule about files nothing can open.
+        let canonical = outside.canonicalize().expect("canonical");
+        assert!(
+            workspace.added_directories().contains(&canonical),
+            "a directory a settings file named was not opened"
+        );
+        assert!(
+            trust.is_trusted(&canonical.display().to_string()),
+            "a directory a settings file named was not vouched for"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An absolute name is left alone. Joining it onto the workspace would name a path inside the
+    /// project that nobody asked for.
+    #[test]
+    fn an_absolute_directory_in_a_settings_file_is_not_joined_onto_the_workspace() {
+        assert_eq!(
+            against_workspace(std::path::Path::new("/tmp/project"), "/opt/other"),
+            "/opt/other"
+        );
     }
 }

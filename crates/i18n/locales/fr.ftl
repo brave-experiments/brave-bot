@@ -113,6 +113,14 @@ doctor-tiers-absent = aucun configuré (définir ANTHROPIC_DEFAULT_OPUS_MODEL)
 doctor-settings = réglages
 doctor-settings-names = { $names }
 doctor-settings-absent = aucun settings.json
+doctor-permissions = permissions
+doctor-permissions-absent = aucune règle
+doctor-permissions-count =
+    { $count ->
+        [one] { $count } règle
+       *[other] { $count } règles
+    }
+doctor-permissions-unreadable = règle illisible
 doctor-leo = leo
 doctor-subscription =
     abonnement { $environment } importé, { $unspent } identifiants sur { $total } non dépensés
@@ -449,6 +457,7 @@ session-rename-needs-something = /rename demande un nom qui contienne quelque ch
 session-cleared = effacée : une nouvelle session, la précédente restant reprenable
 session-add-dir-needs-a-path = /add-dir demande un répertoire, comme /add-dir ~/notes
 session-directory-added = { $directory } ajouté, et approuvé pour cette session
+session-permission-rule-ignored = règle de permission ignorée dans settings.json : { $problem }
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }
 session-signing-in =

@@ -241,9 +241,29 @@ fn run_task(args: &[String]) -> ExitCode {
     // The same choice the interface records. A preference about which model to think with is the
     // user's, not the interface's, so a one-shot run honours it rather than reverting to the
     // default the environment happens to name.
+    // The rules the settings file carried. A one-shot run refuses every write anyway, so what
+    // these add here is the deny list: a rule keeping a file from being read holds for a run
+    // nobody is watching exactly as it does for a session. Anything unreadable is named on stderr,
+    // beside the rest of what this run has to say about itself.
+    let settings = bravebot_config::Settings::load();
+    let (permissions, rejected) = bravebot_agent::permissions::from_settings(
+        &settings,
+        bravebot_agent::home::directory().as_deref(),
+    );
+    for problem in &rejected {
+        eprintln!(
+            "{}",
+            t!(
+                session_permission_rule_ignored,
+                problem = problem.to_string()
+            )
+        );
+    }
+
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
-        .with_model(bravebot_tui::store::load_model());
+        .with_model(bravebot_tui::store::load_model())
+        .with_permissions(permissions);
     for file in files {
         task = task.with_file(file);
     }
@@ -812,6 +832,26 @@ fn doctor() -> ExitCode {
                     ),
                 ),
                 true => fact(t!(doctor_settings), t!(doctor_settings_absent)),
+            }
+
+            // Counted rather than listed: a rule is the user's own text and printing it back says
+            // nothing they cannot read in the file. What is worth saying is which of them this
+            // build could not act on, because those are the ones that look like protection and
+            // are not.
+            let (permissions, rejected) = bravebot_agent::permissions::from_settings(
+                &settings,
+                bravebot_agent::home::directory().as_deref(),
+            );
+            fact(
+                t!(doctor_permissions),
+                match permissions.is_empty() {
+                    true => t!(doctor_permissions_absent).to_string(),
+                    false => t!(doctor_permissions_count, count = permissions.len() as i64),
+                },
+            );
+            for problem in &rejected {
+                ok = false;
+                fact(t!(doctor_permissions_unreadable), problem.to_string());
             }
 
             // Both, where both are reachable, because both are offered to a person choosing and a

@@ -99,6 +99,14 @@ doctor-tiers-absent = none configured (set ANTHROPIC_DEFAULT_OPUS_MODEL)
 doctor-settings = settings
 doctor-settings-names = { $names }
 doctor-settings-absent = no settings.json
+doctor-permissions = permissions
+doctor-permissions-absent = no rules
+doctor-permissions-count =
+    { $count ->
+        [one] { $count } rule
+       *[other] { $count } rules
+    }
+doctor-permissions-unreadable = unreadable rule
 doctor-leo = leo
 doctor-subscription =
     { $environment } subscription imported, { $unspent } of { $total } credentials unspent
@@ -437,6 +445,7 @@ session-rename-needs-something = /rename needs a name with something in it
 session-cleared = cleared: a new session, with the previous one still resumable
 session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/notes
 session-directory-added = added { $directory }, and trusting it for this session
+session-permission-rule-ignored = ignoring a permission rule in settings.json: { $problem }
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }
 # Said before the screen is handed to the AWS CLI, so a terminal filling with its output, and a

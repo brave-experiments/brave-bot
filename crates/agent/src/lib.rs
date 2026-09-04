@@ -14,6 +14,7 @@ pub mod glob;
 pub mod home;
 pub mod manifest;
 pub mod mode;
+pub mod permissions;
 pub mod preamble;
 pub mod processor;
 pub mod programs;

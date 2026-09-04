@@ -15,6 +15,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [labels.md](labels.md) | `LABEL` | 9 | the lattice, taint, who may read what, and how a first label is assigned |
 | [routing.md](routing.md) | `ROUTE` | 7 | where an effect may land and what may decide it |
 | [trust-map.md](trust-map.md) | `TRUST` | 12 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
+| [permissions.md](permissions.md) | `PERM` | 12 | rules written in advance about what to ask about and what to refuse |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |
 | [turns.md](turns.md) | `TURN` | 2 | how long a turn may go on, and what happens when it does not stop |
 | [prompting.md](prompting.md) | `PROMPT` | 10 | every moment the system stops and puts something to a human, and what an answer grants |

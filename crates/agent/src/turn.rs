@@ -18,6 +18,7 @@ use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::capability::{Capability, CapabilitySet};
 use bravebot_core::event::Sink;
+use bravebot_core::permissions::Permissions;
 use bravebot_core::policy::{Policy, ReleasePlan, Routing};
 use bravebot_core::programs::TrustedPrograms;
 use bravebot_core::reference::Presentation;
@@ -405,6 +406,12 @@ pub struct Task {
     /// fine. So the interface passes `None`, and an unattended run passes
     /// [`MAX_TOOL_ROUNDS`], where nothing else can end a loop.
     pub rounds: Option<usize>,
+    /// Rules the user wrote in advance about which actions to ask them about.
+    ///
+    /// Supplied per turn for the reason `home` and `model` are: which file they came from is the
+    /// caller's business. Empty by default, which is a session that behaves as it did before a
+    /// settings file could say anything.
+    pub permissions: Permissions,
 }
 
 /// An image on its way into a prompt, before it has been encoded for the wire.
@@ -437,6 +444,7 @@ impl Task {
             // and a default cannot know whether anybody is, so the default is the one that is
             // wrong in the cheaper direction.
             rounds: Some(MAX_TOOL_ROUNDS),
+            permissions: Permissions::new(),
         }
     }
 
@@ -491,6 +499,12 @@ impl Task {
     /// [`Task::rounds`].
     pub fn with_rounds(mut self, rounds: Option<usize>) -> Self {
         self.rounds = rounds;
+        self
+    }
+
+    /// Apply the rules a person wrote in advance about what to ask them about.
+    pub fn with_permissions(mut self, permissions: Permissions) -> Self {
+        self.permissions = permissions;
         self
     }
 }
@@ -859,6 +873,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         .map_err(|d| TurnError::Precommit(d.to_string()))?
         .with_trust(trust)
         .with_programs(programs)
+        .with_permissions(task.permissions.clone())
         .resuming(conversation.context());
 
     // Found once per turn and reused for every round. Per turn rather than per session so a
