@@ -299,6 +299,7 @@ mod tests {
     /// than drawn in the same orange.
     #[test]
     fn the_shadow_is_not_drawn_in_the_letterforms_ink() {
+        let _held = theme::exclusive();
         let inks = inks(LOGO[2]);
         assert_eq!(inks[0], Some(brand_at(0)), "no letterform: {inks:?}");
         assert!(inks.contains(&Some(theme::muted())), "no shadow: {inks:?}");
@@ -307,6 +308,7 @@ mod tests {
     /// Only the half of the name that is a brand is drawn in the brand's colours.
     #[test]
     fn the_orange_stops_at_the_end_of_brave() {
+        let _held = theme::exclusive();
         let inks = inks(LOGO[1]);
         assert_eq!(inks[0], Some(brand_at(0)), "brave lost its ink");
         let muted = theme::muted();
