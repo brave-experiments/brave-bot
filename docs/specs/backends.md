@@ -4,6 +4,7 @@ title: Backends
 status: normative
 governs:
   - crates/agent/src/backend.rs
+  - crates/bedrock/src/credentials.rs
   - crates/tui/src/app.rs
   - crates/config/src/bedrock.rs
   - crates/config/src/settings.rs
@@ -157,6 +158,31 @@ another it will never call.
 `verified-by: bravebot_agent::backend::a_brave_model_never_needs_an_aws_sign_in`
 `verified-by: bravebot_agent::backend::without_bedrock_configured_nothing_needs_a_sign_in`
 `verified-by: bravebot_agent::backend::signing_in_for_a_model_no_aws_account_serves_does_nothing`
+
+<a id="BACKEND-10"></a>
+### BACKEND-10: asking whether a session is good costs nothing once it is known to be
+
+Establishing that a service has a usable session runs its tool once. Until the credential that
+answer came from is close enough to its own stated expiry to be no use to the request that follows,
+the same question is answered without running anything. A session that is not good is never reported
+as one, and an answer with no stated expiry is not kept.
+
+**Why.** The check happens before every turn, and the tool that answers it takes most of a second, so
+paid each time it is a pause between pressing Enter and seeing the line appear. The expiry is the
+credential's own word about how long the answer stays true, which is why it and not a fixed interval
+is what bounds this. Stopping short of it matters because the answer is used to decide whether to
+sign in before work that then has to be signed: taken at the last second, the request that follows
+carries a credential that has already expired.
+
+`verified-by: bravebot_bedrock::credentials::a_session_already_shown_to_be_good_is_not_asked_about_again`
+`verified-by: bravebot_bedrock::credentials::a_session_that_has_run_out_is_asked_about_again`
+`verified-by: bravebot_bedrock::credentials::a_session_about_to_run_out_is_treated_as_already_gone`
+`verified-by: bravebot_bedrock::credentials::one_profile_being_good_says_nothing_about_another`
+`verified-by: bravebot_bedrock::credentials::the_default_profile_is_remembered_like_any_other`
+`verified-by: bravebot_bedrock::credentials::a_session_with_no_stated_expiry_is_not_kept`
+`verified-by: bravebot_bedrock::credentials::an_expiry_is_converted_to_the_instant_it_names`
+`verified-by: bravebot_bedrock::credentials::the_expiry_the_cli_reports_is_read_from_the_process_format`
+`verified-by: bravebot_bedrock::credentials::an_expiry_that_is_not_the_expected_shape_is_not_guessed_at`
 
 ## Known costs
 

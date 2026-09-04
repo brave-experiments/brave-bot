@@ -41,6 +41,11 @@ pub struct Credentials {
     pub secret_access_key: Secret,
     /// Present for temporary credentials, which is what an SSO or assumed-role session gives.
     pub session_token: Option<Secret>,
+    /// Seconds since the epoch at which these stop working, where the CLI said.
+    ///
+    /// Absent for a long-lived access key, which does not expire, and absent when the field is
+    /// there but unreadable: both mean "nothing here says when to ask again".
+    pub expires_at: Option<u64>,
 }
 
 /// Redacting rather than derived: two of these three fields are live credentials, and printing a
@@ -112,8 +117,80 @@ pub fn resolve(profile: Option<&str>) -> Result<Credentials, CredentialError> {
 /// help", because the alternative is inspecting the CLI's wording to tell an expired session from a
 /// misconfigured profile, and being wrong that way costs a sign-in that explains itself while being
 /// wrong the other way leaves somebody staring at a stalled turn.
+///
+/// Answered from the last successful export while that credential is still good for long enough to
+/// sign what follows, because the CLI takes most of a second to run and a caller asks this before
+/// every turn: paid on each one it is a visible pause between pressing Enter and seeing the line
+/// land. Only a good answer is kept, so a session needing a sign-in is never told it has one.
 pub fn is_signed_in(profile: Option<&str>) -> bool {
-    export(profile).is_ok()
+    if known_good().holds(profile, now()) {
+        return true;
+    }
+    match export(profile) {
+        Ok(credentials) => {
+            known_good().keep(profile, credentials.expires_at);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The sessions an export has already shown to be good, and until when.
+///
+/// Per profile, because a session is signed in to one and not another, and a single slot would have
+/// one profile's answer stand for the next one asked about.
+#[derive(Default)]
+struct KnownGood(std::sync::Mutex<std::collections::HashMap<Option<String>, u64>>);
+
+impl KnownGood {
+    /// Whether this profile was shown to be good and has not run out.
+    ///
+    /// A poisoned lock reads as "nothing is known", which costs a CLI run rather than trusting a
+    /// map another thread was part way through.
+    fn holds(&self, profile: Option<&str>, now: u64) -> bool {
+        let Ok(known) = self.0.lock() else {
+            return false;
+        };
+        known
+            .get(&profile.map(str::to_string))
+            .is_some_and(|&until| now < until)
+    }
+
+    /// Keep a good export, so the next caller need not run the CLI to hear the same thing.
+    ///
+    /// An export that did not say when it expires is not kept at all, and is re-asked every time.
+    /// That is the long-lived-key case, where the CLI answers from a file rather than a network, so
+    /// it is the cheap one, and a lifetime invented for it would be a guess with nothing behind it.
+    fn keep(&self, profile: Option<&str>, expires_at: Option<u64>) {
+        let Some(expires_at) = expires_at else { return };
+        if let Ok(mut known) = self.0.lock() {
+            // Held back from the stated expiry, because this decides whether to sign in before a
+            // turn that then has to run: told yes in the credential's last second, the request that
+            // follows is signed with one that has expired by the time it arrives.
+            known.insert(
+                profile.map(str::to_string),
+                expires_at.saturating_sub(MARGIN),
+            );
+        }
+    }
+}
+
+/// How long before a stated expiry a credential stops counting as usable.
+///
+/// Long enough for the turn that follows the check to be signed and sent.
+const MARGIN: u64 = 300;
+
+fn known_good() -> &'static KnownGood {
+    static KNOWN: std::sync::OnceLock<KnownGood> = std::sync::OnceLock::new();
+    KNOWN.get_or_init(KnownGood::default)
+}
+
+/// Seconds since the Unix epoch.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
 }
 
 /// Sign in for a profile, if that is what is missing, reporting what the sign-in says.
@@ -292,7 +369,61 @@ pub fn decode(bytes: &[u8]) -> Result<Credentials, CredentialError> {
         access_key_id,
         secret_access_key: Secret::new(secret_access_key),
         session_token: field("SessionToken").map(Secret::new),
+        expires_at: field("Expiration").as_deref().and_then(expiry_seconds),
     })
+}
+
+/// The epoch seconds in an `Expiration`, or `None` if it is not the shape this reads.
+///
+/// The CLI emits RFC 3339 in UTC, and only the fixed-width prefix through the seconds is read:
+/// `YYYY-MM-DDTHH:MM:SS`. Anything after it is a zone suffix or a fraction, and neither changes
+/// which second this is to a useful precision. Parsed by hand for the reason the signing timestamp
+/// is formatted by hand, and an unparsable value is not an error anywhere: it means a caller
+/// re-asks the CLI rather than trusting a date it could not read.
+fn expiry_seconds(text: &str) -> Option<u64> {
+    let digits = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+
+    // Rejected rather than skipped over: a value whose separators are somewhere else is not the
+    // format this claims to read, and guessing at it would produce a confidently wrong date.
+    if [4, 7]
+        .iter()
+        .any(|&at| text.as_bytes().get(at) != Some(&b'-'))
+        || text.as_bytes().get(10) != Some(&b'T')
+        || [13, 16]
+            .iter()
+            .any(|&at| text.as_bytes().get(at) != Some(&b':'))
+    {
+        return None;
+    }
+
+    let (year, month, day) = (digits(0..4)?, digits(5..7)?, digits(8..10)?);
+    let (hour, minute, second) = (digits(11..13)?, digits(14..16)?, digits(17..19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day);
+    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).ok()
+}
+
+/// Days since 1970-01-01 for a civil date.
+///
+/// Howard Hinnant's `days_from_civil`, the inverse of the conversion the signing crate uses to
+/// format a timestamp: the epoch shifts to 0000-03-01 so leap days fall at the end of the year and
+/// the arithmetic needs no table.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 /// The first line of a program's stderr, bounded.
@@ -334,6 +465,121 @@ mod tests {
         let credentials =
             decode(br#"{"AccessKeyId":"AKIA","SecretAccessKey":"secret"}"#).expect("decoded");
         assert!(credentials.session_token.is_none());
+    }
+
+    /// The expiry is what lets a caller answer "is this still good" without running the CLI again,
+    /// so it has to survive the decode rather than being dropped with the rest of the envelope.
+    #[test]
+    fn the_expiry_the_cli_reports_is_read_from_the_process_format() {
+        let credentials = decode(
+            br#"{"AccessKeyId":"AKIA","SecretAccessKey":"secret","Expiration":"2026-09-05T03:04:02+00:00"}"#,
+        )
+        .expect("decoded");
+        assert_eq!(credentials.expires_at, Some(1_788_577_442));
+    }
+
+    /// A credential with no stated expiry is the long-lived case, and saying so is not the same as
+    /// saying it expired at the epoch: a caller reads `None` as "nothing here says when to re-ask".
+    #[test]
+    fn credentials_with_no_stated_expiry_report_none() {
+        let credentials =
+            decode(br#"{"AccessKeyId":"AKIA","SecretAccessKey":"secret"}"#).expect("decoded");
+        assert!(credentials.expires_at.is_none());
+    }
+
+    /// Checked against the dates the arithmetic gets wrong: the epoch itself, a leap day in a century
+    /// year that is one, a leap day in an ordinary leap year, a year end, and the day after February
+    /// in a century year that is not a leap year. A conversion error here hands back a credential
+    /// after it stopped working, or re-runs the CLI every turn, and neither surfaces near this code.
+    #[test]
+    fn an_expiry_is_converted_to_the_instant_it_names() {
+        for (text, seconds) in [
+            ("1970-01-01T00:00:00Z", 0),
+            ("2000-02-29T12:00:00Z", 951_825_600),
+            ("2024-02-29T00:00:00Z", 1_709_164_800),
+            ("2026-09-05T03:04:02+00:00", 1_788_577_442),
+            ("2026-12-31T23:59:59Z", 1_798_761_599),
+            ("2100-03-01T23:59:59Z", 4_107_628_799),
+        ] {
+            assert_eq!(expiry_seconds(text), Some(seconds), "{text}");
+        }
+    }
+
+    /// The point of keeping the answer: a caller asking before every turn pays for the CLI once,
+    /// rather than waiting most of a second between pressing Enter and seeing the line land.
+    #[test]
+    fn a_session_already_shown_to_be_good_is_not_asked_about_again() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), Some(10_000));
+        assert!(known.holds(Some("work"), 5_000));
+    }
+
+    /// The whole risk of keeping it. A session that has run out must send the next caller back to the
+    /// CLI, or a turn is signed with a credential that expired and fails at the far end.
+    #[test]
+    fn a_session_that_has_run_out_is_asked_about_again() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), Some(10_000));
+        assert!(!known.holds(Some("work"), 10_000));
+        assert!(!known.holds(Some("work"), 20_000));
+    }
+
+    /// Credentials handed over in their last moment are signed with after this returns, so the answer
+    /// has to stop being yes before the expiry rather than at it.
+    #[test]
+    fn a_session_about_to_run_out_is_treated_as_already_gone() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), Some(10_000));
+        assert!(!known.holds(Some("work"), 10_000 - MARGIN));
+        assert!(known.holds(Some("work"), 10_000 - MARGIN - 1));
+    }
+
+    /// One profile's session says nothing about another's. Answered from a single slot, signing in to
+    /// one account would report every other one as good and skip the sign-in they need.
+    #[test]
+    fn one_profile_being_good_says_nothing_about_another() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), Some(10_000));
+        assert!(!known.holds(Some("personal"), 5_000));
+        assert!(!known.holds(None, 5_000));
+    }
+
+    /// A default profile is a profile, and gets its own answer rather than sharing a named one's.
+    #[test]
+    fn the_default_profile_is_remembered_like_any_other() {
+        let known = KnownGood::default();
+        known.keep(None, Some(10_000));
+        assert!(known.holds(None, 5_000));
+        assert!(!known.holds(Some("work"), 5_000));
+    }
+
+    /// Nothing is kept for an export that did not say when it expires, so those callers re-ask. A
+    /// stand-in lifetime here would be a guess reported as the credential's own word.
+    #[test]
+    fn a_session_with_no_stated_expiry_is_not_kept() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), None);
+        assert!(!known.holds(Some("work"), 0));
+    }
+
+    /// An unreadable expiry must not become a confident date. Read as one, a garbled value either
+    /// pins a session as good long after it expired or forces the CLI on every turn.
+    #[test]
+    fn an_expiry_that_is_not_the_expected_shape_is_not_guessed_at() {
+        for text in [
+            "",
+            "not a date",
+            "2026-09-05",
+            "2026/09/05T03:04:02Z",
+            "2026-09-05 03:04:02Z",
+            "2026-13-05T03:04:02Z",
+            "2026-09-32T03:04:02Z",
+            "2026-09-05T24:04:02Z",
+            "2026-09-05T03:60:02Z",
+            "xxxx-09-05T03:04:02Z",
+        ] {
+            assert_eq!(expiry_seconds(text), None, "{text} was read as a date");
+        }
     }
 
     /// Signing with half a credential produces a signature that is rejected far from the cause, so
