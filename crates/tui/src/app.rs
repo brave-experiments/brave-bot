@@ -1416,7 +1416,7 @@ fn event_loop(
                 needs_draw = true;
             }
             Action::AddDirectory(directory) => {
-                add_directory(&mut session, &mut workspace, &mut trust, &directory);
+                add_directory(&mut session, &mut workspace, &directory);
             }
             Action::Rename(name) => {
                 if name.is_empty() {
@@ -1591,12 +1591,16 @@ fn event_loop(
 /// Session-scoped on purpose. `docs/specs/trust-map.md` is explicit that trust is not sticky per directory,
 /// so a later session starts without this and is asked again. It does survive `--resume`, since
 /// that restores the map its own user gave.
-fn add_directory(
-    session: &mut Session,
-    workspace: &mut Workspace,
-    trust: &mut TrustStore,
-    directory: &str,
-) {
+/// Open another directory to work in.
+///
+/// Reachability and nothing else. An absolute path outside the project is refused whatever any
+/// rule says, so opening one is what makes it addressable at all, and that is the whole of the
+/// grant: the files in it are content nobody has vouched for, exactly like the files in the
+/// project, and a checker reads each one when a turn needs it.
+///
+/// It used to record the directory as trusted content as well, which vouched for every file in a
+/// tree the user had done no more than name.
+fn add_directory(session: &mut Session, workspace: &mut Workspace, directory: &str) {
     if directory.is_empty() {
         session.note(t!(session_add_dir_needs_a_path));
         return;
@@ -1609,7 +1613,6 @@ fn add_directory(
     match workspace.add_directory(&expanded) {
         Ok(added) => {
             let shown = added.display().to_string();
-            trust.trust(&shown);
             session.note(t!(session_directory_added, directory = shown));
         }
         Err(error) => session.note(t!(

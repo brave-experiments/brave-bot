@@ -215,18 +215,25 @@ so an attacker who owns a file gets to try. What that buys them is in
 `verified-by: bravebot_agent::turn::vetting_can_be_turned_off_and_then_nothing_is_offered_to_a_checker`
 
 <a id="TRUST-9"></a>
-### TRUST-9: `/add-dir` makes a directory both reachable and trusted, for the session
+### TRUST-9: `/add-dir` makes a directory reachable, for the session
 
-`/add-dir ~/notes` records an absolute rule (TRUST-3) that does two things together: the directory
-becomes reachable, since an absolute path is otherwise refused whatever the map says, and it is
-recorded as trusted. It lasts the session, `--resume` carries both halves, and `/clear` closes it.
-A directory already inside the project is refused. A directory a resume cannot open again, because
-it has moved or gone, is said so rather than passed over.
+`/add-dir ~/notes` records the directory as somewhere paths may resolve to. An absolute path is
+otherwise refused whatever any rule says, so opening one is what makes it addressable at all, and
+that is the whole of the grant. It lasts the session, `--resume` reopens it, and `/clear` closes
+it. A directory already inside the project is refused. A directory a resume cannot open again,
+because it has moved or gone, is said so rather than passed over.
 
-**Why.** Either half alone is no use, one leaving a rule about files nothing can open and the other
-leaving a directory that prompts on every edit. It closes with the session for the reason every
-other answer here does (TRUST-6): leaving a tree reachable once nothing vouches for it would
-outlive the answer that allowed it.
+The files in it are content nobody has vouched for, exactly like the files in the project, and each
+is read the way any of those is.
+
+**Why it grants no content trust.** It used to grant both together, on the reasoning that a
+directory left reachable but not trusted would prompt on every edit. That reasoning is gone: an
+ordinary write is not shown any more, and what a file is worth is asked per file. What is left is
+the part a person actually did, which is name a place, and naming a place is not reading what is
+in it.
+
+**Why it closes with the session.** Leaving a tree reachable once the session that opened it is
+over would outlive the answer that allowed it.
 
 `verified-by: bravebot_agent::workspace::a_file_in_an_added_directory_is_readable_by_its_absolute_path`
 `verified-by: bravebot_agent::workspace::closing_added_directories_makes_them_unreachable_again`
@@ -234,8 +241,6 @@ outlive the answer that allowed it.
 `verified-by: bravebot_agent::turn::a_turn_can_read_a_file_in_an_added_directory`
 `verified-by: bravebot_tui::sessions::a_resumed_session_can_still_open_the_directory_it_added`
 `verified-by: bravebot_tui::sessions::a_directory_that_has_gone_since_is_reported_on_resume`
-
-## Boundaries
 
 <a id="TRUST-10"></a>
 ### TRUST-10: no rule extends reach; reading, writing and listing stay confined
