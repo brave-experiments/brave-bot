@@ -27,7 +27,7 @@ this spec.
 | `bravebot-cli` | Command-line entry point | `core`, `agent`, `config`, `i18n`, `net`, `sandbox`, `skus`, `tui` | Presentation. Where nobody can be asked, effects are refused rather than applied unseen |
 | `bravebot-mcp` | Model Context Protocol client: the extension boundary for tools | `core`, `net`, `sandbox` | An opaque call erases the routing/content split, so primitives stay native rather than moving behind it |
 | `bravebot-sandbox` | OS-level confinement for subprocesses | none | Confines processes running code we did not write. A processor's caller is our own code, so it is not what this confines |
-| `bravebot-config` | Environment-derived configuration for the backend | none | The user's own configuration surface, on the same footing as the endpoint and the model |
+| `bravebot-config` | Environment-derived configuration for the backend | none | The configuration surface, on the same footing as the endpoint and the model. Reads the settings layers, including one a checkout may carry, and hands on rule text without matching a rule. See [backends.md](backends.md) |
 | `bravebot-i18n` | Message catalogs for everything a person reads | none | Presentation text only. Holds nothing the planner is sent, and decides nothing: a message is named in the source, so no value can pick one. See [localization.md](localization.md) |
 | `bravebot-signing` | Brave services request signing, hs2019 HMAC-SHA256 over the body digest | none | Auth only. Carries no workspace content |
 | `bravebot-skus` | Imports a Leo Premium subscription by registering as a new device | none | Auth only. Carries no workspace content and no model output. See [premium-credentials.md](premium-credentials.md) |

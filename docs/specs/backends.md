@@ -31,18 +31,22 @@ arrives is [labels.md](labels.md).
 
 What a person's settings may say is which region, which credential profile, which host, which model
 each tier names, which model to request when nobody has chosen one, and what to add to a request sent
-to that host. Nothing in that file grants a capability, vouches for a path, or decides whether an
-effect is allowed. It names no command to run.
+to that host. Nothing in a settings file grants a capability or vouches for a path. None of them names
+a command to run.
 
 The block does not become the process environment either. A value is consulted where a variable
 would be, and reaches a subprocess only where that subprocess is the thing it configures.
 
-**Why.** The file is read before anything runs and is the easiest thing on the machine to write to,
-so a permission that could be granted from it would be a permission granted by whatever last edited
-it. Installing the names globally would put every one of them in front of every command the agent
-ever starts, which is a far larger claim than "this is how I reach the backend". A command named in
-the file would be the largest claim of all, since running it is an effect nobody approved: that is
-why a gateway block names a variable holding a credential rather than a way to produce one.
+**Why.** These files are read before anything runs and are the easiest thing on the machine to write
+to, so a capability that could be granted from one would be a capability granted by whatever last
+edited it. That holds hardest for the layers a checkout carries, which arrive with the checkout.
+Installing the names globally would put every one of them in front of every command the agent ever
+starts, which is a far larger claim than "this is how I reach the backend". A command named in a file
+would be the largest claim of all, since running it is an effect nobody approved: that is why a
+gateway block names a variable holding a credential rather than a way to produce one.
+
+**Note.** A `permissions` block is not an exception. Its rules only ever narrow what would otherwise
+be allowed, and nothing in one grants an effect that was refused without it.
 
 `verified-by: by-construction (values are consulted by name and never exported; the only value handed to a subprocess is the AWS profile, passed as an argument to the tool that owns it; no field is read as a path to execute, and a gateway's pass-through options reach a request body and nothing else)`
 
@@ -584,7 +588,73 @@ nothing or somebody told their configuration is broken when their session merely
 `verified-by: bravebot_bedrock::credentials::a_machine_with_no_profiles_at_all_says_so`
 
 
+<a id="BACKEND-24"></a>
+### BACKEND-24: three settings layers resolve a name at a time, closest first
+
+Settings are read from three files: `settings.json` in the user's own directory, then
+`settings.json` in a `.bravebot` directory beside the work, then `settings.local.json` beside that
+one. A later file overrides an earlier one per name rather than wholesale, so a file setting one thing
+leaves everything else in force.
+
+| What | How layers combine |
+|---|---|
+| `env`, `provider` | per name, one level down; the value under a name is replaced whole |
+| `run.scrubEnv`, every list under `permissions` | every layer's entries are kept |
+| `model`, anything else | the closest layer that set it wins |
+
+The project layers are read from the directory the process started in and no ancestor of it. Each
+layer fails independently: one that is missing, oversized, or unparseable leaves the others in force.
+
+**Why.** An account is not the only scope a value belongs to. A credential profile is a property of
+the person, the gateway a particular checkout talks to is a property of that checkout, and something
+one machine needs is neither, so a single file makes one of those three overwrite the others.
+Overriding per name is what makes putting one value in a checkout worth doing, since the alternative
+is restating an entire configuration to change a host. Going deeper than a name would make one
+request's destination the product of two files with no single place to read that says where it goes,
+which is why a gateway entry is replaced whole and a project file naming one must name its host too.
+
+The lists are the exception because an entry in one only ever narrows what is possible: a name under
+`scrubEnv` takes a variable away from a subprocess, and a rule under `permissions` refuses something
+that was otherwise allowed. Overriding either would let a layer hand back what a weaker one withheld,
+and a permission removed by a file somebody did not open is the one outcome worth ruling out. A model
+is one choice rather than a list, so it resolves like any other single value.
+
+Searching upward for the project layer is what this declines to do, because then what configures a
+session would depend on which directory somebody happened to change into, and the file found could sit
+above the thing being worked on. Refusing the whole stack over one bad layer is the other thing it
+declines: a mistake in a checkout must not decide that somebody's own profile no longer applies.
+
+The order and the merge rules are Claude Code's, down to the name `settings.local.json`, so that
+knowing where to put a value for one tool is knowing it for the other.
+
+`verified-by: bravebot_config::settings::a_project_layer_overrides_a_name_the_global_one_set`
+`verified-by: bravebot_config::settings::a_name_only_the_global_layer_set_survives_a_project_layer`
+`verified-by: bravebot_config::settings::the_local_layer_beats_the_one_a_checkout_carries`
+`verified-by: bravebot_config::settings::every_layer_adds_to_the_names_kept_from_a_program`
+`verified-by: bravebot_config::settings::every_layer_adds_to_the_permission_rules`
+`verified-by: bravebot_config::settings::every_layer_adds_to_the_directories_a_file_makes_reachable`
+`verified-by: bravebot_config::settings::the_closest_layer_that_named_a_model_wins`
+`verified-by: bravebot_config::settings::a_layer_naming_no_model_leaves_the_one_below_it`
+`verified-by: bravebot_config::settings::a_project_layer_replaces_one_gateway_and_leaves_the_others`
+`verified-by: bravebot_config::settings::a_project_gateway_naming_no_host_replaces_one_that_did`
+`verified-by: bravebot_config::settings::an_unparseable_project_layer_leaves_the_global_one_in_force`
+`verified-by: bravebot_config::settings::an_oversized_project_layer_leaves_the_global_one_in_force`
+`verified-by: bravebot_config::settings::a_directory_with_no_project_layer_reads_the_global_one_alone`
+`verified-by: bravebot_config::settings::the_layers_that_were_read_are_reported_weakest_first`
+`verified-by: bravebot_config::settings::a_name_more_than_one_layer_set_reports_the_file_that_won`
+`verified-by: bravebot_config::settings::an_override_reports_the_name_and_the_file_and_never_the_value`
+`verified-by: bravebot_config::lib::the_environment_outranks_the_settings_file`
+
 ## Known costs
+
+- **A layer a checkout carries is trusted as far as the person's own file is.** A `.bravebot`
+  directory arrives with whatever produced the checkout, so a `settings.json` in one can name the host
+  every request goes to and the credential that signs it, and somebody who has not read it would not
+  know. Nothing here distinguishes the layers, because the resolution being copied does not, and what
+  limits the damage is the same rule that limits it anywhere: a file names a destination and grants no
+  capability, so the worst it does is send a request somewhere useless or somewhere watching. Refusing
+  the fields that name a destination in the project layers is the fix if that trade stops being worth
+  it, and it would cost the main reason to put a value in a checkout at all.
 
 - **The aichat endpoint Brave runs discards the effort level.** Measured against that endpoint: a
   nonsense value in `reasoning_effort` is answered `200` with usage identical to a request that omits
