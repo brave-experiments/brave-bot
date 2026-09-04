@@ -4,6 +4,7 @@ title: run
 status: normative
 governs:
   - crates/agent/src/exec.rs
+  - crates/agent/src/scrub.rs
   - crates/core/src/command.rs
   - crates/core/src/programs.rs
   - crates/core/src/policy.rs
@@ -205,6 +206,47 @@ RUN-4's to decide.
 `verified-by: bravebot_agent::exec::a_pipeline_stopped_at_the_limit_still_returns_what_it_printed`
 `verified-by: bravebot_agent::exec::a_pipeline_that_ends_by_itself_is_not_marked_stopped`
 `verified-by: bravebot_agent::exec::a_grandchild_holding_the_pipe_does_not_hang_the_run`
+
+<a id="RUN-12"></a>
+### RUN-12: a program is not handed this agent's own credentials
+
+The environment a stage receives is the one this process holds, less the credentials this agent
+authenticates to its backend with. Every stage, not only the first. Removed rather than emptied, so a
+program that distinguishes an unset variable from a blank one sees what a machine that never held the
+credential sees.
+
+**Why.** A person approving a run reads the argv, the resolved binary and the directory. The
+environment is not among those, so a credential travelling alongside them is granted without having
+been seen, and "run `git log`" is approved as an inspection of the repository. A subprocess has no
+use for these: a program the planner chose is doing what somebody approved, not authenticating as
+this agent.
+
+**The rest of the environment stays, and that is not an oversight.** `run aws s3 ls` and `run gh pr
+list` are ordinary requests, and no rule matching variable names can tell one of those from an
+exfiltration. Withholding by guesswork would trade a claim that holds exactly for one that mostly
+holds. What a person is told is the truth about the remainder: a run has the access their own shell
+has, which is what the prompt says every time. A person who wants a name of their own withheld may
+list it, and a list of names can only ever take something away. That list is read once when the
+process starts, so editing it applies to the next session rather than to a run already in flight.
+
+**Not a confinement mechanism, and it must not be read as one.** A program that reaches the network
+is unconfined and unpoliced, so it can send anything it can read: a file, the workspace, a credential
+of the user's own. What closes here is the narrow part of the gap, the credentials a person could
+not have been shown at the prompt and had no way to withhold. The rest of what they hand over is
+still handed over. Nothing is established about what the program then does, and the label on the
+output is unaffected.
+
+A line a person typed themselves is not this, and keeps the whole environment: it is meant to behave
+as their own terminal does, and nothing else about it is gated either.
+
+`verified-by: bravebot_agent::exec::this_agents_own_credentials_do_not_reach_a_program_it_runs`
+`verified-by: bravebot_agent::exec::no_stage_of_a_pipeline_sees_this_agents_credentials`
+`verified-by: bravebot_agent::exec::the_users_own_environment_still_reaches_a_program`
+`verified-by: bravebot_agent::exec::the_plumbing_a_program_needs_is_still_inherited`
+`verified-by: bravebot_agent::exec::the_filtering_can_be_switched_off_by_its_documented_spelling_only`
+`verified-by: bravebot_agent::scrub::this_agents_credentials_are_withheld_without_being_configured`
+`verified-by: bravebot_agent::scrub::nothing_of_the_users_own_is_withheld_by_guesswork`
+`verified-by: bravebot_agent::scrub::a_name_from_the_settings_file_is_withheld_as_well`
 
 ## Open questions
 

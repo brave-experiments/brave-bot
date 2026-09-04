@@ -43,6 +43,7 @@ const MAX_BYTES: u64 = 64 * 1024;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     env: BTreeMap<String, String>,
+    scrub: Vec<String>,
 }
 
 impl Settings {
@@ -67,26 +68,32 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Read an `env` block out of settings JSON.
+    /// Read the `env` block and the scrub list out of settings JSON.
     ///
     /// Only string values are taken. JSON allows a number or a boolean where a variable wants a
     /// string, and coercing one would invent a spelling the writer did not choose: `1` and `true`
     /// are not obviously `"1"` and `"true"` to whoever has to debug it later.
+    ///
+    /// The two blocks are independent: a file naming variables to keep from a subprocess is read
+    /// whether or not it also configures a backend.
     pub fn parse(text: &str) -> Self {
         let Ok(serde_json::Value::Object(root)) = serde_json::from_str(text) else {
             return Self::default();
         };
-        let Some(serde_json::Value::Object(block)) = root.get("env") else {
-            return Self::default();
+        let env = match root.get("env") {
+            Some(serde_json::Value::Object(block)) => block
+                .iter()
+                .filter_map(|(name, value)| match value {
+                    serde_json::Value::String(value) => Some((name.clone(), value.clone())),
+                    _ => None,
+                })
+                .collect(),
+            _ => BTreeMap::new(),
         };
-        let env = block
-            .iter()
-            .filter_map(|(name, value)| match value {
-                serde_json::Value::String(value) => Some((name.clone(), value.clone())),
-                _ => None,
-            })
-            .collect();
-        Self { env }
+        Self {
+            env,
+            scrub: scrub_list(&root),
+        }
     }
 
     /// What this file says a variable is, if it says anything.
@@ -96,7 +103,16 @@ impl Settings {
 
     /// Whether the file set anything at all.
     pub fn is_empty(&self) -> bool {
-        self.env.is_empty()
+        self.env.is_empty() && self.scrub.is_empty()
+    }
+
+    /// Variables this file says to keep from a program the agent runs, beyond the built-in set.
+    ///
+    /// Names only, which is the whole reason this may live in a file at all: naming a variable
+    /// takes something away from a subprocess and can grant nothing. A value here could put a
+    /// credential in front of every command instead, which is what the `env` block declines to do.
+    pub fn scrubbed(&self) -> impl Iterator<Item = &str> {
+        self.scrub.iter().map(String::as_str)
     }
 
     /// Every name the file set, for `doctor` to report.
@@ -106,6 +122,27 @@ impl Settings {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.env.keys().map(String::as_str)
     }
+}
+
+/// The `run.scrubEnv` array: names a file says to keep from a program the agent runs.
+///
+/// Strings only, and empty where the block is absent or shaped differently. A malformed entry is
+/// dropped rather than refused, on the same footing as everything else here: a half-typed file must
+/// not stop a session, and the built-in set still holds whatever this says.
+fn scrub_list(root: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let Some(serde_json::Value::Object(run)) = root.get("run") else {
+        return Vec::new();
+    };
+    let Some(serde_json::Value::Array(names)) = run.get("scrubEnv") else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .filter_map(|name| match name {
+            serde_json::Value::String(name) if !name.trim().is_empty() => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The global state directory, or `None` when there is no home to look in.
@@ -196,6 +233,54 @@ mod tests {
     fn a_missing_file_is_not_an_error() {
         let missing = std::env::temp_dir().join("bravebot-settings-absent");
         assert!(Settings::from_home(Some(missing)).is_empty());
+    }
+
+    /// The escape hatch for a setup that needs a variable the built-in set removes: a person names
+    /// their own, and those are kept from a program the agent runs too.
+    #[test]
+    fn a_file_may_name_variables_to_keep_from_a_program() {
+        let settings = Settings::parse(r#"{"run": {"scrubEnv": ["MY_TOKEN", "OTHER_SECRET"]}}"#);
+        let named: Vec<&str> = settings.scrubbed().collect();
+        assert_eq!(named, ["MY_TOKEN", "OTHER_SECRET"]);
+    }
+
+    /// The two blocks are independent. A file that only says what to withhold from a subprocess
+    /// configures no backend, and reading it must not depend on an `env` block being present.
+    #[test]
+    fn a_scrub_list_is_read_without_an_env_block() {
+        let settings = Settings::parse(r#"{"run": {"scrubEnv": ["MY_TOKEN"]}}"#);
+        assert_eq!(settings.get("AWS_REGION"), None);
+        assert_eq!(settings.scrubbed().collect::<Vec<_>>(), ["MY_TOKEN"]);
+        assert!(!settings.is_empty());
+    }
+
+    /// A name is a string, and an entry that is not one is dropped rather than refusing the file:
+    /// the built-in set still holds whatever else the block says.
+    #[test]
+    fn a_scrub_entry_that_is_not_a_name_is_left_out() {
+        let settings =
+            Settings::parse(r#"{"run": {"scrubEnv": ["KEEP", 1, true, null, "", "  ", "ALSO"]}}"#);
+        assert_eq!(settings.scrubbed().collect::<Vec<_>>(), ["KEEP", "ALSO"]);
+    }
+
+    /// Every shape that is not a list of names reads as an empty list, on the same footing as the
+    /// rest of this file: a half-typed settings file must not stop a session.
+    #[test]
+    fn a_malformed_scrub_block_names_nothing() {
+        for text in [
+            r#"{"run": {}}"#,
+            r#"{"run": {"scrubEnv": {}}}"#,
+            r#"{"run": {"scrubEnv": "MY_TOKEN"}}"#,
+            r#"{"run": "not a block"}"#,
+            r#"{"run": []}"#,
+            r#"{"scrubEnv": ["MY_TOKEN"]}"#,
+        ] {
+            assert_eq!(
+                Settings::parse(text).scrubbed().count(),
+                0,
+                "{text:?} named something"
+            );
+        }
     }
 
     /// `doctor` reports which names a file set. It must not report what they were: on some

@@ -36,6 +36,17 @@
 //! The first stage is given an empty stdin rather than the terminal's. A program that reads stdin
 //! would otherwise block forever on input nobody is typing, and the turn would hang with no
 //! indication of why.
+//!
+//! # This agent's own credentials are not handed on
+//!
+//! The environment is inherited, less the names in [`scrub`]. A person approving a run reads the
+//! binary, the argv and the directory, so a credential travelling alongside those is something they
+//! were never shown and could not have endorsed. The signing key has no use in a subprocess anyway:
+//! a program the planner chose is doing what somebody approved, not authenticating as this agent.
+//!
+//! The rest of the environment stays. `run aws s3 ls` and `run gh pr list` are things people ask
+//! for, and a filter matching names cannot tell one of those from an exfiltration, so it is not
+//! attempted: what holds is narrow and exact rather than broad and approximate.
 
 use bravebot_core::Pipeline;
 use bravebot_core::cancel::Cancel;
@@ -209,6 +220,10 @@ pub fn run_within(
             .stdin(std::mem::replace(&mut upstream, Stdio::null()))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Every stage, not only the first. A credential is as reachable from the middle of a
+        // pipeline as from the front, and one stage spared would be the whole of the hole.
+        crate::scrub::apply(&mut command);
 
         let mut child = match command.spawn() {
             Ok(child) => child,

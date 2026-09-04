@@ -77,3 +77,24 @@ pub const REQUIRED: [&str; 3] = [SIGNING_KEY, KEY_ID, ENDPOINT];
 /// Set to `1` to build without configuration, producing a binary that must be given
 /// the variables at run time.
 pub const ALLOW_UNCONFIGURED_BUILD: &str = "BRAVEBOT_ALLOW_UNCONFIGURED_BUILD";
+
+/// Set to `0` to let a subprocess inherit this process's credentials after all.
+///
+/// The escape hatch for a setup that turns out to need one of the names in [`SCRUBBED`], and the
+/// only way to switch the filtering off. Deliberately not a settings-file key: a file is the
+/// easiest thing on the machine to write to, and the one control that restores a credential to
+/// every command the agent starts should not be settable by whatever last edited one.
+pub const SUBPROCESS_ENV_SCRUB: &str = "BRAVEBOT_SUBPROCESS_ENV_SCRUB";
+
+/// The credentials this agent holds, which are removed from the environment of a program it runs.
+///
+/// The signing key and the key id, and nothing else. These name a secret that reaches Brave's
+/// backend and no subprocess has any use for one: a program the planner chose is doing whatever the
+/// person approved, never authenticating as this agent. Everything else is left alone, including
+/// the endpoints and the model names, which are hosts and identifiers rather than secrets.
+///
+/// **Not a list of every credential on the machine.** `AWS_PROFILE`, `GITHUB_TOKEN` and the rest of
+/// the user's own environment stay, because `run aws s3 ls` and `run gh pr list` are things people
+/// ask for and a name-matching filter cannot tell one of those from an exfiltration. What holds
+/// here is narrow and exact: this agent's own secrets are not handed to programs it starts.
+pub const SCRUBBED: [&str; 2] = [SIGNING_KEY, KEY_ID];

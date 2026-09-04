@@ -19,6 +19,7 @@ pub mod processor;
 pub mod programs;
 pub mod replace;
 pub mod report;
+pub mod scrub;
 pub mod shell;
 pub mod skills;
 pub mod subscription;

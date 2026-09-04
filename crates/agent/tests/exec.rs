@@ -29,6 +29,48 @@ impl Drop for Scratch {
     }
 }
 
+/// Serialises the tests that set variables, and restores what was there.
+///
+/// The environment belongs to the process, so two of these running at once would each see the
+/// other's values and both would be testing something nobody wrote. The lock is held by the guard,
+/// which is why every caller binds it: `let _ = with_env(..)` drops it immediately and takes the
+/// variables with it.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvGuard {
+    restore: Vec<(String, Option<std::ffi::OsString>)>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (name, previous) in &self.restore {
+            // SAFETY: single-threaded within the lock this guard holds.
+            match previous {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+    }
+}
+
+fn with_env(vars: &[(&str, Option<&str>)]) -> EnvGuard {
+    let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut restore = Vec::new();
+    for (name, value) in vars {
+        restore.push(((*name).to_string(), std::env::var_os(name)));
+        // SAFETY: single-threaded within the lock, and restored when the guard drops.
+        match value {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
+    EnvGuard {
+        restore,
+        _lock: lock,
+    }
+}
+
 /// Resolve every stage the way the tool does, then run it.
 fn run(pipeline: Pipeline, at: &std::path::Path) -> Result<exec::Ran, ExecError> {
     let resolved = resolve_all(&pipeline, at)?;
@@ -211,6 +253,153 @@ fn a_stage_that_reads_stdin_is_given_nothing_rather_than_the_terminal() {
     .expect("cat runs and ends");
     assert_eq!(ran.stdout, "", "something was fed in that nobody approved");
     assert!(ran.succeeded());
+}
+
+/// The weakness this closes: a person approving a run reads the binary, the argv and the
+/// directory, so a credential travelling in the environment is granted without having been seen.
+/// The signing key has no use in a subprocess, which is doing what somebody approved rather than
+/// authenticating as this agent.
+#[cfg(unix)]
+#[test]
+fn this_agents_own_credentials_do_not_reach_a_program_it_runs() {
+    let scratch = Scratch::new("scrub");
+    let _guard = with_env(&[
+        ("SERVICES_KEY_AICHAT", Some("a-live-signing-key")),
+        ("BRAVE_SERVICES_KEY_ID", Some("a-live-key-id")),
+    ]);
+
+    // `env` rather than a shell expansion: the point is what the process was handed, and a stage
+    // that expanded a variable itself would be testing this crate's argv handling instead.
+    let ran = run(
+        Pipeline::new(vec![Stage::new("env", Vec::new())]),
+        &scratch.path,
+    )
+    .expect("env runs");
+
+    assert!(ran.succeeded());
+    assert!(
+        !ran.stdout.contains("a-live-signing-key"),
+        "the signing key reached a program the planner chose"
+    );
+    assert!(
+        !ran.stdout.contains("a-live-key-id"),
+        "the key id reached a program the planner chose"
+    );
+}
+
+/// Every stage, not only the first. A credential is as reachable from the middle of a pipeline as
+/// from the front, so one stage spared would be the whole of the hole.
+#[cfg(unix)]
+#[test]
+fn no_stage_of_a_pipeline_sees_this_agents_credentials() {
+    let scratch = Scratch::new("scrub-stages");
+    let _guard = with_env(&[("SERVICES_KEY_AICHAT", Some("a-live-signing-key"))]);
+
+    // The first stage prints nothing of interest; the second is the one being asked. `env` in a
+    // later position is the case a middle stage represents.
+    let ran = run(
+        Pipeline::new(vec![
+            Stage::new("true", Vec::new()),
+            Stage::new("env", Vec::new()),
+        ]),
+        &scratch.path,
+    )
+    .expect("the pipeline runs");
+
+    assert!(
+        !ran.stdout.contains("a-live-signing-key"),
+        "a later stage was handed the signing key"
+    );
+}
+
+/// The user's own environment is left alone. `run aws s3 ls` and `run gh pr list` are ordinary
+/// requests, and a filter matching names cannot tell one of those from an exfiltration, so what
+/// holds here is narrow and exact rather than broad and approximate.
+#[cfg(unix)]
+#[test]
+fn the_users_own_environment_still_reaches_a_program() {
+    let scratch = Scratch::new("scrub-keeps");
+    let _guard = with_env(&[
+        ("AWS_PROFILE", Some("some-profile")),
+        ("GITHUB_TOKEN", Some("a-github-token")),
+    ]);
+
+    let ran = run(
+        Pipeline::new(vec![Stage::new("env", Vec::new())]),
+        &scratch.path,
+    )
+    .expect("env runs");
+
+    assert!(
+        ran.stdout.contains("some-profile"),
+        "AWS_PROFILE was withheld, so `run aws s3 ls` would stop working"
+    );
+    assert!(
+        ran.stdout.contains("a-github-token"),
+        "GITHUB_TOKEN was withheld, so `run gh pr list` would stop working"
+    );
+}
+
+/// A program still needs the plumbing its caller had. Clearing the environment and allowing a set
+/// back in would break the promise `run` makes about `git push`, which needs `HOME` to find
+/// `~/.ssh`, so the environment is inherited less the credentials rather than rebuilt.
+#[cfg(unix)]
+#[test]
+fn the_plumbing_a_program_needs_is_still_inherited() {
+    let scratch = Scratch::new("scrub-plumbing");
+    let ran = run(
+        Pipeline::new(vec![Stage::new("env", Vec::new())]),
+        &scratch.path,
+    )
+    .expect("env runs");
+
+    for name in ["PATH=", "HOME="] {
+        assert!(
+            ran.stdout.contains(name),
+            "{name} was withheld, so a program that needs it would fail"
+        );
+    }
+}
+
+/// The escape hatch, for a setup that turns out to need one of the names. Only the documented
+/// spelling works: a credential reaching every subprocess is not a thing to switch off by a
+/// near-miss like `false` or `off`.
+#[cfg(unix)]
+#[test]
+fn the_filtering_can_be_switched_off_by_its_documented_spelling_only() {
+    let scratch = Scratch::new("scrub-off");
+
+    {
+        let _guard = with_env(&[
+            ("SERVICES_KEY_AICHAT", Some("a-live-signing-key")),
+            ("BRAVEBOT_SUBPROCESS_ENV_SCRUB", Some("0")),
+        ]);
+        let ran = run(
+            Pipeline::new(vec![Stage::new("env", Vec::new())]),
+            &scratch.path,
+        )
+        .expect("env runs");
+        assert!(
+            ran.stdout.contains("a-live-signing-key"),
+            "`0` did not restore inheritance, so the escape hatch does not work"
+        );
+    }
+
+    for spelling in ["false", "off", "no", ""] {
+        let _guard = with_env(&[
+            ("SERVICES_KEY_AICHAT", Some("a-live-signing-key")),
+            ("BRAVEBOT_SUBPROCESS_ENV_SCRUB", Some(spelling)),
+        ]);
+        let ran = run(
+            Pipeline::new(vec![Stage::new("env", Vec::new())]),
+            &scratch.path,
+        )
+        .expect("env runs");
+        assert!(
+            !ran.stdout.contains("a-live-signing-key"),
+            "{spelling:?} switched the filtering off, and only `0` may"
+        );
+    }
 }
 
 /// A user who changes their mind does not wait out a slow program, and the program does not
