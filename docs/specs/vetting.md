@@ -112,7 +112,7 @@ first.
 overwrite the first is the laundering the whole system is built to refuse, and it would be
 laundering by a model reading attacker-controlled text.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::a_clean_verdict_leaves_the_content_exactly_as_unreadable`
 
 ## Known costs
 

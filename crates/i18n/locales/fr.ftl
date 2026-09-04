@@ -519,6 +519,7 @@ verb-write-file = Écrire
 verb-edit-file = Modifier
 verb-todo-write = Planifier
 verb-spawn-processor = Processeur isolé
+verb-vet-content = Contrôler
 verb-load-skill = Compétence
 verb-ask-user = Demander
 verb-run = Exécuter

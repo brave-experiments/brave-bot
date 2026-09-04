@@ -424,6 +424,7 @@ pub(crate) fn verb_for(tool: &str) -> &'static str {
         // with no tools, no memory and one round, and a person watching a line go by should not
         // have to remember which of the verbs meant that.
         "spawn_processor" => t!(verb_spawn_processor),
+        "vet_content" => t!(verb_vet_content),
         "load_skill" => t!(verb_load_skill),
         "ask_user" => t!(verb_ask_user),
         "run" => t!(verb_run),

@@ -512,6 +512,7 @@ verb-todo-write = Plan
 # tools, no memory and one round, and a person watching a line go by should not have to
 # remember which of the verbs meant that.
 verb-spawn-processor = Isolated processor
+verb-vet-content = Vet
 verb-load-skill = Skill
 verb-ask-user = Ask
 verb-run = Run
