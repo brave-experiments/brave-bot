@@ -513,10 +513,6 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.quit();
             Action::Quit
         }
-        KeyCode::Char('t') if ctrl => {
-            session.toggle_trail();
-            Action::Redraw
-        }
         // Reading back through what happened, rather than typing at it. The transcript already
         // scrolls; what needs a mode is everything a person does once they are reading, since the
         // keys for it are letters and the box takes letters.
@@ -659,6 +655,14 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
         // where this chord is the byte that freezes the screen.
         KeyCode::Char('s') if ctrl => {
             session.stash();
+            Action::Redraw
+        }
+        // What a turn did, drawn per entry as the turn fills in. In the shared ladder because it
+        // sets a render flag and sends nothing, and because the trail is *for* watching a turn:
+        // refused mid-turn, a person who wanted to see which tools a turn was calling had to wait
+        // for it to finish before they were allowed to ask.
+        KeyCode::Char('t') if ctrl => {
+            session.toggle_trail();
             Action::Redraw
         }
         // Tab completes, which is what it does everywhere else. Only while a command is being
@@ -813,6 +817,15 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
     // the turn has ended and press Enter again.
     if key.code == KeyCode::Enter && session.queue() {
         return Action::Redraw;
+    }
+
+    // Refused here rather than left to fall through the ladder's catch-all for control chords. The
+    // editor takes the terminal for a child process, which is the screen the turn is drawing on, and
+    // the line it hands back would be waiting for a box that has moved on. That is a decision about
+    // this key, and a key that does nothing by accident reads the same as one that does nothing on
+    // purpose.
+    if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::None;
     }
 
     // The same ladder the idle path uses, rather than a shorter copy of it. Nothing in it sends,
@@ -3951,6 +3964,40 @@ mod tests {
         assert!(!session.shortcuts, "the list stayed up");
     }
 
+    /// The list is documentation, and a turn in flight refuses sending and nothing else. The key
+    /// used to set the flag with the list refused a place to be drawn, so the press did nothing on
+    /// screen and the list came up unasked when the turn ended, attached to no press at all.
+    #[test]
+    fn a_question_mark_lists_the_keys_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "anything");
+        session.submit().expect("the prompt is sent");
+
+        handle_key_while_working(&mut session, key(KeyCode::Char('?')));
+        assert!(session.shortcuts, "the list did not come up");
+        assert!(session.input().is_empty(), "the marker was typed");
+        assert_eq!(
+            session.offered(),
+            crate::state::Offered::Shortcuts,
+            "the list had nowhere to be drawn"
+        );
+
+        handle_key_while_working(&mut session, key(KeyCode::Char('?')));
+        assert!(!session.shortcuts, "the list did not go down again");
+    }
+
+    /// A line being composed mid-turn is one Enter queues, and finishing it is machinery for
+    /// something about to be sent. The list is not, which is why it is the one thing offered there.
+    #[test]
+    fn nothing_is_offered_for_completion_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "anything");
+        session.submit().expect("the prompt is sent");
+
+        handle_key_while_working(&mut session, key(KeyCode::Char('/')));
+        assert_eq!(session.offered(), crate::state::Offered::Nothing);
+    }
+
     /// In shell mode a `?` is a glob for the shell to expand, so it is typed like any other
     /// character rather than putting the list up.
     #[test]
@@ -4734,6 +4781,23 @@ mod tests {
         assert!(!session.show_trail);
     }
 
+    /// The trail is drawn per entry as a turn fills in, so it is what somebody watching a turn call
+    /// tools wants. Refused mid-turn, the key was swallowed by the catch-all for control chords
+    /// while the hint line went on advertising it on every frame of that turn.
+    #[test]
+    fn the_trail_can_be_asked_for_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "anything");
+        session.submit().expect("the prompt is sent");
+
+        assert_eq!(
+            handle_key_while_working(&mut session, ctrl('t')),
+            Action::Redraw
+        );
+        assert!(session.show_trail, "the key was swallowed");
+        assert_eq!(session.input(), "", "a stray character was typed");
+    }
+
     /// With nothing sent yet, the arrows scroll: there is no history to walk.
     #[test]
     fn arrow_keys_scroll_when_there_is_no_history() {
@@ -4985,16 +5049,91 @@ mod tests {
         assert!(session.input().contains('\n'), "no line was started");
     }
 
-    /// The two paths differ over what may be sent and over nothing else. They drifted once, in
-    /// silence, and what a person lost was every key in this list, so the agreement is asserted
-    /// rather than left to whoever next edits one of them.
-    #[test]
-    fn the_navigation_keys_do_the_same_thing_whether_or_not_a_turn_is_running() {
-        let sent = |finished: bool| {
-            let mut session = Session::new("none");
-            for c in "first question".chars() {
-                handle_key(&mut session, key(KeyCode::Char(c)));
+    /// Why a key is allowed to mean something different while a turn runs, or `None` where it is
+    /// not.
+    ///
+    /// The whole of the difference between the two paths, in one place. Every one of them is about
+    /// sending or about leaving, which are the two things the box does not decide.
+    fn allowed_to_differ(key: KeyEvent) -> Option<&'static str> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            // Shift-Enter and Ctrl-J start a line and are not this key.
+            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => Some("sends"),
+            KeyCode::Esc => Some("stops the turn in flight"),
+            KeyCode::Char('c') if ctrl => Some("stops the turn in flight, and then leaves"),
+            KeyCode::Char('d') if ctrl => Some("leaves, which is not something the box does"),
+            KeyCode::Char('g') if ctrl => {
+                Some("hands the screen the turn is drawing on to an editor")
             }
+            KeyCode::Char('!') => Some("arms a mode that changes what Enter does"),
+            _ => None,
+        }
+    }
+
+    /// Every key the two paths could see, so a binding added to one and not the other is caught
+    /// here rather than by somebody pressing it.
+    fn every_key() -> Vec<KeyEvent> {
+        let codes = (0x20u8..=0x7e)
+            .map(|byte| KeyCode::Char(char::from(byte)))
+            .chain([
+                KeyCode::Enter,
+                KeyCode::Tab,
+                KeyCode::BackTab,
+                KeyCode::Backspace,
+                KeyCode::Delete,
+                KeyCode::Insert,
+                KeyCode::Home,
+                KeyCode::End,
+                KeyCode::PageUp,
+                KeyCode::PageDown,
+                KeyCode::Up,
+                KeyCode::Down,
+                KeyCode::Left,
+                KeyCode::Right,
+                KeyCode::Esc,
+                KeyCode::F(1),
+            ]);
+        let modifiers = [
+            KeyModifiers::NONE,
+            KeyModifiers::CONTROL,
+            KeyModifiers::SHIFT,
+            KeyModifiers::ALT,
+        ];
+        codes
+            .flat_map(|code| modifiers.iter().map(move |held| KeyEvent::new(code, *held)))
+            .collect()
+    }
+
+    /// The two paths answer the same set of keys, and the ones they are allowed to disagree about
+    /// are named rather than discovered.
+    ///
+    /// Asserted as a set because a list was the bug. This walked six key codes, and three keys that
+    /// send nothing were answered by the idle path alone: none of the three was in the list, so the
+    /// test that was supposed to pin the agreement said nothing whatever about any of them.
+    #[test]
+    fn the_two_paths_answer_the_same_set_of_keys() {
+        /// Everything a key press can reach that is not about sending, so a difference in any of it
+        /// is a difference the clause forbids.
+        fn answered(session: &Session, action: Action) -> String {
+            format!(
+                "{action:?} input={:?} caret={} scroll={} shell={} shortcuts={} trail={} \
+                 stashed={:?} scrolling={} queued={} browsing={}",
+                session.input(),
+                session.caret(),
+                session.scroll,
+                session.shell,
+                session.shortcuts,
+                session.show_trail,
+                session.stashed(),
+                session.scrolling(),
+                session.queued.len(),
+                session.history.is_browsing(),
+            )
+        }
+
+        let sent = |finished: bool, typed: &str| {
+            let mut session = Session::new("none");
+            type_line(&mut session, "first question");
             handle_key(&mut session, key(KeyCode::Enter));
             // The same transcript either way, so only the running turn differs.
             if finished {
@@ -5002,26 +5141,41 @@ mod tests {
             } else {
                 session.narrate("an answer");
             }
+            // Several arms are read against whether there is a line, so both cases are swept.
+            for c in typed.chars() {
+                if finished {
+                    handle_key(&mut session, key(KeyCode::Char(c)));
+                } else {
+                    handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+                }
+            }
             session
         };
 
-        for code in [
-            KeyCode::Up,
-            KeyCode::Down,
-            KeyCode::PageUp,
-            KeyCode::PageDown,
-            KeyCode::Backspace,
-            KeyCode::Char('x'),
-        ] {
-            let mut idle = sent(true);
-            let mut working = sent(false);
-            assert_eq!(working.status, Status::Working);
+        for line in ["", "half a thought"] {
+            for pressed in every_key() {
+                if allowed_to_differ(pressed).is_some() {
+                    continue;
+                }
+                let mut idle = sent(true, line);
+                let mut working = sent(false, line);
+                assert_eq!(working.status, Status::Working);
+                assert_eq!(
+                    answered(&idle, Action::None),
+                    answered(&working, Action::None),
+                    "the two sessions differed before {pressed:?} was pressed"
+                );
 
-            handle_key(&mut idle, key(code));
-            handle_key_while_working(&mut working, key(code));
+                let at_rest = handle_key(&mut idle, pressed);
+                let mid_turn = handle_key_while_working(&mut working, pressed);
 
-            assert_eq!(idle.input(), working.input(), "{code:?} typed differently");
-            assert_eq!(idle.scroll, working.scroll, "{code:?} scrolled differently");
+                assert_eq!(
+                    answered(&idle, at_rest),
+                    answered(&working, mid_turn),
+                    "{pressed:?} was answered differently while a turn was running, \
+                     over a line of {line:?}"
+                );
+            }
         }
     }
 

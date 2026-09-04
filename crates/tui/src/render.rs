@@ -3165,6 +3165,26 @@ mod tests {
         }
     }
 
+    /// The moment a person hunts for a key is the moment a turn is going somewhere they did not
+    /// want, and the hint line goes on offering the list on every frame of one. The press used to
+    /// set the flag with nowhere for the list to be drawn, so it appeared unasked when the turn
+    /// ended.
+    #[test]
+    fn a_question_mark_lists_every_shortcut_while_a_turn_runs() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit().expect("the prompt is sent");
+        assert_eq!(session.status, Status::Working);
+
+        session.type_char('?');
+        let output = rendered_at(&session, 120, 40);
+
+        for (key, meaning) in SHORTCUTS {
+            assert!(output.contains(key), "{key} missing");
+            assert!(output.contains(meaning), "{key} has no meaning on screen");
+        }
+    }
+
     /// The list folds into columns, so it does not push the transcript off a short terminal the way
     /// one row per binding would.
     #[test]

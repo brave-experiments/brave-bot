@@ -221,9 +221,23 @@ the next press takes a bracket, which is the thing that no longer happens.
 <a id="INPUT-9"></a>
 ### INPUT-9: the box behaves the same whether or not a turn is running
 
-Typing, editing, pasting, dropping a file, completing, walking back through earlier prompts and
-scrolling the transcript all do while a turn is in flight exactly what they do at rest. What a
-running turn refuses is **sending**, and nothing else.
+Typing, editing, pasting, dropping a file, putting a line away, walking back through earlier
+prompts, scrolling the transcript, asking what a turn has done and asking what the keys are all do
+while a turn is in flight exactly what they do at rest. What a running turn refuses is **sending**,
+and the keys allowed to mean something else are named here and nowhere else:
+
+| Key | Why it may differ |
+|---|---|
+| Enter | sends, which is the whole of what is refused (INPUT-10) |
+| Escape, Ctrl-C | stop the turn in flight (INPUT-4) |
+| Ctrl-D | leaves, which is not something the box does |
+| Ctrl-G | hands the screen the turn is drawing on to an editor (INPUT-14) |
+| `!` | arms a mode that changes what Enter does, over whatever the box holds when the turn ends ([shell-mode.md](shell-mode.md)) |
+| Up | takes back what is waiting before it walks the history (INPUT-18) |
+
+**What is offered beneath the box is machinery for finishing a line that is about to be sent**, so a
+running turn offers nothing to complete. The list of keys (INPUT-13) is not that: it is
+documentation somebody asked for, and it is drawn whether or not a turn is running.
 
 **Why.** The box took nothing at all mid-turn once, and it was opened up a piece at a time:
 characters, then editing, then pasting. Walking the history was left behind, so a person could
@@ -231,11 +245,22 @@ compose a new prompt during a turn but could not reach the one they had just sen
 one they want most when a turn is going wrong in front of them. The keys reached no arm and did
 nothing at all, not even the scrolling they fall through to at rest.
 
-A difference between the two has to be a difference about sending. Taking back a prompt that has
-been sent and has not gone yet (INPUT-18) is one; anything else is drift, and this one was silent,
-so the two paths walk one list of keys rather than a list each.
+A difference between the two has to be a difference about sending, and it has to be in the table.
+The two paths therefore answer the same **set** of keys rather than one list each: a test that
+walked six key codes said nothing whatever about the keys that were not among them, and three keys
+that send nothing were answered by the idle path alone for exactly as long as that. Two of the three
+were advertised on every frame of a running turn by the hint line and by the list, so the keys a
+person was most likely to reach for while a turn went wrong were the ones that did nothing.
 
-`verified-by: bravebot_tui::app::the_navigation_keys_do_the_same_thing_whether_or_not_a_turn_is_running`
+Worst of the three was a key whose flag was set and whose answer was refused a place on the screen.
+The press did nothing a person could see, and the list came up when the turn ended, unasked and
+attached to no press.
+
+`verified-by: bravebot_tui::app::the_two_paths_answer_the_same_set_of_keys`
+`verified-by: bravebot_tui::app::a_question_mark_lists_the_keys_while_a_turn_runs`
+`verified-by: bravebot_tui::app::nothing_is_offered_for_completion_while_a_turn_runs`
+`verified-by: bravebot_tui::app::the_trail_can_be_asked_for_while_a_turn_runs`
+`verified-by: bravebot_tui::render::a_question_mark_lists_every_shortcut_while_a_turn_runs`
 `verified-by: bravebot_tui::app::up_recalls_a_previous_prompt_while_a_turn_is_running`
 `verified-by: bravebot_tui::state::recall_works_while_a_turn_is_running`
 `verified-by: bravebot_tui::state::a_recalled_prompt_still_cannot_be_sent_while_a_turn_is_running`

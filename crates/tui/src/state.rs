@@ -1254,6 +1254,20 @@ impl Session {
     /// One of the two at most. A command is the whole line and a reference is its last word, so
     /// nothing can be both.
     pub fn offered(&self) -> Offered {
+        // First, before either guard below. The list of keys is documentation somebody asked for by
+        // pressing a key, not machinery for finishing the line, so neither a turn in flight nor a
+        // command line has anything to say about it. It takes the place of what is offered, since
+        // the two answer the same space and only one of them was asked for.
+        //
+        // Answered after the guards, the flag was set by the press and the list had nowhere to go,
+        // so `?` during a turn did nothing on screen and then put the list up unasked when the turn
+        // ended. A turn going somewhere the person did not want is when they most want a key.
+        if self.shortcuts {
+            return Offered::Shortcuts;
+        }
+        // A line being composed while a turn runs is one Enter will queue, and what is offered for
+        // it is machinery for finishing something about to be sent, which is the one thing a
+        // running turn refuses.
         if self.status == Status::Working {
             return Offered::Nothing;
         }
@@ -1262,11 +1276,6 @@ impl Session {
         // completing either would rewrite the line under someone typing a path.
         if self.shell {
             return Offered::Nothing;
-        }
-        // The list of keys takes the place of what is offered, since the two answer the same space
-        // and only one of them was asked for.
-        if self.shortcuts {
-            return Offered::Shortcuts;
         }
         let commands = crate::app::completions(&self.input);
         if !commands.is_empty() {
@@ -4262,6 +4271,7 @@ mod tests {
 
         assert!(s.submit().is_none(), "a second turn started mid-flight");
     }
+
     mod todos {
         use super::*;
         use bravebot_core::todo::{Item, List, Status, rows};
