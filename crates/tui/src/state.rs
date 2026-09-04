@@ -5,6 +5,7 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use crate::audit::TrailLine;
+use bravebot_agent::Mode;
 use bravebot_agent::report::{Activity, Landing, Phase, Shown};
 use bravebot_core::event::Event;
 use bravebot_i18n::t;
@@ -444,6 +445,13 @@ pub struct Session {
     /// the wrong environment, so its presence would not settle the tier. See
     /// [`crate::status::configured_tier`]. What was actually spent is settled by the first turn.
     pub tier: String,
+    /// Which loop decides this session's next step.
+    ///
+    /// Held on the session rather than passed per turn because that is what it is: a person who
+    /// asked for a bounded session asked for every turn in it to be bounded, and a mode that could
+    /// differ turn by turn would leave a transcript mixing two kinds of run with nothing in it
+    /// saying which was which.
+    pub mode: Mode,
     /// How many turns have been submitted, which picks the indicator's word.
     pub turns: usize,
     /// Tokens spent across the whole session.
@@ -666,6 +674,7 @@ impl Session {
             // The free tier until a caller says otherwise, which is what a build with no premium
             // host has and what a test that does not care about tiers should see.
             tier: t!(status_free_tier).to_string(),
+            mode: Mode::default(),
             turns: 0,
             tokens: 0,
             spend: std::collections::BTreeMap::new(),
@@ -717,6 +726,20 @@ impl Session {
     pub fn on_tier(mut self, tier: impl Into<String>) -> Self {
         self.tier = tier.into();
         self
+    }
+
+    /// Run this session's turns in a particular mode.
+    pub fn in_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// What to say on the opening screen about the mode, or `None` for the default.
+    ///
+    /// The ordinary turn loop is what typing `bravebot` gives you, and announcing it on every
+    /// session would be a line nobody reads. Anything else is a departure and is named.
+    pub fn mode_to_announce(&self) -> Option<String> {
+        (self.mode != Mode::default()).then(|| self.mode.to_string())
     }
 
     /// Load history from disk and keep writing to it.

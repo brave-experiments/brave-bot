@@ -33,11 +33,26 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // With no arguments the interactive session is the natural default.
-        None => interactive(bravebot_tui::app::Start::Fresh),
+        None => interactive(bravebot_tui::app::Start::Fresh, Mode::default()),
         // Picking up where a session left off, chosen from a list or named outright.
         Some("--resume" | "-r") => match args.get(1) {
             Some(id) => resume_named(id),
-            None => interactive(bravebot_tui::app::Start::Choose),
+            None => interactive(bravebot_tui::app::Start::Choose, Mode::default()),
+        },
+        // A mode and no task is an interactive session in that mode, which is how a person asks
+        // for one: `bravebot --mode skill-state`. Only a loop a session can hold qualifies, and a
+        // frozen plan is not one, so that combination is refused rather than opening a session
+        // that would quietly ignore the flag it was given.
+        Some("--mode") if args.len() == 2 => match args[1].parse::<Mode>() {
+            Ok(mode) if mode.is_a_turn_loop() => interactive(bravebot_tui::app::Start::Fresh, mode),
+            Ok(mode) => {
+                eprintln!("{}", t!(cli_mode_needs_a_task, mode = mode.to_string()));
+                ExitCode::FAILURE
+            }
+            Err(complaint) => {
+                eprintln!("{complaint}");
+                ExitCode::FAILURE
+            }
         },
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
@@ -67,6 +82,7 @@ fn print_help() {
     println!("{}", t!(cli_usage_heading));
     for (form, description) in [
         ("bravebot", t!(cli_usage_interactive)),
+        ("bravebot --mode <mode>", t!(cli_usage_interactive_mode)),
         ("bravebot \"<task>\" [--file <path>]...", t!(cli_usage_task)),
         ("cat file | bravebot -p \"<task>\"", t!(cli_usage_piped)),
         ("bravebot --resume [id]", t!(cli_usage_resume)),
@@ -300,9 +316,9 @@ fn run_task(args: &[String]) -> ExitCode {
         eprintln!("{}", t!(cli_notice, notice = failure.to_string()));
     }
 
-    // Both modes take the same arguments and return the same outcome. The whole of the
-    // difference is inside: one asks the model what to do next after every result, the other
-    // asked once, before there were any.
+    // Every mode takes the same arguments and returns the same outcome. The whole of the
+    // difference is inside: one asks the model what to do next after every result, one asked once
+    // before there were any, and one asks after every result from a state instead of a history.
     let outcome = match mode {
         Mode::Turn => turn::run_cancellable(
             &config,
@@ -324,6 +340,19 @@ fn run_task(args: &[String]) -> ExitCode {
             &mut reporter,
             &mut sink,
             TrustStore::new(),
+            &Cancel::new(),
+        ),
+        Mode::SkillState => bravebot_agent::state::resume(
+            &config,
+            &egress,
+            &workspace,
+            &task,
+            &mut bravebot_agent::Conversation::new(),
+            &mut confirmer,
+            &mut reporter,
+            &mut sink,
+            TrustStore::new(),
+            bravebot_core::programs::TrustedPrograms::new(),
             &Cancel::new(),
         ),
     };
@@ -604,7 +633,14 @@ fn resume_named(id: &str) -> ExitCode {
             }
             ExitCode::FAILURE
         }
-        Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
+        // The ordinary loop, since a session record does not say which mode wrote it. Resuming into
+        // a bounded session would be worse than resuming into a turn: the state a bounded run
+        // decided from was never written down, so its next step would begin from an empty one while
+        // the transcript claimed the work was underway.
+        Some(record) => interactive(
+            bravebot_tui::app::Start::Resuming(Box::new(record)),
+            Mode::default(),
+        ),
         None => {
             eprintln!("{}", t!(cli_no_such_session, id = id));
             ExitCode::FAILURE
@@ -612,7 +648,7 @@ fn resume_named(id: &str) -> ExitCode {
     }
 }
 
-fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
+fn interactive(start: bravebot_tui::app::Start, mode: Mode) -> ExitCode {
     let mut config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
@@ -636,7 +672,7 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
         Err(_) => named(bravebot_sandbox::policy::ConfinementLevel::None),
     };
 
-    match bravebot_tui::app::run(&mut config, &workspace, confinement, start) {
+    match bravebot_tui::app::run(&mut config, &workspace, confinement, mode, start) {
         // Printed after the terminal is handed back, so it survives on the screen the person is
         // left looking at rather than going onto the alternate screen with everything else. A
         // session is worth resuming far more often than anybody thinks to write its name down
@@ -1328,6 +1364,25 @@ mod tests {
             parse_invocation(&args(&["--mode", "manifest", "do a thing"])).expect("parses");
         assert_eq!(invocation.mode, Mode::Manifest);
         assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    /// A one-shot run may be bounded, exactly as it may be planned in advance.
+    #[test]
+    fn a_bounded_run_can_be_asked_for_on_the_command_line() {
+        let invocation =
+            parse_invocation(&args(&["--mode", "skill-state", "do a thing"])).expect("parses");
+        assert_eq!(invocation.mode, Mode::SkillState);
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    /// Which modes may open an interactive session, which is the rule the argv arm above rests on.
+    /// A frozen plan cannot: it fixes every step before the first one, so a second prompt has
+    /// nothing to join.
+    #[test]
+    fn only_a_turn_loop_may_open_an_interactive_session() {
+        assert!(Mode::Turn.is_a_turn_loop());
+        assert!(Mode::SkillState.is_a_turn_loop());
+        assert!(!Mode::Manifest.is_a_turn_loop());
     }
 
     #[test]

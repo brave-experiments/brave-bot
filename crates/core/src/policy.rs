@@ -1102,6 +1102,50 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
     }
 
+    /// Take a patch the model wrote into the state the next step will be shown.
+    ///
+    /// The gate a bounded run rests on, and it is [`Policy::adopt_summary`] applied to a different
+    /// shape for the same reason. A run in that mode does not re-send its history; it sends one
+    /// structure instead, and the model maintains that structure itself. So the patch is model
+    /// output going back into the model's own context, exactly as a summary is, and it is checked
+    /// exactly as one.
+    ///
+    /// **Refuses once the context has gone untrusted.** The patch is untrusted then, and there is
+    /// nowhere for it to go. Quarantining it would hand the model a reference in place of the state
+    /// it decides from, which is not a state it can decide from, and relabelling it would be
+    /// laundering. So the step fails and the run keeps the state it already had.
+    ///
+    /// What the state may therefore hold is whatever the model may already say out loud: the *name*
+    /// of a quarantined thing, `ref:3`, and never a byte of what is behind it. Nothing here has to
+    /// enforce that separately, because a context that had been shown those bytes would have fallen
+    /// to untrusted and this would refuse.
+    ///
+    /// **The merge is not here.** This decides whether the patch may be adopted at all;
+    /// [`crate::state::State::merged`] decides what adopting it produces, and refuses a result that
+    /// would break the bound the mode exists for. Two questions, two places: one about provenance,
+    /// one about shape.
+    pub fn adopt_state_patch(
+        &mut self,
+        patch: &Labelled<crate::state::Patch>,
+    ) -> Gated<crate::state::Patch> {
+        let label = patch.label();
+        self.refuse_untrusted("state", "a patch to the execution state", label)?;
+
+        // Released only after the check above has passed, so what goes in the trail is a patch the
+        // gate has already allowed. `describe` names keys and never values, which is what keeps a
+        // long value out of a log line.
+        let proof = Declassification::authorise("a patch to the model's own execution state");
+        let adopted = patch.clone().declassify(&proof);
+        self.allow(
+            "state",
+            format!(
+                "the execution state took a {label} patch that {}",
+                adopted.describe()
+            ),
+        );
+        Ok(adopted)
+    }
+
     /// Whether a read of `path` would be quarantined rather than shown.
     ///
     /// A question about the trust map, keyed by a path the planner named, which is routing and
@@ -5193,6 +5237,83 @@ mod tests {
             "the refusal does not say why: {denial}"
         );
         assert!(!policy.finish(), "the refusal was not recorded");
+    }
+
+    /// A patch is model output going back into the model's own context, so a trusted context may
+    /// adopt one, exactly as it may adopt a summary of itself.
+    #[test]
+    fn a_patch_from_a_trusted_context_is_adopted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let patch = policy.label_model_output(
+            "state",
+            crate::state::Patch::new()
+                .set("working_dir", crate::state::Value::Text("/tmp".to_string())),
+        );
+        let adopted = policy
+            .adopt_state_patch(&patch)
+            .expect("a patch written in a trusted context may be adopted");
+
+        assert_eq!(adopted.len(), 1);
+        assert!(policy.finish(), "nothing should have been refused");
+    }
+
+    /// The case the gate exists for, and the same reasoning as the summary above: a patch written
+    /// in an untrusted context is untrusted, and there is nowhere for it to go. Quarantining it
+    /// would hand the model a reference in place of the state it decides from, and relabelling it
+    /// would be laundering. So the step fails and the run keeps the state it had.
+    #[test]
+    fn a_patch_from_an_untrusted_context_is_refused_rather_than_adopted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "carry on"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .resuming(Integrity::Untrusted);
+
+        let patch = policy.label_model_output(
+            "state",
+            crate::state::Patch::new()
+                .set("found", crate::state::Value::Text("a flag".to_string())),
+        );
+        let denial = policy
+            .adopt_state_patch(&patch)
+            .expect_err("a patch written in an untrusted context must not be adopted");
+
+        assert_eq!(denial.principle, Principle::IntegrityGate);
+        assert!(!policy.finish(), "the refusal was not recorded");
+    }
+
+    /// The trail says what the state took, and says it in keys. A value can be the length of a
+    /// file, and a log line is not the place for one.
+    #[test]
+    fn the_trail_records_a_patch_by_key_and_not_by_value() {
+        let mut sink = RecordingSink::new();
+        {
+            let mut policy = open_policy(&mut sink);
+            let patch = policy.label_model_output(
+                "state",
+                crate::state::Patch::new().set(
+                    "cmd_summary",
+                    crate::state::Value::Text(
+                        "a long secret value nobody wants in a log".to_string(),
+                    ),
+                ),
+            );
+            policy.adopt_state_patch(&patch).expect("adopted");
+            policy.finish();
+        }
+
+        let recorded = format!("{:?}", sink.events());
+        assert!(recorded.contains("cmd_summary"), "{recorded}");
+        assert!(
+            !recorded.contains("a long secret value"),
+            "a value reached the trail: {recorded}"
+        );
     }
 
     mod command_output {

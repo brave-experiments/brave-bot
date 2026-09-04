@@ -443,6 +443,7 @@ pub(crate) fn verb_for(tool: &str) -> &'static str {
         "ask_user" => t!(verb_ask_user),
         "run" => t!(verb_run),
         "read_output" => t!(verb_read_output),
+        "update_state" => t!(verb_update_state),
         _ => t!(verb_unknown),
     }
 }

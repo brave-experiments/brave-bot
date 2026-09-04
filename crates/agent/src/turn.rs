@@ -778,6 +778,188 @@ pub(crate) fn discover_subscription<R: Reporter>(
     discovery.found()
 }
 
+/// The instructions every mode begins from.
+///
+/// Public to the crate so a second loop can put its own rules after these rather than beside them.
+/// Everything this says about quarantine, references, processors and writes is true whatever
+/// decides the next step, and a second copy of it would be a second thing to keep correct.
+pub(crate) fn system_prompt() -> &'static str {
+    SYSTEM_PROMPT
+}
+
+/// Put what a call produced in front of the planner and the person, and say what it was.
+///
+/// Lifted out of the round loop so that a mode which decides its next step differently still
+/// presents a result identically. Everything here is a gate or a report: which slot the content
+/// went into, what the planner is told instead where it may not see it, what the person is shown
+/// that the planner is not, and the provenance recorded against a fresh slot. None of it depends on
+/// how the call was chosen, and all of it would be wrong to write twice.
+///
+/// Returns the body as the planner is told it, so a caller may also carry it forward as an
+/// observation.
+pub(crate) fn record_output<S: Sink, R: Reporter>(
+    policy: &mut Policy<'_, S>,
+    conversation: &mut Conversation,
+    reporter: &mut R,
+    output: &tools::Output,
+    call: &ToolCall,
+    replayed: bool,
+) -> Result<String, TurnError> {
+    let origin = if output.origin.is_empty() {
+        output.tool.clone()
+    } else {
+        output.origin.clone()
+    };
+
+    if let Some(said) = &output.said {
+        let shown = preview_for(policy, &output.tool, said);
+        reporter.quarantined(crate::report::Shown {
+            origin: "what the isolated processor said".to_string(),
+            reach: crate::report::Reach::NoModel,
+            label: said.label().to_string(),
+            lines: shown.lines,
+            preview: shown.preview,
+        });
+    }
+
+    let body = if let Some(entries) = &output.entries {
+        let ids: Vec<_> = (0..entries.count)
+            .map(|_| conversation.next_reference())
+            .collect();
+        let references = policy
+            .defer_entries(
+                &output.tool,
+                &entries.origin,
+                &entries.paths,
+                &ids,
+                conversation.quarantine(),
+            )
+            .map_err(|d| TurnError::Precommit(d.to_string()))?;
+        let described: Vec<String> = references
+            .iter()
+            .map(bravebot_core::reference::Reference::describe)
+            .collect();
+        let named = policy.names_for_display(conversation.quarantine());
+        let preview: Vec<String> = ids
+            .iter()
+            .filter_map(|id| {
+                named
+                    .iter()
+                    .find(|(slot, _, _)| slot == id)
+                    .map(|(slot, label, path)| format!("{slot}{label}  {path}"))
+            })
+            .collect();
+        reporter.landed(crate::report::Landing::Quarantined);
+        reporter.quarantined(crate::report::Shown {
+            origin: entries.origin.clone(),
+            reach: crate::report::Reach::NotThePlanner,
+            label: references
+                .first()
+                .map(|r| r.label.to_string())
+                .unwrap_or_default(),
+            lines: preview.len(),
+            preview,
+        });
+
+        let capped = if output.incomplete {
+            " The listing stopped at that many entries and is incomplete: list a subdirectory to \
+             see the rest."
+        } else {
+            ""
+        };
+        format!(
+            "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are quarantined, one \
+             reference each.{capped}\n\n{}",
+            output.tool,
+            references.len(),
+            described.join("\n")
+        )
+    } else {
+        let slot = conversation.next_reference();
+        let presented = match &output.deferred {
+            Some(deferral) => policy
+                .defer(
+                    "read_file",
+                    slot,
+                    &deferral.origin,
+                    &deferral.path,
+                    deferral.bytes,
+                    conversation.quarantine(),
+                )
+                .map(Presentation::Quarantined),
+            None => policy.present(
+                "tool_result",
+                slot,
+                &origin,
+                &output.text,
+                conversation.quarantine(),
+            ),
+        }
+        .map_err(|d| TurnError::Precommit(d.to_string()))?;
+
+        if output.content {
+            reporter.landed(match (&presented, &output.deferred) {
+                (_, Some(_)) => crate::report::Landing::Reserved,
+                (Presentation::Visible(_), _) => crate::report::Landing::Context,
+                (Presentation::Quarantined(_), _) => crate::report::Landing::Quarantined,
+            });
+        }
+
+        match &presented {
+            Presentation::Visible(text) => {
+                format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
+            }
+            Presentation::Quarantined(reference) => {
+                if let Some(from) = &output.unchanged_from {
+                    policy.copied_from(&reference.slot, from, conversation.quarantine());
+                }
+                if let Some(command) = &output.printed_by {
+                    policy.came_from_command(&reference.slot, command, conversation.quarantine());
+                }
+                if let Some(about) = &output.answers_for {
+                    policy.answers_for(&reference.slot, about.as_ref(), conversation.quarantine());
+                }
+                if output.deferred.is_none() {
+                    let shown = preview_for(policy, &output.tool, &output.text);
+                    let origin = crate::tools::name_references(
+                        &reference.origin,
+                        &policy.names_for_display(conversation.quarantine()),
+                    );
+                    reporter.quarantined(crate::report::Shown {
+                        origin,
+                        reach: crate::report::Reach::NotThePlanner,
+                        label: reference.label.to_string(),
+                        lines: shown.lines,
+                        preview: shown.preview,
+                    });
+                }
+                let capped = if output.incomplete {
+                    format!(
+                        "\n\nThe {} stopped at a cap, so this result is incomplete: it is a sample \
+                         and not the whole answer. Narrow it, or work through a subdirectory to \
+                         cover the rest.",
+                        output.tool
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}{capped}",
+                    output.tool,
+                    reference.describe()
+                )
+            }
+        }
+    };
+
+    conversation.push(match call.id.as_deref().filter(|_| replayed) {
+        Some(id) => Message::tool_result(id, body.clone()),
+        None => Message::user(body.clone()),
+    });
+
+    Ok(body)
+}
+
 /// The path a precommitted routing entry holds, which is trusted by construction.
 fn routing_path<S: Sink>(policy: &Policy<'_, S>, key: &str) -> String {
     policy
@@ -1331,216 +1513,17 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             // moment it sees it, not once the turn happens to end well.
             conversation.observed(policy.context_integrity());
 
-            // The same gate as file context. A tool result the kernel judges untrusted is
-            // quarantined and the planner is told its shape; only trusted results are shown.
-            let origin = if output.origin.is_empty() {
-                output.tool.clone()
-            } else {
-                output.origin.clone()
-            };
-
-            // A read of a file the planner may not see reserves the slot instead of filling
-            // it. The planner is told the same thing either way, a reference and a size, and
-            // the file is opened when a processor or a write finally needs the bytes.
-            // What an isolated processor wanted to say about what it did. It goes to the
-            // person and stops: not into the planner's context, not into a file, not into
-            // another processor's input. Reported before the result, because it is about to
-            // explain what the result is.
-            if let Some(said) = &output.said {
-                let shown = preview_for(&mut policy, &output.tool, said);
-                reporter.quarantined(crate::report::Shown {
-                    origin: "what the isolated processor said".to_string(),
-                    reach: crate::report::Reach::NoModel,
-                    label: said.label().to_string(),
-                    lines: shown.lines,
-                    preview: shown.preview,
-                });
-            }
-
-            // Three shapes, and which one a result takes was decided by the tool that
-            // produced it and the kernel that labelled it, never here.
-            let body = if let Some(entries) = &output.entries {
-                // A listing of files the planner may not see. The names never come out: it
-                // gets one reference per entry, which it can read through and write back to
-                // without ever being told what any of them is called.
-                let ids: Vec<_> = (0..entries.count)
-                    .map(|_| conversation.next_reference())
-                    .collect();
-                let references = policy
-                    .defer_entries(
-                        &output.tool,
-                        &entries.origin,
-                        &entries.paths,
-                        &ids,
-                        conversation.quarantine(),
-                    )
-                    .map_err(|d| TurnError::Precommit(d.to_string()))?;
-                let described: Vec<String> = references
-                    .iter()
-                    .map(bravebot_core::reference::Reference::describe)
-                    .collect();
-                // The planner gets names it cannot read. The person watching gets the
-                // opposite, and needs it: they own the directory, and "2 files, quarantined"
-                // does not tell them whether their agent is about to work on the right one.
-                let named = policy.names_for_display(conversation.quarantine());
-                let preview: Vec<String> = ids
-                    .iter()
-                    .filter_map(|id| {
-                        named
-                            .iter()
-                            .find(|(slot, _, _)| slot == id)
-                            .map(|(slot, label, path)| format!("{slot}{label}  {path}"))
-                    })
-                    .collect();
-                reporter.landed(crate::report::Landing::Quarantined);
-                reporter.quarantined(crate::report::Shown {
-                    origin: entries.origin.clone(),
-                    reach: crate::report::Reach::NotThePlanner,
-                    label: references
-                        .first()
-                        .map(|r| r.label.to_string())
-                        .unwrap_or_default(),
-                    lines: preview.len(),
-                    preview,
-                });
-
-                // Here or nowhere. A listing writes its own truncation notice into its body,
-                // and the planner is not being given the body: it gets the references, and a
-                // capped sample of a tree read as the whole of it is how a planner concludes a
-                // file it cannot find does not exist.
-                let capped = if output.incomplete {
-                    " The listing stopped at that many entries and is incomplete: list a \
-                     subdirectory to see the rest."
-                } else {
-                    ""
-                };
-                format!(
-                    "{TOOL_RESULT_PREFIX}{} could not be shown to you. Its {} entries are \
-                     quarantined, one reference each.{capped}\n\n{}",
-                    output.tool,
-                    references.len(),
-                    described.join("\n")
-                )
-            } else {
-                // Reserved here rather than before the branch above, which reserves one per
-                // entry and would otherwise leave this one hanging: a name handed out and
-                // never used still moves the numbering the planner is reading.
-                let slot = conversation.next_reference();
-                let presented = match &output.deferred {
-                    Some(deferral) => policy
-                        .defer(
-                            "read_file",
-                            slot,
-                            &deferral.origin,
-                            &deferral.path,
-                            deferral.bytes,
-                            conversation.quarantine(),
-                        )
-                        .map(Presentation::Quarantined),
-                    None => policy.present(
-                        "tool_result",
-                        slot,
-                        &origin,
-                        &output.text,
-                        conversation.quarantine(),
-                    ),
-                }
-                .map_err(|d| TurnError::Precommit(d.to_string()))?;
-
-                // Only where the result is workspace content. A read of a file the planner
-                // already holds a reference to answers with a sentence the driver wrote, and
-                // reporting that the model has read *that* is true, useless, and read by a
-                // person as a claim about their file.
-                if output.content {
-                    reporter.landed(match (&presented, &output.deferred) {
-                        (_, Some(_)) => crate::report::Landing::Reserved,
-                        (Presentation::Visible(_), _) => crate::report::Landing::Context,
-                        (Presentation::Quarantined(_), _) => crate::report::Landing::Quarantined,
-                    });
-                }
-
-                match &presented {
-                    Presentation::Visible(text) => {
-                        format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
-                    }
-                    Presentation::Quarantined(reference) => {
-                        // A processor that answered "leave it alone" produced the document it
-                        // was given, so the new slot holds that file byte for byte. Recorded
-                        // here, where the slot is minted, so a write of it back to the same
-                        // file can be seen to change nothing without reading either side.
-                        if let Some(from) = &output.unchanged_from {
-                            policy.copied_from(&reference.slot, from, conversation.quarantine());
-                        }
-                        // Only a slot a program printed may be offered to the user for reading,
-                        // so the provenance is recorded here, where the slot is minted, together
-                        // with the command as the person approved it.
-                        if let Some(command) = &output.printed_by {
-                            policy.came_from_command(
-                                &reference.slot,
-                                command,
-                                conversation.quarantine(),
-                            );
-                        }
-                        // An answer is for one file, however many the processor was given.
-                        // Recorded here, where the slot is minted, so a write of it goes there
-                        // and nowhere else: a planner that assumed a second answer was about a
-                        // second file wrote a game's HTML into a Python script.
-                        if let Some(about) = &output.answers_for {
-                            policy.answers_for(
-                                &reference.slot,
-                                about.as_ref(),
-                                conversation.quarantine(),
-                            );
-                        }
-                        // The bytes exist here, unlike a deferred read, so the person watching
-                        // is shown what the planner is not. It is their workspace; they are the
-                        // only party who can tell whether this is the right file at all.
-                        if output.deferred.is_none() {
-                            let shown = preview_for(&mut policy, &output.tool, &output.text);
-                            // The person's copy says which files, where the planner's says which
-                            // references. Same line, two audiences, and only one of them is
-                            // being kept from the names.
-                            let origin = crate::tools::name_references(
-                                &reference.origin,
-                                &policy.names_for_display(conversation.quarantine()),
-                            );
-                            reporter.quarantined(crate::report::Shown {
-                                origin,
-                                reach: crate::report::Reach::NotThePlanner,
-                                label: reference.label.to_string(),
-                                lines: shown.lines,
-                                preview: shown.preview,
-                            });
-                        }
-                        // The reference describes shape and provenance, and a cap is neither,
-                        // so a search that stopped short reaches the planner looking exactly
-                        // like one that found everything there was.
-                        let capped = if output.incomplete {
-                            format!(
-                                "\n\nThe {} stopped at a cap, so this result is incomplete: it \
-                                 is a sample and not the whole answer. Narrow it, or work \
-                                 through a subdirectory to cover the rest.",
-                                output.tool
-                            )
-                        } else {
-                            String::new()
-                        };
-                        format!(
-                            "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}{capped}",
-                            output.tool,
-                            reference.describe()
-                        )
-                    }
-                }
-            };
-
-            // A result answers the call it belongs to by id where the round replayed calls at
-            // all. Where it did not, the result is a plain message, as everything here was
-            // before: a conversation may hold both shapes, so long as no call goes unanswered.
-            conversation.push(match call.id.as_deref().filter(|_| replayed.is_some()) {
-                Some(id) => Message::tool_result(id, body),
-                None => Message::user(body),
-            });
+            // The same gate as file context, and the same reporting, in the one place that
+            // does it: a result is presented, previewed and recorded identically however the call
+            // that produced it was chosen.
+            record_output(
+                &mut policy,
+                conversation,
+                reporter,
+                &output,
+                call,
+                replayed.is_some(),
+            )?;
         }
 
         // Anything the person typed while that round ran, put in front of the next one.

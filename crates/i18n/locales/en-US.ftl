@@ -23,6 +23,7 @@ count-turns = { $count ->
 cli-tagline = bravebot { $version }: a general-purpose agent resistant to prompt injection
 cli-usage-heading = Usage:
 cli-usage-interactive = Start an interactive session
+cli-usage-interactive-mode = ...in a particular mode, shown on the opening screen
 cli-usage-task = Run a single task
 cli-usage-piped = ...with piped input, never trusted
 cli-usage-resume = Pick up a session in this directory
@@ -43,7 +44,7 @@ cli-name-a-file = Include a workspace file as trusted context
 
 cli-options-heading = Options:
 cli-option-file = Include a workspace file as context (repeatable)
-cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
+cli-option-mode = turn (default) decides step by step; manifest plans the whole run first; skill-state decides step by step from a state instead of the history
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
 cli-option-help = Show this message
@@ -55,6 +56,7 @@ cli-option-version = Show the version
 cli-unknown-option = unknown option: { $flag }
 cli-file-needs-a-path = --file requires a path
 cli-mode-needs-a-name = --mode requires one of { $names }
+cli-mode-needs-a-task = { $mode } is not a mode an interactive session can be in, because it fixes every step before the first one runs. Give it a task instead.
 cli-unexpected-argument = unexpected argument: { $argument }
 cli-task-required = a task is required
 cli-configuration-problem = configuration error: { $problem }
@@ -312,6 +314,8 @@ status-premium-in-use = premium, a credential was spent
 status-premium-not-spent = free tier: no subscription was used
 status-free-tier = free tier only
 status-confinement = Confinement
+# Only shown where the session is in a mode that is not the default.
+status-mode = Mode
 status-this-session = This session
 # Where a session's wall clock went. Four figures, because the whole is unactionable: a session
 # that took an hour on the model, an hour on subprocesses, and an hour waiting for its user to
@@ -516,6 +520,9 @@ turn-ended-unexpectedly = the turn ended unexpectedly
 ## The opening screen
 
 opening-confinement = confinement { $level }
+# Only drawn where the session is in a mode that is not the default, so it reads as a departure
+# rather than as a label every session carries.
+opening-mode = { $mode } mode
 opening-invitation = Ask a question about this workspace.
 
 
@@ -537,6 +544,9 @@ verb-load-skill = Skill
 verb-ask-user = Ask
 verb-run = Run
 verb-read-output = Read output
+# The one tool a bounded run adds. Named for what it is to the person watching, which is the
+# agent writing down what it learned: the mechanism is a state patch and the point is a note.
+verb-update-state = Note
 verb-unknown = Tool
 
 ## Where what a call produced ended up, said at the end of the line about it

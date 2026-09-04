@@ -19,12 +19,15 @@ guards:
 
 ## Scope
 
-The other way a task is run. A turn decides what to do next after each thing it reads. A manifest
-run decides everything first: the planner emits a step list, the kernel refuses it or freezes it,
-and a driver walks it with no model in the control path.
+One of the other ways a task is run. A turn decides what to do next after each thing it reads. A
+manifest run decides everything first: the planner emits a step list, the kernel refuses it or
+freezes it, and a driver walks it with no model in the control path.
 
 The default remains the turn loop. This mode is not a stricter policy. The gates are the same;
 what changes is the scope of the precommitment, from one turn to a whole run.
+
+A third mode decides step by step as a turn does, from an execution state rather than from the
+conversation. It is a different axis from this one and is [skill-state.md](skill-state.md)'s.
 
 ## Clauses
 
@@ -141,9 +144,11 @@ explanation over whatever the plan named next.
 <a id="MANIFEST-9"></a>
 ### MANIFEST-9: the default is the turn loop
 
-An unqualified run, and every session, is still observe-decide-act. Manifest is an opt-in on the
-command line. An unknown name is refused rather than guessed, because guessing wrong here would
-silently run the mode the user did not ask for.
+An unqualified run is still observe-decide-act, and so is every session: this mode fixes every step
+before the first one runs, so a second prompt has nothing to join, and asking for an interactive
+session in it is refused rather than quietly downgraded. Manifest is an opt-in on the command line.
+An unknown name is refused rather than guessed, because guessing wrong here would silently run the
+mode the user did not ask for.
 
 Piped stdin is refused rather than dropped. A pipe is observed context, and this mode does not
 observe before it plans. Name a workspace file instead.

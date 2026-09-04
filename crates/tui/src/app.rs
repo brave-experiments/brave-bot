@@ -9,9 +9,9 @@
 //! the reply arrives. That is honest about what is happening, and it keeps two turns from
 //! ever being in flight together.
 
-use bravebot_agent::Workspace;
 use bravebot_agent::conversation::Conversation;
 use bravebot_agent::turn::{self, PastedImage, Task};
+use bravebot_agent::{Mode, Workspace};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::permissions::Permissions;
@@ -1020,6 +1020,7 @@ pub fn run(
     config: &mut Config,
     workspace: &Workspace,
     confinement: String,
+    mode: Mode,
     start: Start,
 ) -> io::Result<Option<String>> {
     let mut stdout = io::stdout();
@@ -1044,7 +1045,7 @@ pub fn run(
         // still arrives here, loading its empty conversation as a turn would continue a run
         // that cannot be continued.
         Some(Start::Resuming(record)) if record.manifest.is_some() => Ok(None),
-        Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
+        Some(start) => event_loop(&mut terminal, config, workspace, confinement, mode, start),
         // Leaving at the picker resumed nothing and started nothing, so there is nothing to say
         // about picking anything up.
         None => Ok(None),
@@ -1266,6 +1267,7 @@ fn event_loop(
     config: &mut Config,
     workspace: &Workspace,
     confinement: String,
+    mode: Mode,
     start: Start,
 ) -> io::Result<Option<String>> {
     // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
@@ -1277,7 +1279,8 @@ fn event_loop(
     let mut session = Session::new(confinement)
         .with_stored_history()
         .in_workspace(workspace.root())
-        .on_tier(crate::status::configured_tier(config));
+        .on_tier(crate::status::configured_tier(config))
+        .in_mode(mode);
 
     // The model outlived the session that chose it, so the window that came with it has to be asked
     // for again: it is reported by the listing and nowhere else, and nothing on disk remembers it.
@@ -1448,6 +1451,7 @@ fn event_loop(
             }
             Action::Status => {
                 let theme = crate::theme::name();
+                let announced = session.mode_to_announce();
                 let report = crate::status::report(&crate::status::Facts {
                     session_name: stored.title(),
                     session_id: stored.id(),
@@ -1459,6 +1463,7 @@ fn event_loop(
                     theme: &theme,
                     config,
                     confinement: &session.confinement,
+                    mode: announced.as_deref(),
                     turns: session.turns,
                     tokens: session.tokens,
                     timing: session.timing_total(),
@@ -2303,6 +2308,9 @@ fn run_turn_animated(
     // are cheap handles; Egress builds its own connection pool.
     let worker_config = config.clone();
     let worker_workspace = workspace.clone();
+    // Read off the session before the worker starts, since the session stays with the thread that
+    // owns the terminal. It cannot change mid-session, so one copy per turn is the whole of it.
+    let mode = session.mode;
     // Every file named with `@` becomes context, which a turn treats as trusted: the user typed the
     // path and their keystroke is what vouches for it, exactly as `--file` does on the command
     // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
@@ -2358,19 +2366,40 @@ fn run_turn_animated(
         // succeeded or not. A failed turn is still part of the conversation, and the next one
         // is usually about it.
         let mut conversation = conversation;
-        let outcome = turn::resume(
-            &worker_config,
-            &egress,
-            &worker_workspace,
-            &task,
-            &mut conversation,
-            &mut confirmer,
-            &mut reporter,
-            &mut sink,
-            trust,
-            programs,
-            &worker_cancel,
-        );
+        // Both are turn loops, take the same arguments and return the same outcome. The difference
+        // is what a round is shown in order to choose: the exchange so far, or the execution state
+        // and the newest observation. Everything downstream of here is identical, which is why the
+        // interface can hold either without knowing which it has.
+        let outcome = match mode {
+            Mode::SkillState => bravebot_agent::state::resume(
+                &worker_config,
+                &egress,
+                &worker_workspace,
+                &task,
+                &mut conversation,
+                &mut confirmer,
+                &mut reporter,
+                &mut sink,
+                trust,
+                programs,
+                &worker_cancel,
+            ),
+            // A session cannot be in manifest mode, which is refused before a session opens, so
+            // the remaining case is the ordinary turn loop.
+            Mode::Turn | Mode::Manifest => turn::resume(
+                &worker_config,
+                &egress,
+                &worker_workspace,
+                &task,
+                &mut conversation,
+                &mut confirmer,
+                &mut reporter,
+                &mut sink,
+                trust,
+                programs,
+                &worker_cancel,
+            ),
+        };
         (outcome, conversation, sink)
     });
 

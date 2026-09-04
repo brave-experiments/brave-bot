@@ -1,8 +1,13 @@
 //! Task execution.
 //!
-//! Holds the label-aware tools and the turn loop. Tools take their routing arguments
-//! from precommitted routing, never from model output, so a turn cannot be redirected
+//! Holds the label-aware tools and the loops that drive them. Tools take their routing arguments
+//! from precommitted routing, never from model output, so a run cannot be redirected
 //! by the content it processes.
+//!
+//! Three loops, and [`mode`] says which is which: [`turn`] observes and decides per round,
+//! [`manifest`] decides everything before it observes anything, and [`state`] decides per round
+//! from an execution state instead of from the history. They share the tools, the gates and the
+//! transcript; what differs is only what the model is shown in order to choose.
 
 pub mod backend;
 pub mod compact;
@@ -23,6 +28,7 @@ pub mod report;
 pub mod scrub;
 pub mod shell;
 pub mod skills;
+pub mod state;
 pub mod subscription;
 pub mod timing;
 pub mod tools;

@@ -33,6 +33,7 @@ cli-tagline =
     bravebot { $version } : un agent polyvalent résistant à l'injection de prompt
 cli-usage-heading = Utilisation :
 cli-usage-interactive = Démarrer une session interactive
+cli-usage-interactive-mode = ...dans un mode particulier, indiqué sur l'écran d'accueil
 cli-usage-task = Exécuter une seule tâche
 cli-usage-piped = ... avec une entrée redirigée, jamais fiable
 cli-usage-resume = Reprendre une session dans ce répertoire
@@ -53,7 +54,7 @@ cli-name-a-file = Inclure un fichier de l'espace de travail comme contexte fiabl
 
 cli-options-heading = Options :
 cli-option-file = Inclure un fichier de l'espace de travail comme contexte (répétable)
-cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord
+cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord ; skill-state décide étape par étape à partir d'un état plutôt que de l'historique
 cli-option-print = Non interactif. Lit l'entrée redirigée comme contexte en quarantaine
 cli-option-trace = Afficher le journal d'audit
 cli-option-help = Afficher ce message
@@ -65,6 +66,7 @@ cli-option-version = Afficher la version
 cli-unknown-option = option inconnue : { $flag }
 cli-file-needs-a-path = --file demande un chemin
 cli-mode-needs-a-name = --mode demande l'un de : { $names }
+cli-mode-needs-a-task = { $mode } n'est pas un mode qu'une session interactive peut prendre, car il fixe chaque étape avant la première. Donnez-lui plutôt une tâche.
 cli-unexpected-argument = argument inattendu : { $argument }
 cli-task-required = une tâche est requise
 cli-configuration-problem = erreur de configuration : { $problem }
@@ -322,6 +324,7 @@ status-premium-in-use = premium, un jeton a été dépensé
 status-premium-not-spent = offre gratuite : aucun abonnement utilisé
 status-free-tier = offre gratuite seulement
 status-confinement = Confinement
+status-mode = Mode
 status-this-session = Cette session
 status-time = Temps
 status-time-inference = sur le modèle
@@ -522,6 +525,7 @@ turn-ended-unexpectedly = le tour s'est terminé de façon inattendue
 ## L'écran d'accueil
 
 opening-confinement = confinement { $level }
+opening-mode = mode { $mode }
 opening-invitation = Posez une question sur cet espace de travail.
 
 
@@ -538,6 +542,7 @@ verb-load-skill = Compétence
 verb-ask-user = Demander
 verb-run = Exécuter
 verb-read-output = Lire la sortie
+verb-update-state = Noter
 verb-unknown = Outil
 
 
