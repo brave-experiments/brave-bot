@@ -145,10 +145,15 @@ what is in it, so a rule that fences a tree fences those too. A processor is the
 to read what nobody vouched for, which makes it the route a rule most needs to cover rather than the
 one it can afford to miss.
 
+A deny rule also holds against a workspace the user vouched for, which is what makes one worth
+writing: saying yes at startup trusts the whole tree, and a rule is how one file is kept out of that
+answer without declining the rest of it.
+
 `verified-by: bravebot_core::policy::a_denied_program_does_not_run_at_all`
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_read_and_its_contents_do_not_reach_the_planner`
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_written_even_where_writes_are_approved`
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_read_by_a_processor_either`
+`verified-by: bravebot_agent::turn::a_deny_rule_holds_against_a_trusted_workspace`
 
 <a id="PERM-8"></a>
 ### PERM-8: an allow rule answers a prompt and grants nothing else

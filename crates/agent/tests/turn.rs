@@ -1198,6 +1198,228 @@ fn trusting_the_workspace() -> bravebot_core::trust::TrustStore {
     trust
 }
 
+/// Rules as a settings file would have carried them. Every rule must parse: a test whose rule was
+/// silently dropped would pass by matching nothing.
+fn rules(deny: &[&str], ask: &[&str], allow: &[&str]) -> bravebot_core::permissions::Permissions {
+    let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let (permissions, rejected) = bravebot_core::permissions::Permissions::parse(
+        &owned(deny),
+        &owned(ask),
+        &owned(allow),
+        &bravebot_core::permissions::Anchors::none(),
+    );
+    assert!(rejected.is_empty(), "a rule in this test did not parse");
+    permissions
+}
+
+/// A deny rule keeps a file out of the turn entirely: the bytes never reach the planner, and the
+/// file is not opened. This is the case the whole feature is for, so it is checked end to end
+/// rather than at the gate alone.
+#[test]
+fn a_denied_file_is_not_read_and_its_contents_do_not_reach_the_planner() {
+    let scratch = Scratch::new("permissions-read-denied");
+    std::fs::write(scratch.path.join(".env"), "SECRET_TOKEN=hunter2").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2("read_file", r#"{"path":".env"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is in .env").with_permissions(rules(&["Read(./.env)"], &[], &[]));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("hunter2"),
+        "a denied file's contents reached the planner: {second}"
+    );
+    // And it is told why, so it works without the file rather than retrying the same read.
+    assert!(second.contains("deny rule"), "got: {second}");
+}
+
+/// A deny rule stops a write as well as a read: a file whose contents are off limits is not
+/// protected if it can be replaced.
+#[test]
+fn a_denied_file_is_not_written_even_where_writes_are_approved() {
+    let scratch = Scratch::new("permissions-write-denied");
+    std::fs::write(scratch.path.join(".env"), "original").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":".env","contents":"replaced"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("replace .env").with_permissions(rules(&["Read(./.env)"], &[], &[]));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        // Approving every write, so the rule is the only thing that can stop this one.
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join(".env")).unwrap(),
+        "original",
+        "a deny rule did not stop a write to the file it covers"
+    );
+}
+
+/// The other half: an allow rule stops the prompt, so a write that would have been refused for
+/// want of anyone to ask goes through.
+///
+/// Both paths in one run, because the property is the boundary: the rule reaches what it names and
+/// nothing else. Checking only the write that lands would pass equally against a rule that allowed
+/// the whole tree.
+#[test]
+fn an_allow_rule_reaches_the_path_it_names_and_no_other() {
+    let scratch = Scratch::new("permissions-write-allowed");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"notes/out.txt","contents":"written"}"#,
+        ),
+        tool_request_2(
+            "write_file",
+            r#"{"path":"src/main.rs","contents":"written"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write both files").with_permissions(rules(&[], &[], &["Edit(notes/**)"]));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        // Nobody to ask: every prompt is a refusal, so only the rule can let a write through.
+        &mut bravebot_agent::Unattended,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes/out.txt")).unwrap(),
+        "written",
+        "an allow rule did not answer the write prompt"
+    );
+    assert!(
+        !scratch.path.join("src/main.rs").exists(),
+        "an allow rule reached a path it did not name"
+    );
+}
+
+/// A deny rule holds against a file's contents however they are asked for. A processor is the one
+/// component allowed to read quarantined content, so it is the route that would otherwise open a
+/// denied file: the planner never sees the path, hands over a reference, and the bytes reach a model
+/// call. The rule is about the file, not the spelling, so naming it by reference changes nothing.
+#[test]
+fn a_denied_file_is_not_read_by_a_processor_either() {
+    let scratch = Scratch::new("permissions-processor-denied");
+    std::fs::write(scratch.path.join(".env"), "SECRET_TOKEN=hunter2").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        // A listing hands back one reference per entry without naming any of them, which is how a
+        // planner comes to hold a reference to a file it was never shown.
+        tool_request("list_files", r#"{"directory":"."}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"report the token"}"#,
+        ),
+        // Answered, so that a read this rule failed to stop would go on to a processor call whose
+        // body is recorded and inspected below. Without a reply here the turn dies on a missing
+        // response instead, which says nothing about whether the bytes were fetched.
+        processor_reply("nothing to report"),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is the token").with_permissions(rules(&["Read(./.env)"], &[], &[]));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    // Nothing saw the bytes: not the planner, and not the processor that is otherwise the one
+    // component allowed to.
+    for body in received.try_iter() {
+        assert!(
+            !body.contains("hunter2"),
+            "a denied file's contents were read: {body}"
+        );
+    }
+}
+
+/// A deny rule holds against a workspace the user vouched for, which is the case that makes one
+/// worth writing: saying yes at startup trusts the tree, and a rule is how a person keeps one file
+/// out of that answer without having to decline the whole of it.
+#[test]
+fn a_deny_rule_holds_against_a_trusted_workspace() {
+    let scratch = Scratch::new("permissions-denied-though-trusted");
+    std::fs::write(scratch.path.join(".env"), "SECRET_TOKEN=hunter2").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":".env"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is the token").with_permissions(rules(&["Read(./.env)"], &[], &[]));
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    for body in received.try_iter() {
+        assert!(
+            !body.contains("hunter2"),
+            "a trusted workspace overrode a deny rule: {body}"
+        );
+    }
+}
+
 /// The model's own account of what it is doing is the best progress report there is, and it
 /// used to be thrown away: only the final reply survived, so a turn that explained each step
 /// showed none of those explanations.
