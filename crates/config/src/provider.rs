@@ -147,6 +147,11 @@ impl Provider {
         format!("{}/chat/completions", self.base_url)
     }
 
+    /// The URL that answers with what this gateway serves.
+    pub fn models_url(&self) -> String {
+        format!("{}/models", self.base_url)
+    }
+
     /// What to show a person choosing this provider.
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.id)

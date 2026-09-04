@@ -1702,9 +1702,16 @@ fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, S
         .map(bedrock_models)
         .unwrap_or_default();
 
-    // Additive on the same terms, and for the same reason: a gateway has a roster far too large to
-    // enumerate, so what is offered is what the file named.
-    configured.extend(config.providers.iter().flat_map(provider_models));
+    // Additive on the same terms. A block that named its models is taken at its word and costs no
+    // round trip, which is what keeps a configured gateway working offline. One that named none is
+    // asked, because the alternative is a gateway configured exactly as the tool this block's shape
+    // came from configures it, offering nothing.
+    for provider in &config.providers {
+        match provider.models.is_empty() {
+            false => configured.extend(provider_models(provider)),
+            true => configured.extend(fetch_gateway_models(provider).unwrap_or_default()),
+        }
+    }
 
     // A build from source pointed only at Bedrock has blank Brave credentials, and asking with them
     // would list a roster whose every request then fails unsigned.
@@ -1755,6 +1762,53 @@ fn fetch_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, 
         bravebot_aichat::models::list(&mut policy, config, &egress)
             .map_err(|error| error.to_string())
     })
+}
+
+/// Ask one gateway what it offers, for a block that named no models.
+///
+/// The row a person reads is composed here rather than in the client, because the words shown to
+/// somebody belong to the layer that draws them, and it has to match the row a configured model gets
+/// or the same gateway would name itself two ways in one list.
+///
+/// A gateway nothing holds a credential for is not asked. The listing would come back refused, and
+/// the useful thing to say about that gateway is what `doctor` already says: no credential found.
+fn fetch_gateway_models(
+    provider: &bravebot_config::provider::Provider,
+) -> Result<Vec<bravebot_aichat::models::Model>, String> {
+    let token = provider
+        .token(|name| std::env::var(name).ok())
+        .ok_or_else(|| format!("no credential for {}", provider.display_name()))?;
+
+    let mut sink = Trail::new();
+    let egress = Egress::new();
+
+    // The destination is the gateway's own endpoint, which came from configuration. Nothing fetched
+    // decides it, which is what makes asking a service for a list of names safe to do at all.
+    let mut routing = bravebot_core::policy::Routing::new();
+    routing.insert_trusted("models", provider.models_url());
+
+    let mut listed = bravebot_core::policy::Policy::begin(
+        routing,
+        bravebot_core::policy::ReleasePlan::new(),
+        bravebot_core::capability::CapabilitySet::from_iter([
+            bravebot_core::capability::Capability::WebFetch,
+        ]),
+        &mut sink,
+    )
+    .map_err(|denial| denial.to_string())
+    .and_then(|mut policy| {
+        bravebot_aichat::models::list_from_gateway(&mut policy, provider, &token, &egress)
+            .map_err(|error| error.to_string())
+    })?;
+
+    for model in &mut listed {
+        model.display_name = t!(
+            picker_model_gateway,
+            model = model.display_name.as_str(),
+            gateway = provider.display_name()
+        );
+    }
+    Ok(listed)
 }
 
 /// The models a Bedrock configuration offers, strongest tier first.

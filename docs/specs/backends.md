@@ -8,6 +8,7 @@ governs:
   - crates/tui/src/app.rs
   - crates/config/src/bedrock.rs
   - crates/aichat/src/lib.rs
+  - crates/aichat/src/models.rs
   - crates/config/src/provider.rs
   - crates/config/src/settings.rs
 ---
@@ -99,7 +100,8 @@ a reason to stop reaching the existing ones.
 
 A tier appears when the configuration names a model for it, and not otherwise. A service's own
 roster is offered only where this build holds the credentials to reach it. Nothing is invented for a
-tier that was left unset.
+tier that was left unset, and a gateway nothing can authenticate is not asked for a roster nobody
+could then use.
 
 **Why.** A name on the list is a promise that picking it works. An ARN cannot be derived from a
 model name, so an entry guessed for an unnamed tier is a choice that fails remotely, and a build
@@ -393,6 +395,43 @@ qualified name at all, which is what keeps the other rosters' spellings out of t
 `verified-by: bravebot_aichat::lib::only_the_name_the_gateway_knows_reaches_it`
 `verified-by: bravebot_aichat::lib::a_qualified_name_still_finds_the_options_its_model_configured`
 `verified-by: bravebot_tui::status::a_gateway_answering_under_its_own_name_is_not_a_substitution`
+
+<a id="BACKEND-19"></a>
+### BACKEND-19: a gateway that was told no models is asked what it serves
+
+Where a gateway block names its models, those are what is offered and nothing is asked over the
+network. Where it names none, the gateway itself is asked, and what it answers is offered. A listing
+that cannot be fetched contributes nothing and takes nothing away from the rest of the roster.
+
+Nothing is capped. Every model the gateway reports that can call tools is offered.
+
+**Why.** A block naming no models is the ordinary case, not a mistake: the tool this shape is borrowed
+from resolves a roster from a registry, so the commonest block copied in names a credential and
+nothing else. Offering nothing for such a block means a gateway configured exactly as that tool
+configures it appears in a diagnostic and is unusable, which was the state this replaced.
+
+Asking only where nothing was named is what keeps the block worth writing. A stated roster costs no
+round trip and works with no network, which is the position somebody offline is in, and it stays the
+way to pin a short list out of a service that offers hundreds.
+
+The listing is content and the pick is routing, the same footing the roster from Brave's endpoint
+arrives on: names are drawn for a person, that person chooses, and their choice is the endorsement for
+the field it lands in. What may not come from a service is where the request went, and that is
+configuration here rather than anything fetched.
+
+No cap, because a picker filters as somebody types and any limit is this system deciding they may not
+choose a model their gateway serves. A window the gateway reports is taken, since it is the one fact
+about a fetched model nobody can type, and a window the block stated outranks it as the figure
+somebody pinned deliberately. Failing both, the same conservative default a stated roster gets.
+
+`verified-by: bravebot_aichat::models::a_gateway_roster_is_offered_under_names_that_say_which_gateway_serves_them`
+`verified-by: bravebot_aichat::models::a_window_a_gateway_reports_is_taken_from_the_listing`
+`verified-by: bravebot_aichat::models::a_fetched_model_with_no_reported_window_gets_the_assumed_one`
+`verified-by: bravebot_aichat::models::a_window_the_block_stated_outranks_the_one_reported`
+`verified-by: bravebot_aichat::models::a_gateway_model_that_cannot_call_tools_is_not_offered`
+`verified-by: bravebot_aichat::models::a_gateway_that_reports_no_capabilities_still_offers_its_models`
+`verified-by: bravebot_aichat::models::a_fetched_entry_with_no_usable_name_is_dropped`
+`verified-by: bravebot_aichat::models::fetched_gateway_models_are_not_marked_premium`
 
 ## Known costs
 

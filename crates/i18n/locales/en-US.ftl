@@ -96,7 +96,7 @@ doctor-backend-gateway = { $gateway } (gateway)
 # printed one is a diagnostic people paste into issues.
 doctor-gateway-token = found (never printed)
 doctor-gateway-token-absent = none found (set a variable its `env` names)
-doctor-gateway-models-absent = none configured (name them under `models`)
+doctor-gateway-models-absent = none configured (the gateway is asked what it serves)
 doctor-region = region
 doctor-profile = profile
 doctor-profile-absent = default credentials

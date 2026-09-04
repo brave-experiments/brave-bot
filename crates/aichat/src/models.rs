@@ -126,6 +126,110 @@ pub fn list<S: Sink>(
     Ok(usable(listed))
 }
 
+/// One entry of a gateway's own roster.
+///
+/// The OpenAI shape is `{"data": [{"id": ...}]}` and says nothing but the name. Everything else here
+/// is a field gateways add: read where present, absent without complaint, because a gateway that
+/// reports only what the shape requires still has a usable roster.
+#[derive(Debug, Deserialize)]
+struct ListedByGateway {
+    /// What a request names. The only field the shape guarantees.
+    id: String,
+    /// The window, where the gateway reports one.
+    #[serde(default)]
+    context_length: Option<u64>,
+    /// What the model accepts, which is where a gateway says whether it can call tools.
+    ///
+    /// Absent for a gateway that does not report it, and then nothing is filtered: a roster that
+    /// says nothing about capabilities is not a roster claiming none, and dropping all of it would
+    /// leave a person unable to pick anything.
+    #[serde(default)]
+    supported_parameters: Option<Vec<String>>,
+}
+
+/// Ask one gateway what models it serves.
+///
+/// The listing is content, and the person's pick off it is what endorses a request field: the same
+/// footing the Brave roster arrives on, and the reason a fetched roster may reach a picker at all.
+/// The destination is the gateway's own endpoint, which came from configuration rather than from
+/// anything fetched.
+///
+/// Bearer-authenticated because some gateways refuse the listing otherwise, and because a roster is a
+/// per-account fact wherever a gateway offers different models to different keys.
+pub fn list_from_gateway<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    provider: &bravebot_config::provider::Provider,
+    token: &str,
+    egress: &Egress,
+) -> Result<Vec<Model>, ChatError> {
+    let request = Request::get(provider.models_url())
+        .header("accept", "application/json")
+        .header("authorization", format!("Bearer {token}"));
+
+    let response = egress.fetch(policy, request, Label::untrusted_public())?;
+    let (bytes, _) = response.body.into_parts_for_decoding();
+
+    let listed: GatewayListing = serde_json::from_slice(&bytes).map_err(|e| ChatError::Decode {
+        detail: format!(
+            "{e} (received {} bytes from {})",
+            bytes.len(),
+            provider.models_url()
+        ),
+    })?;
+
+    Ok(offered_by_gateway(provider, listed.data))
+}
+
+/// The envelope a gateway's roster arrives in.
+#[derive(Debug, Deserialize)]
+struct GatewayListing {
+    data: Vec<ListedByGateway>,
+}
+
+/// The picker rows one gateway's roster becomes, in the order it listed them.
+///
+/// Separated from the request so the filtering is testable without a server.
+///
+/// Every key is qualified by the provider's id, because that is what a choice is remembered as and
+/// what later selects this gateway rather than another service offering the same name.
+///
+/// Nothing is capped. A gateway's roster runs to hundreds, and the picker filters as a person types,
+/// so a limit here would be this program deciding somebody may not choose a model their gateway
+/// serves.
+fn offered_by_gateway(
+    provider: &bravebot_config::provider::Provider,
+    listed: Vec<ListedByGateway>,
+) -> Vec<Model> {
+    listed
+        .into_iter()
+        .filter(|entry| match entry.supported_parameters.as_ref() {
+            Some(parameters) => parameters.iter().any(|it| it == TOOLS_CAPABILITY),
+            None => true,
+        })
+        .filter(|entry| !entry.id.trim().is_empty())
+        .map(|entry| Model {
+            key: format!("{}/{}", provider.id, entry.id),
+            // The bare name the gateway knows it by. What a person reads is composed by whoever
+            // draws the picker, which is the layer that owns the words shown to somebody.
+            display_name: entry.id.clone(),
+            // A gateway is reached with the person's own bearer token, so a Leo subscription has
+            // nothing to do with it.
+            premium: false,
+            // What the block said about this model outranks what the gateway reports, because a
+            // stated window is somebody pinning a figure they know better than the roster does.
+            // Failing that the reported one, and failing that the conservative default: a window
+            // above the real one does not delay compaction, it removes it.
+            conversation_tokens: Some(
+                provider
+                    .model(&entry.id)
+                    .and_then(|model| model.context_window)
+                    .or(entry.context_length)
+                    .unwrap_or(bravebot_config::provider::CONTEXT_WINDOW),
+            ),
+        })
+        .collect()
+}
+
 /// The models worth offering, `automatic` first.
 ///
 /// Separated from the request so the filtering is testable without a server.
@@ -318,5 +422,132 @@ mod tests {
             .expect("the premium entry survived");
         assert_eq!(sonnet.display_name, "Claude Sonnet");
         assert!(sonnet.premium);
+    }
+
+    /// A gateway configured with no models at all, which is the case its roster is fetched for.
+    fn gateway() -> bravebot_config::provider::Provider {
+        let serde_json::Value::Object(root) = serde_json::from_str(
+            r#"{"provider": {"openrouter": {
+                "options": {"baseURL": "https://openrouter.example.invalid/api/v1"}
+            }}}"#,
+        )
+        .expect("json") else {
+            panic!("not an object");
+        };
+        bravebot_config::provider::Provider::all(&root)
+            .pop()
+            .expect("one provider")
+    }
+
+    fn from_gateway(provider: &bravebot_config::provider::Provider, body: &str) -> Vec<Model> {
+        let listed: GatewayListing = serde_json::from_str(body).expect("the test body parses");
+        offered_by_gateway(provider, listed.data)
+    }
+
+    /// The shape a gateway answers with: an envelope around entries whose only certain field is the
+    /// name. Every key is qualified by the provider's id, since that is what selects this service
+    /// later and a fetched roster is not written down anywhere that could say so instead.
+    #[test]
+    fn a_gateway_roster_is_offered_under_names_that_say_which_gateway_serves_them() {
+        let provider = gateway();
+        let models = from_gateway(
+            &provider,
+            r#"{"data": [{"id": "z-ai/glm-4.6"}, {"id": "moonshot/kimi-k2"}]}"#,
+        );
+        let keys: Vec<&str> = models.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["openrouter/z-ai/glm-4.6", "openrouter/moonshot/kimi-k2"]
+        );
+        // The bare name, for whoever composes the row a person reads.
+        assert_eq!(models[0].display_name, "z-ai/glm-4.6");
+    }
+
+    /// A window the gateway reports is worth having: it is the one fact about a fetched model that
+    /// nobody can type, and the default is deliberately far below what most of them offer.
+    #[test]
+    fn a_window_a_gateway_reports_is_taken_from_the_listing() {
+        let models = from_gateway(
+            &gateway(),
+            r#"{"data": [{"id": "z-ai/glm-4.6", "context_length": 262144}]}"#,
+        );
+        assert_eq!(models[0].conversation_tokens, Some(262_144));
+    }
+
+    /// A gateway saying nothing about a window is not saying there is none. The conservative figure
+    /// stands in, because a budget above the real window does not delay compaction but removes it.
+    #[test]
+    fn a_fetched_model_with_no_reported_window_gets_the_assumed_one() {
+        let models = from_gateway(&gateway(), r#"{"data": [{"id": "z-ai/glm-4.6"}]}"#);
+        assert_eq!(
+            models[0].conversation_tokens,
+            Some(bravebot_config::provider::CONTEXT_WINDOW)
+        );
+    }
+
+    /// Where the block pinned a window for a model, that figure is the person's own and outranks
+    /// what the roster reports, which is the whole reason stating one stays possible.
+    #[test]
+    fn a_window_the_block_stated_outranks_the_one_reported() {
+        let serde_json::Value::Object(root) = serde_json::from_str(
+            r#"{"provider": {"openrouter": {
+                "options": {"baseURL": "https://openrouter.example.invalid/api/v1"},
+                "models": {"z-ai/glm-4.6": {"limit": {"context": 32000, "output": 8192}}}
+            }}}"#,
+        )
+        .expect("json") else {
+            panic!("not an object");
+        };
+        let provider = bravebot_config::provider::Provider::all(&root)
+            .pop()
+            .expect("one provider");
+        let models = from_gateway(
+            &provider,
+            r#"{"data": [{"id": "z-ai/glm-4.6", "context_length": 262144}]}"#,
+        );
+        assert_eq!(models[0].conversation_tokens, Some(32_000));
+    }
+
+    /// Every turn here calls tools, so a chat-only model is a choice that produces an agent which
+    /// cannot read or write anything. Dropped on the same grounds as on the Brave roster.
+    #[test]
+    fn a_gateway_model_that_cannot_call_tools_is_not_offered() {
+        let models = from_gateway(
+            &gateway(),
+            r#"{"data": [
+                {"id": "can/talk", "supported_parameters": ["temperature"]},
+                {"id": "can/work", "supported_parameters": ["temperature", "tools"]}
+            ]}"#,
+        );
+        let keys: Vec<&str> = models.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(keys, ["openrouter/can/work"]);
+    }
+
+    /// A gateway that reports no capabilities at all is not claiming its models have none. Filtering
+    /// on a field the shape does not require would empty the picker for every gateway but one.
+    #[test]
+    fn a_gateway_that_reports_no_capabilities_still_offers_its_models() {
+        let models = from_gateway(&gateway(), r#"{"data": [{"id": "z-ai/glm-4.6"}]}"#);
+        assert_eq!(models.len(), 1);
+    }
+
+    /// A name is what a request carries, so an entry without one cannot be asked for. Nothing else
+    /// on the entry could stand in for it.
+    #[test]
+    fn a_fetched_entry_with_no_usable_name_is_dropped() {
+        let models = from_gateway(
+            &gateway(),
+            r#"{"data": [{"id": "  "}, {"id": "real/one"}]}"#,
+        );
+        let keys: Vec<&str> = models.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(keys, ["openrouter/real/one"]);
+    }
+
+    /// A gateway is reached with somebody's own bearer token, so a Leo subscription has nothing to
+    /// do with it. Marked premium, every row would ask them to import one to use what they pay for.
+    #[test]
+    fn fetched_gateway_models_are_not_marked_premium() {
+        let models = from_gateway(&gateway(), r#"{"data": [{"id": "z-ai/glm-4.6"}]}"#);
+        assert!(!models[0].premium);
     }
 }
