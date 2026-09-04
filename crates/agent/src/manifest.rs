@@ -520,6 +520,10 @@ pub fn run<S: Sink, C: Confirmer, R: Reporter>(
         ));
     }
 
+    // Taken here rather than in either half, because a run is planning plus execution and only
+    // this sees both. `execute` fills in the parts and cannot know when the run began.
+    let began = std::time::Instant::now();
+
     let mut subscription = crate::turn::discover_subscription(config, reporter);
 
     // Owned here rather than inside either half, so a failure in either one still comes back
@@ -554,7 +558,10 @@ pub fn run<S: Sink, C: Confirmer, R: Reporter>(
         task.model.as_deref(),
         &mut attempt,
     ) {
-        Ok(outcome) => Ok(outcome),
+        Ok(mut outcome) => {
+            outcome.timing.wall_ms = began.elapsed().as_millis() as u64;
+            Ok(outcome)
+        }
         Err(error) => Err(stopped(attempt, error)),
     }
 }
@@ -581,6 +588,11 @@ struct Planned {
     model: String,
     tokens: u64,
     output_tokens: u64,
+    /// How long the two planning calls kept the run waiting.
+    ///
+    /// Planning is most of what a short manifest run spends, and a figure that started at
+    /// execution would report the cheap half.
+    inference: std::time::Duration,
     /// Whether the planning policy refused anything.
     clean: bool,
 }
@@ -705,6 +717,7 @@ fn plan<S: Sink, R: Reporter>(
 
     let mut tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut waited = std::time::Duration::ZERO;
     let mut model = String::new();
     let chosen = task.model.as_deref().unwrap_or(&config.default_model);
 
@@ -722,6 +735,7 @@ fn plan<S: Sink, R: Reporter>(
         &history,
         &mut tokens,
         &mut output_tokens,
+        &mut waited,
         &mut model,
     )?;
     // Packaging is not the goal. The record and the second call both see the words, not the
@@ -749,6 +763,7 @@ fn plan<S: Sink, R: Reporter>(
         &history,
         &mut tokens,
         &mut output_tokens,
+        &mut waited,
         &mut model,
     )?;
 
@@ -777,6 +792,7 @@ fn plan<S: Sink, R: Reporter>(
         model,
         tokens,
         output_tokens,
+        inference: waited,
         clean: policy.finish(),
     })
 }
@@ -803,6 +819,7 @@ fn ask<S: Sink, R: Reporter>(
     history: &Conversation,
     tokens: &mut u64,
     output_tokens: &mut u64,
+    waited: &mut std::time::Duration,
     model: &mut String,
 ) -> Result<String, TurnError> {
     if cancel.is_cancelled() {
@@ -818,6 +835,7 @@ fn ask<S: Sink, R: Reporter>(
     let request = ChatRequest::new(chosen, history.with_system(system));
 
     let written_before = *output_tokens;
+    let asked_at = std::time::Instant::now();
     let completion = {
         let mut client =
             crate::backend::Backend::select(config, egress, chosen).with_cancel(cancel.clone());
@@ -829,6 +847,7 @@ fn ask<S: Sink, R: Reporter>(
         })?
     };
 
+    *waited += asked_at.elapsed();
     *tokens += completion.usage.total();
     *output_tokens += completion.usage.completion_tokens;
     *model = completion.model;
@@ -866,8 +885,16 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         model,
         mut tokens,
         mut output_tokens,
+        inference: planning_took,
         clean: planning_was_clean,
     } = planned;
+
+    // Seeded with what planning already spent, then added to by the steps. The run's wall clock is
+    // taken by the caller, which is the only place that saw the whole of it.
+    let mut spent = crate::timing::Elapsed {
+        inference: planning_took,
+        ..Default::default()
+    };
 
     // Noted before the subscription is lent to the steps below, which consume it.
     let premium = subscription.is_some();
@@ -938,6 +965,11 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         let activity = Activity::running(entry.capability, step.describe());
         reporter.tool_started(activity.clone());
 
+        // Wrapped per step for the same reason the turn loop wraps per call: the borrow has to go
+        // back for the next one. A manifest run asks about writes only, but it asks through the
+        // same trait, so the same wrapper counts it.
+        let mut asking = crate::confirm::Timed::new(confirmer);
+        let ran_at = std::time::Instant::now();
         let outcome = fill_before_acting(
             &mut policy,
             workspace,
@@ -953,12 +985,23 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
                 workspace,
                 &mut slots,
                 &mut chat,
-                confirmer,
+                &mut asking,
                 index,
                 step,
                 entry,
             )
         });
+        let took = ran_at.elapsed();
+        let stalled = asking.waited();
+        // A step that failed still spent the time it spent, so this is recorded before the branch
+        // below returns on failure: a run that stopped half way is exactly the one worth reading.
+        spent.stalled += stalled;
+        let thinking = outcome
+            .as_ref()
+            .map(|done| done.inference)
+            .unwrap_or_default();
+        spent.inference += thinking;
+        spent.tools += took.saturating_sub(stalled).saturating_sub(thinking);
 
         match outcome {
             Ok(done) => {
@@ -1015,6 +1058,7 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         output_tokens,
         context_tokens: 0,
         premium,
+        timing: spent.finish(),
         display: shown,
         notices: Vec::new(),
     })
@@ -1027,6 +1071,8 @@ struct Done {
     changes: Vec<crate::diff::Change>,
     tokens: u64,
     output_tokens: u64,
+    /// How long the step waited on the model. Only a transform waits.
+    inference: std::time::Duration,
     /// What this step answered the user with, where it was the one that answered.
     answer: Option<Answered>,
 }
@@ -1211,8 +1257,10 @@ fn run_step<S: Sink, C: Confirmer>(
                     slots,
                 )
                 .map_err(|d| d.to_string())?;
+            let asked_at = std::time::Instant::now();
             let processed =
                 crate::processor::run(policy, chat, slots, &spec).map_err(|e| e.to_string())?;
+            let waited = asked_at.elapsed();
 
             // A processor that answered "leave it" still has to fill the slot the plan named:
             // a later write or answer reads that slot, and skipping the mint would leave the
@@ -1247,6 +1295,7 @@ fn run_step<S: Sink, C: Confirmer>(
                 note,
                 tokens: processed.usage.total(),
                 output_tokens: processed.usage.completion_tokens,
+                inference: waited,
                 ..Done::default()
             })
         }

@@ -90,6 +90,17 @@ pub struct Record {
     /// still there and only the breakdown is missing.
     #[serde(default)]
     pub spend: BTreeMap<usize, u64>,
+    /// Where each turn's wall clock went, by turn number.
+    ///
+    /// The other half of the question [`Record::spend`] answers. Tokens say what a turn cost the
+    /// endpoint; this says what it cost the person sitting in front of it, and the two need not
+    /// agree at all: the cheapest turn in a session is often the one that stopped, put a command on
+    /// the screen, and waited twenty minutes to be allowed to run it.
+    ///
+    /// Empty for a record written before this was kept, which is not the same as a session that
+    /// took no time.
+    #[serde(default)]
+    pub timing: BTreeMap<usize, bravebot_agent::timing::Timing>,
     /// The task list each turn worked to, by turn number.
     ///
     /// Kept per turn rather than as one list, because that is how the transcript shows it: the
@@ -356,6 +367,8 @@ pub struct Standing<'a> {
     pub tokens: u64,
     /// What each turn cost, by turn number.
     pub spend: &'a BTreeMap<usize, u64>,
+    /// Where each turn's wall clock went, by turn number.
+    pub timing: &'a BTreeMap<usize, bravebot_agent::timing::Timing>,
     /// The model the server reported answering with, or `None` before a turn reached one.
     pub model: Option<&'a str>,
     pub todos: &'a BTreeMap<usize, Vec<Row>>,
@@ -498,6 +511,7 @@ impl Handle {
             tokens: standing.tokens,
             model: standing.model.map(str::to_string),
             spend: standing.spend.clone(),
+            timing: standing.timing.clone(),
             todos: standing
                 .todos
                 .iter()
@@ -955,6 +969,34 @@ mod tests {
         assert_eq!(how_long_ago(now - 13 * 60), "13 minutes ago");
     }
 
+    /// Every session written before timing was kept has a record without it, and refusing to parse
+    /// one would make an upgrade look like a lost session. It reads as no breakdown, which is not
+    /// the same as a session that took no time: the turn count and the token total are still there.
+    #[test]
+    fn a_record_written_before_timing_was_kept_still_loads() {
+        let body = serde_json::to_string(&serde_json::json!({
+            "id": "1-2",
+            "directory": "/tmp/x",
+            "title": "a session",
+            "started": 1,
+            "updated": 1,
+            "turns": 2,
+            "tokens": 3_400,
+            "conversation": {
+                "messages": [],
+                "context": "trusted",
+                "references": 0,
+                "archive": [],
+                "measured": 0,
+            },
+        }))
+        .expect("serialises");
+
+        let record: Record = serde_json::from_str(&body).expect("an older record still parses");
+        assert!(record.timing.is_empty(), "a breakdown was invented");
+        assert_eq!(record.tokens, 3_400, "the figures that were kept were lost");
+    }
+
     /// A clock that has gone backwards since the session was written must not produce an age in
     /// the future or a panic.
     #[test]
@@ -1147,6 +1189,7 @@ mod tests {
             tokens: 0,
             model: None,
             spend: BTreeMap::new(),
+            timing: BTreeMap::new(),
             todos: BTreeMap::new(),
             trust: None,
             programs: Vec::new(),

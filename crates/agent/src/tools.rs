@@ -523,6 +523,13 @@ pub struct Output {
     /// Zero for every tool but the processor. A turn that reported only its own rounds would
     /// understate what it cost by however much its processors wrote.
     pub usage: Usage,
+    /// How long the call spent waiting on the model, where it called one.
+    ///
+    /// Travels beside [`Output::usage`] and for the same reason. A processor is a request like any
+    /// other, and the turn was waiting on the endpoint for it: left out, the seconds would be
+    /// charged to tool execution, and a turn that did most of its work in processors would read as
+    /// one that ran a very slow subprocess.
+    pub inference: std::time::Duration,
     /// The command whose output this is, where a run produced it.
     ///
     /// Recorded on the slot by the turn loop, since only a slot minted from a command may be
@@ -596,6 +603,8 @@ struct Produced {
     content: bool,
     /// What the tool spent at the model. Only a processor spends anything.
     usage: Usage,
+    /// How long the tool waited on the model. Only a processor waits.
+    inference: std::time::Duration,
     /// The command whose output this is, where a run produced it.
     ///
     /// Recorded on the slot by the turn loop, because only a slot minted from a command may be
@@ -621,6 +630,7 @@ impl Produced {
             said: None,
             content: false,
             usage: Usage::default(),
+            inference: std::time::Duration::ZERO,
             printed_by: None,
         }
     }
@@ -675,6 +685,12 @@ impl Produced {
 
     fn costing(mut self, usage: Usage) -> Self {
         self.usage = usage;
+        self
+    }
+
+    /// Say how long the tool waited on the model for this.
+    fn waiting(mut self, inference: std::time::Duration) -> Self {
+        self.inference = inference;
         self
     }
 }
@@ -925,6 +941,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 said: produced.said,
                 content: produced.content,
                 usage: produced.usage,
+                inference: produced.inference,
                 printed_by: produced.printed_by,
             };
         }
@@ -972,6 +989,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         said: produced.said,
         content: produced.content,
         usage: produced.usage,
+        inference: produced.inference,
         printed_by: produced.printed_by,
     }
 }
@@ -997,6 +1015,7 @@ fn problem(text: impl Into<String>) -> Produced {
         said: None,
         content: false,
         usage: Usage::default(),
+        inference: std::time::Duration::ZERO,
         printed_by: None,
     }
 }
@@ -2246,7 +2265,12 @@ fn spawn_processor<S: Sink>(
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
-    match processor::run(policy, &mut tools.chat, tools.slots, &spec) {
+    let asked_at = std::time::Instant::now();
+    let answer = processor::run(policy, &mut tools.chat, tools.slots, &spec);
+    // Taken around the call rather than inside it, so a processor that failed still reports the
+    // time it spent failing: a request that errored kept the turn waiting just as long.
+    let waited = asked_at.elapsed();
+    match answer {
         Ok(done) => {
             // Nothing to keep. A slot is written once and read by whatever the planner points
             // at it, and a slot holding a copy of a document that is already in a slot has
@@ -2261,7 +2285,8 @@ fn spawn_processor<S: Sink>(
                     ),
                     "left it alone",
                 )
-                .costing(done.usage);
+                .costing(done.usage)
+                .waiting(waited);
                 produced.said = done.note;
                 return produced;
             }
@@ -2278,7 +2303,8 @@ fn spawn_processor<S: Sink>(
                         .to_string(),
                     "said something, produced no document",
                 )
-                .costing(done.usage);
+                .costing(done.usage)
+                .waiting(waited);
                 produced.said = done.note;
                 return produced;
             };
@@ -2299,13 +2325,14 @@ fn spawn_processor<S: Sink>(
             };
             let mut produced = Produced::new(document, origin, note)
                 .costing(done.usage)
+                .waiting(waited)
                 .of_content();
             produced.unchanged_from = done.unchanged_from;
             produced.answers_for = Some(spec.about().cloned());
             produced.said = done.note;
             produced
         }
-        Err(error) => problem(format!("error: {error}")),
+        Err(error) => problem(format!("error: {error}")).waiting(waited),
     }
 }
 

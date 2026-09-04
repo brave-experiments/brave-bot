@@ -27,10 +27,12 @@ use bravebot_i18n::t;
 use bravebot_net::Egress;
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::confirm::Confirmer;
 use crate::conversation::{Conversation, TOOL_RESULT_PREFIX};
 use crate::report::{IgnoreReports, Phase, Reporter};
+use crate::timing::{Elapsed, Timing};
 use crate::tools;
 use crate::workspace::{Workspace, WorkspaceError};
 
@@ -534,6 +536,13 @@ pub struct Outcome {
     /// premium host used to report itself as premium, so a session whose credentials could not be
     /// read said "premium" while being answered by whatever the free tier serves.
     pub premium: bool,
+    /// Where the turn's wall clock went.
+    ///
+    /// Beside the token figures because it answers the other half of the same question. Tokens say
+    /// what a turn cost the endpoint; this says what it cost the person in front of it, and the two
+    /// have no relation: the cheapest turn in a session can be the one that took ten minutes
+    /// because it stopped and waited to be allowed to run a command.
+    pub timing: Timing,
     /// The reply, released for display while the policy was still open.
     pub(crate) display: String,
     /// What to tell the person watching about standing instructions and skills.
@@ -815,6 +824,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     programs: TrustedPrograms,
     cancel: &Cancel,
 ) -> Result<Outcome, TurnError> {
+    // First thing in the turn, so the wall figure covers the work that happens before the first
+    // request goes out. Skill discovery and the preamble read files, and a turn in a large tree can
+    // spend real time there; started after them, that time would land in no figure at all and the
+    // parts would silently fail to add up to the whole.
+    let began = Instant::now();
+    let mut spent = Elapsed::default();
+
     let mut routing = Routing::new();
     routing.insert_trusted("task", task.prompt.clone());
     for (index, file) in task.files.iter().enumerate() {
@@ -1038,7 +1054,12 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 model: task.model.as_deref(),
                 cancel: Some(cancel),
             };
-            match crate::compact::compact(&mut policy, &mut chat, conversation, steps) {
+            // A summary is a model call, so it belongs in the inference figure for the same reason
+            // its tokens belong in the total: the turn was waiting on the endpoint for it.
+            let summarising = Instant::now();
+            let summary = crate::compact::compact(&mut policy, &mut chat, conversation, steps);
+            spent.inference += summarising.elapsed();
+            match summary {
                 Ok(Some(done)) => {
                     tokens += done.usage.total();
                     output_tokens += done.usage.completion_tokens;
@@ -1099,6 +1120,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // and a trail with a line per chunk would bury every other line in it.
         let as_written = policy.authorise_display_release("the reply as the model writes it");
 
+        let asked_at = Instant::now();
         let completion = {
             let mut client =
                 crate::backend::Backend::select(config, egress, model).with_cancel(cancel.clone());
@@ -1122,6 +1144,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 reporter.streaming(progress.written.declassify(&as_written).to_string());
             })?
         };
+        // Retries included, because a round that had to reconnect really did keep the turn waiting
+        // that long. The count is what the turn spent, not what the endpoint would have taken had
+        // the connection held.
+        spent.inference += asked_at.elapsed();
         tokens += completion.usage.total();
         output_tokens += completion.usage.completion_tokens;
         context_tokens = completion.usage.prompt_tokens;
@@ -1243,6 +1269,11 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 return Err(TurnError::Cancelled);
             }
 
+            // Wrapped per call rather than once for the turn, because the borrow has to be given
+            // back: the loop above hands the same confirmer to the next call. What it counted is
+            // taken off the tool figure below.
+            let mut asking = crate::confirm::Timed::new(confirmer);
+            let ran_at = Instant::now();
             let output = tools::dispatch(
                 &mut policy,
                 &mut tools::Tools {
@@ -1260,10 +1291,22 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                     },
                     cancel,
                 },
-                confirmer,
+                &mut asking,
                 reporter,
                 call,
             );
+            let took = ran_at.elapsed();
+            let stalled = asking.waited();
+            spent.stalled += stalled;
+            // What the model waited for inside the call, which is not what the call spent working:
+            // a processor is a request, and its seconds belong with the other requests'.
+            spent.inference += output.inference;
+            // Both taken off, so the four figures partition the turn rather than double-count the
+            // parts of it that nest. Saturating because they are separate clocks: a measure of the
+            // inside cannot be allowed to make the outside negative.
+            spent.tools += took
+                .saturating_sub(stalled)
+                .saturating_sub(output.inference);
             // A processor is a model call of its own, so what it spent belongs in the turn's
             // total. Left out, a turn that did most of its work in processors would report
             // having cost almost nothing.
@@ -1522,6 +1565,9 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     let trust = policy.trust().clone();
     let programs = policy.programs().clone();
 
+    // Read last, so everything the turn did is inside it, including the presentation just above.
+    spent.wall = began.elapsed();
+
     Ok(Outcome {
         reply: completion.content,
         model: completion.model,
@@ -1534,6 +1580,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // Whether a credential was actually presented, which is what `route` decides from. A
         // subscription that was found is one that will be spent on every round of this turn.
         premium: subscription.is_some(),
+        timing: spent.finish(),
         clean: policy.finish(),
         display,
         notices: notices.into_iter().map(|n| n.message).collect(),

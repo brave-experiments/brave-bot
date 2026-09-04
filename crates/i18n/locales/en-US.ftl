@@ -293,6 +293,14 @@ status-premium-not-spent = free tier: no subscription was used
 status-free-tier = free tier only
 status-confinement = Confinement
 status-this-session = This session
+# Where a session's wall clock went. Four figures, because the whole is unactionable: a session
+# that took an hour on the model, an hour on subprocesses, and an hour waiting for its user to
+# answer a prompt are three different problems with the same total.
+status-time = Time
+status-time-inference = on the model
+status-time-tools = running tools
+status-time-stalled = waiting on you
+status-time-overhead = unaccounted for
 status-trust = Trust
 status-nothing-vouched-for = nothing vouched for
 status-trusted = trusted

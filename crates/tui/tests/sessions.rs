@@ -75,6 +75,42 @@ fn a_plan() -> BTreeMap<usize, Vec<Row>> {
     )])
 }
 
+/// Where three turns' time went, with a different shape in each so a round trip that muddled the
+/// figures could not pass: one turn dominated by the model, one by a subprocess, one by a person who
+/// took a while to answer.
+fn a_time_breakdown() -> BTreeMap<usize, bravebot_agent::timing::Timing> {
+    use bravebot_agent::timing::Timing;
+    BTreeMap::from([
+        (
+            1,
+            Timing {
+                wall_ms: 12_000,
+                inference_ms: 11_000,
+                tools_ms: 500,
+                stalled_ms: 0,
+            },
+        ),
+        (
+            2,
+            Timing {
+                wall_ms: 40_000,
+                inference_ms: 2_000,
+                tools_ms: 37_000,
+                stalled_ms: 0,
+            },
+        ),
+        (
+            3,
+            Timing {
+                wall_ms: 300_000,
+                inference_ms: 4_000,
+                tools_ms: 1_000,
+                stalled_ms: 294_000,
+            },
+        ),
+    ])
+}
+
 /// A map with both polarities, so the round trip is tested on the case that matters: a path a
 /// write marked untrusted inside a tree the user vouched for.
 fn a_trust_map() -> TrustStore {
@@ -133,6 +169,7 @@ fn a_session_is_named_once_there_is_a_record_to_name() {
             turns: 1,
             tokens: 1_200,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -170,6 +207,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             turns: 1,
             tokens: 1_200,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -244,6 +282,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             turns: 2,
             tokens: 3_400,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -276,6 +315,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             turns: 1,
             tokens: 0,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
@@ -297,6 +337,7 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
             turns: 3,
             tokens: 5_600,
             spend: &BTreeMap::from([(1, 1_200), (2, 900), (3, 3_500)]),
+            timing: &a_time_breakdown(),
             model: Some("claude-opus-4-8"),
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -310,6 +351,19 @@ fn sessions_are_written_read_back_and_kept_per_directory() {
     let listed = sessions::list(&scratch.project);
     assert_eq!(listed.len(), 1, "resuming forked the session");
     assert_eq!(listed[0].title, "make a space invaders game");
+
+    // Where the time went comes back per turn, like the token breakdown beside it. The turn that
+    // spent five minutes waiting on a person is the one a reader is looking for, and a total cannot
+    // point at it.
+    let record = sessions::load(&scratch.project, &listed[0].id).expect("the session loads");
+    assert_eq!(record.timing, a_time_breakdown());
+    let stalled = record.timing[&3];
+    assert_eq!(stalled.stalled_ms, 294_000);
+    assert_eq!(
+        stalled.overhead_ms(),
+        1_000,
+        "the parts did not add up to the whole"
+    );
 
     // The audit comes back grouped by the turn that left it, which is what puts a trail under
     // the right entry when the transcript is replayed. Reading the record alone left every turn
@@ -430,6 +484,7 @@ fn the_audit_keeps_the_time_each_event_happened() {
             turns: 1,
             tokens: 0,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -491,6 +546,7 @@ fn renaming_a_session_rewrites_the_record_immediately() {
             turns: 1,
             tokens: 1_200,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -534,6 +590,7 @@ fn a_chosen_name_survives_the_next_turn() {
             turns: 1,
             tokens: 10,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &a_plan(),
             trust: &a_trust_map(),
@@ -603,6 +660,7 @@ fn a_resumed_session_can_still_open_the_directory_it_added() {
             turns: 1,
             tokens: 10,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &BTreeMap::new(),
             trust: &trust,
@@ -667,6 +725,7 @@ fn a_directory_that_has_gone_since_is_reported_on_resume() {
             turns: 1,
             tokens: 10,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),
@@ -717,6 +776,7 @@ fn a_manifest_run_is_recorded_and_cannot_be_resumed() {
             turns: 1,
             tokens: 0,
             spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
             model: None,
             todos: &BTreeMap::new(),
             trust: &TrustStore::new(),

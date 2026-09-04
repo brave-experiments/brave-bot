@@ -198,6 +198,45 @@ than the one in force at the time.
 `verified-by: bravebot_tui::state::an_aside_is_charged_to_the_turn_it_interrupted`
 `verified-by: bravebot_tui::state::clearing_forgets_what_each_turn_cost`
 
+<a id="SESSION-12"></a>
+### SESSION-12: the record says where each turn's time went, not only how long it took
+
+Every turn's wall clock is written down split four ways: what was spent waiting on the model, what
+was spent running tools, what was spent waiting for the person to answer a prompt, and what is left
+over. The four are a partition rather than four independent measures, so the parts account for the
+whole and the remainder is meaningful. An approval prompt is drawn from inside a tool call, so what
+was spent waiting for a person is taken off the tool figure rather than counted in both.
+
+A turn that failed is recorded on the same footing as one that succeeded, and a `/compact` asked for
+mid-turn is charged to the turn it interrupted, as its tokens are. `/status` reports the session
+total and each part that actually happened; a part that did not happen is left out rather than shown
+as zero. A record written before this was kept reads as an empty breakdown, which is not the same as
+a session that took no time.
+
+**Why.** A duration alone is unactionable, and the three things it conflates want three different
+fixes. A turn that took four minutes on the model, one that took four minutes running a test suite,
+and one that took four minutes with a diff on the screen while its user was at lunch are the same
+number. Only the last is not the machine's fault, and it is the one a total can never reveal:
+stalled time was previously invisible, so the harness's own overhead and a person's thinking time
+were indistinguishable from inference.
+
+`verified-by: bravebot_tui::state::each_turn_records_where_its_time_went`
+`verified-by: bravebot_tui::state::an_aside_charges_its_wait_to_the_turn_it_interrupted`
+`verified-by: bravebot_tui::state::a_failed_turn_still_accounts_for_its_wall_clock`
+`verified-by: bravebot_tui::state::a_resumed_session_carries_on_from_the_time_it_had_spent`
+`verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
+`verified-by: bravebot_tui::sessions::a_record_written_before_timing_was_kept_still_loads`
+`verified-by: bravebot_tui::status::the_panel_says_where_the_session_spent_its_time`
+`verified-by: bravebot_tui::status::a_part_that_never_happened_is_not_reported_as_zero`
+`verified-by: bravebot_tui::status::a_session_with_no_turn_yet_reports_no_time`
+`verified-by: bravebot_agent::confirm::the_time_a_person_takes_to_answer_is_counted`
+`verified-by: bravebot_agent::confirm::every_kind_of_question_is_timed`
+`verified-by: bravebot_agent::confirm::a_refusal_is_a_wait_like_any_other`
+`verified-by: bravebot_agent::confirm::the_answer_passes_through_untouched`
+`verified-by: bravebot_agent::timing::the_remainder_is_what_nothing_else_accounts_for`
+`verified-by: bravebot_agent::timing::parts_exceeding_the_whole_do_not_wrap`
+`verified-by: bravebot_agent::turn::time_spent_waiting_for_an_approval_is_not_charged_to_the_tool`
+
 ## Known costs
 
 - **Two working directories can share a session store.** The directory name is derived by mapping

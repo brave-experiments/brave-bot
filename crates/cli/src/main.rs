@@ -539,6 +539,13 @@ fn record_manifest_run(
     // One turn, so the breakdown and the total say the same thing. Written anyway, because a
     // reader comparing runs should not have to special-case where the figure came from.
     let spend = std::collections::BTreeMap::from([(1, tokens)]);
+    // Where that one turn's time went, on the same footing. A manifest run is the case where this
+    // matters most: it is the mode nobody is watching, so a run that spent its afternoon blocked on
+    // an approval nobody was there to give leaves this as the only trace of it.
+    let timing = std::collections::BTreeMap::from([(
+        1,
+        outcome.as_ref().map(|o| o.timing).unwrap_or_default(),
+    )]);
     let mut handle = Handle::begin(workspace.root());
     handle.save(
         prompt,
@@ -550,6 +557,7 @@ fn record_manifest_run(
             turns: 1,
             tokens,
             spend: &spend,
+            timing: &timing,
             model: outcome.as_ref().ok().map(|o| o.model.as_str()),
             todos: &todos,
             trust: &trust,

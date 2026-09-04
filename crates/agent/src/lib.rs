@@ -22,6 +22,7 @@ pub mod report;
 pub mod shell;
 pub mod skills;
 pub mod subscription;
+pub mod timing;
 pub mod tools;
 pub mod turn;
 pub mod workspace;

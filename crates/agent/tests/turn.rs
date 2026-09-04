@@ -882,6 +882,105 @@ fn an_approved_write_is_applied() {
     );
 }
 
+/// The whole reason a turn's clock is split up. A person taking a while over an approval and a
+/// model taking a while to answer are indistinguishable in a wall-clock figure, and only one of the
+/// two is anybody's problem to fix.
+///
+/// The wait is charged to the person and taken back off the tool: an approval is drawn from inside
+/// the write call, so a naive measure would count the same seconds twice and the parts would come to
+/// more than the whole.
+#[test]
+fn time_spent_waiting_for_an_approval_is_not_charged_to_the_tool() {
+    /// Approves writes, slowly, the way somebody reading a diff does.
+    struct SlowlyApproves;
+
+    impl bravebot_agent::confirm::Confirmer for SlowlyApproves {
+        fn confirm_write(
+            &mut self,
+            _request: &bravebot_agent::confirm::WriteRequest,
+        ) -> bravebot_agent::confirm::Decision {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            bravebot_agent::confirm::Decision::Approve
+        }
+
+        fn confirm_run(
+            &mut self,
+            _request: &bravebot_agent::confirm::RunRequest,
+        ) -> bravebot_agent::confirm::RunDecision {
+            bravebot_agent::confirm::RunDecision::reject()
+        }
+
+        fn confirm_read_output(
+            &mut self,
+            _request: &bravebot_agent::confirm::OutputRequest,
+        ) -> bravebot_agent::confirm::Decision {
+            bravebot_agent::confirm::Decision::Reject
+        }
+
+        fn confirm_vouch(
+            &mut self,
+            _request: &bravebot_agent::confirm::VouchRequest,
+        ) -> bravebot_agent::confirm::Decision {
+            bravebot_agent::confirm::Decision::Reject
+        }
+
+        fn ask_user(
+            &mut self,
+            _asking: &bravebot_core::ask::Asking,
+        ) -> Vec<bravebot_core::ask::Answer> {
+            Vec::new()
+        }
+    }
+
+    let scratch = Scratch::new("timing-stalled");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "write_file",
+            r#"{"path":"out.txt","contents":"written body"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write out.txt");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut SlowlyApproves,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let timing = outcome.timing;
+    assert!(
+        timing.stalled_ms >= 120,
+        "the wait for an approval was not counted: {timing:?}"
+    );
+    // The write itself is a few bytes to a temporary directory. Anything near the wait means the
+    // stall was charged here as well as to the person.
+    assert!(
+        timing.tools_ms < 100,
+        "the approval wait was charged to the tool as well: {timing:?}"
+    );
+    // Two rounds went to a local server, so this is small but real, and it must not have swallowed
+    // the wait either.
+    assert!(
+        timing.inference_ms < 120,
+        "the approval wait was charged to the model: {timing:?}"
+    );
+    // The parts are parts of the whole, which is what makes the remainder meaningful.
+    assert!(
+        timing.wall_ms >= timing.stalled_ms,
+        "the parts came to more than the whole: {timing:?}"
+    );
+}
+
 /// The property that matters: a refused write does not touch the disk.
 #[test]
 fn a_refused_write_does_not_happen() {

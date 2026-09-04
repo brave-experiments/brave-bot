@@ -1304,6 +1304,7 @@ fn event_loop(
             let recalled = crate::sessions::recall(workspace.root(), &record);
             session.replay(&conversation, &record.title, &recalled);
             session.restore_spend(record.tokens, record.spend.clone());
+            session.restore_timing(record.timing.clone());
             // Said after the transcript, so it reads as a caveat on what was just shown: the work
             // it describes may not be in the tree the user is now looking at.
             if let Some(note) = crate::sessions::branch_note(
@@ -1436,6 +1437,7 @@ fn event_loop(
                     confinement: &session.confinement,
                     turns: session.turns,
                     tokens: session.tokens,
+                    timing: session.timing_total(),
                     trust: &trust,
                     programs: &programs,
                 });
@@ -1457,6 +1459,7 @@ fn event_loop(
                         turns: session.turns,
                         tokens: session.tokens,
                         spend: session.spend_by_turn(),
+                        timing: session.timing_by_turn(),
                         model: session.served_model(),
                         todos: &session.todos_by_turn(),
                         trust: &trust,
@@ -1523,6 +1526,7 @@ fn event_loop(
                             turns: session.turns,
                             tokens: session.tokens,
                             spend: session.spend_by_turn(),
+                            timing: session.timing_by_turn(),
                             model: session.served_model(),
                             todos: &session.todos_by_turn(),
                             trust: &trust,
@@ -1554,6 +1558,7 @@ fn event_loop(
                         turns: session.turns,
                         tokens: session.tokens,
                         spend: session.spend_by_turn(),
+                        timing: session.timing_by_turn(),
                         model: session.served_model(),
                         todos: &session.todos_by_turn(),
                         trust: &trust,
@@ -2478,6 +2483,11 @@ fn fold_outcome(
             if !outcome.clean {
                 session.note(t!(session_something_was_refused));
             }
+            // Where the wall clock went, beside what the turn cost. The wall figure is the
+            // session's own, taken from the moment Enter was pressed; this fills in the parts, which
+            // only the worker saw.
+            session.spent_time(outcome.timing);
+
             // What the turn's last request came to, against what it would be compacted at. Not
             // the same figure as the cost above: that adds every round together, this says how
             // full the context is now.

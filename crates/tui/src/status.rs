@@ -82,6 +82,12 @@ pub struct Facts<'a> {
     pub confinement: &'a str,
     pub turns: usize,
     pub tokens: u64,
+    /// Where the session's wall clock went, every turn added together.
+    ///
+    /// Beside the token count because it is the other half of what a session cost. A person
+    /// reading this wants to know which of the three things to do something about, and only the
+    /// split can tell them: a faster model, a faster test suite, or fewer prompts.
+    pub timing: bravebot_agent::timing::Timing,
     pub trust: &'a TrustStore,
     pub programs: &'a TrustedPrograms,
 }
@@ -166,6 +172,41 @@ pub fn report(facts: &Facts<'_>) -> Report {
             tokens(facts.tokens)
         ),
     ));
+
+    // Under the turn and token counts, because it is the same question about the same session:
+    // what did this cost. Drawn only once a turn has run, since every figure would be zero before
+    // that and a panel of zeroes reads as a broken feature rather than as an idle session.
+    //
+    // The threshold is a whole second rather than any time at all, because the figures are rendered
+    // by the same formatter the indicator uses and it floors to seconds: a part of 400ms would be
+    // drawn as `0s`, which reads as "none" beside a note saying where the time went.
+    if facts.timing.wall_ms >= 1_000 {
+        lines.push(Line::new(
+            t!(status_time),
+            crate::indicator::format_elapsed(std::time::Duration::from_millis(
+                facts.timing.wall_ms,
+            )),
+        ));
+        // Only the parts that happened. A session that never ran a tool has nothing to say about
+        // tool time, and a zero beside it invites the reader to work out whether it means "none" or
+        // "not measured".
+        for (millis, note) in [
+            (facts.timing.inference_ms, t!(status_time_inference)),
+            (facts.timing.tools_ms, t!(status_time_tools)),
+            (facts.timing.stalled_ms, t!(status_time_stalled)),
+            (facts.timing.overhead_ms(), t!(status_time_overhead)),
+        ] {
+            if millis >= 1_000 {
+                lines.push(
+                    Line::new(
+                        "",
+                        crate::indicator::format_elapsed(std::time::Duration::from_millis(millis)),
+                    )
+                    .with_note(note),
+                );
+            }
+        }
+    }
 
     // Last because it is the part that grows. What a write recorded is the thing nothing else
     // reports: a file an earlier turn marked untrusted is invisible until it refuses to be read.
@@ -322,6 +363,9 @@ mod tests {
             confinement: "kernel-enforced",
             turns: 4,
             tokens: 12_400,
+            // Nothing measured, which is what a session looks like before its first turn. Tests
+            // about the time report set this themselves.
+            timing: bravebot_agent::timing::Timing::default(),
             trust,
             programs: &NOTHING_VOUCHED,
         }
@@ -576,6 +620,71 @@ mod tests {
         let shown = rendered(&report(&with_added));
         assert!(shown.contains("/tmp/notes"), "{shown}");
         assert!(shown.contains("added with /add-dir"), "{shown}");
+    }
+
+    /// A total is unactionable. The panel has to say which of the three things took the time, since
+    /// the answer decides whether a person wants a faster model, a faster test suite, or fewer
+    /// prompts.
+    #[test]
+    fn the_panel_says_where_the_session_spent_its_time() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let mut spent = facts(&config, &trust);
+        spent.timing = bravebot_agent::timing::Timing {
+            wall_ms: 600_000,
+            inference_ms: 120_000,
+            tools_ms: 60_000,
+            stalled_ms: 400_000,
+        };
+
+        let shown = rendered(&report(&spent));
+        assert!(
+            shown.contains("10m 00s"),
+            "the total was not reported: {shown}"
+        );
+        assert!(shown.contains("waiting on you"), "{shown}");
+        // The remainder is the figure with nobody to blame for it, and it is the one nothing else
+        // can show.
+        assert!(shown.contains("unaccounted for"), "{shown}");
+        assert!(
+            shown.contains("6m 40s"),
+            "the stall was not reported: {shown}"
+        );
+    }
+
+    /// Before a turn has run every figure is zero, and a panel of zeroes reads as a broken feature
+    /// rather than as a session that has not started.
+    #[test]
+    fn a_session_with_no_turn_yet_reports_no_time() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let shown = rendered(&report(&facts(&config, &trust)));
+        assert!(!shown.contains("waiting on you"), "{shown}");
+        assert!(!shown.contains("unaccounted for"), "{shown}");
+    }
+
+    /// A part that did not happen says nothing rather than `0s`, which beside a note about where the
+    /// time went reads as a measurement rather than as an absence.
+    #[test]
+    fn a_part_that_never_happened_is_not_reported_as_zero() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let mut quiet = facts(&config, &trust);
+        // A session that was never asked anything and ran no tool: all of it on the model.
+        quiet.timing = bravebot_agent::timing::Timing {
+            wall_ms: 30_000,
+            inference_ms: 30_000,
+            tools_ms: 0,
+            stalled_ms: 0,
+        };
+
+        let shown = rendered(&report(&quiet));
+        assert!(shown.contains("on the model"), "{shown}");
+        assert!(
+            !shown.contains("waiting on you"),
+            "a stall that never happened was reported: {shown}"
+        );
+        assert!(!shown.contains("running tools"), "{shown}");
     }
 
     /// A session with nothing sent has no name yet, and saying so is better than an empty line.

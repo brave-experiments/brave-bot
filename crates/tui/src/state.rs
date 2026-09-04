@@ -454,6 +454,13 @@ pub struct Session {
     /// the question when one turn spent most of it. A total alone cannot distinguish a session of
     /// twenty even turns from one turn that ran away, and those want different fixes.
     spend: std::collections::BTreeMap<usize, u64>,
+    /// Where each turn's wall clock went, by turn number.
+    ///
+    /// Kept beside [`Session::spend`] and written down with it. Tokens say what a turn cost the
+    /// endpoint; this says what it cost the person, split so the two things a person can act on are
+    /// separable from the one they cannot: what was spent waiting on them, and what was spent
+    /// waiting on the model.
+    timing: std::collections::BTreeMap<usize, bravebot_agent::timing::Timing>,
     /// How large the last request was, and the budget it is compacted at.
     ///
     /// `None` until a request has been measured, which is the honest reading: nothing has been
@@ -652,6 +659,7 @@ impl Session {
             turns: 0,
             tokens: 0,
             spend: std::collections::BTreeMap::new(),
+            timing: std::collections::BTreeMap::new(),
             occupancy: None,
             served: None,
             // Nothing has been served, so nothing has been compared. Set by the first turn.
@@ -800,9 +808,37 @@ impl Session {
         self.spend = by_turn;
     }
 
+    /// Take on how an earlier session's turns spent their time.
+    ///
+    /// Separate from [`Session::restore_spend`] because a record written before timing was kept has
+    /// the one and not the other, and a resume must not have to choose between restoring both or
+    /// neither.
+    pub fn restore_timing(
+        &mut self,
+        by_turn: std::collections::BTreeMap<usize, bravebot_agent::timing::Timing>,
+    ) {
+        self.timing = by_turn;
+    }
+
     /// What each turn cost, by turn number, for writing the session down.
     pub fn spend_by_turn(&self) -> &std::collections::BTreeMap<usize, u64> {
         &self.spend
+    }
+
+    /// Where each turn's wall clock went, by turn number, for writing the session down.
+    pub fn timing_by_turn(
+        &self,
+    ) -> &std::collections::BTreeMap<usize, bravebot_agent::timing::Timing> {
+        &self.timing
+    }
+
+    /// Every turn's timing added together.
+    pub fn timing_total(&self) -> bravebot_agent::timing::Timing {
+        let mut total = bravebot_agent::timing::Timing::default();
+        for timing in self.timing.values() {
+            total.add(*timing);
+        }
+        total
     }
 
     /// Begin again with nothing behind you.
@@ -823,6 +859,7 @@ impl Session {
         self.turns = 0;
         self.tokens = 0;
         self.spend.clear();
+        self.timing.clear();
         self.occupancy = None;
         self.written = 0;
         self.todos.clear();
@@ -2173,6 +2210,32 @@ impl Session {
         // Added to rather than set, since a turn that compacted part way through has already put
         // that cost here under the same number.
         *self.spend.entry(self.turns).or_insert(0) += tokens;
+        // The wall clock is taken here because this is the last moment it can be: the timer is
+        // cleared two lines up. It is also the better of the two available figures. The turn loop
+        // measures its own span, but a turn runs on a worker and the person was waiting from the
+        // moment they pressed Enter, which is what this clock started on.
+        //
+        // Recorded whether or not the breakdown ever arrives, so a turn always accounts for its own
+        // wall clock and a missing breakdown reads as time nothing has claimed rather than as a turn
+        // that never happened. See [`Session::spent_time`].
+        self.timing.entry(self.turns).or_default().wall_ms += self
+            .finished
+            .map_or(0, |f| u64::try_from(f.took.as_millis()).unwrap_or(u64::MAX));
+    }
+
+    /// Record how the turn just finished divided its time up.
+    ///
+    /// Beside [`Session::complete`] rather than inside it, in the same way the context measurement
+    /// is: both are facts the worker brings back about the turn, and neither is knowable from the
+    /// transcript. The wall figure is not taken from here, because this side has the better one.
+    ///
+    /// Added to rather than set, for the reason the token breakdown is: a turn that compacted part
+    /// way through has already charged that wait to the same number.
+    pub fn spent_time(&mut self, timing: bravebot_agent::timing::Timing) {
+        let entry = self.timing.entry(self.turns).or_default();
+        entry.inference_ms += timing.inference_ms;
+        entry.tools_ms += timing.tools_ms;
+        entry.stalled_ms += timing.stalled_ms;
     }
 
     /// Record a failure. The turn is over either way, so the session returns to idle.
@@ -2193,6 +2256,12 @@ impl Session {
             took: self.elapsed(),
             failed: true,
         });
+        // A turn that failed after ten minutes still spent them, and it is the turn most worth
+        // reading afterwards. Recorded on the same footing as a turn that succeeded, so a session
+        // whose figures are being added up does not quietly omit the expensive failures.
+        self.timing.entry(self.turns).or_default().wall_ms += self
+            .finished
+            .map_or(0, |f| u64::try_from(f.took.as_millis()).unwrap_or(u64::MAX));
         self.started = None;
         self.phase = None;
         self.running = None;
@@ -2284,12 +2353,20 @@ impl Session {
     /// per-turn figures while still counting it in the total, so the two would not add up.
     pub fn end_aside(&mut self, tokens: u64) {
         self.status = Status::Idle;
+        // Read before the timer is cleared. A `/compact` is a model call and nothing else, so all
+        // of it is inference: charged to the turn it interrupted, exactly as its tokens are, and to
+        // both figures rather than only to the wall clock, or an aside would read as time the
+        // harness spent on itself.
+        let took = u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.started = None;
         self.phase = None;
         self.running = None;
         self.tokens += tokens;
         if self.turns > 0 {
             *self.spend.entry(self.turns).or_insert(0) += tokens;
+            let entry = self.timing.entry(self.turns).or_default();
+            entry.wall_ms += took;
+            entry.inference_ms += took;
         }
     }
 
@@ -5073,6 +5150,115 @@ mod tests {
             assert_eq!(s.tokens, 650, "the breakdown and the total disagreed");
         }
 
+        /// The whole point of keeping the split: a turn's wall clock alone cannot say whether it was
+        /// slow because the model was, or because it stopped and waited for a person.
+        #[test]
+        fn each_turn_records_where_its_time_went() {
+            use bravebot_agent::timing::Timing;
+            let mut s = session();
+
+            s.type_char('a');
+            s.submit();
+            s.complete("first", Vec::new(), 400);
+            s.spent_time(Timing {
+                // The worker's own wall figure is deliberately ignored: the session has a better
+                // one, taken from the moment the prompt was submitted.
+                wall_ms: 999_999,
+                inference_ms: 300,
+                tools_ms: 100,
+                stalled_ms: 5_000,
+            });
+
+            let first = s
+                .timing_by_turn()
+                .get(&1)
+                .copied()
+                .expect("turn 1 recorded");
+            assert_eq!(first.inference_ms, 300);
+            assert_eq!(first.tools_ms, 100);
+            assert_eq!(
+                first.stalled_ms, 5_000,
+                "the time spent waiting on a person was not kept"
+            );
+            assert_ne!(
+                first.wall_ms, 999_999,
+                "the worker's wall figure overwrote the session's own"
+            );
+        }
+
+        /// `/compact` is a model call made in the middle of a turn, so its wait is that turn's and it
+        /// is inference rather than time nobody can account for.
+        #[test]
+        fn an_aside_charges_its_wait_to_the_turn_it_interrupted() {
+            let mut s = session();
+
+            s.type_char('a');
+            s.submit();
+            s.complete("reply", Vec::new(), 400);
+
+            s.begin_aside();
+            s.end_aside(250);
+
+            let turn = s
+                .timing_by_turn()
+                .get(&1)
+                .copied()
+                .expect("turn 1 recorded");
+            assert_eq!(
+                turn.inference_ms, turn.wall_ms,
+                "an aside's wait was not counted as time spent on the model"
+            );
+        }
+
+        /// A turn that failed after ten minutes still spent them, and it is the turn most worth
+        /// reading afterwards. A session adding up its own figures must not omit its failures.
+        #[test]
+        fn a_failed_turn_still_accounts_for_its_wall_clock() {
+            let mut s = session();
+
+            s.type_char('a');
+            s.submit();
+            s.fail("it went wrong");
+
+            assert!(
+                s.timing_by_turn().contains_key(&1),
+                "a failed turn left no trace of the time it spent"
+            );
+        }
+
+        /// A record written before timing was kept has a token breakdown and no time breakdown, and
+        /// resuming one must restore what there is rather than refusing both.
+        #[test]
+        fn a_resumed_session_carries_on_from_the_time_it_had_spent() {
+            use bravebot_agent::timing::Timing;
+            let mut s = session();
+            s.restore_timing(std::collections::BTreeMap::from([(
+                1,
+                Timing {
+                    wall_ms: 8_000,
+                    inference_ms: 3_000,
+                    tools_ms: 1_000,
+                    stalled_ms: 4_000,
+                },
+            )]));
+
+            s.type_char('a');
+            s.submit();
+            s.complete("reply", Vec::new(), 800);
+            s.spent_time(Timing {
+                inference_ms: 1_000,
+                ..Timing::default()
+            });
+
+            let total = s.timing_total();
+            assert_eq!(total.inference_ms, 4_000, "the earlier turn was dropped");
+            assert_eq!(total.stalled_ms, 4_000);
+            assert!(
+                total.wall_ms >= 8_000,
+                "the resumed turn's wall clock was lost"
+            );
+        }
+
         /// Clearing begins a new session, and a new session has spent nothing. A breakdown left
         /// behind would attribute the previous session's cost to this one's turns.
         #[test]
@@ -5088,6 +5274,10 @@ mod tests {
             assert!(
                 s.spend_by_turn().is_empty(),
                 "the breakdown outlived the session"
+            );
+            assert!(
+                s.timing_by_turn().is_empty(),
+                "the time breakdown outlived the session"
             );
         }
 

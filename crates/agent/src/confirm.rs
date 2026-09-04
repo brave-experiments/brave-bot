@@ -499,6 +499,65 @@ impl Confirmer for ReadsOutput {
     }
 }
 
+/// Another confirmer, with a stopwatch on how long its answers took to arrive.
+///
+/// Wrapped here rather than measured at each prompt because this is the one place every question
+/// passes through. The terminal draws four different prompts from three different call sites, and a
+/// timer added to each would be four chances to add it to three of them; a turn that asked a
+/// question the fourth way would then look as though nobody was ever waiting.
+///
+/// What is measured is the wait, not the decision. A refusal takes as long to arrive as an approval,
+/// and the person was equally away from their desk either way. Nothing here reads a request or an
+/// answer: it starts a clock, hands the question straight through, and stops it.
+pub struct Timed<'a, C: Confirmer> {
+    inner: &'a mut C,
+    waited: std::time::Duration,
+}
+
+impl<'a, C: Confirmer> Timed<'a, C> {
+    pub fn new(inner: &'a mut C) -> Self {
+        Self {
+            inner,
+            waited: std::time::Duration::ZERO,
+        }
+    }
+
+    /// How long this confirmer has kept the turn waiting, over every question it has been asked.
+    pub fn waited(&self) -> std::time::Duration {
+        self.waited
+    }
+
+    /// Time one question, whatever kind it is.
+    fn timing<T>(&mut self, ask: impl FnOnce(&mut C) -> T) -> T {
+        let started = std::time::Instant::now();
+        let answer = ask(self.inner);
+        self.waited += started.elapsed();
+        answer
+    }
+}
+
+impl<C: Confirmer> Confirmer for Timed<'_, C> {
+    fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
+        self.timing(|inner| inner.confirm_write(request))
+    }
+
+    fn confirm_run(&mut self, request: &RunRequest) -> RunDecision {
+        self.timing(|inner| inner.confirm_run(request))
+    }
+
+    fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
+        self.timing(|inner| inner.confirm_read_output(request))
+    }
+
+    fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
+        self.timing(|inner| inner.confirm_vouch(request))
+    }
+
+    fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
+        self.timing(|inner| inner.ask_user(asking))
+    }
+}
+
 impl fmt::Display for Decision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -525,6 +584,142 @@ mod tests {
             ),
             bravebot_core::ask::Question::new("Branch", "Which branch?", Vec::new(), false),
         ]))
+    }
+
+    fn a_write() -> WriteRequest {
+        WriteRequest {
+            path: "src/main.rs".to_string(),
+            contents: "fn main() {}\n".to_string(),
+            existing: None,
+            intent: Intent::Overwrite,
+            untrusted: false,
+        }
+    }
+
+    fn an_output() -> OutputRequest {
+        OutputRequest {
+            command: "git log".to_string(),
+            output: "one line\n".to_string(),
+            reference: "output_1".to_string(),
+        }
+    }
+
+    fn a_vouch() -> VouchRequest {
+        VouchRequest {
+            path: "vendor/lib.js".to_string(),
+            preview: "// a library\n".to_string(),
+            truncated: false,
+        }
+    }
+
+    /// A confirmer that takes its time answering, so a test can assert the wait was noticed rather
+    /// than assert on a real clock.
+    struct Slow(std::time::Duration);
+
+    impl Confirmer for Slow {
+        fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+            std::thread::sleep(self.0);
+            Decision::Approve
+        }
+
+        /// Refuses, and takes just as long about it. That is the point of the test below: a wait is
+        /// a wait whichever way it is answered.
+        fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+            std::thread::sleep(self.0);
+            RunDecision::reject()
+        }
+
+        fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+            std::thread::sleep(self.0);
+            Decision::Reject
+        }
+
+        fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+            std::thread::sleep(self.0);
+            Decision::Reject
+        }
+
+        fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+            std::thread::sleep(self.0);
+            Vec::new()
+        }
+    }
+
+    /// The figure this whole thing exists for. Without it, time a person spent reading a diff is
+    /// indistinguishable from time the model spent thinking, and only one of the two is worth
+    /// trying to reduce.
+    #[test]
+    fn the_time_a_person_takes_to_answer_is_counted() {
+        let mut slow = Slow(std::time::Duration::from_millis(30));
+        let mut timed = Timed::new(&mut slow);
+
+        assert_eq!(timed.confirm_write(&a_write()), Decision::Approve);
+        assert!(
+            timed.waited() >= std::time::Duration::from_millis(30),
+            "the wait was not counted: {:?}",
+            timed.waited()
+        );
+    }
+
+    /// Every question, not only the one that happened to be instrumented first. A turn that asked
+    /// the fifth way would otherwise report that nobody was ever waiting.
+    #[test]
+    fn every_kind_of_question_is_timed() {
+        let each = std::time::Duration::from_millis(10);
+        let mut slow = Slow(each);
+        let mut timed = Timed::new(&mut slow);
+
+        timed.confirm_write(&a_write());
+        timed.confirm_run(&a_run());
+        timed.confirm_read_output(&an_output());
+        timed.confirm_vouch(&a_vouch());
+        timed.ask_user(&a_series());
+
+        assert!(
+            timed.waited() >= each * 5,
+            "some question was not timed: {:?}",
+            timed.waited()
+        );
+    }
+
+    /// A refusal took as long to arrive as an approval would have, and the person was equally away
+    /// from their desk. Counting only approvals would understate exactly the sessions where somebody
+    /// sat there saying no.
+    #[test]
+    fn a_refusal_is_a_wait_like_any_other() {
+        let mut slow = Slow(std::time::Duration::from_millis(30));
+        let mut timed = Timed::new(&mut slow);
+
+        assert!(!timed.confirm_run(&a_run()).approved());
+        assert!(
+            timed.waited() >= std::time::Duration::from_millis(30),
+            "a refusal was not counted as a wait: {:?}",
+            timed.waited()
+        );
+    }
+
+    /// Nothing asked is no time waited, so a turn that never stopped reports none rather than
+    /// something small and unexplained.
+    #[test]
+    fn a_turn_that_asked_nothing_waited_for_nothing() {
+        let mut slow = Slow(std::time::Duration::from_millis(30));
+        let timed = Timed::new(&mut slow);
+        assert_eq!(timed.waited(), std::time::Duration::ZERO);
+    }
+
+    /// The answer has to be the inner confirmer's, unchanged. A wrapper that measured correctly and
+    /// altered a decision would be a permission bug wearing a stopwatch.
+    #[test]
+    fn the_answer_passes_through_untouched() {
+        let mut approving = ApproveWrites;
+        let mut timed = Timed::new(&mut approving);
+        assert_eq!(timed.confirm_write(&a_write()), Decision::Approve);
+        assert!(!timed.confirm_run(&a_run()).approved());
+
+        let mut refusing = Unattended;
+        let mut timed = Timed::new(&mut refusing);
+        assert_eq!(timed.confirm_write(&a_write()), Decision::Reject);
+        assert!(timed.ask_user(&a_series()).is_empty());
     }
 
     /// Nobody is there, so nothing is answered. Saying nothing rather than a decline per
