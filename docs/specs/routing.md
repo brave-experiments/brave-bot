@@ -85,8 +85,9 @@ An action whose capability was not granted is refused outright. A person's
 approval mints a **single-use** endorsement bound to that exact value, so it cannot be replayed,
 redirected to another value, or reused for a different pipeline.
 
-A write that would make a trusted path untrusted is the case that must be shown. Where nobody can
-be asked, effects are refused rather than applied unseen.
+A write of bytes from somewhere nobody vouched for is the case that must be shown, whether the
+destination was trusted or had no rule at all. Where nobody can be asked, every write is shown and
+therefore refused, rather than applied unseen.
 
 `verified-by: bravebot_core::policy::a_granted_action_needs_a_matching_endorsement`
 `verified-by: bravebot_core::policy::an_endorsement_cannot_be_replayed`

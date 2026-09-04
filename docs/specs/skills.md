@@ -70,9 +70,13 @@ the grant, on the same footing as the configuration that picks the model and the
 <a id="SKILL-4"></a>
 ### SKILL-4: a project's own files are read through the trust map
 
-A workspace `AGENTS.md` and `.bravebot/skills` are labelled as workspace content, so TRUST decides.
-`.bravebot/skills` is checked for trust **before it is enumerated at all**, because a directory
-name is content too.
+A workspace `AGENTS.md` and `.bravebot/skills` are labelled as workspace content, so the trust map
+decides. Both are paths a session opens by recording, so the ordinary case is that they are read;
+what the map still answers is the case where something took that back, a write that landed fetched
+bytes in one of them or a person who said no.
+
+`.bravebot/skills` is checked **before it is enumerated at all**, because a directory name is
+content too.
 
 `verified-by: bravebot_agent::skills::a_skill_in_an_untrusted_project_is_not_named_to_the_planner`
 `verified-by: bravebot_agent::skills::a_skill_the_trust_map_distrusts_stops_being_offered`
