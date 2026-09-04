@@ -2110,6 +2110,11 @@ fn run_turn_animated(
     trust: TrustStore,
     programs: TrustedPrograms,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
+    // The prompt is in the transcript by now, and drawn before anything that might take a moment:
+    // a check that has to run the AWS CLI holds the frame for as long as the process takes, and
+    // until this the line somebody typed is nowhere on their screen.
+    redraw(terminal, session)?;
+
     // Before the worker starts, because a sign-in needs the terminal and this is the thread that
     // has it. Left to the worker, the URL and code the AWS CLI prints would land in a frame this
     // loop redraws over.
