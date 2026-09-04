@@ -54,6 +54,31 @@ Two places in the kernel do branch on untrusted bytes, deliberately. Both are na
 costs in [docs/specs/labels.md](docs/specs/labels.md). An unlisted exception is indistinguishable
 from a violation.
 
+## The inverse mistake: inventing a violation
+
+This rule is about content that could reach the planner or steer a turn in progress. It is not a
+general prohibition on reading bytes that arrived over a network, and it says nothing about this
+program's own configuration and startup.
+
+`GET /v1/models` is the example to keep in mind. It is fetched before any session, from the endpoint
+the user configured, so a person can pick a model off a list they read. It carries
+`Label::untrusted_public()` because that label records *where bytes came from*, not that the data is
+injection-sensitive, and the code already branches on it freely: `usable` filters on
+`capabilities`, compares `access` against `premium`, and `adopt_window` takes a number out of the
+same response to decide when a conversation is shortened. None of that is a violation, and an
+argument implying it is has misread the rule.
+
+So before reaching for a trust or label argument, ask whether the bytes could reach a model's
+context or influence a turn already running. If they could not, the question is an ordinary
+engineering one: latency, offline behaviour, staleness, how many code paths. Argue it on those
+terms.
+
+**Why this is worth a section.** A wrong trust argument reads exactly like a safety feature, which
+is the same thing that makes a real violation hard to spot, and it is more likely to be waved
+through than a plain design mistake. It also talks you out of the better implementation for a reason
+that does not exist. Getting the scope of the rule wrong in this direction is a real cost, not a
+harmless excess of caution.
+
 ## Everything else is in the specs
 
 [docs/specs/](docs/specs/README.md) is the source of truth for behaviour, clause by clause, with
