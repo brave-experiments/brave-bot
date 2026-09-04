@@ -123,6 +123,11 @@ and `make check-spec` fails on a mismatch. When one commit adds clauses to two s
 is edited by both, so stage it a hunk at a time rather than landing an unrelated count alongside the
 wrong change.
 
+**Close a GitHub issue from the commit and the pull request that finish it.** Where the change fully
+resolves the issue, use GitHub's closing syntax (`Closes #123`, `Fixes #123`) so that merging closes
+it. Where the change is only part of what the issue asks for, name it without the keyword (`Part of
+#123`): an issue closed while the rest of it is outstanding is worse than one left open.
+
 
 ## Pull requests
 
