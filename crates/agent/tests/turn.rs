@@ -1692,7 +1692,7 @@ fn a_refused_edit_does_not_happen() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::rejecting();
 
-    let task = Task::new("edit a.txt");
+    let task = Task::new("edit a.txt").without_vetting();
     turn::run(
         &config,
         &egress,
@@ -1730,7 +1730,7 @@ fn an_ambiguous_edit_is_refused_without_asking() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    let task = Task::new("edit a.txt");
+    let task = Task::new("edit a.txt").without_vetting();
     turn::run(
         &config,
         &egress,
@@ -2485,6 +2485,7 @@ fn editing_an_untrusted_file_is_refused() {
             "edit_file",
             r#"{"path":"a.txt","old_text":"old","new_text":"new"}"#,
         ),
+        reply_with("VERDICT: UNSAFE\nit carries a line addressed to its reader"),
         reply_with("understood"),
     ]);
     let config = config_for(&endpoint);
@@ -2492,7 +2493,7 @@ fn editing_an_untrusted_file_is_refused() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    // No trust map at all: nothing is vouched for.
+    // Nothing vouched for, and a checker that will not clear it either.
     let task = Task::new("edit a.txt");
     turn::run(
         &config,
@@ -2514,11 +2515,13 @@ fn editing_an_untrusted_file_is_refused() {
         "an untrusted file was edited"
     );
 
-    let _first = received.recv().expect("first request");
-    let second = received.recv().expect("second request");
+    let bodies: Vec<String> = received.try_iter().collect();
     assert!(
-        second.contains("refusing to expose untrusted content"),
-        "the model was not told why: {second}"
+        bodies
+            .iter()
+            .filter(|b| !b.contains("You are a security classifier"))
+            .any(|b| b.contains("refusing to expose untrusted content")),
+        "the model was not told why: {bodies:?}"
     );
 }
 
@@ -8272,5 +8275,44 @@ fn opening_a_session_does_not_undo_what_a_write_recorded() {
     assert!(
         !outcome.trust.is_trusted("AGENTS.md"),
         "opening a session handed back a rule a write had taken away"
+    );
+}
+
+/// An edit of a file nobody has vouched for.
+///
+/// Locating a passage is a comparison, so an edit needs the file readable. A planner that edits
+/// without having read first must not be refused for a reason it cannot act on.
+#[test]
+fn a_file_nobody_vouched_for_can_be_edited_once_a_checker_has_read_it() {
+    let scratch = Scratch::new("vet-on-edit");
+    std::fs::write(scratch.path.join("app.js"), "const SPEED = 100;\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "edit_file",
+            r#"{"path":"app.js","old_text":"100","new_text":"50"}"#,
+        ),
+        reply_with("VERDICT: SAFE\nplain source"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("halve the speed"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("app.js")).unwrap(),
+        "const SPEED = 50;\n",
+        "the edit did not happen"
     );
 }

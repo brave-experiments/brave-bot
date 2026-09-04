@@ -177,8 +177,8 @@ file is [naming-files.md](naming-files.md), and dropping one on the window is
 <a id="TRUST-8"></a>
 ### TRUST-8: a read of a file nobody vouched for asks a checker, not a person
 
-When a turn is about to be refused a file's contents, the whole file is offered to an isolated
-checker. A clean verdict writes exactly the rule `@` would have written, for that path and no
+When a turn is about to be refused a file's contents, whether for a read or to locate the passage
+an edit names, the whole file is offered to an isolated checker. A clean verdict writes exactly the rule `@` would have written, for that path and no
 other, and the read proceeds as any read of a vouched-for path does. Anything else leaves the file
 quarantined and the turn carries on with a reference. Recorded once per path, so a file is offered
 at most once however many times it is read.
@@ -200,6 +200,7 @@ so an attacker who owns a file gets to try. What that buys them is in
 [vetting.md](vetting.md), which owns the checker itself.
 
 `verified-by: bravebot_agent::turn::a_file_nobody_vouched_for_is_shown_once_a_checker_has_read_it`
+`verified-by: bravebot_agent::turn::a_file_nobody_vouched_for_can_be_edited_once_a_checker_has_read_it`
 `verified-by: bravebot_agent::turn::a_file_a_checker_will_not_clear_stays_quarantined`
 `verified-by: bravebot_agent::turn::a_file_already_trusted_is_not_offered_to_a_checker`
 `verified-by: bravebot_agent::turn::a_file_is_offered_to_a_checker_once_and_not_again_after_it_passes`

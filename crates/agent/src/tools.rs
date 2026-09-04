@@ -989,7 +989,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
-        "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
+        "edit_file" => edit_file(policy, tools, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         "vet_content" => vet_content(policy, tools, &arguments),
@@ -1745,12 +1745,11 @@ fn write_file<S: Sink, C: Confirmer>(
 /// result is written back only if the file still matches what was read.
 fn edit_file<S: Sink, C: Confirmer>(
     policy: &mut Policy<'_, S>,
-    workspace: &Workspace,
-    slots: &SlotStore,
+    tools: &mut Tools<'_>,
     confirmer: &mut C,
     arguments: &Value,
 ) -> Produced {
-    let found = match path_argument(policy, "edit_file", Purpose::Effect, slots, arguments) {
+    let found = match path_argument(policy, "edit_file", Purpose::Effect, tools.slots, arguments) {
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
@@ -1774,6 +1773,19 @@ fn edit_file<S: Sink, C: Confirmer>(
         Ok(p) => p,
         Err(denial) => return problem(format!("refused: {denial}")),
     };
+
+    // The same question a read asks, asked here too. Locating a passage is a comparison, so an
+    // edit needs the file readable, and a planner that edits without having read first would
+    // otherwise be refused for a reason it cannot act on: it cannot vouch for anything, and there
+    // is nobody to ask.
+    let (proposed_for_vetting, _) = proposed.clone().into_parts_for_decoding();
+    if tools.vetting && policy.read_is_quarantined(&proposed_for_vetting) {
+        let verdict = vet_before_reading(policy, tools, &path, &proposed_for_vetting);
+        if verdict == Some(bravebot_core::vet::Verdict::Safe) {
+            policy.trust_after_vetting(&proposed_for_vetting);
+        }
+    }
+    let workspace = tools.workspace;
 
     let source = match workspace.read(policy, &path) {
         Ok(contents) => contents,
