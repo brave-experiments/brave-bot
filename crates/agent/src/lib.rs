@@ -26,6 +26,7 @@ pub mod subscription;
 pub mod timing;
 pub mod tools;
 pub mod turn;
+pub mod vet;
 pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, Unattended, WriteRequest};

@@ -50,9 +50,9 @@ Never construct a `Labelled` by hand to give a value a better label than its inp
 laundering, whichever crate it happens in. If a value derived from untrusted input has to be
 trusted for something to work, the design is wrong, not the label.
 
-Two places in the kernel do branch on untrusted bytes, deliberately. Both are named under Known
-costs in [docs/specs/labels.md](docs/specs/labels.md). An unlisted exception is indistinguishable
-from a violation.
+Three places in the kernel do branch on untrusted bytes, deliberately. All three are named under
+Known costs in [docs/specs/labels.md](docs/specs/labels.md). An unlisted exception is
+indistinguishable from a violation.
 
 ## Everything else is in the specs
 
@@ -66,6 +66,7 @@ rules here.
 | where an effect may land and what may decide it | [routing.md](docs/specs/routing.md) |
 | which paths a person vouched for, and what a write records | [trust-map.md](docs/specs/trust-map.md) |
 | the one component that reads untrusted content | [processors.md](docs/specs/processors.md) |
+| asking whether quarantined content is what it was said to be | [vetting.md](docs/specs/vetting.md) |
 | a tool's arguments, refusals, or results | [tools/](docs/specs/tools/tool-surface.md) |
 | why the planner has no shell, and what `run` may do | [shell-mode.md](docs/specs/shell-mode.md), [run.md](docs/specs/tools/run.md) |
 | `@`, pasting, dropping a file | [naming-files.md](docs/specs/naming-files.md), [pasting.md](docs/specs/pasting.md), [dropping.md](docs/specs/dropping.md) |
