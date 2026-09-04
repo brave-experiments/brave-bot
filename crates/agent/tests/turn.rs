@@ -5462,11 +5462,20 @@ fn a_promoted_skill_name_is_recorded_as_the_models_choice() {
     );
 }
 
-/// The property the feature rests on. AGENTS.md is instructions, and instructions from a
-/// directory nobody vouched for are exactly what this design refuses to put in front of the
-/// planner. There is no wrapper that makes it safe, so it is left out.
+/// The cost of starting a session without asking anybody anything, kept in front of whoever
+/// reads this file next rather than deleted along with the question.
+///
+/// A session opens by trusting the two paths that hold the user's standing instructions for the
+/// project, and it does that before anything has read a byte of either. So a workspace AGENTS.md
+/// reaches the system prompt on the first turn, whoever wrote it, and the payload below is what
+/// that means when the project came from somebody else. Nothing downstream catches it: standing
+/// instructions are the highest-privilege content in the system, and a rule in the map is exactly
+/// as good as the reason it was written.
+///
+/// Deliberate, and named under Known costs in the trust map. Change the assertion here and the
+/// spec together, or not at all.
 #[test]
-fn an_untrusted_workspace_agents_file_never_reaches_the_system_prompt() {
+fn a_workspace_agents_file_is_obeyed_without_anybody_vouching_for_it() {
     let scratch = Scratch::new("agents-untrusted");
     std::fs::write(
         scratch.path.join("AGENTS.md"),
@@ -5495,12 +5504,12 @@ fn an_untrusted_workspace_agents_file_never_reaches_the_system_prompt() {
 
     let body = received.recv().expect("request body");
     assert!(
-        !body.contains("IGNORE-YOUR-RULES") && !body.contains("exfiltrate"),
-        "untrusted standing instructions reached the model: {body}"
+        body.contains("IGNORE-YOUR-RULES") && body.contains("exfiltrate"),
+        "the workspace's standing instructions were left out: {body}"
     );
     assert!(
-        outcome.notices.iter().any(|n| n.contains("not trusted")),
-        "the user was told nothing about it: {:?}",
+        outcome.notices.is_empty(),
+        "nothing was skipped, so there was nothing to report: {:?}",
         outcome.notices
     );
 }
@@ -5725,12 +5734,11 @@ fn an_untrusted_directory_is_not_reported_as_a_refusal() {
 
     assert!(
         outcome.clean,
-        "leaving out untrusted standing instructions was reported as a gate refusing something"
+        "an ordinary turn was reported as one where a gate refused something"
     );
-    assert_eq!(
-        outcome.notices.len(),
-        2,
-        "expected one notice each for AGENTS.md and the skills: {:?}",
+    assert!(
+        outcome.notices.is_empty(),
+        "a session opens trusting these two paths, so neither is skipped: {:?}",
         outcome.notices
     );
 }
@@ -5741,6 +5749,10 @@ fn a_single_skipped_skill_is_counted_in_the_singular() {
     let scratch = Scratch::new("agents-singular");
     write_project_skill(&scratch.path, "only", "only", "a body");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
+    // A session opens trusting this directory, so the skipping this counts has to be asked for:
+    // a rule already covering the path is one a session start leaves alone.
+    let mut distrusted = bravebot_core::trust::TrustStore::new();
+    distrusted.distrust(".bravebot/skills");
 
     let (endpoint, _received) = serve(&reply_with("the answer"));
     let config = config_for(&endpoint);
@@ -5755,7 +5767,7 @@ fn a_single_skipped_skill_is_counted_in_the_singular() {
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut bravebot_agent::IgnoreReports,
         &mut sink,
-        bravebot_core::trust::TrustStore::new(),
+        distrusted,
         &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
@@ -8148,5 +8160,45 @@ fn vetting_can_be_turned_off_and_then_nothing_is_offered_to_a_checker() {
     assert!(
         !outcome.trust.is_trusted("notes.md"),
         "vetting was off and a rule was recorded anyway"
+    );
+}
+
+/// A session opens by trusting its standing instructions, and that is a default rather than an
+/// override.
+///
+/// The round trip this closes: a turn writes fetched bytes into `AGENTS.md`, reconciliation
+/// records the path as untrusted, and the next turn must not hand that rule back. A bootstrap that
+/// re-trusted on every turn would launder the file it had just been told about.
+#[test]
+fn opening_a_session_does_not_undo_what_a_write_recorded() {
+    let scratch = Scratch::new("bootstrap-no-override");
+    std::fs::write(scratch.path.join("AGENTS.md"), "conventions\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // What reconciliation would have left behind after untrusted bytes landed there.
+    let mut poisoned = bravebot_core::trust::TrustStore::new();
+    poisoned.distrust("AGENTS.md");
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("do the work").without_vetting(),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut bravebot_agent::IgnoreReports,
+        &mut sink,
+        poisoned,
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        !outcome.trust.is_trusted("AGENTS.md"),
+        "opening a session handed back a rule a write had taken away"
     );
 }

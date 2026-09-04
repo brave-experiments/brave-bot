@@ -422,6 +422,13 @@ pub struct Task {
     pub vetting: bool,
 }
 
+/// The paths every session starts by trusting, and the whole of that list.
+///
+/// The user's own standing instructions for this project. Nothing else: the working directory's
+/// files are what a checker is for, and `.bravebot` whole would cover a themes directory and
+/// anything else a repository drops there, none of which is ever read as an instruction.
+pub const BOOTSTRAP_PATHS: [&str; 2] = ["AGENTS.md", ".bravebot/skills"];
+
 /// An image on its way into a prompt, before it has been encoded for the wire.
 ///
 /// Raw bytes rather than the finished data URL, so the size that is recorded and reported is the
@@ -882,6 +889,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         .with_trust(trust)
         .with_programs(programs)
         .resuming(conversation.context());
+
+    // Before anything consults the map. The user's own instructions for this project are read as
+    // instructions, and the two paths that hold them are the only ones a session starts with.
+    policy.bootstrap(&BOOTSTRAP_PATHS);
 
     // Found once per turn and reused for every round. Per turn rather than per session so a
     // skill written or edited while the session is open takes effect on the next one, including

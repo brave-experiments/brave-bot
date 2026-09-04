@@ -1344,12 +1344,8 @@ fn event_loop(
         }
     };
 
-    // Settled once, before any turn. Nothing means the user left at the question, and a session
-    // they never agreed to have must not begin behind it.
-    let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), inherited_trust)
-    else {
-        return Ok(left_behind(&stored));
-    };
+    // Settled once, before any turn.
+    let mut trust = opening_trust(&mut session, workspace.root(), inherited_trust);
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
@@ -1493,11 +1489,7 @@ fn event_loop(
                 // context and the directories opened under it go too, since opening one is a grant
                 // and leaving it reachable with nothing vouching for it would outlive its answer.
                 workspace.close_added_directories();
-                let Some(fresh) = opening_trust(terminal, &mut session, workspace.root(), None)
-                else {
-                    return Ok(left_behind(&stored));
-                };
-                trust = fresh;
+                trust = opening_trust(&mut session, workspace.root(), None);
                 // A new session vouches for no program, on the same reasoning as the map: the
                 // list is a standing permission, and this begins a session that was never asked.
                 programs = TrustedPrograms::new();
@@ -1851,40 +1843,28 @@ fn set_theme(session: &mut Session, name: &str) {
 
 /// The trust map the session starts with, or nothing if the user asked to leave.
 ///
-/// A fresh session always asks, whatever any session in this directory answered before. The
-/// question grants standing permission, and a launch that skipped it because someone said yes
-/// last week would be granting that permission on behalf of a user who was never asked, which is
-/// trust assumed from silence rather than granted.
+/// The rules a session opens with.
 ///
-/// Resuming is the one case that does not ask, and it is not an exception to that: the map comes
-/// out of the record of the very session being picked up, so the answer being honoured is the one
-/// its own user gave. It carries the rules that session's writes recorded too, which is what stops
-/// a resumed turn reading back a file an earlier turn poisoned. A record from before the map was
-/// kept has none, and is asked about.
+/// A fresh one opens with none. Nothing about the working directory is trusted content: the
+/// project's own files are what a checker reads, and the two paths holding the user's standing
+/// instructions are recorded by the turn itself rather than here, so every entry point gets them
+/// and not just this one.
+///
+/// Resuming carries the map out of the record of the session being picked up, rules its writes
+/// recorded and all, which is what stops a resumed turn reading back a file an earlier turn of
+/// that session poisoned.
 fn opening_trust(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
     root: &std::path::Path,
     inherited: Option<TrustStore>,
-) -> Option<TrustStore> {
-    // Said only when resuming. On a fresh start the user has just answered the question and does
-    // not need telling where the answer came from.
-    let (trust, inherited) = match inherited {
-        Some(trust) => (trust, true),
-        None => (crate::trust_prompt::ask(terminal, root)?, false),
-    };
-
-    if !trust.is_trusted(".") {
-        session.note(t!(session_not_trusting));
-        return Some(trust);
+) -> TrustStore {
+    match inherited {
+        Some(trust) => {
+            session.note(t!(session_trusting_as_left, directory = root.display()));
+            trust
+        }
+        None => TrustStore::new(),
     }
-    let where_it_is = root.display();
-    session.note(if inherited {
-        t!(session_trusting_as_left, directory = where_it_is)
-    } else {
-        t!(session_trusting, directory = where_it_is)
-    });
-    Some(trust)
 }
 
 /// Run a command the user typed in shell mode, redrawing while it runs.

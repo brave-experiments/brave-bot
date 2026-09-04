@@ -4,7 +4,6 @@ title: Asking a person
 status: normative
 governs:
   - crates/tui/src/confirm.rs
-  - crates/tui/src/trust_prompt.rs
   - crates/tui/src/remote_confirm.rs
 ---
 
@@ -15,8 +14,7 @@ answer grants, and what one answer must never be taken for. `ask_user`, where th
 a question, is [tools/ask-user.md](tools/ask-user.md) and is a different thing: these prompts are the system asking
 permission.
 
-There are four: the startup trust question, a write or edit, a
-run, and reading what a run printed.
+There are three: a write or edit, a run, and reading what a run printed.
 
 ## What every prompt owes the reader
 
@@ -36,8 +34,7 @@ command that printed them. A person cannot endorse a routing field they were not
 ### PROMPT-2: a prompt says what approving does, and what it does not
 
 The run prompt says it is not sandboxed, asks for the side effects and the output together, and
-names the exact command it would vouch for. The output prompt says
-what approving does. The trust prompt explains the consequence and names both answers.
+names the exact command it would vouch for. The output prompt says what approving does.
 
 **Why.** The second half of a run grant, that what the command prints becomes trusted, is the one
 nothing else would tell the user.
@@ -46,8 +43,6 @@ nothing else would tell the user.
 `verified-by: bravebot_tui::confirm::a_run_prompt_asks_for_the_side_effects_and_the_output_together`
 `verified-by: bravebot_tui::confirm::a_run_prompt_names_the_exact_command_it_would_vouch_for`
 `verified-by: bravebot_tui::confirm::the_output_prompt_says_what_approving_does`
-`verified-by: bravebot_tui::trust_prompt::the_prompt_explains_the_consequence`
-`verified-by: bravebot_tui::trust_prompt::the_prompt_names_the_directory_and_both_answers`
 
 <a id="PROMPT-3"></a>
 ### PROMPT-3: what a prompt shows is drawn inside a margin it cannot forge
@@ -104,8 +99,8 @@ exact value it was given for.
 ### PROMPT-6: standing permission needs its own key, and is never the default
 
 The run prompt separates running once from running always, Enter does not approve a run, and a run
-releasing private data offers no standing permission at all. Declining, and Ctrl-C, vouch
-for nothing.
+releasing private data offers no standing permission at all. Declining, and Ctrl-C, vouch for
+nothing.
 
 `verified-by: bravebot_tui::confirm::the_run_keys_separate_running_once_from_running_always`
 `verified-by: bravebot_tui::confirm::enter_does_not_approve_a_run`
@@ -114,21 +109,16 @@ for nothing.
 `verified-by: bravebot_tui::confirm::a_private_input_run_can_still_be_approved_once_or_refused`
 `verified-by: bravebot_tui::confirm::saying_no_to_a_run_vouches_for_nothing`
 `verified-by: bravebot_tui::confirm::ctrl_c_refuses_the_run_and_vouches_for_nothing`
-`verified-by: bravebot_tui::trust_prompt::declining_trusts_nothing`
 
 <a id="PROMPT-7"></a>
 ### PROMPT-7: declining is not cancelling
 
-Saying no to a write does not stop the turn; Ctrl-C refuses it and does. Leaving at the startup
-question ends the session, and only Ctrl-C leaves.
+Saying no to a write does not stop the turn; Ctrl-C refuses it and does.
 
 **Why.** A refusal the agent can carry on past is how a person steers without starting over.
 
 `verified-by: bravebot_tui::confirm::saying_no_does_not_stop_the_turn`
 `verified-by: bravebot_tui::confirm::ctrl_c_refuses_the_write_and_stops_the_turn`
-`verified-by: bravebot_tui::trust_prompt::ctrl_c_leaves_rather_than_answering_the_question`
-`verified-by: bravebot_tui::trust_prompt::only_ctrl_c_leaves`
-`verified-by: bravebot_tui::trust_prompt::leaving_starts_no_session`
 
 <a id="PROMPT-8"></a>
 ### PROMPT-8: a resume restores standing permissions, and nothing else
@@ -177,4 +167,3 @@ colours is a weaker one. Text that sets no colour of its own is otherwise the te
 which under a light theme in a dark terminal is the path to unreadable.
 
 `verified-by: bravebot_tui::confirm::every_prompt_paints_the_themes_background_inside_its_border`
-`verified-by: bravebot_tui::trust_prompt::the_prompt_paints_the_themes_background_inside_its_border`

@@ -96,7 +96,6 @@ because it is trusted, and it still cannot draw its own escapes.
 Every prompt and the session view render at small sizes rather than panicking or truncating the
 question out of view.
 
-`verified-by: bravebot_tui::trust_prompt::a_tiny_terminal_still_renders`
 `verified-by: bravebot_tui::confirm::a_tiny_terminal_still_renders_the_prompt`
 
 <a id="VIEW-6"></a>

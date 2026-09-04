@@ -2361,6 +2361,37 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Always the exact path, never its parent. Naming one file says nothing about its siblings,
     /// and a rule on the file is more specific than any rule on the tree around it, so a
     /// referenced file is trusted inside a directory nobody vouched for.
+    /// Record the rules a session starts with, before any turn has run.
+    ///
+    /// The user's own standing instructions for this project: the file that says how work is done
+    /// here, and the directory holding the skills they wrote. Both are theirs, both are read as
+    /// instructions rather than as data, and a session that treated them as content nobody
+    /// vouched for would ignore the very files the user wrote to be obeyed.
+    ///
+    /// Two paths and no more. Not the working directory, whose files are what a checker is for,
+    /// and not `.bravebot` whole, which is where a repository may drop anything it likes and where
+    /// only the skills directory is ever read as instructions.
+    ///
+    /// Written whether or not the files exist. A rule is about a path rather than about what was
+    /// there when it was made, sources are resolved afresh every turn, and an `AGENTS.md` written
+    /// during a session is read by the turn after it.
+    pub fn bootstrap(&mut self, paths: &[&str]) {
+        for path in paths {
+            // A default, never an override. A rule already covering the path was put there by
+            // something that knew more than this does: a write that poisoned the file and recorded
+            // it, or a person who said no. Re-trusting on the next turn would undo both, and the
+            // first of those is the round trip the whole map exists to close.
+            if self.trust.integrity_of(path).is_some() {
+                continue;
+            }
+            self.trust.trust(path);
+            self.allow(
+                "trust",
+                format!("{path} trusted: the user's own standing instructions for this project"),
+            );
+        }
+    }
+
     /// Record that an isolated checker read the whole of this file and found nothing in it
     /// addressed to whoever reads it.
     ///
