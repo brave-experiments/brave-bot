@@ -326,6 +326,15 @@ pub trait Reporter {
     /// Paired by position rather than by an identifier because dispatch runs one call at a
     /// time: there is never a second call in flight for this to be ambiguous between.
     fn tool_finished(&mut self, _activity: Activity) {}
+
+    /// A prompt the person typed mid-turn has reached the planner.
+    ///
+    /// The user's own words on their way back to them, so there is nothing to release: this is the
+    /// one text a display gate has never had anything to say about. Sent because the moment is
+    /// what matters. A prompt that waited above the box and then went into the middle of a turn
+    /// needs to be seen going in, or the answer that changes course reads as the planner changing
+    /// its mind unprompted.
+    fn interjected(&mut self, _said: String) {}
 }
 
 /// Discards every report.
@@ -363,6 +372,8 @@ pub struct RecordingReporter {
     pub shown: Vec<Shown>,
     /// Where each result went.
     pub landed: Vec<Landing>,
+    /// Everything the person said mid-turn, in the order it reached the planner.
+    pub interjected: Vec<String>,
 }
 
 impl Reporter for RecordingReporter {
@@ -404,6 +415,10 @@ impl Reporter for RecordingReporter {
 
     fn landed(&mut self, landing: Landing) {
         self.landed.push(landing);
+    }
+
+    fn interjected(&mut self, said: String) {
+        self.interjected.push(said);
     }
 }
 

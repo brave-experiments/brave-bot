@@ -2167,6 +2167,9 @@ fn run_turn_animated(
     // thing and `mpsc` cannot select across two. Only a write expects a reply.
     let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
     let (answer_tx, answer_rx) = mpsc::channel::<crate::remote_confirm::Reply>();
+    // Prompts typed while this turn runs, going the other way. Shared rather than sent, so that
+    // taking one back off the queue takes it out of the turn's reach too.
+    let typed = session.interjections();
 
     // A fresh token per turn: reusing one could cancel a turn before it started.
     let cancel = Cancel::new();
@@ -2225,7 +2228,7 @@ fn run_turn_animated(
         // Two handles over one channel back to the thread that owns the terminal: one asks about
         // writes and waits, the other reports progress and moves on.
         let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main.clone());
-        let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(to_main, answer_rx);
+        let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(to_main, answer_rx, typed);
         let egress = Egress::new();
         // Owned by the worker for the duration and handed back afterwards, whether the turn
         // succeeded or not. A failed turn is still part of the conversation, and the next one
@@ -2388,6 +2391,11 @@ fn run_turn_animated(
             crate::remote_confirm::ToMain::Finished(activity) => session.finish_activity(activity),
             crate::remote_confirm::ToMain::Quarantined(shown) => session.show(shown),
             crate::remote_confirm::ToMain::Landed(landing) => session.landed(landing),
+            // The turn has taken the oldest waiting prompt, so it stops being something waiting
+            // above the box and becomes something said. Which prompt is not named: the turn takes
+            // them in the order they were sent and this end hands them over in that order, so the
+            // oldest is the one that has gone.
+            crate::remote_confirm::ToMain::Interjected(_) => session.interjected(),
         });
 
         // The worker dropped its senders, so the turn is over.
@@ -5027,6 +5035,125 @@ mod tests {
         assert_eq!(session.queued[0].prompt, "second");
     }
 
+    /// The point of queueing, and what it used to fail at: a prompt typed mid-turn is put where the
+    /// running turn can reach it, not left for a turn that may be minutes away. A person who says
+    /// "no, not that file" while an agent works is trying to redirect the work in front of them,
+    /// and an instruction that waits for the answer arrives after the thing it was meant to change.
+    #[test]
+    fn a_prompt_queued_mid_turn_is_within_the_running_turns_reach() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+
+        // What the worker holds. Taken before the prompt is queued, exactly as a turn takes it.
+        let reaching = session.interjections();
+        assert!(reaching.take().is_none(), "something was waiting already");
+
+        for c in "actually stop".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(&mut session, key(KeyCode::Enter));
+
+        assert_eq!(
+            reaching.take().as_deref(),
+            Some("actually stop"),
+            "the turn could not reach a prompt typed while it ran"
+        );
+    }
+
+    /// Until the turn takes it, a queued prompt has not been said: it is drawn above the box as
+    /// waiting, and the transcript is for what has happened. It joins the transcript at the moment
+    /// the planner is given it, which is what keeps the two reading in the same order.
+    #[test]
+    fn a_queued_prompt_joins_the_transcript_when_the_planner_is_given_it() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        for c in "second".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(&mut session, key(KeyCode::Enter));
+
+        let said = session
+            .transcript
+            .iter()
+            .filter(|entry| entry.speaker == crate::state::Speaker::User)
+            .count();
+        assert_eq!(said, 1, "a prompt that had not gone anywhere was recorded");
+
+        session.interjected();
+        let said: Vec<&str> = session
+            .transcript
+            .iter()
+            .filter(|entry| entry.speaker == crate::state::Speaker::User)
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(said, vec!["first", "second"]);
+        assert!(session.queued.is_empty(), "it is still drawn as waiting");
+    }
+
+    /// A prompt still waiting when the turn ends is a turn of its own, as every queued prompt used
+    /// to be. What must not happen is both: the copy left for the turn that has finished has to go,
+    /// or the same words reach the planner twice, the second time as an interjection into the very
+    /// turn they started.
+    #[test]
+    fn a_prompt_that_outlived_the_turn_is_sent_once() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        for c in "second".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(&mut session, key(KeyCode::Enter));
+
+        let reaching = session.interjections();
+        session.complete("done", Vec::new(), 0);
+        assert_eq!(session.send_queued().as_deref(), Some("second"));
+        assert!(
+            reaching.take().is_none(),
+            "the prompt was sent as a turn and left waiting to be interjected as well"
+        );
+    }
+
+    /// Three prompts queued during one turn, and the rule that governs them afterwards: the running
+    /// turn takes what it can, one becomes the next turn, and the rest go on waiting under the same
+    /// rule. What must hold throughout is that the queue on the screen and the buffer the turn takes
+    /// from never disagree about how many prompts are waiting.
+    #[test]
+    fn what_is_still_waiting_stays_in_step_with_what_is_drawn() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        let reaching = session.interjections();
+
+        for line in ["one", "two", "three"] {
+            for c in line.chars() {
+                session.type_char(c);
+            }
+            assert!(session.queue(), "nothing was queued");
+        }
+
+        // The turn takes the first, as it would at a round boundary.
+        assert_eq!(reaching.take().as_deref(), Some("one"));
+        session.interjected();
+        assert_eq!(session.queued.len(), 2);
+
+        // Then it ends with two still waiting. The oldest becomes a turn of its own.
+        session.complete("an answer", Vec::new(), 0);
+        assert_eq!(session.send_queued().as_deref(), Some("two"));
+        assert_eq!(session.queued.len(), 1);
+
+        // And the last is waiting for the turn that just began, not for a second copy of itself.
+        assert_eq!(reaching.take().as_deref(), Some("three"));
+        assert!(reaching.take().is_none(), "a prompt was waiting twice over");
+    }
+
     /// Up reaches for the last thing the person said, and while prompts are waiting that is the
     /// queue. It walked the history instead, which holds a copy of every queued line: the copy
     /// came back, the person rewrote it, and the prompt they meant to take back went anyway.
@@ -5055,6 +5182,58 @@ mod tests {
         );
         assert_eq!(session.input(), "second\nthird");
         assert!(session.queued.is_empty(), "a prompt was left waiting");
+    }
+
+    /// Taking a prompt back has to take it out of the turn's reach too, or the key reads as having
+    /// done nothing: the line comes back to the box, the person rewrites it, and the copy the turn
+    /// was still holding arrives at the planner anyway. Which is the bug the old queue could not
+    /// have, because nothing could reach a queued prompt until the turn was over.
+    #[test]
+    fn taking_the_queue_back_takes_it_out_of_the_turns_reach() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        let reaching = session.interjections();
+        for c in "second".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(&mut session, key(KeyCode::Enter));
+
+        handle_key_while_working(&mut session, key(KeyCode::Up));
+        assert_eq!(session.input(), "second");
+        assert!(
+            reaching.take().is_none(),
+            "a prompt taken back was still on its way to the planner"
+        );
+    }
+
+    /// The other side of it: a prompt the turn has already been given cannot be taken back, because
+    /// the planner has it. Offering it to the box would leave the person editing a line that had
+    /// gone, and pressing Enter would say it twice.
+    #[test]
+    fn a_prompt_the_turn_has_taken_cannot_be_taken_back() {
+        let mut session = Session::new("none");
+        for c in "first".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+        let reaching = session.interjections();
+        for c in "second".chars() {
+            handle_key_while_working(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key_while_working(&mut session, key(KeyCode::Enter));
+
+        // The turn takes it, as it would at its next round boundary.
+        assert_eq!(reaching.take().as_deref(), Some("second"));
+
+        handle_key_while_working(&mut session, key(KeyCode::Up));
+        assert!(
+            !session.input().contains("second"),
+            "a prompt the planner already had came back to the box: {}",
+            session.input()
+        );
     }
 
     /// With nothing waiting the key means what it has always meant. Taking the queue back is the

@@ -269,17 +269,43 @@ attached to no press.
 `verified-by: bravebot_tui::app::ctrl_j_is_not_swallowed_while_a_turn_runs`
 
 <a id="INPUT-10"></a>
-### INPUT-10: a prompt sent while a turn runs waits for it, and says that it is waiting
+### INPUT-10: a prompt sent while a turn runs goes into that turn, at its next round boundary
 
 Enter mid-turn takes the line out of the box and holds it. It is drawn under the box, marked, so
-the person can see that what they sent went somewhere. Waiting prompts go in the order they were
-typed, one turn each, as soon as the session is free to start one.
+the person can see that what they sent went somewhere.
 
-A waiting prompt is **not** in the transcript. It has not happened; it moves there at the moment
-its own turn begins, and it is drawn as waiting only until then. What it names is settled when it
-is queued, not when it is sent, because a file the person took off the line afterwards was never
-part of that prompt. It is in the prompt history from the moment it is queued, since from the
-person's side that is when they sent it.
+**The turn in flight takes it.** A turn asks between rounds, after the round's tool calls have run
+and before the next request goes out, and everything waiting goes into the conversation there, in
+the order it was typed. So an instruction reaches the planner while the work it is about is still
+happening. A prompt still waiting when the turn ends becomes a turn of its own, as every queued
+prompt used to, and the rest go on waiting under the same rule.
+
+**Why.** A prompt that waits for the turn to end is not an instruction, it is a comment. Somebody
+watching an agent read the wrong file and typing "no, the other one" is talking about what is
+happening now; delivered after the answer, it arrives after the thing it was meant to prevent, and
+the work it would have redirected has been done. This is what Claude Code does, and for this reason.
+
+Not mid-round. Every call the planner asked for in a round runs, because a round is a set of calls
+asked for together and answering some while abandoning others leaves calls unanswered. Stopping in
+the middle of one is what the keys in INPUT-4 are for.
+
+**It may not route.** Routing is precommitted from the prompt that began the turn and stays that
+way, so an interjection reaches the planner as words to read and every effect it goes on to ask for
+is gated against the routing the turn began with. It is trusted, on the footing of the opening
+prompt and by the same act, since a keystroke has no author but the person at the keyboard. The
+audit trail records it as the user's own input, so a turn that changed course halfway through does
+not read as one that thought of it unprompted. See [routing.md](routing.md).
+
+**What it carries is text.** A turn already running cannot be handed a file or a picture: it fixed
+the shape of its context before it read anything. So markers resolve to words when the line is sent,
+and the person keeps looking at what they typed: a dropped file resolves to its name, which the
+planner can go and read. See [dropping.md](dropping.md).
+
+A waiting prompt is **not** in the transcript. It has not happened; it moves there at the moment the
+planner is given it, whether that is inside the running turn or as a turn of its own, and it is
+drawn as waiting only until then. What it names is settled when it is queued, not when it is sent,
+because a file the person took off the line afterwards was never part of that prompt. It is in the
+prompt history from the moment it is queued, since from the person's side that is when they sent it.
 
 Stopping a turn leaves the queue alone. The next waiting prompt begins its turn as it would after
 any turn, and the rest go on waiting in order. A prompt is taken back out of the queue by asking
@@ -308,6 +334,12 @@ while the first is in flight, and the queue is what makes that refusal visible i
 
 `verified-by: bravebot_tui::app::enter_queues_a_prompt_while_a_turn_is_running`
 `verified-by: bravebot_tui::app::starting_a_line_mid_turn_does_not_queue_it`
+`verified-by: bravebot_tui::app::a_prompt_queued_mid_turn_is_within_the_running_turns_reach`
+`verified-by: bravebot_tui::app::a_queued_prompt_joins_the_transcript_when_the_planner_is_given_it`
+`verified-by: bravebot_tui::app::a_prompt_that_outlived_the_turn_is_sent_once`
+`verified-by: bravebot_tui::app::what_is_still_waiting_stays_in_step_with_what_is_drawn`
+`verified-by: bravebot_agent::turn::a_prompt_typed_mid_turn_reaches_the_planner_on_the_next_round`
+`verified-by: bravebot_agent::turn::a_prompt_typed_mid_turn_is_recorded_as_the_users_own_input`
 `verified-by: bravebot_tui::state::a_prompt_sent_while_a_turn_runs_waits_for_it`
 `verified-by: bravebot_tui::state::a_waiting_prompt_goes_when_the_turn_ends`
 `verified-by: bravebot_tui::state::waiting_prompts_go_in_the_order_they_were_typed`
@@ -318,6 +350,7 @@ while the first is in flight, and the queue is what makes that refusal visible i
 `verified-by: bravebot_tui::state::there_is_nothing_to_queue_when_the_line_is_blank_or_nothing_is_running`
 `verified-by: bravebot_tui::render::a_waiting_prompt_is_shown_as_waiting`
 `verified-by: bravebot_tui::render::a_prompt_stops_waiting_once_its_turn_begins`
+`verified-by: bravebot_tui::render::a_prompt_stops_waiting_once_the_running_turn_takes_it`
 
 <a id="INPUT-11"></a>
 ### INPUT-11: what is attached is drawn nearest the box, above what is waiting
@@ -535,6 +568,13 @@ comes back staged with it, so a marker in a line that comes back stands for the 
 picture it stood for when it went. They stay in the prompt history, since from the person's side
 they were sent and taking them back does not unsay them.
 
+**Only what the planner has not been given.** A prompt the running turn has already taken
+(INPUT-10) cannot be taken back, because it is in the conversation: offering it to the box would
+leave the person editing a line that had gone, and sending it again would say it twice. Taking one
+back that the turn has *not* reached puts it out of the turn's reach as well, or the key would read
+as having done nothing: the line in the box, and the copy arriving at the planner a moment later.
+Where the turn has taken every waiting prompt, the press leaves the box exactly as it was.
+
 With nothing waiting the key is unchanged: it walks the history, and scrolls once there is nothing
 left to walk. Inside a paragraph it moves between rows first, and reaches the queue from the top
 row, the way it reaches the history there.
@@ -547,6 +587,8 @@ flight, which is aimed at something else entirely and costs the answer being wri
 
 `verified-by: bravebot_tui::app::up_takes_back_everything_waiting_rather_than_a_copy_of_it`
 `verified-by: bravebot_tui::app::up_walks_the_history_again_once_nothing_is_waiting`
+`verified-by: bravebot_tui::app::taking_the_queue_back_takes_it_out_of_the_turns_reach`
+`verified-by: bravebot_tui::app::a_prompt_the_turn_has_taken_cannot_be_taken_back`
 `verified-by: bravebot_tui::state::taking_the_queue_back_puts_every_waiting_prompt_in_the_box`
 `verified-by: bravebot_tui::state::a_half_typed_line_stays_below_what_comes_back`
 `verified-by: bravebot_tui::state::what_a_waiting_prompt_named_is_named_again_when_it_comes_back`

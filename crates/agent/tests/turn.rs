@@ -930,6 +930,11 @@ fn time_spent_waiting_for_an_approval_is_not_charged_to_the_tool() {
         ) -> Vec<bravebot_core::ask::Answer> {
             Vec::new()
         }
+
+        /// Nobody is typing: no interface, and no queue to type into.
+        fn interjection(&mut self) -> Option<String> {
+            None
+        }
     }
 
     let scratch = Scratch::new("timing-stalled");
@@ -1188,6 +1193,11 @@ impl bravebot_agent::Confirmer for RecordingConfirmer {
         _asking: &bravebot_core::ask::Asking,
     ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
+    }
+
+    /// Nobody is typing: no interface, and no queue to type into.
+    fn interjection(&mut self) -> Option<String> {
+        None
     }
 }
 
@@ -1457,6 +1467,160 @@ fn what_the_model_says_between_tool_calls_reaches_the_interface() {
         reporter.narration,
         vec!["Let me look at a.txt first.".to_string()],
         "the model's account of its own work did not reach the interface"
+    );
+}
+
+/// Says one thing, once, the first time it is asked.
+///
+/// What a person typing mid-turn looks like to a turn: nothing on most rounds, and one line on
+/// one of them. Refuses everything else, since a test that wanted a write approved says so.
+struct SaysOnce {
+    said: Option<String>,
+}
+
+impl SaysOnce {
+    fn new(said: &str) -> Self {
+        Self {
+            said: Some(said.to_string()),
+        }
+    }
+}
+
+impl bravebot_agent::Confirmer for SaysOnce {
+    fn confirm_write(
+        &mut self,
+        _request: &bravebot_agent::WriteRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
+    fn confirm_run(
+        &mut self,
+        _request: &bravebot_agent::RunRequest,
+    ) -> bravebot_agent::RunDecision {
+        bravebot_agent::RunDecision::reject()
+    }
+
+    fn confirm_read_output(
+        &mut self,
+        _request: &bravebot_agent::confirm::OutputRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
+    fn confirm_vouch(
+        &mut self,
+        _request: &bravebot_agent::confirm::VouchRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
+    fn ask_user(
+        &mut self,
+        _asking: &bravebot_core::ask::Asking,
+    ) -> Vec<bravebot_core::ask::Answer> {
+        Vec::new()
+    }
+
+    fn interjection(&mut self) -> Option<String> {
+        self.said.take()
+    }
+}
+
+/// The whole point of the change, end to end: a line typed while the turn ran is in front of the
+/// planner on the very next round, not after the answer it was meant to change.
+///
+/// A prompt that waits for the turn to end arrives too late to be an instruction. The person is
+/// watching an agent work and saying "not that one" about the thing it is doing now.
+#[test]
+fn a_prompt_typed_mid_turn_reaches_the_planner_on_the_next_round() {
+    let scratch = Scratch::new("interject");
+    std::fs::write(scratch.path.join("a.txt"), "body").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("stopping there, as you asked"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("what is in a.txt?"),
+        &mut SaysOnce::new("actually, stop and tell me what you have"),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+    assert!(outcome.clean, "no gate should have refused");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    assert_eq!(bodies.len(), 2, "one tool round and the answer");
+    assert!(
+        bodies[1].contains("actually, stop and tell me what you have"),
+        "what the person typed mid-turn never reached the planner: {}",
+        bodies[1]
+    );
+    // Not in the first, which had gone out before they typed. Asserted because a driver that put
+    // interjections in front of every round would pass the test above and re-send the line forever.
+    assert!(
+        !bodies[0].contains("actually, stop"),
+        "a line typed during the first round was somehow in the request that started it"
+    );
+    assert_eq!(
+        reporter.interjected,
+        vec!["actually, stop and tell me what you have".to_string()],
+        "the interface was not told the prompt had gone in"
+    );
+}
+
+/// It is the user's own words, so it arrives with the standing of the prompt that began the turn.
+/// The audit trail is where a session's inputs are accounted for, and a turn that changed course
+/// halfway through must not read as one that thought of it unprompted.
+#[test]
+fn a_prompt_typed_mid_turn_is_recorded_as_the_users_own_input() {
+    let scratch = Scratch::new("interject-trail");
+    std::fs::write(scratch.path.join("a.txt"), "body").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("what is in a.txt?"),
+        &mut SaysOnce::new("look at b.txt instead"),
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let recorded = sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::GatePassed { gate, detail }
+                if *gate == "provenance" && detail.contains("while the turn was running")
+        )
+    });
+    assert!(
+        recorded,
+        "a prompt typed mid-turn went into the context with nothing in the trail saying so"
     );
 }
 
@@ -3230,6 +3394,11 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
             _asking: &bravebot_core::ask::Asking,
         ) -> Vec<bravebot_core::ask::Answer> {
             Vec::new()
+        }
+
+        /// Nobody is typing: no interface, and no queue to type into.
+        fn interjection(&mut self) -> Option<String> {
+            None
         }
     }
 
@@ -6198,6 +6367,11 @@ impl bravebot_agent::Confirmer for AnswersWith {
         self.asked.push(asking.clone());
         self.replies.clone()
     }
+
+    /// Nobody is typing: no interface, and no queue to type into.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// The whole point, end to end: one call settles three unknowns and the planner reads all three
@@ -6528,6 +6702,11 @@ impl bravebot_agent::Confirmer for AskedAboutRuns {
         _asking: &bravebot_core::ask::Asking,
     ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
+    }
+
+    /// Nobody is typing: no interface, and no queue to type into.
+    fn interjection(&mut self) -> Option<String> {
+        None
     }
 }
 
@@ -7008,6 +7187,11 @@ impl bravebot_agent::Confirmer for ReadsWhatItRan {
     ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
     }
+
+    /// Nobody is typing: no interface, and no queue to type into.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// The whole point, end to end: the model runs a discovery command, cannot read the result, asks,
@@ -7330,6 +7514,11 @@ impl bravebot_agent::Confirmer for VouchesForFiles {
         _asking: &bravebot_core::ask::Asking,
     ) -> Vec<bravebot_core::ask::Answer> {
         Vec::new()
+    }
+
+    /// Nobody is typing: no interface, and no queue to type into.
+    fn interjection(&mut self) -> Option<String> {
+        None
     }
 }
 

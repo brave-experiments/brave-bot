@@ -129,6 +129,34 @@ its name, which is a path nobody's gesture put there.
 `verified-by: bravebot_tui::dropped::an_empty_paste_is_not_a_drop`
 `verified-by: bravebot_tui::drop::pasting_prose_about_a_real_file_is_still_prose`
 
+<a id="DROP-8"></a>
+### DROP-8: a file dropped onto a line queued mid-turn is named, not carried
+
+A prompt sent while a turn is running goes into that running turn rather than waiting for the next
+one ([terminal-input.md](terminal-input.md)), and a turn already running cannot be handed a file: it
+precommitted its routing and fixed the shape of its context before it read anything, so there is no
+trusted slot for one to arrive in. What the planner is given instead is the file's
+**name**, in place of the marker, settled at the moment the line was sent. A pasted picture has no
+such recourse and resolves to a sentence saying a picture was pasted and cannot be shown.
+
+Only what talks to the model sees this. The box, the transcript and the history keep the marker,
+exactly as a folded paste keeps its own marker, because that is what was on the person's screen.
+See [pasting.md](pasting.md).
+
+**Why.** Dropping a file mid-turn is telling the agent which file to look at, and a name is enough
+for that: the planner reads it and goes to the file through the same gate it reads any other file
+through, with the trust map deciding as it always does. The two alternatives are worse. Leaving the
+marker in place sends `[Image #1]`, which stands for nothing the planner can use. Admitting the file
+would mean minting a trusted path in the middle of a turn from a string that crossed a thread
+boundary after untrusted content had already been observed, which is the property
+[routing.md](routing.md) exists to hold.
+
+A prompt that is still waiting when the turn ends is not affected: it becomes a turn of its own, and
+as its own turn it carries its files and pictures the way any prompt does.
+
+`verified-by: bravebot_tui::drop::a_file_dropped_into_a_queued_line_is_named_to_the_planner`
+`verified-by: bravebot_tui::drop::resolving_a_queued_line_does_not_rewrite_what_the_person_sees`
+
 ## Known costs
 
 - **A screenshot somebody sent you is content you have not read and are vouching for.** It goes

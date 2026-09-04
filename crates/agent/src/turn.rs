@@ -1542,6 +1542,35 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                 None => Message::user(body),
             });
         }
+
+        // Anything the person typed while that round ran, put in front of the next one.
+        //
+        // Here rather than at the end of the turn, which is where it used to go, and the
+        // difference is the whole point: a turn that has gone wrong is one somebody wants to
+        // redirect while it is still going, and a prompt that waits for the answer arrives after
+        // the work it was meant to change. Asked after the results rather than before them so the
+        // planner reads the round it just did and then what the person made of it, which is the
+        // order the two things happened in.
+        //
+        // Every call in the round has run by now. A line typed halfway through cannot stop the
+        // rest, and must not: a round is a set of calls the planner asked for together, and
+        // dropping the tail would answer some and leave others hanging. Stopping is what Escape
+        // is for.
+        //
+        // After the cancel checks above, so a stop that arrived during the round is still what
+        // happens: a person who pressed Escape and then typed is starting again, not adding to a
+        // turn they have just stopped.
+        while let Some(said) = confirmer.interjection() {
+            // The one input this whole arrangement takes as trusted, and it stays trusted here
+            // for the reason the opening prompt is: a keystroke has no author but the person at
+            // the keyboard. What it cannot do is route. Nothing here consults it to decide where
+            // an effect lands, and the routing this turn precommitted is untouched, so a line
+            // typed mid-turn reaches the planner as words and every effect it asks for is gated
+            // exactly as one asked for by the opening prompt would be.
+            policy.admit_interjection(said.chars().count());
+            reporter.interjected(said.clone());
+            conversation.push(Message::user(said));
+        }
     };
 
     // Released while the policy is open, so the audit trail records that the reply was

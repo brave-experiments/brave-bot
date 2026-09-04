@@ -2480,6 +2480,28 @@ mod tests {
             );
         }
 
+        /// And the same the other way it can stop waiting, which is the ordinary way now: the turn
+        /// in flight takes it. It moves from the rows under the box into the transcript, because it
+        /// has been said, and two copies is one too many either way.
+        #[test]
+        fn a_prompt_stops_waiting_once_the_running_turn_takes_it() {
+            let mut session = working();
+            for c in "actually look at b.txt".chars() {
+                session.type_char(c);
+            }
+            session.queue();
+            assert!(rendered(&session).contains("QUEUED"), "nothing was waiting");
+
+            session.interjected();
+
+            let output = rendered(&session);
+            assert!(!output.contains("QUEUED"), "still drawn as waiting");
+            assert!(
+                output.contains("actually look at b.txt"),
+                "it left the screen entirely"
+            );
+        }
+
         /// Nearly every call reads into the planner's context, so a line saying so appeared
         /// under nearly every call and distinguished nothing. It crowded out the lines that do.
         #[test]

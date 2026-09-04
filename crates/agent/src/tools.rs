@@ -3256,6 +3256,11 @@ mod tests {
                 self.seen.push(asking.clone());
                 self.reply.clone()
             }
+
+            /// Nobody is typing: no interface, and no queue to type into.
+            fn interjection(&mut self) -> Option<String> {
+                None
+            }
         }
 
         /// Run the tool against a fresh policy in a workspace the user vouched for.

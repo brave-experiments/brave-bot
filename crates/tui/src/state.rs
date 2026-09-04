@@ -548,8 +548,18 @@ pub struct Session {
     /// Prompts typed and sent while a turn was running, in the order they were typed.
     ///
     /// Not in the transcript: they have not happened. They are drawn under the box as waiting,
-    /// and each moves into the transcript at the moment its own turn begins.
+    /// and each moves into the transcript at the moment it reaches the planner, whether that is
+    /// inside the running turn or as a turn of its own.
     pub queued: Vec<Queued>,
+    /// The same prompts, resolved, for the turn in flight to take between rounds.
+    ///
+    /// Shared with the worker rather than sent down a channel, because a queued prompt can be
+    /// taken back: a line already posted into a channel is gone, and Up would appear to retrieve
+    /// a prompt that then arrived anyway. Both ends holding one buffer makes taking it back mean
+    /// what it says.
+    ///
+    /// Mirrors `queued`, minus whatever the turn has already taken.
+    pending: crate::remote_confirm::Interjections,
     /// The reply the model is writing right now, as far as it has got.
     ///
     /// Not in the transcript, because it is not a thing that happened yet: it is drawn at the
@@ -676,6 +686,7 @@ impl Session {
             phase: None,
             running: None,
             queued: Vec::new(),
+            pending: crate::remote_confirm::Interjections::new(),
             streaming: String::new(),
             answers: Vec::new(),
             pasted: Vec::new(),
@@ -2089,11 +2100,22 @@ impl Session {
         if prompt.is_empty() {
             return false;
         }
+        // Resolved before the line is taken, because taking it clears what the markers stand for.
+        let resolved = self.resolved(&prompt);
         let (attached, pasted) = self.take_line(&prompt);
         self.history.push(prompt.clone());
         if self.persist {
             crate::store::append_history(&prompt);
         }
+        // Into the turn's reach the moment it is typed, rather than when the turn next asks. The
+        // turn asks between rounds and a round can be a long wait; put there now, the line is
+        // taken at the first boundary after it was sent, which is the soonest anything could act
+        // on it.
+        //
+        // The resolved copy lives only there. What is kept here is what the person typed, because
+        // that is what the screen and the history are for, and a second copy of the resolved line
+        // would be one for the two to disagree over.
+        self.pending.push(resolved);
         self.queued.push(Queued {
             prompt,
             attached,
@@ -2103,12 +2125,80 @@ impl Session {
         true
     }
 
+    /// The buffer the running turn takes interjections from.
+    ///
+    /// Handed to the worker when a turn starts. Cloning shares the buffer rather than copying it,
+    /// which is the point: what the interface adds is what the turn takes.
+    pub fn interjections(&self) -> crate::remote_confirm::Interjections {
+        self.pending.clone()
+    }
+
+    /// A queued line with every marker in it put back to words.
+    ///
+    /// What a mid-turn prompt is given to the planner as. A turn already running cannot be handed
+    /// a file or a picture: routing was precommitted before it read anything, and a file admitted
+    /// now would be context this turn never fixed the shape of. So what travels is text, and each
+    /// marker becomes the most honest sentence available about what stood there.
+    ///
+    /// A paste becomes the words themselves, exactly as [`Session::unfolded`] makes it: the marker
+    /// was only ever a way of drawing a long paste short.
+    ///
+    /// A file and a picture cannot become their contents, so they become their names. A named file
+    /// is one the planner can go and read, through the same gate it reads anything else through,
+    /// and a person who dropped a file mid-turn is telling it which file to look at. A picture has
+    /// no such recourse and says so: better a planner that knows a screenshot was meant for it and
+    /// cannot see it than one that is handed `[Image #2]` and left counting.
+    fn resolved(&self, line: &str) -> String {
+        let mut resolved = self.unfolded(line);
+        for attached in self.named_in(line) {
+            resolved = resolved.replace(&attached.marker, &attached.name);
+        }
+        // Not from the catalog, and deliberately: the planner reads this, so it is part of what the
+        // model is given rather than something a person is being told. Same reasoning as the marker
+        // in [`Session::attach`], and the catalog says so at the top of itself.
+        for pasted in self.pasted_named(line) {
+            resolved = resolved.replace(
+                &pasted.marker,
+                &format!(
+                    "({} was pasted here, but it cannot be shown to you: a picture cannot join a \
+                     turn already running. Ask for it again if you need to see it.)",
+                    pasted.marker
+                ),
+            );
+        }
+        resolved
+    }
+
+    /// Record that the prompt queued longest ago has reached the planner mid-turn.
+    ///
+    /// Called when the turn says it took one, rather than when the line was put where the turn
+    /// could reach it: until it is taken the prompt is still waiting, and it belongs above the box
+    /// where a waiting prompt is drawn. This is the moment it becomes part of the conversation, so
+    /// this is the moment it joins the transcript, which reads in the order things happened.
+    pub fn interjected(&mut self) {
+        if self.queued.is_empty() {
+            return;
+        }
+        let gone = self.queued.remove(0);
+        self.transcript.push(Entry::user(gone.prompt));
+        self.scroll = 0;
+    }
+
     /// Begin the turn for the prompt queued longest ago, if the session is free to start one.
+    ///
+    /// What a prompt still waiting when the turn ended does, which is what every queued prompt used
+    /// to do. It becomes a turn of its own, and as its own turn it gets what a turn gets: routing
+    /// precommitted from it, and the files and pictures it named carried with it. That is why one
+    /// left over is better off here than interjected, and why nothing tries to hurry it.
     pub fn send_queued(&mut self) -> Option<String> {
         if self.status != Status::Idle || self.queued.is_empty() {
             return None;
         }
         let next = self.queued.remove(0);
+        // The copy left for the running turn goes: this prompt is becoming a turn of its own, and a
+        // copy still in the buffer would reach the planner a second time, as an interjection into
+        // the very turn this line started.
+        self.pending.take();
         Some(self.begin_turn(next.prompt, (next.attached, next.pasted)))
     }
 
@@ -2126,6 +2216,22 @@ impl Session {
         if self.queued.is_empty() {
             return false;
         }
+        // From the back, which is the end this key takes from, and only as far as the turn has not
+        // already reached. A prompt comes back only if its copy was still there to drop: a line the
+        // planner has been given cannot be unsaid, and offering it back to the box would leave the
+        // person editing a prompt that had already gone. The two threads move independently, so a
+        // line can be taken between the key press and this loop.
+        //
+        // Before anything is disturbed, so that finding nothing left to take leaves the box exactly
+        // as it was rather than half rewritten.
+        let mut reclaimed = Vec::new();
+        while !self.queued.is_empty() && self.pending.forget_last() {
+            reclaimed.push(self.queued.pop().expect("the queue was not empty"));
+        }
+        if reclaimed.is_empty() {
+            return false;
+        }
+
         // The box is about to be rewritten, so the things standing over it that belong to the line
         // it held go, exactly as they do for anything else that writes a whole line.
         self.history.leave();
@@ -2134,7 +2240,7 @@ impl Session {
         let mut lines = Vec::new();
         let mut attached = Vec::new();
         let mut pasted = Vec::new();
-        for waiting in self.queued.drain(..) {
+        for waiting in reclaimed.into_iter().rev() {
             lines.push(waiting.prompt);
             attached.extend(waiting.attached);
             pasted.extend(waiting.pasted);

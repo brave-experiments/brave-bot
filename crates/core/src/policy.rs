@@ -798,6 +798,31 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
     }
 
+    /// Record a prompt the user typed while the turn was already running.
+    ///
+    /// On the footing of [`Policy::admit_pasted_image`], and for the same reason: a keystroke is
+    /// the one input nobody steers, so a line typed mid-turn is as trusted as the line that began
+    /// it. What it cannot do is route, and it does not need to. Routing was precommitted from the
+    /// opening prompt and stays precommitted: this text reaches the planner as words to read, and
+    /// every effect it goes on to ask for is gated exactly as it was before, against the routing
+    /// this turn began with.
+    ///
+    /// So there is no label to hand back. What this is instead is the record, because the audit
+    /// trail is where a session's inputs are accounted for and a turn that changed course
+    /// halfway through should not read as one that thought of it unprompted.
+    ///
+    /// This must only ever be reached from a line a human typed. Never point it at model output or
+    /// at anything a tool read: those are content, and this would launder them.
+    pub fn admit_interjection(&mut self, characters: usize) {
+        self.allow(
+            "provenance",
+            format!(
+                "{characters} characters, typed by the user at their own keyboard while the turn \
+                 was running; it may not route"
+            ),
+        );
+    }
+
     /// Transform content without exposing it, keeping its label.
     ///
     /// A tool often needs to reshape what it read, joining lines or adding a truncation notice, before

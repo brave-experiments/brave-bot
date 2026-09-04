@@ -314,6 +314,25 @@ pub trait Confirmer {
     /// The questions arrive already shaped and released by the kernel, so an implementation
     /// draws what it was handed rather than formatting anything itself.
     fn ask_user(&mut self, asking: &Asking) -> Vec<Answer>;
+
+    /// Whatever the person has typed since the last time this was asked, or `None`.
+    ///
+    /// The one method here that is not a question, and it is here because this trait is the
+    /// person's end of a turn: everything else asks them something, and this asks whether they
+    /// have said something unprompted. It is the reverse direction over the same connection, which
+    /// is why it lives beside them rather than in [`crate::report::Reporter`], where nothing has a
+    /// reply.
+    ///
+    /// **Must not block.** A question waits because nothing may proceed without an answer; this is
+    /// asked between rounds of a turn that is going perfectly well, and an implementation that
+    /// waited would stall every turn on a person who is not typing. Nothing waiting is the
+    /// ordinary answer and `None` is what says so.
+    ///
+    /// The line comes back as the user typed it, already whole: anything standing in it for
+    /// something else was resolved when they pressed the key. See
+    /// [`Policy::admit_interjection`](bravebot_core::policy::Policy::admit_interjection) for what
+    /// it may and may not do once it arrives.
+    fn interjection(&mut self) -> Option<String>;
 }
 
 /// Nobody to ask: refuses every write and answers no question.
@@ -344,6 +363,11 @@ impl Confirmer for Unattended {
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
+    }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
     }
 }
 
@@ -376,6 +400,11 @@ impl Confirmer for ApproveWrites {
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
+    }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
     }
 }
 
@@ -411,6 +440,11 @@ impl Confirmer for ChoosesFirst {
             })
             .collect()
     }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Approves every run and every write. Test-only, and named so its use is conspicuous.
@@ -445,6 +479,11 @@ impl Confirmer for ApproveRuns {
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Approves every run and vouches for its programs. Test-only.
@@ -471,6 +510,11 @@ impl Confirmer for RemembersRuns {
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
     }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Approves a run once and lets its output be read. Test-only.
@@ -496,6 +540,11 @@ impl Confirmer for ReadsOutput {
 
     fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
         Vec::new()
+    }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
     }
 }
 
@@ -555,6 +604,13 @@ impl<C: Confirmer> Confirmer for Timed<'_, C> {
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
         self.timing(|inner| inner.ask_user(asking))
+    }
+
+    /// Not timed, unlike everything else here. This does not wait, so there is nothing to time,
+    /// and what the figure means is the turn held up on a person: counting a question that nobody
+    /// was asked would put the time a turn spent working under the time it spent waiting.
+    fn interjection(&mut self) -> Option<String> {
+        self.inner.interjection()
     }
 }
 
@@ -642,6 +698,11 @@ mod tests {
         fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
             std::thread::sleep(self.0);
             Vec::new()
+        }
+
+        /// Nobody is typing: no interface, and no queue to type into.
+        fn interjection(&mut self) -> Option<String> {
+            None
         }
     }
 

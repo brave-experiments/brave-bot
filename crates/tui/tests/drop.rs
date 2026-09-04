@@ -280,3 +280,52 @@ fn a_drop_leaves_room_after_itself() {
     }
     assert_eq!(session.input(), "[Image #1] what is this");
 }
+
+/// A file dropped onto a line queued mid-turn reaches the planner as its name.
+///
+/// It cannot reach it as contents: routing was precommitted before the turn read anything, so a
+/// file admitted now would be context whose shape the turn never fixed. The name is enough, and it
+/// is what the person meant by dropping it: the planner reads it and goes to the file through the
+/// same gate it reads anything else through.
+#[test]
+fn a_file_dropped_into_a_queued_line_is_named_to_the_planner() {
+    let scratch = Scratch::new("queued-drop");
+    let path = scratch.file("shot.png");
+    let mut session = session_in(&scratch);
+
+    session.type_char('a');
+    session.submit();
+    let reaching = session.interjections();
+
+    session.drop_files(&path);
+    for c in "what is wrong here".chars() {
+        session.type_char(c);
+    }
+    assert!(session.queue(), "nothing was queued");
+
+    assert_eq!(
+        reaching.take().as_deref(),
+        Some("shot.png what is wrong here"),
+        "the marker reached the planner as a marker, standing for nothing it can use"
+    );
+}
+
+/// What the person sees is still what they typed. Only the thing that talks to the model is given
+/// the resolved words, exactly as a folded paste works: the transcript and the box keep the marker,
+/// because that is what was on their screen.
+#[test]
+fn resolving_a_queued_line_does_not_rewrite_what_the_person_sees() {
+    let scratch = Scratch::new("queued-drop-display");
+    let path = scratch.file("shot.png");
+    let mut session = session_in(&scratch);
+
+    session.type_char('a');
+    session.submit();
+    session.drop_files(&path);
+    assert!(session.queue(), "nothing was queued");
+
+    assert_eq!(
+        session.queued[0].prompt, "[Image #1]",
+        "the person's own line was rewritten under them"
+    );
+}

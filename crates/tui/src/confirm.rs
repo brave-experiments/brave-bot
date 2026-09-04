@@ -58,6 +58,14 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
     fn ask_user(&mut self, asking: &Asking) -> Vec<UserAnswer> {
         crate::ask::ask(self.terminal, asking)
     }
+
+    /// Never anything. This confirmer runs the turn on the thread that owns the terminal, so while
+    /// one is running there is no box to type into and nothing can have arrived. Interjecting
+    /// belongs to [`crate::remote_confirm::RemoteConfirmer`], where the turn is off on its own
+    /// thread and the interface is still taking keys.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// What the user did with the question.
