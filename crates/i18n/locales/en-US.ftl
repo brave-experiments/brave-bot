@@ -136,6 +136,11 @@ doctor-permissions-unreadable = unreadable rule
 # A file that configures a gateway names no variables, and reporting that as an absent file would
 # describe a file the person is looking at.
 doctor-settings-no-variables = settings.json, naming no variables
+doctor-settings-layer = layer
+doctor-settings-override = override
+# Which file a name finally came from, where more than one set it. Somebody looking at a value they
+# did not expect has three files to open otherwise.
+doctor-settings-overridden = { $name } from { $path }
 doctor-leo = leo
 doctor-subscription =
     { $environment } subscription imported, { $unspent } of { $total } credentials unspent

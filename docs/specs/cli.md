@@ -91,16 +91,18 @@ exiting successfully with an explanation on stdout.
 <a id="CLI-7"></a>
 ### CLI-7: `doctor` reports configuration and confinement without changing anything
 
-It prints every backend this build can reach and what identifies it, which names a settings file
-set, the model in force and whether it was chosen or defaulted, the confinement available on this
-platform, and the state of any imported subscription. The signing key is named as never
-transmitted, and a value from the settings file is never printed: where a credential decides whether
-a backend works, what is reported is that one was found. A configuration error makes it fail rather
-than pass with a warning.
+It prints every backend this build can reach and what identifies it, which names the settings set,
+which settings files are in force and which of them won a name more than one set, the model in force
+and whether it was chosen or defaulted, the confinement available on this platform, and the state of
+any imported subscription. The signing key is named as never transmitted, and a value from a settings
+file is never printed: where a credential decides whether a backend works, what is reported is that
+one was found. A configuration error makes it fail rather than pass with a warning.
 
 **Why.** It exists to answer "what will this actually use", so reporting a default when a choice
 is in force would explain the wrong thing, and naming one backend where two are reachable would
-explain only the half somebody happened to ask about. Values are withheld because a settings file
+explain only the half somebody happened to ask about. Naming the files is the same argument: settings
+resolve across three of them, so a value somebody did not expect has three places it could have come
+from and the path is the whole of what narrows it to one. Values are withheld because a settings file
 holds credentials on some machines, and a diagnostic that prints one is a diagnostic people paste
 into issues. Whether one was found still has to be said, because a backend nothing can authenticate
 is the case this is most often run to explain.

@@ -1024,6 +1024,23 @@ fn doctor() -> ExitCode {
                 (true, true) => fact(t!(doctor_settings), t!(doctor_settings_absent)),
             }
 
+            // Which files are in force, weakest first, and then only the names where that order
+            // decided something. A person reading a value they did not expect has three places it
+            // could have come from, and the paths are the whole of what tells them which.
+            for layer in settings.layers() {
+                fact(t!(doctor_settings_layer), layer.display().to_string());
+            }
+            for (name, path) in settings.overridden() {
+                fact(
+                    t!(doctor_settings_override),
+                    t!(
+                        doctor_settings_overridden,
+                        name = name,
+                        path = path.display().to_string()
+                    ),
+                );
+            }
+
             // Counted rather than listed: a rule is the user's own text and printing it back says
             // nothing they cannot read in the file. What is worth saying is which of them this
             // build could not act on, because those are the ones that look like protection and
