@@ -3643,6 +3643,10 @@ mod tests {
     /// nothing in the record says that: what it holds is that the call was made.
     #[test]
     fn a_recalled_call_does_not_claim_an_outcome() {
+        // Reads a colour, so it holds the theme for the duration: a test putting one in force
+        // beside this one would otherwise decide what this draws in.
+        let _held = crate::theme::exclusive();
+
         let mut session = Session::new("none");
         session
             .transcript
