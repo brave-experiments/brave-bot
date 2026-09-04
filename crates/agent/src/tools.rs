@@ -1211,24 +1211,12 @@ fn read_file<S: Sink, C: Confirmer>(
 
 /// The text a slot holds for a file, read at the moment something needs it.
 ///
-/// The same shaping an eager read would have applied, from the same two functions, so a
-/// deferred read and an immediate one put the same bytes in the same slot. Deferring changes
-/// when a file is read and nothing else about it.
+/// The whole file, unshaped. A slot's contents are written back over the file they came from, so
+/// anything the pager would do for a reader is destruction here: the lines past its limit would be
+/// dropped, a long line rewritten, and its note about both appended to the body as though the file
+/// had always ended that way.
 pub(crate) fn read_into_slot(workspace: &Workspace, path: &str) -> Result<String, String> {
-    workspace
-        .page(path, 1, usize::MAX)
-        .map(|page| {
-            let mut text = render_page(&page);
-            // A file that went through a slot used to come back a byte shorter than it went in,
-            // because the lines are joined with newlines between them and none after. Every
-            // processed file lost its last newline, which the next diff anybody reads calls
-            // "no newline at end of file".
-            if page.ends_with_newline && !text.ends_with('\n') {
-                text.push('\n');
-            }
-            text
-        })
-        .map_err(|e| e.to_string())
+    workspace.whole(path).map_err(|e| e.to_string())
 }
 
 /// Read the files any of these slots is still waiting on.

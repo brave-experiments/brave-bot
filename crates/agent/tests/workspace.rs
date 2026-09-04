@@ -2002,3 +2002,62 @@ fn a_directory_cannot_be_attached() {
         .expect_err("a directory must not attach");
     assert!(matches!(error, WorkspaceError::Invalid { .. }));
 }
+
+/// What a slot holds is the file, not a reader's view of it.
+///
+/// The pager's three shapings are all destruction here, because a slot's contents are written
+/// back over the file they came from: the lines past its cap would be dropped, a long line
+/// rewritten, and its note about having done both appended as though the file ended that way.
+#[test]
+fn the_whole_of_a_file_is_read_without_the_pagers_shaping() {
+    let scratch = Scratch::new("read-unshaped");
+    let long_line = "x".repeat(5_000);
+    let body: String = (1..=1_200)
+        .map(|n| {
+            if n == 3 {
+                format!("{long_line}\n")
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect();
+    std::fs::write(scratch.path.join("big.txt"), &body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let whole = workspace.whole("big.txt").expect("read succeeds");
+
+    assert_eq!(whole, body, "the file did not come back byte for byte");
+    assert_eq!(whole.lines().count(), 1_200);
+    assert!(!whole.contains("line truncated"));
+    assert!(!whole.contains("continue with offset"));
+}
+
+/// A file that ends without a newline must come back without one, or every file that goes
+/// through a slot grows a byte the next diff reports.
+#[test]
+fn a_whole_read_keeps_the_files_own_ending() {
+    let scratch = Scratch::new("read-whole-ending");
+    std::fs::write(scratch.path.join("none.txt"), "no trailing newline").unwrap();
+    std::fs::write(scratch.path.join("one.txt"), "trailing newline\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    assert_eq!(
+        workspace.whole("none.txt").expect("read"),
+        "no trailing newline"
+    );
+    assert_eq!(
+        workspace.whole("one.txt").expect("read"),
+        "trailing newline\n"
+    );
+}
+
+/// Binary files are refused here exactly as a paged read refuses them, or the unshaped path
+/// would become a way to put arbitrary bytes into a slot.
+#[test]
+fn a_whole_read_of_a_binary_file_is_refused() {
+    let scratch = Scratch::new("read-whole-binary");
+    std::fs::write(scratch.path.join("blob.bin"), [0u8, 1, 2, 0, 255]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    assert!(workspace.whole("blob.bin").is_err());
+}

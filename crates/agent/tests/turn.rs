@@ -8103,3 +8103,101 @@ fn a_checker_that_will_not_say_the_word_produces_an_unsafe_verdict() {
         .expect("the planner was told a verdict");
     assert!(told.contains("would not call it safe"), "{told}");
 }
+
+/// A quarantined file reaches a processor whole, or the write that follows destroys it.
+///
+/// The planner cannot read the file, so nobody is in a position to notice that the copy handed
+/// to the processor stopped early. The processor returns what it was given plus its change, that
+/// becomes the whole file, and everything past the cut is gone.
+#[test]
+fn a_long_quarantined_file_reaches_a_processor_whole() {
+    let scratch = Scratch::new("long-quarantined-file");
+    let body: String = (1..=600).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.path.join("long.txt"), &body).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"long.txt"}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"return it unchanged"}"#,
+        ),
+        processor_reply("REWRITTEN"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("tidy the file"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    let processor = bodies
+        .iter()
+        .find(|b| b.contains("You are an isolated processor"))
+        .expect("a processor ran");
+
+    assert!(
+        !processor.contains("continue with offset"),
+        "the pager's note to the planner was written into the file's slot"
+    );
+    assert!(
+        processor.contains("line 600"),
+        "the processor was given a truncated copy of the file: it ends before line 600"
+    );
+}
+
+/// The same cut, made across a line rather than across a file.
+///
+/// A minified bundle, a long data row, a base64 blob: the pager shortens any line over its limit
+/// and marks it, which is right for a screen and wrong for a copy that is about to be written
+/// back over the original.
+#[test]
+fn a_quarantined_file_with_a_long_line_reaches_a_processor_intact() {
+    let scratch = Scratch::new("long-line-quarantined-file");
+    let long = "x".repeat(5_000);
+    std::fs::write(scratch.path.join("bundle.js"), format!("{long}\n")).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"bundle.js"}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"return it unchanged"}"#,
+        ),
+        processor_reply("REWRITTEN"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("tidy the bundle"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    let processor = bodies
+        .iter()
+        .find(|b| b.contains("You are an isolated processor"))
+        .expect("a processor ran");
+
+    assert!(
+        !processor.contains("line truncated"),
+        "the processor was given a copy with a line rewritten by the pager"
+    );
+}
