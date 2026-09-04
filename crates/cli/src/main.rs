@@ -821,17 +821,20 @@ fn doctor() -> ExitCode {
         Ok(config) => {
             println!("{}", t!(doctor_configuration_ok));
 
-            match settings.is_empty() {
-                // Names only. On some machines a value here is a credential, and a diagnostic that
-                // prints one is a diagnostic people paste into issues.
-                false => fact(
+            // Names only. On some machines a value here is a credential, and a diagnostic that
+            // prints one is a diagnostic people paste into issues.
+            //
+            // The variables the file names, not everything it configured: a gateway is a block rather
+            // than a variable and gets a section of its own below. A file that only configures one
+            // therefore names nothing here, which is absence rather than an empty list.
+            let named: Vec<&str> = settings.names().collect();
+            match (named.is_empty(), settings.is_empty()) {
+                (false, _) => fact(
                     t!(doctor_settings),
-                    t!(
-                        doctor_settings_names,
-                        names = settings.names().collect::<Vec<_>>().join(", ")
-                    ),
+                    t!(doctor_settings_names, names = named.join(", ")),
                 ),
-                true => fact(t!(doctor_settings), t!(doctor_settings_absent)),
+                (true, false) => fact(t!(doctor_settings), t!(doctor_settings_no_variables)),
+                (true, true) => fact(t!(doctor_settings), t!(doctor_settings_absent)),
             }
 
             // Counted rather than listed: a rule is the user's own text and printing it back says
@@ -861,6 +864,9 @@ fn doctor() -> ExitCode {
             }
             if let Some(bedrock) = config.bedrock.as_ref() {
                 report_bedrock(bedrock);
+            }
+            for provider in &config.providers {
+                report_gateway(provider);
             }
 
             // What a run would actually request, since a choice made with `/model` overrides the
@@ -921,6 +927,51 @@ fn report_bedrock(bedrock: &bravebot_config::bedrock::Bedrock) {
                 .join(", "),
         ),
         true => fact(t!(doctor_tiers), t!(doctor_tiers_absent)),
+    }
+}
+
+/// What `doctor` says about one configured gateway.
+///
+/// Whether a credential can be found rather than what it is, because on this path the value is a
+/// bearer token and a diagnostic that printed one is a diagnostic people paste into issues. Which
+/// models, because a gateway's own roster is far larger than the block names and the listed slugs are
+/// what tells someone whether the block did what they meant.
+fn report_gateway(provider: &bravebot_config::provider::Provider) {
+    fact(
+        t!(doctor_backend),
+        t!(doctor_backend_gateway, gateway = provider.display_name()),
+    );
+    fact(t!(doctor_endpoint), provider.chat_completions_url());
+    fact(
+        t!(doctor_key_name),
+        gateway_credential(provider, |name| std::env::var(name).ok()),
+    );
+    match provider.models.is_empty() {
+        false => fact(
+            t!(doctor_tiers),
+            provider
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        true => fact(t!(doctor_tiers), t!(doctor_gateway_models_absent)),
+    }
+}
+
+/// What `doctor` says about a gateway's credential: that one was found, never what it is.
+///
+/// Separate from the printing so the withholding is testable. The value here is a long-lived bearer
+/// token, so a diagnostic that echoed one would put a live credential in every issue somebody pastes
+/// this into.
+fn gateway_credential(
+    provider: &bravebot_config::provider::Provider,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> &'static str {
+    match provider.token(lookup).is_some() {
+        true => t!(doctor_gateway_token),
+        false => t!(doctor_gateway_token_absent),
     }
 }
 
@@ -1041,6 +1092,55 @@ mod tests {
     fn a_name_longer_than_its_column_still_leaves_a_gap() {
         let line = aligned("point de terminaison", "https://example", FACT);
         assert_eq!(line, "  point de terminaison https://example");
+    }
+
+    /// The gateway a settings file configured, for the `doctor` tests below.
+    fn configured_gateway(text: &str) -> bravebot_config::provider::Provider {
+        bravebot_config::Settings::parse(text)
+            .providers()
+            .first()
+            .expect("one provider")
+            .clone()
+    }
+
+    /// A gateway's credential is a long-lived bearer token, so a diagnostic that echoed one would put
+    /// a live credential in every issue somebody pastes this into.
+    #[test]
+    fn a_gateway_credential_is_reported_as_found_and_never_printed() {
+        let provider = configured_gateway(
+            r#"{"provider": {"gw": {
+                "env": ["A_TOKEN_VARIABLE"],
+                "options": {"baseURL": "https://example.invalid/v1", "apiKey": "in-the-file"}
+            }}}"#,
+        );
+
+        let from_variable = gateway_credential(&provider, |name| match name {
+            "A_TOKEN_VARIABLE" => Some("secret-from-the-environment".to_string()),
+            _ => None,
+        });
+        assert!(!from_variable.contains("secret-from-the-environment"));
+
+        // A token written into the file is found too, and is withheld on the same footing.
+        let from_file = gateway_credential(&provider, |_| None);
+        assert!(!from_file.contains("in-the-file"));
+        assert_eq!(from_variable, from_file);
+    }
+
+    /// A gateway nothing holds a credential for says so. Reporting one as found would answer the
+    /// question `doctor` exists to answer wrongly, and the request then fails somewhere further away.
+    #[test]
+    fn a_gateway_with_no_credential_is_reported_as_having_none() {
+        let provider = configured_gateway(
+            r#"{"provider": {"gw": {
+                "env": ["ABSENT_ONE"],
+                "options": {"baseURL": "https://example.invalid/v1"}
+            }}}"#,
+        );
+
+        assert_ne!(
+            gateway_credential(&provider, |_| None),
+            gateway_credential(&provider, |_| Some("anything".to_string()))
+        );
     }
 
     /// An interactive `bravebot -p "task"` must not block waiting for a pipe that is not coming.

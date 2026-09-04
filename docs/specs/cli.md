@@ -86,16 +86,19 @@ exiting successfully with an explanation on stdout.
 It prints every backend this build can reach and what identifies it, which names a settings file
 set, the model in force and whether it was chosen or defaulted, the confinement available on this
 platform, and the state of any imported subscription. The signing key is named as never
-transmitted, and a value from the settings file is never printed. A configuration error makes it
-fail rather than pass with a warning.
+transmitted, and a value from the settings file is never printed: where a credential decides whether
+a backend works, what is reported is that one was found. A configuration error makes it fail rather
+than pass with a warning.
 
 **Why.** It exists to answer "what will this actually use", so reporting a default when a choice
 is in force would explain the wrong thing, and naming one backend where two are reachable would
 explain only the half somebody happened to ask about. Values are withheld because a settings file
 holds credentials on some machines, and a diagnostic that prints one is a diagnostic people paste
-into issues.
+into issues. Whether one was found still has to be said, because a backend nothing can authenticate
+is the case this is most often run to explain.
 
-`verified-by: none`
+`verified-by: bravebot_cli::main::a_gateway_credential_is_reported_as_found_and_never_printed`
+`verified-by: bravebot_cli::main::a_gateway_with_no_credential_is_reported_as_having_none`
 
 <a id="CLI-8"></a>
 ### CLI-8: `--mode` chooses how a one-shot is run; the default is the turn loop

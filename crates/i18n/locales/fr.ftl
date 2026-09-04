@@ -105,6 +105,10 @@ doctor-key = { $key } (jamais transmise)
 doctor-backend = service
 doctor-backend-bedrock = AWS Bedrock
 doctor-backend-aichat = Brave Leo
+doctor-backend-gateway = { $gateway } (passerelle)
+doctor-gateway-token = trouvé (jamais affiché)
+doctor-gateway-token-absent = aucun trouvé (définissez une variable nommée dans `env`)
+doctor-gateway-models-absent = aucun configuré (nommez-les sous `models`)
 doctor-region = région
 doctor-profile = profil
 doctor-profile-absent = identifiants par défaut
@@ -121,6 +125,7 @@ doctor-permissions-count =
        *[other] { $count } règles
     }
 doctor-permissions-unreadable = règle illisible
+doctor-settings-no-variables = settings.json, ne nommant aucune variable
 doctor-leo = leo
 doctor-subscription =
     abonnement { $environment } importé, { $unspent } identifiants sur { $total } non dépensés

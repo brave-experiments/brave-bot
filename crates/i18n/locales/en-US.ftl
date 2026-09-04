@@ -91,6 +91,12 @@ doctor-key = { $key } (never transmitted)
 doctor-backend = offers
 doctor-backend-bedrock = AWS Bedrock
 doctor-backend-aichat = Brave Leo
+doctor-backend-gateway = { $gateway } (gateway)
+# Whether one was found, never the value: on this path it is a bearer token, and a diagnostic that
+# printed one is a diagnostic people paste into issues.
+doctor-gateway-token = found (never printed)
+doctor-gateway-token-absent = none found (set a variable its `env` names)
+doctor-gateway-models-absent = none configured (name them under `models`)
 doctor-region = region
 doctor-profile = profile
 doctor-profile-absent = default credentials
@@ -107,6 +113,9 @@ doctor-permissions-count =
        *[other] { $count } rules
     }
 doctor-permissions-unreadable = unreadable rule
+# A file that configures a gateway names no variables, and reporting that as an absent file would
+# describe a file the person is looking at.
+doctor-settings-no-variables = settings.json, naming no variables
 doctor-leo = leo
 doctor-subscription =
     { $environment } subscription imported, { $unspent } of { $total } credentials unspent
