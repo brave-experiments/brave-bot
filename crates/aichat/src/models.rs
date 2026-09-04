@@ -156,13 +156,38 @@ struct ListedByGateway {
 ///
 /// Bearer-authenticated because some gateways refuse the listing otherwise, and because a roster is a
 /// per-account fact wherever a gateway offers different models to different keys.
+///
+/// What this account may reach is asked for first, where the gateway answers such a question, and the
+/// service-wide roster is the fallback. The narrower answer is the better one: a model the credential
+/// cannot reach is a row that fails the moment somebody picks it, and the wide list is nearly three
+/// times the size here. Only the fallback is guaranteed to exist, since the account-scoped route is a
+/// gateway's own extension rather than part of the shape.
 pub fn list_from_gateway<S: Sink>(
     policy: &mut Policy<'_, S>,
     provider: &bravebot_config::provider::Provider,
     token: &str,
     egress: &Egress,
 ) -> Result<Vec<Model>, ChatError> {
-    let request = Request::get(provider.models_url())
+    match fetch_listing(policy, provider.account_models_url(), token, egress) {
+        Ok(listed) => Ok(offered_by_gateway(provider, listed)),
+        // Any failure falls through to the wide roster: a gateway with no such route answers 404,
+        // one that has it under another name answers something undecodable, and neither is a reason
+        // to offer nothing when a list that does work is one request away.
+        Err(_) => {
+            let listed = fetch_listing(policy, provider.models_url(), token, egress)?;
+            Ok(offered_by_gateway(provider, listed))
+        }
+    }
+}
+
+/// One roster request, decoded.
+fn fetch_listing<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    url: String,
+    token: &str,
+    egress: &Egress,
+) -> Result<Vec<ListedByGateway>, ChatError> {
+    let request = Request::get(&url)
         .header("accept", "application/json")
         .header("authorization", format!("Bearer {token}"));
 
@@ -170,14 +195,9 @@ pub fn list_from_gateway<S: Sink>(
     let (bytes, _) = response.body.into_parts_for_decoding();
 
     let listed: GatewayListing = serde_json::from_slice(&bytes).map_err(|e| ChatError::Decode {
-        detail: format!(
-            "{e} (received {} bytes from {})",
-            bytes.len(),
-            provider.models_url()
-        ),
+        detail: format!("{e} (received {} bytes from {url})", bytes.len()),
     })?;
-
-    Ok(offered_by_gateway(provider, listed.data))
+    Ok(listed.data)
 }
 
 /// The envelope a gateway's roster arrives in.

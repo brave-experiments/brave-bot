@@ -1689,7 +1689,10 @@ fn expand_home(directory: &str) -> String {
 /// Shared by the picker and by the budget lookup a session does when it starts, because both want
 /// the same listing and a second copy of the policy setup would be a second place for the gate to
 /// be got wrong.
-fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, String> {
+fn list_models(
+    config: &Config,
+    chosen: Option<&str>,
+) -> Result<Vec<bravebot_aichat::models::Model>, String> {
     // Bedrock is additive. Its tiers come from configuration rather than from a listing, since it has
     // no listing endpoint and an ARN does not say which model it resolves to, but the Brave roster is
     // what everyone has and a settings block adds to it rather than replacing it.
@@ -1709,7 +1712,10 @@ fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, S
     for provider in &config.providers {
         match provider.models.is_empty() {
             false => configured.extend(provider_models(provider)),
-            true => configured.extend(fetch_gateway_models(provider).unwrap_or_default()),
+            true => configured.extend(in_reading_order(
+                fetch_gateway_models(provider).unwrap_or_default(),
+                chosen.unwrap_or(&config.default_model),
+            )),
         }
     }
 
@@ -1782,10 +1788,11 @@ fn fetch_gateway_models(
     let mut sink = Trail::new();
     let egress = Egress::new();
 
-    // The destination is the gateway's own endpoint, which came from configuration. Nothing fetched
-    // decides it, which is what makes asking a service for a list of names safe to do at all.
+    // Both destinations are the gateway's own endpoint, which came from configuration. Nothing
+    // fetched decides either, which is what makes asking a service for a list of names safe at all.
     let mut routing = bravebot_core::policy::Routing::new();
     routing.insert_trusted("models", provider.models_url());
+    routing.insert_trusted("account-models", provider.account_models_url());
 
     let mut listed = bravebot_core::policy::Policy::begin(
         routing,
@@ -1809,6 +1816,29 @@ fn fetch_gateway_models(
         );
     }
     Ok(listed)
+}
+
+/// A fetched gateway roster in the order a person should meet it: what a session would use, then
+/// everything else by name.
+///
+/// The gateway's own order is roughly newest-first, which puts a model somebody has never heard of at
+/// the top and buries the one they work with. A configured roster needs none of this: the file is
+/// already the order they chose.
+///
+/// Alphabetical by the key, so the provider id groups the rows and a name somebody half-remembers is
+/// where they would look for it. Sorted rather than capped, because a picker filters as it is typed
+/// and dropping rows would decide somebody may not choose a model their gateway serves.
+fn in_reading_order(
+    mut models: Vec<bravebot_aichat::models::Model>,
+    chosen: &str,
+) -> Vec<bravebot_aichat::models::Model> {
+    models.sort_by(|left, right| {
+        let ranked = |model: &bravebot_aichat::models::Model| model.key != chosen;
+        ranked(left)
+            .cmp(&ranked(right))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    models
 }
 
 /// The models a Bedrock configuration offers, strongest tier first.
@@ -1901,7 +1931,7 @@ fn provider_models(
 /// is what it was before this existed, and a session that is merely offline should not open with a
 /// complaint about a request nobody asked for.
 fn adopt_budget_for_current_model(session: &mut Session, config: &mut Config) {
-    let Ok(models) = list_models(config) else {
+    let Ok(models) = list_models(config, session.model()) else {
         return;
     };
     if config.adopt_window(advertised_window(&models, session.model())) {
@@ -1929,7 +1959,7 @@ fn choose_model(
     session: &mut Session,
     config: &mut Config,
 ) {
-    match list_models(config) {
+    match list_models(config, session.model()) {
         Ok(models) => {
             if let Some(chosen) = crate::model_prompt::choose(terminal, models, session.model()) {
                 // The listing is the only place a window is ever reported, so the budget is taken
@@ -3020,6 +3050,49 @@ mod tests {
                 "opus-arn",
                 "openrouter/z-ai/glm-4.6",
                 bravebot_config::DEFAULT_MODEL
+            ]
+        );
+    }
+
+    /// A fetched roster arrives roughly newest-first, which puts a model nobody has heard of at the
+    /// top and buries the one they work with. The model in force leads, and the rest sort by name so
+    /// a half-remembered one is where somebody would look for it.
+    #[test]
+    fn a_fetched_roster_leads_with_the_model_in_force() {
+        // Last in the gateway's order and last alphabetically, so leading is the only way it gets
+        // to the top: a test whose input already led with it would pass against no sorting at all.
+        let roster = vec![
+            listed("openrouter/anthropic/claude-sonnet-4.5", None),
+            listed("openrouter/moonshot/kimi-k2", None),
+            listed("openrouter/z-ai/glm-4.6", None),
+        ];
+        let ordered = in_reading_order(roster, "openrouter/z-ai/glm-4.6");
+        let keys: Vec<&str> = ordered.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "openrouter/z-ai/glm-4.6",
+                "openrouter/anthropic/claude-sonnet-4.5",
+                "openrouter/moonshot/kimi-k2"
+            ]
+        );
+    }
+
+    /// Nothing in force is the ordinary first run. Every row still sorts by name rather than keeping
+    /// an order that means nothing to the person reading it.
+    #[test]
+    fn a_fetched_roster_nobody_has_chosen_from_is_still_sorted() {
+        let roster = vec![
+            listed("openrouter/z-ai/glm-4.6", None),
+            listed("openrouter/anthropic/claude-sonnet-4.5", None),
+        ];
+        let ordered = in_reading_order(roster, bravebot_config::DEFAULT_MODEL);
+        let keys: Vec<&str> = ordered.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "openrouter/anthropic/claude-sonnet-4.5",
+                "openrouter/z-ai/glm-4.6"
             ]
         );
     }

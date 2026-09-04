@@ -403,7 +403,10 @@ Where a gateway block names its models, those are what is offered and nothing is
 network. Where it names none, the gateway itself is asked, and what it answers is offered. A listing
 that cannot be fetched contributes nothing and takes nothing away from the rest of the roster.
 
-Nothing is capped. Every model the gateway reports that can call tools is offered.
+What the credential in use may reach is asked for ahead of what the service offers generally, and the
+wider roster answers only where the narrower question does not. Nothing is capped: every model
+reported that can call tools is offered, ordered with the model a session would use first and the rest
+by name.
 
 **Why.** A block naming no models is the ordinary case, not a mistake: the tool this shape is borrowed
 from resolves a roster from a registry, so the commonest block copied in names a credential and
@@ -419,10 +422,20 @@ arrives on: names are drawn for a person, that person chooses, and their choice 
 the field it lands in. What may not come from a service is where the request went, and that is
 configuration here rather than anything fetched.
 
+Asking what the credential may reach is asking the question a person actually has. A model their key
+cannot serve is a row that fails the moment it is picked, and the two answers differ by a factor of
+three, so the wide roster is mostly rows that would not work. It is a fallback rather than the only
+request because that narrower route is a gateway's own extension: one that does not answer it has to
+end up with a roster anyway.
+
 No cap, because a picker filters as somebody types and any limit is this system deciding they may not
-choose a model their gateway serves. A window the gateway reports is taken, since it is the one fact
-about a fetched model nobody can type, and a window the block stated outranks it as the figure
-somebody pinned deliberately. Failing both, the same conservative default a stated roster gets.
+choose a model their gateway serves. Ordering does that work instead, and it is needed precisely
+because nothing is dropped: a roster arriving newest-first opens on models nobody has heard of and
+buries the one in use. A configured roster is left alone, the file being the order somebody chose.
+
+A window the gateway reports is taken, since it is the one fact about a fetched model nobody can type,
+and a window the block stated outranks it as the figure somebody pinned deliberately. Failing both,
+the same conservative default a stated roster gets.
 
 `verified-by: bravebot_aichat::models::a_gateway_roster_is_offered_under_names_that_say_which_gateway_serves_them`
 `verified-by: bravebot_aichat::models::a_window_a_gateway_reports_is_taken_from_the_listing`
@@ -432,6 +445,8 @@ somebody pinned deliberately. Failing both, the same conservative default a stat
 `verified-by: bravebot_aichat::models::a_gateway_that_reports_no_capabilities_still_offers_its_models`
 `verified-by: bravebot_aichat::models::a_fetched_entry_with_no_usable_name_is_dropped`
 `verified-by: bravebot_aichat::models::fetched_gateway_models_are_not_marked_premium`
+`verified-by: bravebot_tui::app::a_fetched_roster_leads_with_the_model_in_force`
+`verified-by: bravebot_tui::app::a_fetched_roster_nobody_has_chosen_from_is_still_sorted`
 
 ## Known costs
 

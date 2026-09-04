@@ -152,6 +152,15 @@ impl Provider {
         format!("{}/models", self.base_url)
     }
 
+    /// The URL that answers with what the credential in use may reach.
+    ///
+    /// A narrower roster than [`Provider::models_url`], and the useful one: a model this account
+    /// cannot reach is a row that fails the moment somebody picks it. Not part of the shape every
+    /// gateway implements, so a caller asks and falls back rather than relying on it.
+    pub fn account_models_url(&self) -> String {
+        format!("{}/models/user", self.base_url)
+    }
+
     /// What to show a person choosing this provider.
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.id)
