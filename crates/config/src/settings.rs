@@ -1,15 +1,25 @@
-//! The `env` block and the `model` key in `~/.bravebot/settings.json`.
+//! `~/.bravebot/settings.json`.
 //!
 //! A file rather than only the process environment, because the values that select a backend are
 //! long-lived: which AWS profile to assume and which model each tier names are properties of a
 //! person's account, not of the shell a session happened to start in. Exporting them from a shell
 //! profile works and keeps working; this exists so it is not the only way.
 //!
-//! Deliberately the same shape as Claude Code's `~/.claude/settings.json`, down to the variable
-//! names, so a block that configures one configures the other unedited. A different spelling for
-//! the same six values would be a second thing to learn for no gain. `model` is read for the same
-//! reason: it is where both Claude Code and opencode put that choice, and a key those tools honour
-//! that this one silently dropped is worse than one nobody writes.
+//! Blocks borrowing the shape of whichever tool already reads them, so that one copied from
+//! elsewhere works unedited rather than being rewritten first. A different spelling for the same
+//! values would be a second thing to learn for no gain:
+//!
+//! - `env`, a flat map of strings, spelled as Claude Code's `~/.claude/settings.json` spells it,
+//!   down to the variable names. The switch is this program's own name, since it selects a backend
+//!   for this program, but the model names are shared because those name someone's Bedrock
+//!   deployment.
+//! - `model`, for the same reason: it is where both Claude Code and opencode put that choice, and a
+//!   key those tools honour that this one silently dropped is worse than one nobody writes.
+//! - `permissions`, whose rules Claude Code spells the same way.
+//! - `provider`, in opencode's shape, read by [`crate::provider`].
+//!
+//! They are independent. A file configuring one has nothing to say about the others, and reading any
+//! of them does not depend on another being present.
 //!
 //! # What this file is trusted for
 //!
@@ -52,6 +62,7 @@ pub struct Settings {
     /// Separate from `env` because it is not a variable: nothing exports `model`, and folding it
     /// into that map would make it collide with a name someone's shell already uses.
     model: Option<String>,
+    providers: Vec<crate::provider::Provider>,
 }
 
 /// The `permissions` block, as text, exactly as the file spelled it.
@@ -134,6 +145,7 @@ impl Settings {
             scrub: scrub_list(&root),
             permissions: permission_lists(&root),
             model,
+            providers: crate::provider::Provider::all(&root),
         }
     }
 
@@ -156,11 +168,17 @@ impl Settings {
             && self.scrub.is_empty()
             && self.permissions.is_empty()
             && self.model.is_none()
+            && self.providers.is_empty()
     }
 
     /// The rule text and added directories the `permissions` block carried.
     pub fn permissions(&self) -> &PermissionLists {
         &self.permissions
+    }
+
+    /// The gateways this file configured, in the order it listed them.
+    pub fn providers(&self) -> &[crate::provider::Provider] {
+        &self.providers
     }
 
     /// Variables this file says to keep from a program the agent runs, beyond the built-in set.
@@ -511,6 +529,36 @@ mod tests {
         let settings = Settings::parse(r#"{"env": {"AWS_REGION": "us-west-2"}}"#);
         assert!(settings.permissions().is_empty());
         assert_eq!(settings.get("AWS_REGION"), Some("us-west-2"));
+    }
+
+    /// The reason the block is opencode's shape rather than one invented here: a `provider` entry
+    /// copied out of `opencode.json` configures this agent without being rewritten first.
+    #[test]
+    fn a_provider_block_is_read_beside_the_env_block() {
+        let settings = Settings::parse(
+            r#"{
+                "env": {"AWS_REGION": "us-west-2"},
+                "provider": {"openrouter": {
+                    "options": {"baseURL": "https://openrouter.ai/api/v1"},
+                    "models": {"z-ai/glm-4.6": {}}
+                }}
+            }"#,
+        );
+        assert_eq!(settings.get("AWS_REGION"), Some("us-west-2"));
+        assert_eq!(settings.providers().len(), 1);
+        assert!(settings.providers()[0].offers("z-ai/glm-4.6"));
+    }
+
+    /// The two blocks are independent. A file that only configures a gateway names no variables, and
+    /// reading it must not depend on an `env` block being present.
+    #[test]
+    fn a_provider_block_is_read_without_an_env_block() {
+        let settings = Settings::parse(
+            r#"{"provider": {"gw": {"options": {"baseURL": "https://example.invalid/v1"}}}}"#,
+        );
+        assert_eq!(settings.get("AWS_REGION"), None);
+        assert_eq!(settings.providers().len(), 1);
+        assert!(!settings.is_empty());
     }
 
     /// `doctor` reports which names a file set. It must not report what they were: on some

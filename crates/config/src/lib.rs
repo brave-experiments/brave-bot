@@ -20,6 +20,7 @@ mod settings;
 pub use settings::Settings;
 
 pub mod bedrock;
+pub mod provider;
 
 include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 
@@ -157,6 +158,11 @@ pub struct Config {
     /// below may still be blank, since somebody pointing the agent at their own AWS account is not
     /// required to hold Brave service credentials as well.
     pub bedrock: Option<bedrock::Bedrock>,
+    /// Gateways the settings file configured, in the order it listed them.
+    ///
+    /// Additive on the same terms as [`Config::bedrock`]: the models named here are offered beside
+    /// the other rosters, and the model a person picks is what decides where a request goes.
+    pub providers: Vec<provider::Provider>,
     /// HMAC signing key. Never transmitted; used only to sign the request digest.
     pub signing_key: Secret,
     /// Key id sent in the Authorization header. The server derives its copy of the
@@ -256,11 +262,13 @@ impl Config {
     /// lose to it on every binary anybody was given: the key would parse, be reported by `doctor`,
     /// and change nothing outside a source build. An exported variable still outranks it.
     pub fn from_env_and_settings(settings: &Settings) -> Result<Self, ConfigError> {
-        Self::from_lookup(|key| match key {
+        let mut config = Self::from_lookup(|key| match key {
             env_var::DEFAULT_MODEL => resolve_model(env::var(key).ok(), settings, built_in),
             _ => resolve(key, env::var(key).ok(), built_in)
                 .or_else(|| settings.get(key).map(str::to_string)),
-        })
+        })?;
+        config.providers = settings.providers().to_vec();
+        Ok(config)
     }
 
     /// Read configuration from an arbitrary lookup, so tests need not mutate global
@@ -361,6 +369,9 @@ impl Config {
 
         Ok(Self {
             bedrock,
+            // A gateway is configured by a block rather than by a variable, so a flat lookup cannot
+            // describe one. Filled in by [`Config::from_env_and_settings`], which has the file.
+            providers: Vec::new(),
             signing_key,
             key_id,
             endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -387,6 +398,18 @@ impl Config {
             }
             _ => false,
         }
+    }
+
+    /// The gateway offering `model`, if one does.
+    ///
+    /// The model names the service, so this is the whole of how a request reaches a gateway. Where
+    /// two providers list the same model string there is no fact left to break the tie, and the first
+    /// wins: an arbitrary answer to a configuration that asked an unanswerable question, reported by
+    /// `doctor` rather than resolved here.
+    pub fn provider_for(&self, model: &str) -> Option<&provider::Provider> {
+        self.providers
+            .iter()
+            .find(|provider| provider.offers(model))
     }
 
     /// Whether the Brave backend can be reached at all.
@@ -649,6 +672,26 @@ mod tests {
         })
         .expect("configured");
         assert_eq!(config.default_model, DEFAULT_MODEL);
+    }
+
+    /// A gateway is additive on the same terms a Bedrock block is. Naming one adds to what a person
+    /// may choose and must not decide what answers when they have chosen nothing, nor set the budget
+    /// from a window belonging to a model the session may never use.
+    #[test]
+    fn a_provider_block_changes_neither_the_default_model_nor_the_budget() {
+        let settings = Settings::parse(
+            r#"{"provider": {"openrouter": {
+                "options": {"baseURL": "https://openrouter.example.invalid/api/v1"},
+                "models": {"z-ai/glm-4.6": {"limit": {"context": 1000000, "output": 64000}}}
+            }}}"#,
+        );
+        let mut config = Config::from_lookup(complete_env).expect("configured");
+        config.providers = settings.providers().to_vec();
+
+        assert_eq!(config.default_model, DEFAULT_MODEL);
+        assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
+        // Taken only once that model is the one in force, which is what picking it does.
+        assert!(config.adopt_window(Some(1_000_000)));
     }
 
     /// The exception: with no Brave credentials, `automatic` names a backend that cannot be reached at

@@ -1,8 +1,9 @@
 //! Which backend a request goes to.
 //!
-//! Two exist: the aichat endpoint Brave runs, and Claude on AWS Bedrock. The choice is made from
-//! configuration, once, here, so the turn loop and everything beside it asks the same question of
-//! whichever one is in use rather than branching on the backend at every call.
+//! Three exist: the aichat endpoint Brave runs, Claude on AWS Bedrock, and an OpenAI-compatible
+//! gateway somebody configured. The choice is made from configuration, once, here, so the turn loop
+//! and everything beside it asks the same question of whichever one is in use rather than branching
+//! on the backend at every call.
 //!
 //! The choice is not content. It comes from [`bravebot_config::Config`], which is built from the
 //! environment and the user's own settings file before any turn starts, and nothing a model says can
@@ -26,6 +27,14 @@ use std::fmt;
 pub enum BackendError {
     Aichat(ChatError),
     Bedrock(BedrockError),
+    /// A gateway is configured but nothing holds its bearer token.
+    ///
+    /// Refused here rather than sent unauthenticated, on the same footing as a Bedrock tier whose
+    /// model cannot be resolved: a request the configuration cannot sign fails at the far end for a
+    /// reason nothing local could explain, and the remedy is naming a variable that holds one.
+    NoGatewayToken {
+        provider: String,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -33,6 +42,11 @@ impl fmt::Display for BackendError {
         match self {
             Self::Aichat(e) => write!(f, "{e}"),
             Self::Bedrock(e) => write!(f, "{e}"),
+            Self::NoGatewayToken { provider } => write!(
+                f,
+                "no credential for the {provider} gateway: set one of the variables its `env` names, \
+                 or `options.apiKey` in its settings block"
+            ),
         }
     }
 }
@@ -81,6 +95,17 @@ pub enum Backend<'a> {
         egress: &'a Egress,
         cancel: Option<Cancel>,
     },
+    /// A configured OpenAI-compatible gateway.
+    ///
+    /// Speaks the same protocol as the aichat backend and is sent by the same client, differing in
+    /// host and credential. A separate variant regardless, because which service a request went to is
+    /// the thing worth being able to read at a dispatch site.
+    Gateway {
+        config: &'a Config,
+        provider: &'a bravebot_config::provider::Provider,
+        egress: &'a Egress,
+        cancel: Option<Cancel>,
+    },
 }
 
 impl<'a> Backend<'a> {
@@ -94,18 +119,26 @@ impl<'a> Backend<'a> {
     /// Not content. The name comes from what `/model` listed and a person picked, or from the
     /// configured default, and the pick is the endorsement for the request field it lands in.
     pub fn select(config: &'a Config, egress: &'a Egress, model: &str) -> Self {
-        match config.bedrock.as_ref() {
-            Some(bedrock) if bedrock.offers(model) => Self::Bedrock {
+        if let Some(bedrock) = config.bedrock.as_ref().filter(|it| it.offers(model)) {
+            return Self::Bedrock {
                 config: bedrock,
                 egress,
                 cancel: None,
-            },
-            _ => Self::Aichat {
+            };
+        }
+        if let Some(provider) = config.provider_for(model) {
+            return Self::Gateway {
                 config,
+                provider,
                 egress,
-                subscription: None,
                 cancel: None,
-            },
+            };
+        }
+        Self::Aichat {
+            config,
+            egress,
+            subscription: None,
+            cancel: None,
         }
     }
 
@@ -138,6 +171,11 @@ impl<'a> Backend<'a> {
     /// may name an inference-profile ARN: that is a handle standing for whatever the profile resolves
     /// to today, and the reply naming the model behind it is the indirection working. Compared anyway,
     /// it would report a substitution on every single turn.
+    ///
+    /// True for a gateway too. A configured model is a concrete slug the gateway answers under, and
+    /// which upstream served it is a different question from which model did: `provider.order` picks
+    /// between hosts of the same model, so a name that comes back changed is a substitution there as
+    /// much as on the aichat endpoint.
     pub fn reports_the_model_it_was_asked_for(config: &Config, model: &str) -> bool {
         !config
             .bedrock
@@ -174,7 +212,9 @@ impl<'a> Backend<'a> {
     /// Stop reading a streamed reply as soon as this says to.
     pub fn with_cancel(mut self, stop: Cancel) -> Self {
         match &mut self {
-            Self::Aichat { cancel, .. } | Self::Bedrock { cancel, .. } => *cancel = Some(stop),
+            Self::Aichat { cancel, .. }
+            | Self::Bedrock { cancel, .. }
+            | Self::Gateway { cancel, .. } => *cancel = Some(stop),
         }
         self
     }
@@ -207,6 +247,18 @@ impl<'a> Backend<'a> {
                 cancel,
             } => {
                 let mut client = BedrockClient::new(config, egress);
+                if let Some(cancel) = cancel {
+                    client = client.with_cancel(cancel.clone());
+                }
+                Ok(client.complete(policy, request)?)
+            }
+            Self::Gateway {
+                config,
+                provider,
+                egress,
+                cancel,
+            } => {
+                let mut client = gateway_client(config, provider, egress)?;
                 if let Some(cancel) = cancel {
                     client = client.with_cancel(cancel.clone());
                 }
@@ -249,8 +301,38 @@ impl<'a> Backend<'a> {
                 }
                 Ok(client.complete_streaming(policy, request, progress)?)
             }
+            Self::Gateway {
+                config,
+                provider,
+                egress,
+                cancel,
+            } => {
+                let mut client = gateway_client(config, provider, egress)?;
+                if let Some(cancel) = cancel {
+                    client = client.with_cancel(cancel.clone());
+                }
+                Ok(client.complete_streaming(policy, request, progress)?)
+            }
         }
     }
+}
+
+/// A client pointed at `provider`, with its token resolved.
+///
+/// The token is read here rather than held on the variant, because it is read from the process
+/// environment at the point a request needs signing: a value read once at startup would go stale in a
+/// session where somebody exported a new one.
+fn gateway_client<'a>(
+    config: &'a Config,
+    provider: &'a bravebot_config::provider::Provider,
+    egress: &'a Egress,
+) -> Result<AichatClient<'a>, BackendError> {
+    let token = provider
+        .token(|name| std::env::var(name).ok())
+        .ok_or_else(|| BackendError::NoGatewayToken {
+            provider: provider.display_name().to_string(),
+        })?;
+    Ok(AichatClient::new(config, egress).for_gateway(provider, token))
 }
 
 #[cfg(test)]
@@ -282,6 +364,90 @@ mod tests {
             other => aichat_only(other),
         })
         .expect("configured")
+    }
+
+    /// Every roster at once, so a configuration alone cannot say where a request goes.
+    fn with_a_gateway() -> Config {
+        let mut config = both_backends();
+        let serde_json::Value::Object(root) = serde_json::from_str(
+            r#"{"provider": {"openrouter": {
+                "env": ["A_TOKEN_VARIABLE"],
+                "options": {"baseURL": "https://openrouter.example.invalid/api/v1"},
+                "models": {"z-ai/glm-4.6": {}, "anthropic/claude-sonnet-4.5": {}}
+            }}}"#,
+        )
+        .expect("json") else {
+            panic!("not an object");
+        };
+        config.providers = bravebot_config::provider::Provider::all(&root);
+        config
+    }
+
+    /// The model names the service. A gateway slug means nothing to Brave's endpoint or to Bedrock,
+    /// so a request carrying one has to reach the gateway that listed it.
+    #[test]
+    fn a_configured_gateway_model_selects_the_gateway_backend() {
+        let egress = Egress::new();
+        assert!(matches!(
+            Backend::select(&with_a_gateway(), &egress, "z-ai/glm-4.6"),
+            Backend::Gateway { .. }
+        ));
+    }
+
+    /// Configuring a gateway is additive. A name it does not list still reaches the service that
+    /// does, which is the whole of what "takes nothing away" means here.
+    #[test]
+    fn a_gateway_does_not_take_the_other_rosters_away() {
+        let config = with_a_gateway();
+        let egress = Egress::new();
+        assert!(matches!(
+            Backend::select(&config, &egress, "automatic"),
+            Backend::Aichat { .. }
+        ));
+        assert!(matches!(
+            Backend::select(&config, &egress, "opus-arn"),
+            Backend::Bedrock { .. }
+        ));
+    }
+
+    /// A gateway authenticates with a bearer token and has nothing to sign in for. Deciding
+    /// otherwise would run the AWS CLI before a request that never touches AWS.
+    #[test]
+    fn a_gateway_model_never_needs_an_aws_sign_in() {
+        let config = with_a_gateway();
+        assert!(!Backend::needs_sign_in(&config, "z-ai/glm-4.6"));
+        let mut said = Vec::new();
+        assert!(
+            Backend::sign_in_if_needed(&config, "z-ai/glm-4.6", |line| said.push(line)).is_ok()
+        );
+        assert!(said.is_empty(), "a gateway asked for a sign-in: {said:?}");
+    }
+
+    /// A gateway answers under the slug it was asked for, so a name that comes back changed is a
+    /// substitution worth reporting. Unlike a Bedrock ARN, there is no indirection to explain it.
+    #[test]
+    fn a_gateway_reports_the_model_it_was_asked_for() {
+        assert!(Backend::reports_the_model_it_was_asked_for(
+            &with_a_gateway(),
+            "z-ai/glm-4.6"
+        ));
+    }
+
+    /// A request the configuration cannot sign is refused rather than sent unauthenticated, which
+    /// would fail at the far end for a reason nothing local could explain.
+    #[test]
+    fn a_gateway_with_nothing_holding_a_token_refuses_the_request() {
+        let config = with_a_gateway();
+        let egress = Egress::new();
+        let provider = config.provider_for("z-ai/glm-4.6").expect("offered");
+        let failure = gateway_client(&config, provider, &egress)
+            .err()
+            .expect("refused");
+        assert!(matches!(failure, BackendError::NoGatewayToken { .. }));
+        assert!(
+            format!("{failure}").contains("openrouter"),
+            "the failure does not say which gateway: {failure}"
+        );
     }
 
     /// Nothing changes for a build that was not pointed at Bedrock, which is every existing one.

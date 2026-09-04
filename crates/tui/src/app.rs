@@ -1696,11 +1696,15 @@ fn list_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, S
     //
     // The configured tiers come first: someone who named them went out of their way to, and the
     // alternative buries them under a roster they did not ask about.
-    let configured = config
+    let mut configured = config
         .bedrock
         .as_ref()
         .map(bedrock_models)
         .unwrap_or_default();
+
+    // Additive on the same terms, and for the same reason: a gateway has a roster far too large to
+    // enumerate, so what is offered is what the file named.
+    configured.extend(config.providers.iter().flat_map(provider_models));
 
     // A build from source pointed only at Bedrock has blank Brave credentials, and asking with them
     // would list a roster whose every request then fails unsigned.
@@ -1793,6 +1797,39 @@ fn bedrock_models(
             // The same figure for every tier, because it is a property of what an opaque profile
             // ARN gets rather than of a particular model.
             conversation_tokens: Some(bravebot_config::bedrock::CONTEXT_WINDOW),
+        })
+        .collect()
+}
+
+/// The models a gateway was configured to offer, in the order the file listed them.
+///
+/// One entry per named model, and nothing else. A gateway's own roster runs to hundreds of models
+/// across upstreams most people will never use, so asking it would produce a listing nobody could
+/// pick from, and asking it at all would cost a round trip on a path that must still work offline.
+///
+/// Every entry is marked free. Premium means a Leo subscription, and a gateway reached with somebody's
+/// own bearer token does not involve one. What it costs them is between them and the gateway.
+///
+/// The name says which service answers, because the same slug may be reachable more than one way:
+/// `anthropic/claude-sonnet-4.5` through a gateway and Brave's own Sonnet are different bills and
+/// different credentials, and nothing else on the row would say which was about to answer.
+fn provider_models(
+    provider: &bravebot_config::provider::Provider,
+) -> Vec<bravebot_aichat::models::Model> {
+    provider
+        .models
+        .iter()
+        .map(|model| bravebot_aichat::models::Model {
+            key: model.id.clone(),
+            display_name: t!(
+                picker_model_gateway,
+                model = model.id.as_str(),
+                gateway = provider.display_name()
+            ),
+            premium: false,
+            // Stated or assumed, never absent: a window is what the budget is taken from, and
+            // reporting nothing would leave the session on a default chosen for a different service.
+            conversation_tokens: Some(model.window()),
         })
         .collect()
 }
@@ -2800,6 +2837,119 @@ mod tests {
             advertised_window(&models, Some("opus-arn")),
             Some(bravebot_config::bedrock::CONTEXT_WINDOW)
         );
+    }
+
+    /// A gateway configured by a `provider` block, for the picker tests below.
+    fn gateway(models: &str) -> bravebot_config::provider::Provider {
+        let text = format!(
+            r#"{{"provider": {{"openrouter": {{
+                "options": {{"baseURL": "https://openrouter.example.invalid/api/v1"}},
+                "models": {models}
+            }}}}}}"#
+        );
+        let serde_json::Value::Object(root) = serde_json::from_str(&text).expect("json") else {
+            panic!("not an object");
+        };
+        bravebot_config::provider::Provider::all(&root)
+            .pop()
+            .expect("one provider")
+    }
+
+    /// A gateway's roster is what the file named and nothing else. Asking the gateway would list
+    /// hundreds of models across upstreams nobody configured, and would cost a round trip on a path
+    /// that has to work offline.
+    #[test]
+    fn only_the_gateway_models_the_file_named_are_offered() {
+        let models = provider_models(&gateway(r#"{"z-ai/glm-4.6": {}, "moonshot/kimi-k2": {}}"#));
+        let keys: Vec<&str> = models.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(keys, ["moonshot/kimi-k2", "z-ai/glm-4.6"]);
+    }
+
+    /// The same model may be reachable more than one way, billed and credentialled differently, and
+    /// nothing else on the row would say which was about to answer.
+    #[test]
+    fn a_gateway_row_says_which_service_answers_it() {
+        let models = provider_models(&gateway(r#"{"anthropic/claude-sonnet-4.5": {}}"#));
+        assert_eq!(
+            models[0].display_name,
+            t!(
+                picker_model_gateway,
+                model = "anthropic/claude-sonnet-4.5",
+                gateway = "openrouter"
+            )
+        );
+        assert!(models[0].display_name.contains("openrouter"));
+    }
+
+    /// Premium means a Leo subscription. A gateway reached with somebody's own bearer token does not
+    /// involve one, and marking it premium would ask them to import a subscription to use what they
+    /// already pay for.
+    #[test]
+    fn gateway_models_are_not_marked_premium() {
+        let models = provider_models(&gateway(r#"{"z-ai/glm-4.6": {}}"#));
+        assert!(!models[0].premium);
+    }
+
+    /// The budget lookup shares this listing, so an entry has to carry a window. A model that stated
+    /// one gets it, and the figure has to survive reaching the picker or the session compacts against
+    /// a window belonging to a different service.
+    #[test]
+    fn a_gateway_entry_carries_the_window_the_budget_is_taken_from() {
+        let models = provider_models(&gateway(
+            r#"{"anthropic/claude-sonnet-4.5": {"limit": {"context": 1000000, "output": 64000}}}"#,
+        ));
+        assert_eq!(
+            advertised_window(&models, Some("anthropic/claude-sonnet-4.5")),
+            Some(1_000_000)
+        );
+    }
+
+    /// A window nobody stated is the conservative default rather than nothing at all. Reporting
+    /// nothing would leave the budget on a figure chosen for a different service, and a budget above
+    /// the real window does not delay compaction but removes it.
+    #[test]
+    fn a_gateway_model_with_no_stated_window_still_carries_one() {
+        let models = provider_models(&gateway(r#"{"z-ai/glm-4.6": {}}"#));
+        assert_eq!(
+            advertised_window(&models, Some("z-ai/glm-4.6")),
+            Some(bravebot_config::provider::CONTEXT_WINDOW)
+        );
+    }
+
+    /// A gateway is additive on the same terms Bedrock is: its models are offered beside the others
+    /// rather than in place of them, so nothing a person could reach before stops being reachable.
+    #[test]
+    fn gateway_models_are_offered_alongside_the_other_rosters() {
+        use bravebot_config::env_var;
+
+        let mut configured = bedrock_models(&bedrock_configured(&[
+            (env_var::USE_BEDROCK, "1"),
+            (env_var::AWS_REGION, "us-west-2"),
+            (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
+        ]));
+        configured.extend(provider_models(&gateway(r#"{"z-ai/glm-4.6": {}}"#)));
+
+        let roster = combined(
+            configured,
+            Ok(vec![bravebot_aichat::models::Model::automatic()]),
+        )
+        .expect("a roster");
+        let keys: Vec<&str> = roster.iter().map(|m| m.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["opus-arn", "z-ai/glm-4.6", bravebot_config::DEFAULT_MODEL]
+        );
+    }
+
+    /// A gateway's models need no network to know, so a Brave listing that could not be fetched must
+    /// not withdraw them: that is the position somebody offline is most likely to be in.
+    #[test]
+    fn an_unreachable_listing_still_offers_the_gateway_models() {
+        let configured = provider_models(&gateway(r#"{"z-ai/glm-4.6": {}}"#));
+        let roster = combined(configured, Err("the endpoint is unreachable".into()))
+            .expect("the gateway models survive");
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].key, "z-ai/glm-4.6");
     }
 
     /// A model chosen in an earlier session is read back off disk, and the window that came with it

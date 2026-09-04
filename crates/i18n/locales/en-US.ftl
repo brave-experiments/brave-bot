@@ -173,6 +173,9 @@ picker-premium = premium
 # Brave roster already says of the models it serves through its own account.
 picker-model-bedrock-profile = { $tier } (your { $profile } AWS profile)
 picker-model-bedrock = { $tier } (your AWS account)
+# The slug whole rather than shortened: it is what a request names, and the same model reached through
+# a gateway and through Brave is a different bill and a different credential.
+picker-model-gateway = { $model } (via { $gateway })
 resume-heading = Resume session
 resume-search-placeholder = Search…
 resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session

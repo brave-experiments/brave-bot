@@ -7,14 +7,17 @@ governs:
   - crates/bedrock/src/credentials.rs
   - crates/tui/src/app.rs
   - crates/config/src/bedrock.rs
+  - crates/aichat/src/lib.rs
+  - crates/config/src/provider.rs
   - crates/config/src/settings.rs
 ---
 
 ## Scope
 
-Where a request for a reply goes. Two services can answer: the aichat endpoint Brave runs, and
-Claude on AWS Bedrock through somebody's own account. This file governs which of them serves a
-given request, what a person is offered to choose from, and what a configuration may decide.
+Where a request for a reply goes. Three services can answer: the aichat endpoint Brave runs, Claude
+on AWS Bedrock through somebody's own account, and an OpenAI-compatible gateway somebody configured.
+This file governs which of them serves a given request, what a person is offered to choose from, and
+what a configuration may decide.
 
 The wire protocol of either service is ordinary code. So is signing, which
 [network-egress.md](network-egress.md) covers as the one way out. What a reply is labelled once it
@@ -25,9 +28,10 @@ arrives is [labels.md](labels.md).
 <a id="BACKEND-1"></a>
 ### BACKEND-1: a settings file may name a destination and never a permission
 
-What a person's settings may say is which region, which credential profile, which model each tier
-names, and which model to request when nobody has chosen one. Nothing in that file grants a
-capability, vouches for a path, or decides whether an effect is allowed.
+What a person's settings may say is which region, which credential profile, which host, which model
+each tier names, which model to request when nobody has chosen one, and what to add to a request sent
+to that host. Nothing in that file grants a capability, vouches for a path, or decides whether an
+effect is allowed. It names no command to run.
 
 The block does not become the process environment either. A value is consulted where a variable
 would be, and reaches a subprocess only where that subprocess is the thing it configures.
@@ -35,15 +39,17 @@ would be, and reaches a subprocess only where that subprocess is the thing it co
 **Why.** The file is read before anything runs and is the easiest thing on the machine to write to,
 so a permission that could be granted from it would be a permission granted by whatever last edited
 it. Installing the names globally would put every one of them in front of every command the agent
-ever starts, which is a far larger claim than "this is how I reach the backend".
+ever starts, which is a far larger claim than "this is how I reach the backend". A command named in
+the file would be the largest claim of all, since running it is an effect nobody approved: that is
+why a gateway block names a variable holding a credential rather than a way to produce one.
 
-`verified-by: by-construction (the block is read as a flat map of strings and only ever consulted by name; nothing exports it, and the sole value handed to a subprocess is the profile, passed as an argument to the tool that owns it)`
+`verified-by: by-construction (values are consulted by name and never exported; the only value handed to a subprocess is the AWS profile, passed as an argument to the tool that owns it; no field is read as a path to execute, and a gateway's pass-through options reach a request body and nothing else)`
 
 <a id="BACKEND-2"></a>
 ### BACKEND-2: configuring a second backend takes nothing away from the first
 
-A settings block naming AWS tiers does not change which model answers when nobody has chosen one,
-and does not change how large a request may get before the conversation is shortened.
+A settings block naming AWS tiers or a gateway does not change which model answers when nobody has
+chosen one, and does not change how large a request may get before the conversation is shortened.
 
 **Why.** Every build can reach Brave, and that is what somebody has before they configure anything.
 Adding a way to reach more models should not quietly move the default onto one of them, nor set a
@@ -51,6 +57,7 @@ budget from a window that belongs to a model the session may never use.
 
 `verified-by: bravebot_config::lib::a_bedrock_block_does_not_change_the_default_model`
 `verified-by: bravebot_config::lib::a_bedrock_block_does_not_move_the_budget_off_the_default`
+`verified-by: bravebot_config::lib::a_provider_block_changes_neither_the_default_model_nor_the_budget`
 
 <a id="BACKEND-3"></a>
 ### BACKEND-3: the model names the service, and nothing else selects one
@@ -70,6 +77,8 @@ list they read, and a model's own output never reaches it.
 `verified-by: bravebot_agent::backend::a_configured_bedrock_model_selects_the_bedrock_backend`
 `verified-by: bravebot_agent::backend::a_brave_model_still_reaches_aichat_while_bedrock_is_configured`
 `verified-by: bravebot_agent::backend::without_bedrock_configured_the_aichat_backend_is_selected`
+`verified-by: bravebot_agent::backend::a_configured_gateway_model_selects_the_gateway_backend`
+`verified-by: bravebot_agent::backend::a_gateway_reports_the_model_it_was_asked_for`
 
 <a id="BACKEND-4"></a>
 ### BACKEND-4: what a person may choose is every model any reachable service offers
@@ -82,6 +91,8 @@ offering exactly one model and no way back to the ones every build has. Reaching
 a reason to stop reaching the existing ones.
 
 `verified-by: bravebot_tui::app::configured_tiers_are_offered_alongside_the_brave_roster`
+`verified-by: bravebot_tui::app::gateway_models_are_offered_alongside_the_other_rosters`
+`verified-by: bravebot_agent::backend::a_gateway_does_not_take_the_other_rosters_away`
 
 <a id="BACKEND-5"></a>
 ### BACKEND-5: only models that can actually be reached are offered
@@ -97,6 +108,9 @@ request fails unsigned.
 
 `verified-by: bravebot_tui::app::a_tier_with_no_model_configured_is_not_offered`
 `verified-by: bravebot_config::lib::without_brave_credentials_the_default_is_the_strongest_bedrock_tier`
+`verified-by: bravebot_tui::app::only_the_gateway_models_the_file_named_are_offered`
+`verified-by: bravebot_config::provider::a_provider_may_offer_no_models`
+`verified-by: bravebot_config::provider::a_provider_without_a_base_url_is_not_offered`
 
 <a id="BACKEND-6"></a>
 ### BACKEND-6: a row says which service will answer it
@@ -111,6 +125,7 @@ list and distinguished nothing.
 
 `verified-by: bravebot_tui::app::a_configured_tier_is_not_confusable_with_a_brave_model_served_through_bedrock`
 `verified-by: bravebot_tui::app::a_tier_with_no_profile_configured_still_names_the_account`
+`verified-by: bravebot_tui::app::a_gateway_row_says_which_service_answers_it`
 
 <a id="BACKEND-7"></a>
 ### BACKEND-7: the conversation budget belongs to the model in force
@@ -124,6 +139,7 @@ like one with nothing to summarise.
 
 `verified-by: bravebot_tui::app::a_bedrock_entry_carries_the_window_the_budget_is_taken_from`
 `verified-by: bravebot_tui::app::the_window_of_a_model_chosen_earlier_is_found_in_the_listing`
+`verified-by: bravebot_tui::app::a_gateway_entry_carries_the_window_the_budget_is_taken_from`
 
 <a id="BACKEND-8"></a>
 ### BACKEND-8: an unreachable listing costs only what it described
@@ -137,6 +153,7 @@ the position somebody offline is most likely to be in.
 
 `verified-by: bravebot_tui::app::an_unreachable_listing_still_offers_the_configured_tiers`
 `verified-by: bravebot_tui::app::an_unreachable_listing_with_no_tiers_configured_is_still_a_failure`
+`verified-by: bravebot_tui::app::an_unreachable_listing_still_offers_the_gateway_models`
 
 <a id="BACKEND-9"></a>
 ### BACKEND-9: a sign-in is asked for before work starts, by the model about to answer
@@ -158,6 +175,7 @@ another it will never call.
 `verified-by: bravebot_agent::backend::a_brave_model_never_needs_an_aws_sign_in`
 `verified-by: bravebot_agent::backend::without_bedrock_configured_nothing_needs_a_sign_in`
 `verified-by: bravebot_agent::backend::signing_in_for_a_model_no_aws_account_serves_does_nothing`
+`verified-by: bravebot_agent::backend::a_gateway_model_never_needs_an_aws_sign_in`
 
 <a id="BACKEND-10"></a>
 ### BACKEND-10: asking whether a session is good costs nothing once it is known to be
@@ -231,12 +249,109 @@ is where somebody with no `model` key already starts.
 `verified-by: bravebot_config::bedrock::every_tier_names_a_brave_model`
 `verified-by: bravebot_config::bedrock::the_tiers_name_different_brave_models`
 
+<a id="BACKEND-13"></a>
+### BACKEND-13: a gateway block is read in the shape the tool that already reads it uses
+
+What configures a gateway is a block whose field names, nesting and optionality are another tool's,
+so that a block copied out of that tool's configuration works here unedited. Nothing is required that
+it does not require, no field is added to the block however useful it would be, and a field this
+system does not know is read past rather than refused.
+
+**Why.** The whole value of the shape is that somebody already knows it and an editor already
+validates it. A field added here would be one the other tool rejects, and a requirement added here
+would refuse a block it accepts, so either one costs exactly the property the borrowing was for.
+Reading past an unknown field is what makes a copy work, which is why it is the deliberate behaviour
+and not a shortcoming.
+
+`verified-by: bravebot_config::provider::a_provider_block_is_read`
+`verified-by: bravebot_config::provider::a_model_entry_may_be_empty`
+`verified-by: bravebot_config::provider::fields_this_crate_does_not_know_are_read_past`
+`verified-by: bravebot_config::provider::a_limit_missing_either_half_states_no_window`
+`verified-by: bravebot_config::settings::a_provider_block_is_read_beside_the_env_block`
+`verified-by: bravebot_config::settings::a_provider_block_is_read_without_an_env_block`
+
+<a id="BACKEND-14"></a>
+### BACKEND-14: a window nobody stated is assumed low, never asked for and never guessed high
+
+A configured model may state the size of its context window, and where it does not, the figure
+assumed is one deliberately below what the model is likely to have. Nothing is asked over the network
+to find out, and nobody is required to supply it.
+
+**Why.** A budget above the real window does not shorten a conversation late, it removes shortening
+altogether and silently. So the error has to lean low, which is the same reasoning already applied to
+the single figure assumed for an opaque AWS profile. Requiring the number instead asks for one the
+person writing the file does not have, since a window belongs to the model and the upstream serving
+it, and a figure typed to satisfy a requirement looks authoritative in a way a default does not.
+Asking the service costs a round trip before a picker can draw and breaks the case where nothing is
+reachable.
+
+Stating one still has to be possible, because one gateway serves models whose windows differ by more
+than an order of magnitude, and pinning a request to a particular upstream can cap the window well
+below what the model offers elsewhere.
+
+`verified-by: bravebot_config::provider::a_model_without_a_stated_window_gets_the_assumed_one`
+`verified-by: bravebot_config::provider::a_stated_window_is_read`
+`verified-by: bravebot_tui::app::a_gateway_entry_carries_the_window_the_budget_is_taken_from`
+`verified-by: bravebot_tui::app::a_gateway_model_with_no_stated_window_still_carries_one`
+
+<a id="BACKEND-15"></a>
+### BACKEND-15: what a gateway block adds to a request is carried, never interpreted
+
+A configured model may carry a block of options that reaches the request body as it stands. Nothing
+here parses it, knows what any of its fields mean, or validates them, and it cannot replace what the
+turn itself put in the request.
+
+**Why.** A gateway's routing controls are its own invention, so a schema enumerating them is one that
+has to change when the gateway adds a field, and supporting the shape of gateways generally is what
+makes this something other than support for one of them. It comes from the person's own configuration
+surface and no model output reaches it, so it is trusted as far as a variable they exported would be.
+That footing is what also bounds it: a destination may be named from a file, and a file overwriting
+the model or the messages a turn built would be deciding what was asked rather than where it goes.
+
+`verified-by: bravebot_aichat::lib::model_options_are_merged_into_the_request_body`
+`verified-by: bravebot_aichat::lib::model_options_cannot_overwrite_what_the_turn_built`
+`verified-by: bravebot_aichat::lib::a_model_with_no_options_adds_nothing_to_the_body`
+`verified-by: bravebot_config::provider::model_options_are_carried_without_being_interpreted`
+
+<a id="BACKEND-16"></a>
+### BACKEND-16: a gateway credential is named rather than resolved ahead of time
+
+Where a gateway's credential lives is named by its block: variables that may hold it, or a value
+written in the file. It is read at the point a request needs it, and a request that cannot be
+authenticated is refused with the remedy named rather than sent.
+
+**Why.** Read once at startup, a credential goes stale in a session where somebody exported a new
+one. Sent without one, the request fails at the far end for a reason nothing local could explain,
+which is the same argument that stops a model name being guessed for an unconfigured tier. Naming a
+variable is also the only way to keep a long-lived token out of a file people paste into issues,
+which is why it is preferred where the block offers both and why a value in the file never displaces
+one a variable holds.
+
+`verified-by: bravebot_config::provider::a_named_variable_holds_the_token_before_the_file_does`
+`verified-by: bravebot_config::provider::a_token_written_into_the_file_is_still_read`
+`verified-by: bravebot_config::provider::a_provider_with_nothing_holding_a_token_has_none`
+`verified-by: bravebot_agent::backend::a_gateway_with_nothing_holding_a_token_refuses_the_request`
+
 ## Known costs
 
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that
   expire during a session, and the tool that holds them is the one the person already signs in
   with. That is a process this code did not write, reading a configuration this code does not
   govern.
+
+- **A gateway credential may be a plaintext string in the settings file.** The shape this block
+  borrows has a field for one, and taking the shape means taking the field. Naming a variable is
+  recommended and preferred where both are present, but nothing prevents the other, and the only
+  real fix is a credential store this does not have.
+
+- **A gateway's pass-through options are unvalidated.** A misspelled routing field is a request the
+  gateway rejects, or worse one it silently routes somewhere unintended. The alternative is a schema
+  that goes stale as the gateway changes, and that trade is what keeps this from being support for
+  one particular gateway.
+
+- **Fields another tool defines are read past in silence.** Somebody who knows the shape will expect
+  its cost, modality and package fields to do something here, and they do nothing. That surprise is
+  the price of a block that can be copied in either direction.
 
 - **The assumed AWS window is a guess.** No endpoint there reports a context window, and an
   inference-profile ARN does not say which model it resolves to, so one figure stands in for every

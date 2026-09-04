@@ -184,6 +184,7 @@ picker-current = actuel
 picker-premium = premium
 picker-model-bedrock-profile = { $tier } (votre profil AWS { $profile })
 picker-model-bedrock = { $tier } (votre compte AWS)
+picker-model-gateway = { $model } (via { $gateway })
 resume-heading = Reprendre une session
 resume-search-placeholder = Rechercher…
 resume-keys =

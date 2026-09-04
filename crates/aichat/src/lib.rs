@@ -1,11 +1,16 @@
-//! Client for the OpenAI-compatible aichat backend.
+//! Client for an OpenAI-compatible backend.
 //!
 //! Targets `POST /v1/chat/completions`. Despite the `/v1` prefix that is the **v2**
-//! API: the server infers the version from the path, so there is no `/v2/` route to
-//! construct. `/v1/conversation` is the older, deprecated surface.
+//! API for Brave's own endpoint: the server infers the version from the path, so there is no
+//! `/v2/` route to construct. `/v1/conversation` is the older, deprecated surface.
 //!
-//! Requests are signed rather than bearer-authenticated; see [`bravebot_signing`]. All
-//! traffic goes through [`bravebot_net::Egress`] so the policy gate sees it, and the model
+//! Two services are reached through this one client, because they speak the same protocol. Brave's
+//! endpoint signs its requests; see [`bravebot_signing`]. A configured gateway bearer-authenticates
+//! and may carry pass-through options in the body. What differs between them is a URL, a header and
+//! a body field, which is why [`AichatClient::prepare`] is the only place that branches on it: the
+//! framing, the retries and the cancellation are the same code for both.
+//!
+//! All traffic goes through [`bravebot_net::Egress`] so the policy gate sees it, and the model
 //! reported in the response is preserved because the server may substitute a different
 //! one than was requested.
 
@@ -131,6 +136,16 @@ pub struct AichatClient<'a> {
     egress: &'a Egress,
     subscription: Option<&'a mut dyn Subscription>,
     cancel: Option<Cancel>,
+    gateway: Option<Gateway<'a>>,
+}
+
+/// Where a request goes when a configured gateway serves the model, rather than Brave's endpoint.
+///
+/// Holds the resolved token rather than the means of resolving one, because a caller has already
+/// had to find it to know whether the request can be sent at all.
+struct Gateway<'a> {
+    provider: &'a bravebot_config::provider::Provider,
+    token: String,
 }
 
 impl<'a> AichatClient<'a> {
@@ -140,7 +155,26 @@ impl<'a> AichatClient<'a> {
             egress,
             subscription: None,
             cancel: None,
+            gateway: None,
         }
+    }
+
+    /// Send this request to a configured gateway, bearer-authenticated, instead of to Brave.
+    ///
+    /// The model has already decided this: a caller reaches for it because the name it holds is one
+    /// the provider offers. Nothing here re-decides that, and a token is required rather than
+    /// optional because an unauthenticated request to a gateway is one that fails at the far end for
+    /// a reason nothing local could explain.
+    pub fn for_gateway(
+        mut self,
+        provider: &'a bravebot_config::provider::Provider,
+        token: impl Into<String>,
+    ) -> Self {
+        self.gateway = Some(Gateway {
+            provider,
+            token: token.into(),
+        });
+        self
     }
 
     /// Send requests on the premium tier, spending a credential on each.
@@ -187,6 +221,60 @@ impl<'a> AichatClient<'a> {
         }
     }
 
+    /// The request to send, addressed and authenticated for whichever service serves it.
+    ///
+    /// The one place either backend is branched on. Both speak the same protocol over the same
+    /// egress path, so what a gateway changes is the host, the credential, and a body that may carry
+    /// pass-through options; everything after this point is shared.
+    ///
+    /// The options are merged at the top level of the body and never interpreted. They come from the
+    /// settings file, which is the person's own configuration surface, so they are trusted exactly as
+    /// far as a variable they exported would be. A key the request already set wins, because a
+    /// configuration must not rewrite the model or the messages a turn built.
+    fn prepare(&mut self, request: &ChatRequest) -> Result<Request, ChatError> {
+        let encode = |value: &serde_json::Value| {
+            serde_json::to_vec(value).map_err(|e| ChatError::Encode(e.to_string()))
+        };
+
+        if let Some(gateway) = self.gateway.as_ref() {
+            let mut body =
+                serde_json::to_value(request).map_err(|e| ChatError::Encode(e.to_string()))?;
+            if let (Some(object), Some(options)) = (
+                body.as_object_mut(),
+                gateway
+                    .provider
+                    .model(&request.model)
+                    .and_then(|model| model.options.as_ref()),
+            ) {
+                for (key, value) in options {
+                    object.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            return Ok(
+                Request::post(gateway.provider.chat_completions_url(), encode(&body)?)
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", gateway.token)),
+            );
+        }
+
+        let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
+        let headers =
+            bravebot_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
+        let (url, credential) = self.route()?;
+
+        let mut http = Request::post(url, body)
+            .header("content-type", "application/json")
+            .header("digest", &headers.digest)
+            .header("authorization", &headers.authorization);
+        if let Some(credential) = credential {
+            http = http.header(
+                "cookie",
+                format!("{}={}", credential.cookie_name, credential.cookie_value),
+            );
+        }
+        Ok(http)
+    }
+
     /// Send a chat completion request.
     ///
     /// The reply is labelled untrusted-public: it is remote content we do not control,
@@ -214,24 +302,7 @@ impl<'a> AichatClient<'a> {
         policy: &mut Policy<'_, S>,
         request: &ChatRequest,
     ) -> Result<Completion, ChatError> {
-        let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
-
-        let headers =
-            bravebot_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
-
-        let (url, credential) = self.route()?;
-
-        let mut http = Request::post(url, body)
-            .header("content-type", "application/json")
-            .header("digest", &headers.digest)
-            .header("authorization", &headers.authorization);
-
-        if let Some(credential) = credential {
-            http = http.header(
-                "cookie",
-                format!("{}={}", credential.cookie_name, credential.cookie_value),
-            );
-        }
+        let http = self.prepare(request)?;
 
         let response = self.egress.fetch(policy, http, Label::untrusted_public())?;
 
@@ -346,25 +417,7 @@ impl<'a> AichatClient<'a> {
             return Err(ChatError::Cancelled);
         }
 
-        let body = serde_json::to_vec(request).map_err(|e| ChatError::Encode(e.to_string()))?;
-
-        let headers =
-            bravebot_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
-
-        let (url, credential) = self.route()?;
-
-        let mut http = Request::post(url, body)
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .header("digest", &headers.digest)
-            .header("authorization", &headers.authorization);
-
-        if let Some(credential) = credential {
-            http = http.header(
-                "cookie",
-                format!("{}={}", credential.cookie_name, credential.cookie_value),
-            );
-        }
+        let http = self.prepare(request)?.header("accept", "text/event-stream");
 
         let stream = self
             .egress
@@ -556,4 +609,164 @@ fn worth_another_attempt(attempt: u32, error: &ChatError) -> bool {
 
 fn backoff(failures: u32) -> Duration {
     BACKOFF * 2u32.pow(failures - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::Message;
+
+    fn config() -> Config {
+        Config::from_lookup(|key| {
+            match key {
+                "SERVICES_KEY_AICHAT" => Some("test-signing-key"),
+                "BRAVE_SERVICES_KEY_ID" => Some("test-key-id"),
+                "BRAVE_AI_CHAT_ENDPOINT" => Some("https://brave.example.invalid"),
+                _ => None,
+            }
+            .map(str::to_string)
+        })
+        .expect("configured")
+    }
+
+    fn provider(models: &str) -> bravebot_config::provider::Provider {
+        let text = format!(
+            r#"{{"provider": {{"openrouter": {{
+                "options": {{"baseURL": "https://openrouter.example.invalid/api/v1"}},
+                "models": {models}
+            }}}}}}"#
+        );
+        let serde_json::Value::Object(root) = serde_json::from_str(&text).expect("json") else {
+            panic!("not an object");
+        };
+        bravebot_config::provider::Provider::all(&root)
+            .pop()
+            .expect("one provider")
+    }
+
+    fn request(model: &str) -> ChatRequest {
+        ChatRequest::new(model, vec![Message::user("hello")])
+    }
+
+    fn body(http: &Request) -> serde_json::Value {
+        serde_json::from_slice(http.body.as_ref().expect("a body")).expect("json")
+    }
+
+    fn header<'a>(http: &'a Request, name: &str) -> Option<&'a str> {
+        http.headers
+            .iter()
+            .find(|(header, _)| header == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// A gateway is reached at its own host with its own credential. Signing it as though it were
+    /// Brave's endpoint would send a bearer service to a service that has never heard of one.
+    #[test]
+    fn a_gateway_request_goes_to_the_configured_host_with_a_bearer_token() {
+        let config = config();
+        let egress = Egress::new();
+        let provider = provider(r#"{"z-ai/glm-4.6": {}}"#);
+        let http = AichatClient::new(&config, &egress)
+            .for_gateway(&provider, "a-token")
+            .prepare(&request("z-ai/glm-4.6"))
+            .expect("prepared");
+
+        assert_eq!(
+            http.url,
+            "https://openrouter.example.invalid/api/v1/chat/completions"
+        );
+        assert_eq!(header(&http, "authorization"), Some("Bearer a-token"));
+        assert_eq!(header(&http, "digest"), None);
+    }
+
+    /// Nothing changes for Brave's endpoint, which is every existing request. A gateway is additive,
+    /// and a client built without one still signs.
+    #[test]
+    fn a_request_without_a_gateway_is_still_signed() {
+        let config = config();
+        let egress = Egress::new();
+        let http = AichatClient::new(&config, &egress)
+            .prepare(&request("automatic"))
+            .expect("prepared");
+
+        assert_eq!(
+            http.url,
+            "https://brave.example.invalid/v1/chat/completions"
+        );
+        assert!(header(&http, "digest").is_some());
+        assert!(
+            header(&http, "authorization").is_some_and(|value| !value.starts_with("Bearer ")),
+            "a signed request does not bearer-authenticate"
+        );
+    }
+
+    /// The escape hatch the block exists for: a gateway's routing controls are its own invention, so
+    /// they reach the body whole rather than through a schema that has to know what they mean.
+    #[test]
+    fn model_options_are_merged_into_the_request_body() {
+        let config = config();
+        let egress = Egress::new();
+        let provider = provider(
+            r#"{"anthropic/claude-sonnet-4.5": {"options": {
+                "provider": {"order": ["amazon-bedrock"], "allow_fallbacks": false}
+            }}}"#,
+        );
+        let http = AichatClient::new(&config, &egress)
+            .for_gateway(&provider, "a-token")
+            .prepare(&request("anthropic/claude-sonnet-4.5"))
+            .expect("prepared");
+
+        let body = body(&http);
+        assert_eq!(
+            body.get("provider"),
+            Some(&serde_json::json!({"order": ["amazon-bedrock"], "allow_fallbacks": false}))
+        );
+        assert_eq!(
+            body.get("model"),
+            Some(&serde_json::json!("anthropic/claude-sonnet-4.5"))
+        );
+    }
+
+    /// A configuration may add to a request and must not rewrite it. Letting `options` replace the
+    /// model or the messages would let the file decide what a turn asked, which is not what a
+    /// destination is for.
+    #[test]
+    fn model_options_cannot_overwrite_what_the_turn_built() {
+        let config = config();
+        let egress = Egress::new();
+        let provider = provider(
+            r#"{"m": {"options": {"model": "something/else", "messages": [], "stream": true}}}"#,
+        );
+        let http = AichatClient::new(&config, &egress)
+            .for_gateway(&provider, "a-token")
+            .prepare(&request("m"))
+            .expect("prepared");
+
+        let body = body(&http);
+        assert_eq!(body.get("model"), Some(&serde_json::json!("m")));
+        assert_eq!(
+            body.get("messages")
+                .and_then(|it| it.as_array())
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    /// A model with nothing to add sends the body the turn built, so a gateway entry that states
+    /// only a window is not also a request modifier.
+    #[test]
+    fn a_model_with_no_options_adds_nothing_to_the_body() {
+        let config = config();
+        let egress = Egress::new();
+        let provider =
+            provider(r#"{"z-ai/glm-4.6": {"limit": {"context": 131072, "output": 8192}}}"#);
+        let http = AichatClient::new(&config, &egress)
+            .for_gateway(&provider, "a-token")
+            .prepare(&request("z-ai/glm-4.6"))
+            .expect("prepared");
+
+        let body = body(&http);
+        let keys: Vec<&String> = body.as_object().expect("an object").keys().collect();
+        assert_eq!(keys, ["messages", "model"]);
+    }
 }
