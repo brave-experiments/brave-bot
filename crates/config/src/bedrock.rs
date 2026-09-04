@@ -42,6 +42,50 @@ impl Tier {
             Tier::Haiku => "Haiku",
         }
     }
+
+    /// The tier a settings file's `model` key names, if it names one at all.
+    ///
+    /// These three words are what Claude Code and opencode put in that key, and there they mean a
+    /// tier rather than a model: the concrete model each one stands for comes from the same
+    /// `ANTHROPIC_DEFAULT_*_MODEL` variables read here. Matched case-insensitively because a
+    /// hand-written file says `Opus` as readily as `opus`.
+    ///
+    /// Anything else is `None` and is used as written, which is what carries a model id, an
+    /// inference-profile ARN, and a name from the Brave roster.
+    pub fn from_alias(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "opus" => Some(Tier::Opus),
+            "sonnet" => Some(Tier::Sonnet),
+            "haiku" => Some(Tier::Haiku),
+            _ => None,
+        }
+    }
+
+    /// What this tier is called on the Brave roster.
+    ///
+    /// Where no AWS account is configured a tier word still has to name something, or it reaches an
+    /// endpoint that has never heard of it and is silently reset: the key would appear to work and
+    /// do nothing. Every build can reach Brave, so this is the roster a tier word resolves against
+    /// when nothing else can serve it.
+    ///
+    /// Compiled in rather than matched against `GET /v1/models`, because a [`crate::Config`] is
+    /// built without touching the network and a one-shot run never asks for that listing at all:
+    /// only the interactive picker does. Resolving a word against it would put an HTTP round trip in
+    /// front of every `bravebot "prompt"` to expand one word, and would fail with no network where
+    /// this succeeds.
+    ///
+    /// The cost is that the service owns these names and can rename one, and nothing here notices: a
+    /// snapshot of the live roster does not belong in a public repository either. Checked by hand
+    /// against `GET /v1/models`, where all three were present when this was written. A name the
+    /// endpoint has stopped serving is reset by it to `automatic`, which is where somebody with no
+    /// `model` key already starts.
+    pub fn brave_model(self) -> &'static str {
+        match self {
+            Tier::Opus => "claude-opus",
+            Tier::Sonnet => "claude-3-sonnet",
+            Tier::Haiku => "claude-3-haiku",
+        }
+    }
 }
 
 /// Everything needed to talk to Bedrock, when a build is pointed at it.
@@ -364,6 +408,60 @@ mod tests {
         ])
         .expect("configured");
         assert_eq!(bedrock.host(), "bedrock-runtime.eu-central-1.amazonaws.com");
+    }
+
+    /// The three words a settings file written for Claude Code or opencode puts in its `model` key.
+    /// Case-insensitive because a hand-written file says `Opus` as readily as `opus`.
+    #[test]
+    fn the_tier_words_are_recognised_whatever_their_case() {
+        assert_eq!(Tier::from_alias("opus"), Some(Tier::Opus));
+        assert_eq!(Tier::from_alias("Sonnet"), Some(Tier::Sonnet));
+        assert_eq!(Tier::from_alias("HAIKU"), Some(Tier::Haiku));
+        assert_eq!(Tier::from_alias("  opus  "), Some(Tier::Opus));
+    }
+
+    /// Every tier names something on the roster every build can reach, or the word it came from
+    /// resolves to nothing and is silently reset by the endpoint. The names themselves are the
+    /// server's to change and are checked by hand; what is pinned here is that all three are
+    /// answered, and that none is left as the bare tier word.
+    #[test]
+    fn every_tier_names_a_brave_model() {
+        for tier in Tier::ALL {
+            let name = tier.brave_model();
+            assert!(!name.is_empty(), "{tier:?} names nothing");
+            assert_eq!(
+                Tier::from_alias(name),
+                None,
+                "{tier:?} resolves to the bare tier word, which the endpoint does not serve"
+            );
+        }
+    }
+
+    /// Three tiers, three distinct models. Two words collapsing onto one name would make a choice
+    /// between them no choice at all.
+    #[test]
+    fn the_tiers_name_different_brave_models() {
+        let names: Vec<&str> = Tier::ALL.into_iter().map(Tier::brave_model).collect();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "{names:?} are not all distinct");
+    }
+
+    /// Everything else is a model name, and is used as written. An ARN and a name from the Brave
+    /// roster both have to survive this untouched.
+    #[test]
+    fn anything_that_is_not_a_tier_word_names_no_tier() {
+        for name in [
+            "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc",
+            "claude-opus-4-8",
+            "llama-3-8b-instruct",
+            "automatic",
+            "opus-4",
+            "",
+        ] {
+            assert_eq!(Tier::from_alias(name), None, "{name} was read as a tier");
+        }
     }
 
     /// A remembered choice outlives the settings that made it reachable. Bedrock rejects an unknown

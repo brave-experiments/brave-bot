@@ -1,4 +1,4 @@
-//! The `env` block in `~/.bravebot/settings.json`.
+//! The `env` block and the `model` key in `~/.bravebot/settings.json`.
 //!
 //! A file rather than only the process environment, because the values that select a backend are
 //! long-lived: which AWS profile to assume and which model each tier names are properties of a
@@ -7,7 +7,9 @@
 //!
 //! Deliberately the same shape as Claude Code's `~/.claude/settings.json`, down to the variable
 //! names, so a block that configures one configures the other unedited. A different spelling for
-//! the same six values would be a second thing to learn for no gain.
+//! the same six values would be a second thing to learn for no gain. `model` is read for the same
+//! reason: it is where both Claude Code and opencode put that choice, and a key those tools honour
+//! that this one silently dropped is worse than one nobody writes.
 //!
 //! # What this file is trusted for
 //!
@@ -45,6 +47,11 @@ pub struct Settings {
     env: BTreeMap<String, String>,
     scrub: Vec<String>,
     permissions: PermissionLists,
+    /// What the top-level `model` key named, if it named anything.
+    ///
+    /// Separate from `env` because it is not a variable: nothing exports `model`, and folding it
+    /// into that map would make it collide with a name someone's shell already uses.
+    model: Option<String>,
 }
 
 /// The `permissions` block, as text, exactly as the file spelled it.
@@ -93,14 +100,15 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Read the `env` block and the scrub list out of settings JSON.
+    /// Read the `env` block, the `model` key and the scrub list out of settings JSON.
     ///
     /// Only string values are taken. JSON allows a number or a boolean where a variable wants a
     /// string, and coercing one would invent a spelling the writer did not choose: `1` and `true`
     /// are not obviously `"1"` and `"true"` to whoever has to debug it later.
     ///
-    /// The two blocks are independent: a file naming variables to keep from a subprocess is read
-    /// whether or not it also configures a backend.
+    /// Each is read independently, so a file with one and not the others still supplies what it
+    /// has: a `model` key is the whole of some people's settings, and requiring an `env` block
+    /// beside it would discard it for being alone.
     pub fn parse(text: &str) -> Self {
         let Ok(serde_json::Value::Object(root)) = serde_json::from_str(text) else {
             return Self::default();
@@ -115,10 +123,17 @@ impl Settings {
                 .collect(),
             _ => BTreeMap::new(),
         };
+        let model = match root.get("model") {
+            Some(serde_json::Value::String(name)) => Some(name.trim())
+                .filter(|name| !name.is_empty())
+                .map(str::to_string),
+            _ => None,
+        };
         Self {
             env,
             scrub: scrub_list(&root),
             permissions: permission_lists(&root),
+            model,
         }
     }
 
@@ -127,9 +142,20 @@ impl Settings {
         self.env.get(name).map(String::as_str)
     }
 
+    /// The model the file asked for, if it asked for one.
+    ///
+    /// A default rather than the model: `/model` records a choice that outlives the session making
+    /// it, and that choice wins. This is what answers for somebody who has never made one.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
     /// Whether the file set anything at all.
     pub fn is_empty(&self) -> bool {
-        self.env.is_empty() && self.scrub.is_empty() && self.permissions.is_empty()
+        self.env.is_empty()
+            && self.scrub.is_empty()
+            && self.permissions.is_empty()
+            && self.model.is_none()
     }
 
     /// The rule text and added directories the `permissions` block carried.
@@ -149,9 +175,14 @@ impl Settings {
     /// Every name the file set, for `doctor` to report.
     ///
     /// Names only. The values include credentials on some machines, and a diagnostic that prints
-    /// them is a diagnostic people paste into issues.
+    /// them is a diagnostic people paste into issues. `model` is among them so a file that sets
+    /// only that is not reported as setting nothing.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.env.keys().map(String::as_str)
+        self.model
+            .is_some()
+            .then_some("model")
+            .into_iter()
+            .chain(self.env.keys().map(String::as_str))
     }
 }
 
@@ -248,11 +279,66 @@ mod tests {
     }
 
     /// Settings files carry other blocks. One this crate does not read must not stop it finding
-    /// the one it does.
+    /// the ones it does.
     #[test]
     fn other_blocks_are_ignored() {
-        let settings = Settings::parse(r#"{"model": "opus", "env": {"AWS_REGION": "us-west-2"}}"#);
+        let settings = Settings::parse(
+            r#"{"permissions": {"allow": []}, "env": {"AWS_REGION": "us-west-2"}}"#,
+        );
         assert_eq!(settings.get("AWS_REGION"), Some("us-west-2"));
+    }
+
+    /// The key Claude Code and opencode both use for this. Read because a file written for either
+    /// of them is the file people have, and a key those tools honour that this one dropped looks
+    /// like the setting doing nothing.
+    #[test]
+    fn a_top_level_model_key_is_read() {
+        let settings = Settings::parse(r#"{"model": "opus"}"#);
+        assert_eq!(settings.model(), Some("opus"));
+    }
+
+    /// The two are independent. A `model` key is the whole of some people's settings, and
+    /// requiring an `env` block beside it would discard it for being alone.
+    #[test]
+    fn a_model_and_an_env_block_are_read_from_the_same_file() {
+        let settings = Settings::parse(r#"{"model": "opus", "env": {"AWS_REGION": "us-west-2"}}"#);
+        assert_eq!(settings.model(), Some("opus"));
+        assert_eq!(settings.get("AWS_REGION"), Some("us-west-2"));
+    }
+
+    /// A blank is absence. Sending `""` as a model would be reset by the server anyway, and here it
+    /// would shadow the value a release has built in for no stated reason.
+    #[test]
+    fn a_model_that_is_blank_or_not_a_string_names_nothing() {
+        for text in [
+            r#"{"model": ""}"#,
+            r#"{"model": "   "}"#,
+            r#"{"model": 1}"#,
+            r#"{"model": true}"#,
+            r#"{"model": null}"#,
+            r#"{"model": ["opus"]}"#,
+            r#"{"model": {"name": "opus"}}"#,
+        ] {
+            assert_eq!(Settings::parse(text).model(), None, "{text} named a model");
+        }
+    }
+
+    /// Surrounding space is the shape a hand-edited file has, and a model name with a newline in it
+    /// is not one either backend serves.
+    #[test]
+    fn a_model_is_trimmed() {
+        assert_eq!(
+            Settings::parse("{\"model\": \" opus\\n\"}").model(),
+            Some("opus")
+        );
+    }
+
+    /// A file that sets only a model has set something, so `doctor` must not report it as absent.
+    #[test]
+    fn a_file_with_only_a_model_is_not_empty() {
+        let settings = Settings::parse(r#"{"model": "opus"}"#);
+        assert!(!settings.is_empty());
+        assert_eq!(settings.names().collect::<Vec<_>>(), ["model"]);
     }
 
     /// A variable is a string. Coercing a number or a boolean would invent a spelling the writer

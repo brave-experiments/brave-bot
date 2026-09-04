@@ -213,6 +213,28 @@ fn resolve(
     }
 }
 
+/// Which model to request, from the three places that may name one.
+///
+/// Ranked differently from every other value, which is why it is written out rather than going
+/// through [`resolve`]. The settings file sits *above* the baked-in value here: every release bakes
+/// in a default model, so a `model` key ranked below it would lose on every binary anybody was
+/// given, leaving a key that parses, is reported by `doctor`, and changes nothing outside a source
+/// build.
+///
+/// An exported variable still wins, as it does everywhere else. `env.BRAVE_AI_CHAT_DEFAULT_MODEL`
+/// is read last, below the baked-in value, because that block is variables and is ranked like them.
+fn resolve_model(
+    from_env: Option<String>,
+    settings: &Settings,
+    baked: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    from_env
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| settings.model().map(str::to_string))
+        .or_else(|| baked(env_var::DEFAULT_MODEL))
+        .or_else(|| settings.get(env_var::DEFAULT_MODEL).map(str::to_string))
+}
+
 impl Config {
     /// Read configuration from the process environment, falling back to the values
     /// built into this binary.
@@ -228,10 +250,16 @@ impl Config {
     /// The environment wins over the file for the same reason it wins over a baked-in value: a
     /// variable someone exported for one session is the most specific thing they said, and a file
     /// that overrode it would make `AWS_PROFILE=other bravebot` do nothing.
+    ///
+    /// The `model` key is the exception, and sits above the baked-in value rather than below it.
+    /// Every release bakes in a default model, so a `model` key ranked like the `env` block would
+    /// lose to it on every binary anybody was given: the key would parse, be reported by `doctor`,
+    /// and change nothing outside a source build. An exported variable still outranks it.
     pub fn from_env_and_settings(settings: &Settings) -> Result<Self, ConfigError> {
-        Self::from_lookup(|key| {
-            resolve(key, env::var(key).ok(), built_in)
-                .or_else(|| settings.get(key).map(str::to_string))
+        Self::from_lookup(|key| match key {
+            env_var::DEFAULT_MODEL => resolve_model(env::var(key).ok(), settings, built_in),
+            _ => resolve(key, env::var(key).ok(), built_in)
+                .or_else(|| settings.get(key).map(str::to_string)),
         })
     }
 
@@ -277,6 +305,31 @@ impl Config {
         // no credentials and the strongest configured tier is the only thing that can answer.
         let default_model = lookup(env_var::DEFAULT_MODEL)
             .filter(|m| !m.trim().is_empty())
+            // `opus`, `sonnet` and `haiku` name a tier rather than a model, which is what those
+            // words mean in the settings file this key is copied from. Left as the word they reach a
+            // service that has never heard of them, so they are resolved to a model that exists:
+            // the tier's own ARN where an AWS account named one, and the Brave roster's name for
+            // that tier otherwise, since every build can reach Brave.
+            //
+            // The AWS account wins where it named the tier, because somebody who configured it
+            // asked for it by name. A tier they left unset falls through to Brave rather than being
+            // guessed at, an ARN not being derivable from a word, except on a build with no Brave
+            // credentials: there a Brave name reaches a service this build cannot sign for, so the
+            // strongest tier the AWS account did name is the only thing that could answer.
+            .map(|chosen| match bedrock::Tier::from_alias(&chosen) {
+                Some(tier) => match bedrock.as_ref() {
+                    Some(bedrock) => bedrock
+                        .model_for(tier)
+                        .or_else(|| match endpoint.is_empty() {
+                            true => bedrock.default_model(),
+                            false => None,
+                        })
+                        .unwrap_or(tier.brave_model())
+                        .to_string(),
+                    None => tier.brave_model().to_string(),
+                },
+                None => chosen,
+            })
             .or_else(|| match bedrock.as_ref() {
                 Some(bedrock) if endpoint.is_empty() => bedrock.default_model().map(str::to_string),
                 _ => None,
@@ -645,6 +698,168 @@ mod tests {
         let chosen = resolve(env_var::AWS_REGION, None, |_| None)
             .or_else(|| settings.get(env_var::AWS_REGION).map(str::to_string));
         assert_eq!(chosen.as_deref(), Some("from-the-file"));
+    }
+
+    /// The point of reading the key: a file naming a model is what decides, without the variable
+    /// being exported anywhere.
+    #[test]
+    fn a_model_in_the_settings_file_becomes_the_default() {
+        let settings = Settings::parse(r#"{"model": "llama-3-8b-instruct"}"#);
+        let config = Config::from_lookup(|key| match key {
+            env_var::DEFAULT_MODEL => resolve_model(None, &settings, |_| None),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert_eq!(config.default_model, "llama-3-8b-instruct");
+    }
+
+    /// The whole reason this value is ranked differently. Every release bakes a default model in, so
+    /// a `model` key ranked below it would lose on every binary anybody was given: the key would
+    /// parse, `doctor` would report it, and nothing outside a source build would change.
+    #[test]
+    fn a_model_in_the_settings_file_outranks_the_baked_in_one() {
+        let settings = Settings::parse(r#"{"model": "opus"}"#);
+        let chosen = resolve_model(None, &settings, |_| Some("automatic".into()));
+        assert_eq!(chosen.as_deref(), Some("opus"));
+    }
+
+    /// A variable exported for one session is still the most specific thing the person said, here as
+    /// everywhere else.
+    #[test]
+    fn an_exported_model_outranks_the_settings_file() {
+        let settings = Settings::parse(r#"{"model": "opus"}"#);
+        let chosen = resolve_model(Some("from-the-env".into()), &settings, |_| None);
+        assert_eq!(chosen.as_deref(), Some("from-the-env"));
+    }
+
+    /// A blank variable is a placeholder rather than an instruction to discard what the file said.
+    #[test]
+    fn a_blank_exported_model_does_not_shadow_the_settings_file() {
+        let settings = Settings::parse(r#"{"model": "opus"}"#);
+        let chosen = resolve_model(Some("   ".into()), &settings, |_| None);
+        assert_eq!(chosen.as_deref(), Some("opus"));
+    }
+
+    /// The `env` block is variables, and is ranked like them: below what the build baked in. Only
+    /// the top-level key is promoted above it.
+    #[test]
+    fn the_env_block_spelling_stays_below_the_baked_in_value() {
+        let settings =
+            Settings::parse(r#"{"env": {"BRAVE_AI_CHAT_DEFAULT_MODEL": "from-the-env-block"}}"#);
+        let chosen = resolve_model(None, &settings, |_| Some("baked".into()));
+        assert_eq!(chosen.as_deref(), Some("baked"));
+
+        // And is still read where the build baked nothing in, so the spelling keeps working.
+        let chosen = resolve_model(None, &settings, |_| None);
+        assert_eq!(chosen.as_deref(), Some("from-the-env-block"));
+    }
+
+    /// With nothing said anywhere the default stands, which is what a fresh machine has.
+    #[test]
+    fn no_model_named_anywhere_leaves_the_default() {
+        let chosen = resolve_model(None, &Settings::default(), |_| None);
+        assert_eq!(chosen, None);
+    }
+
+    /// Where those three words come from they name a tier, and the tier's model is what the same
+    /// file already said. Left as the word, the request reaches a backend that has never heard of
+    /// it: Bedrock refuses an unknown model rather than substituting one.
+    #[test]
+    fn a_tier_alias_resolves_to_the_model_that_tier_names() {
+        for (alias, expected) in [
+            ("opus", "opus-arn"),
+            ("sonnet", "sonnet-arn"),
+            ("haiku", "haiku-arn"),
+            // A hand-written file says `Opus` as readily as `opus`.
+            ("Opus", "opus-arn"),
+        ] {
+            let config = Config::from_lookup(|key| match key {
+                env_var::USE_BEDROCK => Some("1".into()),
+                env_var::AWS_REGION => Some("us-west-2".into()),
+                env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+                env_var::BEDROCK_SONNET_MODEL => Some("sonnet-arn".into()),
+                env_var::BEDROCK_HAIKU_MODEL => Some("haiku-arn".into()),
+                env_var::DEFAULT_MODEL => Some(alias.into()),
+                other => complete_env(other),
+            })
+            .unwrap();
+            assert_eq!(config.default_model, expected, "{alias} did not resolve");
+        }
+    }
+
+    /// Everything that is not one of the three words is used as written, which is what carries an
+    /// inference-profile ARN and a name from the Brave roster alike.
+    #[test]
+    fn a_model_that_is_not_a_tier_alias_is_used_as_written() {
+        for name in [
+            "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc",
+            "claude-opus-4-8",
+            "llama-3-8b-instruct",
+            "automatic",
+        ] {
+            let config = Config::from_lookup(|key| match key {
+                env_var::USE_BEDROCK => Some("1".into()),
+                env_var::AWS_REGION => Some("us-west-2".into()),
+                env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+                env_var::DEFAULT_MODEL => Some(name.into()),
+                other => complete_env(other),
+            })
+            .unwrap();
+            assert_eq!(config.default_model, name);
+        }
+    }
+
+    /// An ARN cannot be derived from a word, so a tier the AWS account left unset falls through to
+    /// the roster every build can reach rather than being guessed at.
+    #[test]
+    fn an_alias_for_an_unconfigured_tier_falls_through_to_brave() {
+        let config = Config::from_lookup(|key| match key {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+            env_var::DEFAULT_MODEL => Some("haiku".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert_eq!(config.default_model, bedrock::Tier::Haiku.brave_model());
+    }
+
+    /// The case a settings file written for another tool actually lands in: no AWS account, so the
+    /// word has to name something on the roster every build can reach. Left as the bare word it
+    /// reaches an endpoint that has never heard of it and is silently reset, which is the key
+    /// appearing to work and doing nothing.
+    #[test]
+    fn a_tier_alias_without_bedrock_resolves_against_the_brave_roster() {
+        for (alias, tier) in [
+            ("opus", bedrock::Tier::Opus),
+            ("sonnet", bedrock::Tier::Sonnet),
+            ("haiku", bedrock::Tier::Haiku),
+        ] {
+            let config = Config::from_lookup(|key| match key {
+                env_var::DEFAULT_MODEL => Some(alias.into()),
+                other => complete_env(other),
+            })
+            .unwrap();
+            assert_eq!(config.default_model, tier.brave_model());
+            // Never left as the bare word, which is the thing that silently did nothing.
+            assert_ne!(config.default_model, alias);
+        }
+    }
+
+    /// With no Brave credentials a Brave name reaches a service this build cannot sign for, so an
+    /// unset tier resolves to the strongest one the AWS account did name instead.
+    #[test]
+    fn without_brave_credentials_an_unconfigured_tier_stays_on_aws() {
+        let config = Config::from_lookup(|key| match key {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+            env_var::DEFAULT_MODEL => Some("haiku".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(!config.serves_aichat());
+        assert_eq!(config.default_model, "opus-arn");
     }
 
     #[test]

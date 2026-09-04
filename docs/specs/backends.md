@@ -25,9 +25,9 @@ arrives is [labels.md](labels.md).
 <a id="BACKEND-1"></a>
 ### BACKEND-1: a settings file may name a destination and never a permission
 
-What a person's settings may say is which region, which credential profile, and which model each
-tier names. Nothing in that file grants a capability, vouches for a path, or decides whether an
-effect is allowed.
+What a person's settings may say is which region, which credential profile, which model each tier
+names, and which model to request when nobody has chosen one. Nothing in that file grants a
+capability, vouches for a path, or decides whether an effect is allowed.
 
 The block does not become the process environment either. A value is consulted where a variable
 would be, and reaches a subprocess only where that subprocess is the thing it configures.
@@ -183,6 +183,53 @@ carries a credential that has already expired.
 `verified-by: bravebot_bedrock::credentials::an_expiry_is_converted_to_the_instant_it_names`
 `verified-by: bravebot_bedrock::credentials::the_expiry_the_cli_reports_is_read_from_the_process_format`
 `verified-by: bravebot_bedrock::credentials::an_expiry_that_is_not_the_expected_shape_is_not_guessed_at`
+
+<a id="BACKEND-11"></a>
+### BACKEND-11: a settings file names the model above what the build baked in
+
+Where a settings file names a model and an exported variable does not, that name is what a request
+uses, in preference to the model compiled into the binary. A choice already recorded with `/model`
+still wins over all of it.
+
+**Why.** Every release bakes a default model in, so this value ranked like the rest of the file would
+lose on every binary anybody was given: the key would parse, `doctor` would report it, and nothing
+would change outside a source build. An exported variable stays above the file because it is the most
+specific thing a person said, and a recorded pick stays above both because it is the more recent one.
+
+`verified-by: bravebot_config::lib::a_model_in_the_settings_file_outranks_the_baked_in_one`
+`verified-by: bravebot_config::lib::an_exported_model_outranks_the_settings_file`
+`verified-by: bravebot_config::lib::the_env_block_spelling_stays_below_the_baked_in_value`
+
+<a id="BACKEND-12"></a>
+### BACKEND-12: a tier word names a model some reachable service serves
+
+`opus`, `sonnet` and `haiku` name a tier rather than a model. Each resolves to a model that can
+actually be reached: the model an AWS account named for that tier, and otherwise that tier's name on
+the roster every build can reach. A tier word is never sent as the bare word. Any other name is used
+as written.
+
+**Why.** Those three words are what a settings file written for another tool puts in this key, so
+they are the common case rather than an edge one. Sent unresolved they reach a service that has never
+heard of them: Bedrock refuses an unknown model, and the aichat endpoint silently resets one, which
+makes the key appear to work while changing nothing. An AWS account that named the tier wins because
+naming it is asking for it, and a tier it left unset falls through rather than being guessed at,
+since an ARN cannot be derived from a word. The exception is a build holding no Brave credentials,
+where a Brave name reaches a service it cannot sign for.
+
+**Note.** The Brave names are compiled in rather than matched against the model listing. A
+configuration is built without touching the network, and a one-shot run never asks for that listing:
+only the interactive picker does. Resolving a word against it would put a round trip in front of every
+one-shot run to expand one word, and would fail with no network where it currently succeeds. The cost
+is that the service owns those names, and a renamed one is reset by the endpoint to `automatic`, which
+is where somebody with no `model` key already starts.
+
+`verified-by: bravebot_config::lib::a_tier_alias_resolves_to_the_model_that_tier_names`
+`verified-by: bravebot_config::lib::a_tier_alias_without_bedrock_resolves_against_the_brave_roster`
+`verified-by: bravebot_config::lib::an_alias_for_an_unconfigured_tier_falls_through_to_brave`
+`verified-by: bravebot_config::lib::without_brave_credentials_an_unconfigured_tier_stays_on_aws`
+`verified-by: bravebot_config::lib::a_model_that_is_not_a_tier_alias_is_used_as_written`
+`verified-by: bravebot_config::bedrock::every_tier_names_a_brave_model`
+`verified-by: bravebot_config::bedrock::the_tiers_name_different_brave_models`
 
 ## Known costs
 
