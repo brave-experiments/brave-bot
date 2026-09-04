@@ -78,7 +78,7 @@ impl std::fmt::Display for CredentialError {
         match self {
             Self::NotInstalled => f.write_str(
                 "the AWS CLI is not installed, and Bedrock credentials come from it. Install it, or \
-                 unset CLAUDE_CODE_USE_BEDROCK to use the Brave backend",
+                 unset BRAVEBOT_USE_BEDROCK to use the Brave backend",
             ),
             Self::Refused { detail } => write!(
                 f,

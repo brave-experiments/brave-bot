@@ -29,14 +29,13 @@ pub const CONTEXT_BUDGET: &str = "BRAVEBOT_CONTEXT_BUDGET";
 
 /// Set to `1` to reach Claude through AWS Bedrock rather than the aichat backend.
 ///
-/// The Bedrock names here are Claude Code's, spelled exactly as it spells them, so an `env` block
-/// that configures `~/.claude/settings.json` configures `~/.bravebot/settings.json` unedited. They
-/// break this file's convention that every name is Brave-prefixed, and that is deliberate: what
-/// makes the setting worth having is that it transfers, and a second spelling for the same values
-/// would be another thing to learn in exchange for nothing.
+/// Brave-prefixed like the rest of this file: the switch decides which backend this program uses,
+/// so it belongs to this program. The model names below keep Claude Code's spelling, since those
+/// name someone's Bedrock deployment rather than anything here.
 ///
-/// None of them appear in ALL. They describe one person's AWS account, not the build.
-pub const USE_BEDROCK: &str = "CLAUDE_CODE_USE_BEDROCK";
+/// Absent from ALL, along with the rest of the Bedrock names. They describe one person's AWS
+/// account, not the build.
+pub const USE_BEDROCK: &str = "BRAVEBOT_USE_BEDROCK";
 
 /// Which AWS region to reach Bedrock in. Required once [`USE_BEDROCK`] is on.
 pub const AWS_REGION: &str = "AWS_REGION";
