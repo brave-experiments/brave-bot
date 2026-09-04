@@ -39,27 +39,29 @@ call, what untrusted content reaches is the planner rather than a slot.
 | Tools | none, and the request carries no tool list at all |
 | Memory | none: the messages are built from nothing each time |
 | Conversation | one request, one reply, no loop to steer |
-| Reads | exactly one reference, named before the call, and nothing else |
+| Reads | exactly the content the call was built for, and nothing else |
 | Writes | nothing at all: no slot, no file, no reference |
 
-One reference rather than several, because a verdict is about a thing: a call given two documents
-and answering in one word has said something about neither.
+One thing rather than several, because a verdict is about a thing: a call given two documents and
+answering in one word has said something about neither. What that thing is, a reference or a file,
+is the driver's own name for it and is routing either way.
 
 **Why.** A checker with one tool is a second planner with untrusted content in its context, which
 is the thing this design refuses. A loop would give a reply something to steer.
 
-`verified-by: bravebot_core::policy::only_the_slot_it_was_given_reaches_a_checker`
-`verified-by: bravebot_core::policy::vetting_a_reference_to_nothing_is_refused`
+`verified-by: bravebot_core::policy::only_the_content_it_was_given_reaches_a_checker`
+`verified-by: bravebot_core::policy::content_at_another_label_than_the_spec_fixed_is_refused`
 
 <a id="VET-2"></a>
 ### VET-2: the question is fixed by the driver before the content is read
 
-What is being vetted, what it was expected to be, and the label of what will come back are all
-settled in one place before any byte is touched, and nothing widens the question afterwards. The
-expectation comes from the planner and must not be private.
+What is being vetted, what it was expected to be, and the label of what is read are all settled in
+one place before any byte is touched, and nothing widens the question afterwards. Content at any
+other label than the one fixed is refused rather than vetted, so the label a verdict is about is
+always the label somebody fixed. The expectation comes from the planner and must not be private.
 
 `verified-by: bravebot_core::policy::a_private_expectation_cannot_direct_a_checker`
-`verified-by: bravebot_core::vet::a_description_names_the_slot_and_the_label_but_no_content`
+`verified-by: bravebot_core::vet::a_description_names_the_subject_and_the_label_but_no_content`
 
 <a id="VET-3"></a>
 ### VET-3: silence about what to expect narrows the question rather than widening it

@@ -2404,13 +2404,20 @@ fn vet_content<S: Sink>(
         Err(refusal) => return problem(refusal),
     };
 
+    // Out of the slot and straight into the call, still wrapped. The driver carries it and never
+    // reads it: the kernel fenced it on the way in and read the verdict out on the way back.
+    let content = match policy.resolve("vet_content", &slot, tools.slots) {
+        Ok(content) => content,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
     let expected = argument(arguments, "expected");
-    let spec = match policy.before_vet(&origin, &slot, expected.as_ref(), tools.slots) {
+    let spec = match policy.before_vet(&origin, slot.as_str(), content.label(), expected.as_ref()) {
         Ok(spec) => spec,
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
-    match crate::vet::run(policy, &mut tools.chat, tools.slots, &spec) {
+    match crate::vet::run(policy, &mut tools.chat, &content, &spec) {
         Ok(done) => {
             // Two sentences the driver wrote, and the verdict picks between them. Both say the
             // same thing about what has not changed, because the failure this guards against is

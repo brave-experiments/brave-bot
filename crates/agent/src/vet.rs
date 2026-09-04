@@ -21,7 +21,6 @@ use bravebot_aichat::ChatError;
 use bravebot_aichat::protocol::{ChatRequest, Message, Usage};
 use bravebot_core::event::Sink;
 use bravebot_core::policy::{Denial, Policy};
-use bravebot_core::slot::SlotStore;
 use bravebot_core::value::Labelled;
 use bravebot_core::vet::{Verdict, VetSpec};
 use std::fmt;
@@ -136,12 +135,12 @@ fn expectation(spec: &VetSpec) -> String {
 pub fn run<S: Sink>(
     policy: &mut Policy<'_, S>,
     chat: &mut Chat<'_>,
-    slots: &SlotStore,
+    content: &Labelled<String>,
     spec: &VetSpec,
 ) -> Result<Vetted, VetError> {
     // Assembled inside the kernel, so the bytes are never in a variable this function could
     // examine. What comes back is wrapped and stays wrapped until the line that hands it over.
-    let input = policy.compose_vet_input(spec, slots)?;
+    let input = policy.compose_vet_input(spec, content)?;
 
     // The question goes in the system prompt and the content in the user message, so what the
     // checker was asked and what it was asked about arrive as different kinds of thing.
@@ -181,16 +180,8 @@ pub fn run<S: Sink>(
 mod tests {
     use super::*;
     use bravebot_core::label::Label;
-    use bravebot_core::slot::SlotId;
 
     fn spec_with(expected: Option<&str>) -> VetSpec {
-        let mut store = SlotStore::new();
-        let slot = SlotId::new("ref:0");
-        store
-            .writer_for(slot.clone(), Label::untrusted_public())
-            .unwrap()
-            .write("fetched from the web")
-            .unwrap();
         let mut sink = bravebot_core::event::NullSink;
         let mut routing = bravebot_core::policy::Routing::new();
         routing.insert_trusted("task", "vet it");
@@ -203,7 +194,12 @@ mod tests {
         .expect("policy");
         let expected = expected.map(|e| Labelled::new(e.to_string(), Label::untrusted_public()));
         policy
-            .before_vet("vet:1", &slot, expected.as_ref(), &store)
+            .before_vet(
+                "vet:1",
+                "ref:0",
+                Label::untrusted_public(),
+                expected.as_ref(),
+            )
             .expect("a vetting call")
     }
 

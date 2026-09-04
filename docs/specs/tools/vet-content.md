@@ -19,8 +19,8 @@ routing; `expected` is content. The result is a verdict. What a checker is and w
 
 One rather than a list. A reference naming nothing is refused.
 
-`verified-by: bravebot_core::policy::only_the_slot_it_was_given_reaches_a_checker`
-`verified-by: bravebot_core::policy::vetting_a_reference_to_nothing_is_refused`
+`verified-by: bravebot_core::policy::only_the_content_it_was_given_reaches_a_checker`
+`verified-by: bravebot_core::policy::an_unknown_reference_is_refused`
 
 <a id="VETC-2"></a>
 ### VETC-2: what the content was expected to be comes from the planner and may not be private

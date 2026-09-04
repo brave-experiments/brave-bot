@@ -16,7 +16,6 @@
 //! is reported, and what to do about it is the planner's problem.
 
 use crate::label::Label;
-use crate::slot::SlotId;
 
 /// What one vetting call answered.
 ///
@@ -57,7 +56,7 @@ impl Verdict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VetSpec {
     id: String,
-    reads: SlotId,
+    subject: String,
     expected: Option<String>,
     input_label: Label,
 }
@@ -65,13 +64,13 @@ pub struct VetSpec {
 impl VetSpec {
     pub(crate) fn new(
         id: impl Into<String>,
-        reads: SlotId,
+        subject: impl Into<String>,
         expected: Option<String>,
         input_label: Label,
     ) -> Self {
         Self {
             id: id.into(),
-            reads,
+            subject: subject.into(),
             expected,
             input_label,
         }
@@ -82,12 +81,13 @@ impl VetSpec {
         &self.id
     }
 
-    /// The one slot it may read, and the only thing it will be given.
+    /// The driver's own name for what is being vetted: a reference, or a path.
     ///
-    /// One rather than several because a verdict is about a thing, and a call given two documents
-    /// answering with one word has said something about neither of them.
-    pub fn reads(&self) -> &SlotId {
-        &self.reads
+    /// One thing rather than several, because a verdict is about a thing, and a call given two
+    /// documents answering with one word has said something about neither of them. Routing either
+    /// way, so it is safe to put in the trail and in front of the checker.
+    pub fn subject(&self) -> &str {
+        &self.subject
     }
 
     /// What the planner said the content was supposed to be, where it knew.
@@ -117,7 +117,7 @@ impl VetSpec {
         };
         format!(
             "{} vets {} ({}), {told}",
-            self.id, self.reads, self.input_label
+            self.id, self.subject, self.input_label
         )
     }
 }
@@ -126,13 +126,13 @@ impl VetSpec {
 mod tests {
     use super::*;
 
-    /// The trail says which slot was vetted and at what label. Somebody reading it back is
+    /// The trail says what was vetted and at what label. Somebody reading it back is
     /// entitled to know what was looked at without the record having quoted it at them.
     #[test]
-    fn a_description_names_the_slot_and_the_label_but_no_content() {
+    fn a_description_names_the_subject_and_the_label_but_no_content() {
         let spec = VetSpec::new(
             "vet:1",
-            SlotId::new("ref:0"),
+            "ref:0",
             Some("the release notes for version 2".to_string()),
             Label::untrusted_private(),
         );
@@ -148,12 +148,7 @@ mod tests {
     /// given an expectation and had it dropped.
     #[test]
     fn a_description_says_when_it_was_told_nothing_to_expect() {
-        let spec = VetSpec::new(
-            "vet:1",
-            SlotId::new("ref:0"),
-            None,
-            Label::untrusted_public(),
-        );
+        let spec = VetSpec::new("vet:1", "ref:0", None, Label::untrusted_public());
 
         assert!(
             spec.describe()

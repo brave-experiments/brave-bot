@@ -1633,29 +1633,22 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// The same shape as fixing a processor and for the same reason: what a reader of
     /// quarantined content is allowed to see is decided here rather than by the code that runs
-    /// it. One slot, an optional expectation, and the label of what it reads, all settled before
-    /// any byte of the content is touched.
+    /// it. One subject, an optional expectation, and the label of what will be read, all settled
+    /// before any byte of the content is touched.
     ///
-    /// The expectation is the planner's own words and must be public. It is not routing: a
-    /// vetting call has nowhere to route anything to, no tool, no path and no output but a word.
-    /// It is read here rather than carried, the same relaxation an instruction to a processor
-    /// gets, and on the same two facts: the operation changes nothing, and what it can reach was
-    /// fixed by this call rather than by the value.
+    /// The subject is the driver's own name for what is being vetted, a reference or a path, and
+    /// is routing in both cases. The expectation is the planner's own words and must be public.
+    /// It is not routing: a vetting call has nowhere to route anything to, no tool, no path and
+    /// no output but a word. It is read here rather than carried, the same relaxation an
+    /// instruction to a processor gets, and on the same two facts: the operation changes nothing,
+    /// and what it can reach was fixed by this call rather than by the value.
     pub fn before_vet(
         &mut self,
         id: &str,
-        reads: &SlotId,
+        subject: &str,
+        input_label: Label,
         expected: Option<&Labelled<String>>,
-        slots: &crate::slot::SlotStore,
     ) -> Gated<crate::vet::VetSpec> {
-        let Some(input_label) = slots.label_of(reads) else {
-            return Err(self.deny(
-                "vet",
-                Principle::Confinement,
-                format!("{id}: '{reads}' is not a reference to anything"),
-            ));
-        };
-
         let expected = match expected {
             Some(expected) => {
                 let label = expected.label();
@@ -1678,7 +1671,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             None => None,
         };
 
-        let spec = crate::vet::VetSpec::new(id, reads.clone(), expected, input_label);
+        let spec = crate::vet::VetSpec::new(id, subject, expected, input_label);
         self.allow(
             "vet",
             format!(
@@ -1689,31 +1682,44 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(spec)
     }
 
-    /// Assemble a vetting call's input from the slot its spec names.
+    /// Assemble a vetting call's input from the content its spec was built for.
     ///
-    /// Runs here because the driver may not hold the bytes. What comes back is still wrapped, at
-    /// the label of what it read, so the driver can hand it to the model call and nothing else.
+    /// Runs here because the driver may not hold the bytes in a form it could read. What comes
+    /// back is still wrapped, at the label the spec fixed, so the driver can hand it to the model
+    /// call and nothing else.
     ///
-    /// The content is fenced with the name of the slot it came from. That is for the checker's
-    /// benefit, not for safety: content can contain the fence text, and nothing here depends on
-    /// it not doing so. A checker talked into ignoring the fence has still been asked one
-    /// question and can still answer it only with a word.
+    /// Refuses content at a different label than the spec was built for. The label decides what
+    /// the answer may be used for, so a spec built against one and filled from another would be a
+    /// verdict about bytes nobody fixed a label for.
+    ///
+    /// The content is fenced with the subject's name. That is for the checker's benefit, not for
+    /// safety: content can contain the fence text, and nothing here depends on it not doing so. A
+    /// checker talked into ignoring the fence has still been asked one question and can still
+    /// answer it only with a word.
     pub fn compose_vet_input(
         &mut self,
         spec: &crate::vet::VetSpec,
-        slots: &crate::slot::SlotStore,
+        content: &Labelled<String>,
     ) -> Gated<Labelled<String>> {
-        let slot = spec.reads();
-        let content = slots.take_for_effect(slot).map_err(|e| Denial {
-            principle: Principle::Confinement,
-            message: format!("{}: {e}", spec.id()),
-        })?;
-        let proof = Declassification::authorise("assembled into a vetting call's input");
+        if content.label() != spec.input_label() {
+            return Err(self.deny(
+                "vet",
+                Principle::Confinement,
+                format!(
+                    "{}: the spec was built for {} and the content is {}",
+                    spec.id(),
+                    spec.input_label(),
+                    content.label()
+                ),
+            ));
+        }
 
+        let subject = spec.subject();
+        let proof = Declassification::authorise("assembled into a vetting call's input");
         let mut body = String::new();
-        body.push_str(&format!("--- begin {slot} (the content to vet) ---\n"));
-        body.push_str(&content.declassify(&proof));
-        body.push_str(&format!("\n--- end {slot} ---\n"));
+        body.push_str(&format!("--- begin {subject} (the content to vet) ---\n"));
+        body.push_str(&content.clone().declassify(&proof));
+        body.push_str(&format!("\n--- end {subject} ---\n"));
 
         self.allow(
             "vet",
@@ -5422,19 +5428,7 @@ mod tests {
     mod vetting {
         use super::*;
 
-        /// One written slot, and a policy with everything a turn would have.
-        fn quarantine() -> (SlotStore, SlotId) {
-            let mut store = SlotStore::new();
-            let slot = SlotId::new("ref:0");
-            store
-                .writer_for(slot.clone(), Label::untrusted_public())
-                .unwrap()
-                .write("fetched from the web")
-                .unwrap();
-            (store, slot)
-        }
-
-        fn policy_for<'a>(sink: &'a mut RecordingSink) -> Policy<'a, RecordingSink> {
+        fn policy_for(sink: &mut RecordingSink) -> Policy<'_, RecordingSink> {
             Policy::begin(
                 routing_with("task", "vet it"),
                 ReleasePlan::new(),
@@ -5451,64 +5445,59 @@ mod tests {
             )
         }
 
-        fn reply(text: &str) -> Labelled<String> {
+        fn content(text: &str) -> Labelled<String> {
             Labelled::new(text.to_string(), Label::untrusted_public())
         }
 
-        /// A checker is given the one slot its spec names, so content the planner did not ask
-        /// about cannot arrive in the question by accident.
+        /// A checker is given the content its spec was built for and nothing else: no other slot,
+        /// no other file, and nothing the driver happened to be holding.
         #[test]
-        fn only_the_slot_it_was_given_reaches_a_checker() {
-            let (mut store, slot) = quarantine();
-            let other = SlotId::new("ref:1");
-            store
-                .writer_for(other.clone(), Label::untrusted_public())
-                .unwrap()
-                .write("read from the workspace")
-                .unwrap();
+        fn only_the_content_it_was_given_reaches_a_checker() {
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let spec = policy
-                .before_vet("v", &slot, None, &store)
-                .expect("a vetting call over one slot");
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
             let input = policy
-                .compose_vet_input(&spec, &store)
+                .compose_vet_input(&spec, &content("fetched from the web"))
                 .expect("input assembled");
 
             let (text, label) = input.into_parts_for_decoding();
             assert!(text.contains("fetched from the web"), "{text}");
-            assert!(
-                !text.contains("read from the workspace"),
-                "a slot the spec did not name reached the checker: {text}"
-            );
+            assert!(text.contains("ref:0"), "{text}");
             assert_eq!(label, Label::untrusted_public());
         }
 
-        /// A reference to nothing is refused rather than vetting an empty string and calling it
-        /// safe, which is the shape of a pass nobody earned.
+        /// The label decides what a verdict may be used for, so a spec fixed against one label
+        /// cannot be filled from content at another. Without this the label fixed before the run
+        /// would say nothing about the bytes that actually went in.
         #[test]
-        fn vetting_a_reference_to_nothing_is_refused() {
-            let store = SlotStore::new();
+        fn content_at_another_label_than_the_spec_fixed_is_refused() {
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
+            let spec = policy
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
+                .expect("a vetting call");
             policy
-                .before_vet("v", &SlotId::new("ref:nope"), None, &store)
-                .expect_err("a reference to nothing must be refused");
+                .compose_vet_input(
+                    &spec,
+                    &Labelled::new("elsewhere".to_string(), Label::untrusted_private()),
+                )
+                .expect_err("content at another label must be refused");
         }
 
         /// The expectation is read, so it must not be the user's private data wearing the shape
         /// of a description.
         #[test]
         fn a_private_expectation_cannot_direct_a_checker() {
-            let (store, slot) = quarantine();
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let private = Labelled::new("an API key".to_string(), Label::trusted_private());
             policy
-                .before_vet("v", &slot, Some(&private), &store)
+                .before_vet("v", "ref:0", Label::untrusted_public(), Some(&private))
                 .expect_err("a private expectation must be refused");
         }
 
@@ -5516,16 +5505,20 @@ mod tests {
         /// its reader.
         #[test]
         fn a_checker_that_says_the_word_is_believed() {
-            let (store, slot) = quarantine();
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let spec = policy
-                .before_vet("v", &slot, Some(&expectation()), &store)
+                .before_vet(
+                    "v",
+                    "ref:0",
+                    Label::untrusted_public(),
+                    Some(&expectation()),
+                )
                 .expect("a vetting call");
             let (verdict, _) = policy.read_verdict(
                 &spec,
-                reply(&format!(
+                content(&format!(
                     "{}\nit reads as release notes",
                     crate::vet::Verdict::SAFE
                 )),
@@ -5538,14 +5531,13 @@ mod tests {
         /// the planner is told so.
         #[test]
         fn an_answer_with_neither_word_is_unsafe() {
-            let (store, slot) = quarantine();
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let spec = policy
-                .before_vet("v", &slot, None, &store)
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
                 .expect("a vetting call");
-            let (verdict, _) = policy.read_verdict(&spec, reply("looks fine to me"));
+            let (verdict, _) = policy.read_verdict(&spec, content("looks fine to me"));
             assert_eq!(verdict, crate::vet::Verdict::Unsafe);
         }
 
@@ -5553,16 +5545,15 @@ mod tests {
         /// writing one of them into the content and hoping it is read as the answer.
         #[test]
         fn an_answer_with_both_words_is_unsafe() {
-            let (store, slot) = quarantine();
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let spec = policy
-                .before_vet("v", &slot, None, &store)
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
                 .expect("a vetting call");
             let (verdict, _) = policy.read_verdict(
                 &spec,
-                reply(&format!(
+                content(&format!(
                     "{}\nbut also {}",
                     crate::vet::Verdict::SAFE,
                     crate::vet::Verdict::UNSAFE
@@ -5573,15 +5564,14 @@ mod tests {
 
         /// The one that would matter if it were wrong: a reply the transport called trusted is
         /// still untrusted, because what it read was. Nothing a checker says can raise its own
-        /// label, and a verdict raises nothing at all.
+        /// label.
         #[test]
         fn what_a_checker_said_cannot_come_back_better_than_what_went_in() {
-            let (store, slot) = quarantine();
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let spec = policy
-                .before_vet("v", &slot, None, &store)
+                .before_vet("v", "ref:0", Label::untrusted_public(), None)
                 .expect("a vetting call");
             let flattering = Labelled::trusted(format!("{}\nfine", crate::vet::Verdict::SAFE));
             let (_, said) = policy.read_verdict(&spec, flattering);
@@ -5593,21 +5583,14 @@ mod tests {
         /// to be right.
         #[test]
         fn what_a_checker_said_is_labelled_by_taint_over_the_input() {
-            let mut store = SlotStore::new();
-            let slot = SlotId::new("ref:0");
-            store
-                .writer_for(slot.clone(), Label::untrusted_private())
-                .unwrap()
-                .write("read from the workspace")
-                .unwrap();
             let mut sink = RecordingSink::new();
             let mut policy = policy_for(&mut sink);
 
             let spec = policy
-                .before_vet("v", &slot, None, &store)
+                .before_vet("v", "ref:0", Label::untrusted_private(), None)
                 .expect("a vetting call");
             assert_eq!(spec.input_label(), Label::untrusted_private());
-            let (_, said) = policy.read_verdict(&spec, reply(crate::vet::Verdict::SAFE));
+            let (_, said) = policy.read_verdict(&spec, content(crate::vet::Verdict::SAFE));
             assert_eq!(said.label(), Label::untrusted_private());
         }
     }
