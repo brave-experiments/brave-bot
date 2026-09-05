@@ -155,12 +155,21 @@ Leaving prints the command that resumes this session, and the id is the one that
 printed after the terminal is handed back, so it stays on the screen the person is left looking at
 rather than going with the interface. A session that never wrote a record prints nothing.
 
+A session that changed its working directory says where it went, because an id is looked up under
+the directory the command is run in and the shell reading this line never moved. Where the session
+ended where it started, the directory goes unsaid: naming the one somebody is standing in reads as
+though something had happened to it.
+
 **Why.** A session is worth resuming far more often than anybody thinks to write its name down
 beforehand, and the picker is no use to someone who has already closed the window. Naming a
 session with no record behind it would be worse than saying nothing: the command would answer "no
-session by that name".
+session by that name". Naming one in the wrong directory is worse again, because it does not fail:
+the same id in the directory left behind is the same session as it was before the move, so the line
+would quietly resume work that stops partway.
 
 `verified-by: bravebot_tui::sessions::a_session_is_named_once_there_is_a_record_to_name`
+`verified-by: bravebot_cli::main::a_session_that_stayed_put_is_named_by_its_id_alone`
+`verified-by: bravebot_cli::main::a_session_that_moved_says_where_to_resume_it`
 
 <a id="SESSION-9"></a>
 ### SESSION-9: the theme name is stored globally, like the model
@@ -261,6 +270,11 @@ were indistinguishable from inference.
 rather than at the end of the next turn. What was already written stays where it was written: those
 turns happened in that directory and are still worth resuming there. A session that has had no turn
 yet writes nothing, as it does anywhere else.
+
+The trail stays with the turns rather than following the session, since it is appended a turn at a
+time beside whichever record was current. A move therefore splits it, and a resume replays the
+whole conversation but shows only the gate decisions made in the directory being resumed from. The
+conversation does not split: every save writes the whole of it.
 
 **Why.** SESSION-1 keeps one list per working directory, and the record carries the trust map, which
 is written in that directory's terms: a relative rule means a path under it. A record left behind

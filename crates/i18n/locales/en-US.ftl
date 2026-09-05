@@ -74,6 +74,9 @@ cli-notice = note: { $notice }
 cli-model-used = model: { $model }
 cli-something-was-refused = note: a policy gate refused something during this turn
 cli-resume-heading = Resume this session with:
+# When /cd moved the session, the shell this is printed into is not where the record is, and
+# --resume looks an id up under the directory it runs in.
+cli-resume-moved = This session moved to { $directory }. Resume it from there with:
 
 
 ## Reporting configuration and confinement

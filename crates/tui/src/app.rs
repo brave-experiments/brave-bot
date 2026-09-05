@@ -1155,13 +1155,13 @@ pub enum Start {
 }
 
 /// Run the interface until the user leaves.
-/// Returns the id of the session left behind, where there is one to pick up again.
+/// Returns the session left behind, where there is one to pick up again.
 pub fn run(
     config: &mut Config,
     workspace: &Workspace,
     confinement: String,
     start: Start,
-) -> io::Result<Option<String>> {
+) -> io::Result<Option<crate::sessions::Resumable>> {
     let mut stdout = io::stdout();
     take_over_terminal(&mut stdout)?;
 
@@ -1392,22 +1392,25 @@ fn show_transcript(
 
 /// Concrete in the backend rather than generic: the loop is only ever driven by a real
 /// terminal, and a generic backend's error type carries no bounds to convert from.
-/// The session's own name, for telling somebody how to pick it up again.
+/// The session left behind, for telling somebody how to pick it up again.
 ///
 /// Nothing for a session that was opened and left without sending anything: there is no record to
 /// resume, and naming one would be offering a command that answers "no session by that name".
-fn left_behind(stored: &crate::sessions::Handle) -> Option<String> {
-    stored.resumable().map(str::to_string)
+///
+/// Where it is, and not only what it is called: `/cd` moves the record, and the shell this is
+/// eventually printed into did not move with it.
+fn left_behind(stored: &crate::sessions::Handle) -> Option<crate::sessions::Resumable> {
+    stored.to_resume()
 }
 
-/// Returns the id of the session left behind, where there is one to pick up again.
+/// Returns the session left behind, where there is one to pick up again.
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: &mut Config,
     workspace: &Workspace,
     confinement: String,
     start: Start,
-) -> io::Result<Option<String>> {
+) -> io::Result<Option<crate::sessions::Resumable>> {
     // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
     // the turns after it must see one. The primary root never changes, so nothing keyed on it
     // (the session record, where AGENTS.md is looked for) moves underneath.

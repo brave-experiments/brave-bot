@@ -86,6 +86,9 @@ cli-model-used = modèle : { $model }
 cli-something-was-refused =
     note : un contrôle de la politique a refusé quelque chose pendant ce tour
 cli-resume-heading = Reprenez cette session avec :
+# Quand /cd a déplacé la session, le shell où ceci s'affiche n'est pas là où se trouve
+# l'enregistrement, et --resume cherche un identifiant sous le répertoire où il est lancé.
+cli-resume-moved = Cette session s'est déplacée vers { $directory }. Reprenez-la depuis là avec :
 
 
 ## L'état de la configuration et du confinement

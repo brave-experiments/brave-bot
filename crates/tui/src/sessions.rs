@@ -380,6 +380,18 @@ pub struct Standing<'a> {
     pub manifest: Option<&'a StoredManifest>,
 }
 
+/// A session worth picking up again, and where to pick it up.
+///
+/// The id alone is half an answer. `--resume` looks an id up under the working directory it is run
+/// in, and `/cd` may have left the record somewhere other than where the process started, so the
+/// directory travels with the id rather than being assumed by whoever prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resumable {
+    pub id: String,
+    /// The working directory the session ended in, which is where its record is.
+    pub directory: PathBuf,
+}
+
 /// A live session, holding where to write and what has been written.
 #[derive(Debug, Clone)]
 pub struct Handle {
@@ -453,6 +465,16 @@ impl Handle {
     /// command that would answer "no session by that name" is worse than saying nothing.
     pub fn resumable(&self) -> Option<&str> {
         self.wrote.then_some(self.id.as_str())
+    }
+
+    /// The session to hand back as this one ends: its name, and where to ask for it.
+    ///
+    /// Nothing where [`Handle::resumable`] has nothing, on the same reasoning.
+    pub fn to_resume(&self) -> Option<Resumable> {
+        self.resumable().map(|id| Resumable {
+            id: id.to_string(),
+            directory: self.project.clone(),
+        })
     }
 
     pub fn title(&self) -> &str {

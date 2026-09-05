@@ -9,7 +9,9 @@ use bravebot_core::cancel::Cancel;
 use bravebot_core::event::{Event, RecordingSink, Role};
 use bravebot_core::trust::TrustStore;
 use bravebot_i18n::t;
+use bravebot_tui::sessions::Resumable;
 use std::io::{IsTerminal, Read, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -642,9 +644,8 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
         // left looking at rather than going onto the alternate screen with everything else. A
         // session is worth resuming far more often than anybody thinks to write its name down
         // beforehand, and the picker is no help to someone who has already closed the window.
-        Ok(Some(id)) => {
-            println!("{}", t!(cli_resume_heading));
-            println!("bravebot --resume {id}");
+        Ok(Some(left)) => {
+            println!("{}", resume_hint(&left, workspace.root()));
             ExitCode::SUCCESS
         }
         Ok(None) => ExitCode::SUCCESS,
@@ -653,6 +654,27 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// What to say on the way out about picking this session up again.
+///
+/// `--resume` looks an id up under the working directory it is run in, so the id on its own is a
+/// whole answer only while the session ended where it started. `/cd` moves the record, and the
+/// shell this is printed into did not move with it: a bare id there names a session the shell
+/// cannot find, or worse, finds an earlier state of the same one and resumes that. Naming the
+/// directory is what keeps the line true.
+///
+/// Said only when the two differ. Telling somebody the directory they are already standing in
+/// reads as though something had happened to it.
+fn resume_hint(left: &Resumable, started_in: &Path) -> String {
+    let heading = match left.directory == started_in {
+        true => t!(cli_resume_heading).to_string(),
+        false => t!(
+            cli_resume_moved,
+            directory = left.directory.display().to_string()
+        ),
+    };
+    format!("{heading}\nbravebot --resume {}", left.id)
 }
 
 /// What to call the confinement that was achieved.
@@ -1071,6 +1093,42 @@ mod tests {
     use bravebot_core::event::Sink;
     use bravebot_core::label::Label;
     use bravebot_core::slot::SlotId;
+    use std::path::PathBuf;
+
+    /// A session that stayed where it started needs no directory: the shell reading this line is
+    /// already standing in the one the id will be looked up under.
+    #[test]
+    fn a_session_that_stayed_put_is_named_by_its_id_alone() {
+        let left = Resumable {
+            id: "abc".to_string(),
+            directory: PathBuf::from("/work"),
+        };
+        let hint = resume_hint(&left, Path::new("/work"));
+
+        assert!(hint.contains("bravebot --resume abc"), "{hint}");
+        assert!(
+            !hint.contains("/work"),
+            "the directory somebody is already in was named at them: {hint}"
+        );
+    }
+
+    /// A session that moved with `/cd` left its record where it moved to, and `--resume` looks an
+    /// id up under the directory it is run in. Printing the id alone would name a session this
+    /// shell cannot find, or find an earlier state of the same one and resume that.
+    #[test]
+    fn a_session_that_moved_says_where_to_resume_it() {
+        let left = Resumable {
+            id: "abc".to_string(),
+            directory: PathBuf::from("/other"),
+        };
+        let hint = resume_hint(&left, Path::new("/work"));
+
+        assert!(hint.contains("bravebot --resume abc"), "{hint}");
+        assert!(
+            hint.contains("/other"),
+            "the line does not say where the session went: {hint}"
+        );
+    }
 
     /// The column the English names were hand-spaced into, so extracting them changed nothing
     /// about what `doctor` prints.
