@@ -473,6 +473,7 @@ command-status = Report this session, what it may touch, and what it has spent
 command-model = Choose which model to think with
 command-theme = Choose which theme paints the interface
 command-add-dir = Open another directory, and trust it for this session
+command-cd = Work in another directory from now on, and trust it for this session
 command-rename = Call this conversation something else
 command-compact = Summarise the conversation so far, keeping the recent part
 command-clear = Start a new session here, keeping this one resumable
@@ -489,6 +490,12 @@ session-rename-needs-something = /rename needs a name with something in it
 session-cleared = cleared: a new session, with the previous one still resumable
 session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/notes
 session-directory-added = added { $directory }, and trusting it for this session
+session-cd-needs-a-path = /cd needs a directory, as in /cd ~/projects/other
+session-directory-changed = now working in { $directory }, and trusting it for this session
+# Said once per directory that was open and is not any more, so nobody discovers it by being
+# refused a file they could read a minute ago.
+session-directory-closed = closed { $directory }; open it again with /add-dir { $directory }
+session-directory-not-changed = could not move to { $directory }: { $problem }
 session-permission-rule-ignored = ignoring a permission rule in settings.json: { $problem }
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }

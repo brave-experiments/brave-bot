@@ -798,3 +798,75 @@ fn a_manifest_run_is_recorded_and_cannot_be_resumed() {
     assert!(report.contains("not usable"), "{report}");
     assert!(report.contains("the plan is not well formed"), "{report}");
 }
+
+/// A session that changes its working directory is recorded under the directory it moved to.
+///
+/// The record carries the trust map, and the map is written in the working directory's terms: a
+/// relative rule means a path under it. A record left in the old directory would offer the new
+/// directory's answers to somebody resuming in the old one, which is a yes for a directory nobody
+/// was asked about. What was written before the move stays where it was written, since that is
+/// where those turns happened and it is still worth resuming there.
+#[test]
+fn a_session_that_changes_directory_is_recorded_where_it_moved_to() {
+    let scratch = Scratch::new("moved");
+    let elsewhere = scratch.project.parent().expect("a root").join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+    let conversation = a_conversation();
+    let snapshot = conversation.snapshot();
+    let spend = BTreeMap::new();
+    let timing = BTreeMap::new();
+    let todos = BTreeMap::new();
+    let programs = TrustedPrograms::new();
+    let standing = |trust| Standing {
+        conversation: &snapshot,
+        turns: 1,
+        tokens: 0,
+        spend: &spend,
+        timing: &timing,
+        model: None,
+        todos: &todos,
+        trust,
+        programs: &programs,
+        directories: &[],
+        manifest: None,
+    };
+
+    let nothing_vouched_for = TrustStore::new();
+    let mut handle = Handle::begin(&scratch.project);
+    handle.save("start here", standing(&nothing_vouched_for));
+
+    // The map as it is once the working directory has moved: about the new directory.
+    let mut moved_map = TrustStore::new();
+    moved_map.trust(".");
+
+    handle.move_to(&elsewhere);
+    handle.save("start here", standing(&moved_map));
+
+    let there = sessions::list(&elsewhere);
+    assert_eq!(
+        there.len(),
+        1,
+        "the session was not recorded where it moved"
+    );
+    let moved = sessions::load(&elsewhere, handle.id()).expect("the record loads");
+    assert_eq!(moved.directory, elsewhere.display().to_string());
+    assert!(
+        moved
+            .trust_map()
+            .expect("the map was written")
+            .is_trusted("."),
+        "the map that moved with the session was not the one written down"
+    );
+
+    let here = sessions::list(&scratch.project);
+    assert_eq!(here.len(), 1, "the record left behind was moved or removed");
+    let left = sessions::load(&scratch.project, handle.id()).expect("the record loads");
+    assert!(
+        !left
+            .trust_map()
+            .expect("the map was written")
+            .is_trusted("."),
+        "the new directory's answer was left in the old directory's list"
+    );
+}

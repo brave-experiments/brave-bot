@@ -731,6 +731,15 @@ impl Session {
         self
     }
 
+    /// Complete against somewhere else from now on, the working directory having moved.
+    ///
+    /// The box has to follow, and not only for convenience: `@` completes to a path that is then
+    /// resolved against the working directory, so a list still drawn from the old one would offer
+    /// names that name nothing, or worse, name a different file of the same name.
+    pub fn now_in_workspace(&mut self, root: impl Into<std::path::PathBuf>) {
+        self.workspace = root.into();
+    }
+
     /// Say what the configuration allows, for the opening screen to draw.
     pub fn on_tier(mut self, tier: impl Into<String>) -> Self {
         self.tier = tier.into();

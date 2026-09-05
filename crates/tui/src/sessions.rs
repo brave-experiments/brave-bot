@@ -425,6 +425,24 @@ impl Handle {
         }
     }
 
+    /// Continue this session in `project`, once the working directory has moved there.
+    ///
+    /// A record lives under the directory it is about, and the map it carries is written in that
+    /// directory's terms: a relative rule means a path under it. Leaving the record where the
+    /// session began would put the new directory's map into the old directory's list, so resuming
+    /// there would inherit a yes that was given for somewhere else. Moving the record keeps the
+    /// two together, which is the whole of what makes an inherited map safe to inherit.
+    ///
+    /// Nothing is written yet, and nothing already written is moved or removed: what happened
+    /// before the move happened in the old directory and is still worth resuming there. The
+    /// session becomes resumable in its new home once it is saved there, which is why the caller
+    /// saves straight after moving.
+    pub fn move_to(&mut self, project: &Path) {
+        self.project = project.to_path_buf();
+        self.branch = branch_of(project);
+        self.wrote = false;
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

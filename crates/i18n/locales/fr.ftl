@@ -477,6 +477,7 @@ command-status = Décrire cette session, ce qu'elle peut toucher, et ce qu'elle 
 command-model = Choisir avec quel modèle réfléchir
 command-theme = Choisir quel thème habille l'interface
 command-add-dir = Ouvrir un autre répertoire, et l'approuver pour cette session
+command-cd = Travailler désormais dans un autre répertoire, et l'approuver pour cette session
 command-rename = Appeler cette conversation autrement
 command-compact = Résumer la conversation jusqu'ici, en gardant la partie récente
 command-clear = Démarrer une nouvelle session ici, celle-ci restant reprenable
@@ -493,6 +494,12 @@ session-rename-needs-something = /rename demande un nom qui contienne quelque ch
 session-cleared = effacée : une nouvelle session, la précédente restant reprenable
 session-add-dir-needs-a-path = /add-dir demande un répertoire, comme /add-dir ~/notes
 session-directory-added = { $directory } ajouté, et approuvé pour cette session
+session-cd-needs-a-path = /cd demande un répertoire, comme /cd ~/projets/autre
+session-directory-changed = travail désormais dans { $directory }, et approuvé pour cette session
+# Dit une fois par répertoire qui était ouvert et ne l'est plus, pour que personne ne l'apprenne
+# en se voyant refuser un fichier lisible une minute plus tôt.
+session-directory-closed = { $directory } fermé ; rouvrez-le avec /add-dir { $directory }
+session-directory-not-changed = impossible de passer à { $directory } : { $problem }
 session-permission-rule-ignored = règle de permission ignorée dans settings.json : { $problem }
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }

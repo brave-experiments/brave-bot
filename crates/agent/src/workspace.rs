@@ -109,6 +109,25 @@ pub struct Workspace {
     added: Vec<PathBuf>,
 }
 
+/// What changed when the working directory moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    /// The new primary root, canonical.
+    pub root: PathBuf,
+    /// Directories that were open and are not any more, in the order they closed, the one left
+    /// behind first. Empty is possible: moving into a directory that was already open closes
+    /// nothing but the root it replaces.
+    pub closed: Vec<PathBuf>,
+}
+
+/// Whether two directories are the same tree, or one holds the other.
+///
+/// Component-wise, so `/work/srcfoo` is not taken to be inside `/work/src`. A test on the
+/// characters would close a directory that merely shares a prefix with the new root's name.
+fn overlaps(one: &Path, other: &Path) -> bool {
+    one.starts_with(other) || other.starts_with(one)
+}
+
 impl Workspace {
     /// Create a workspace at `root`, which must exist.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, WorkspaceError> {
@@ -173,6 +192,64 @@ impl Workspace {
     /// The directories added by name, in the order they were added.
     pub fn added_directories(&self) -> &[PathBuf] {
         &self.added
+    }
+
+    /// Work in `directory` from now on, which must exist.
+    ///
+    /// The primary root is what a relative path means, so moving it moves the whole of what this
+    /// workspace is about. Returns the canonical path, and the directories that were open and are
+    /// no longer, which the caller has to tell the user about: reach that goes quietly is reach
+    /// somebody will discover by being refused a file they could read a minute ago.
+    ///
+    /// **Nothing may overlap the new root.** The directory left behind is closed, and so is any
+    /// added directory inside the new root or containing it. That is not tidiness: a file inside
+    /// two open directories has two spellings, one relative and one absolute, and the two are
+    /// separate namespaces in the trust map. A tree reachable by both spellings could be read
+    /// under whichever rule was more permissive, which is the one thing keeping the namespaces
+    /// apart exists to prevent. An added directory that overlaps nothing is left open, since the
+    /// user opened it by name and moving elsewhere does not withdraw that.
+    pub fn change_root(&mut self, directory: &str) -> Result<Moved, WorkspaceError> {
+        let candidate = Path::new(directory);
+        if !candidate.is_absolute() {
+            return Err(WorkspaceError::Invalid {
+                path: directory.to_string(),
+                reason: "must be an absolute path",
+            });
+        }
+
+        let canonical = candidate.canonicalize().map_err(|e| WorkspaceError::Io {
+            path: directory.to_string(),
+            detail: e.to_string(),
+        })?;
+
+        if !canonical.is_dir() {
+            return Err(WorkspaceError::Invalid {
+                path: directory.to_string(),
+                reason: "must be a directory",
+            });
+        }
+
+        if canonical == self.root {
+            return Err(WorkspaceError::Invalid {
+                path: directory.to_string(),
+                reason: "is already the working directory",
+            });
+        }
+
+        // The old root among them: it is a directory that was open, and after this it is not.
+        let mut closed = vec![std::mem::replace(&mut self.root, canonical.clone())];
+        let (overlapping, kept) = std::mem::take(&mut self.added)
+            .into_iter()
+            .partition(|open| overlaps(open, &canonical));
+        self.added = kept;
+        closed.extend(overlapping);
+        // Whatever the new root is now reachable as itself, so it did not close.
+        closed.retain(|open| *open != canonical);
+
+        Ok(Moved {
+            root: canonical,
+            closed,
+        })
     }
 
     /// Close every directory added by name, leaving only the primary root.

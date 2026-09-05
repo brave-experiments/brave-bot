@@ -254,6 +254,22 @@ were indistinguishable from inference.
 `verified-by: bravebot_agent::timing::parts_exceeding_the_whole_do_not_wrap`
 `verified-by: bravebot_agent::turn::time_spent_waiting_for_an_approval_is_not_charged_to_the_tool`
 
+<a id="SESSION-13"></a>
+### SESSION-13: a session that changes directory is recorded where it moved to
+
+`/cd` moves the record with the working directory, and the session is written there straight away
+rather than at the end of the next turn. What was already written stays where it was written: those
+turns happened in that directory and are still worth resuming there. A session that has had no turn
+yet writes nothing, as it does anywhere else.
+
+**Why.** SESSION-1 keeps one list per working directory, and the record carries the trust map, which
+is written in that directory's terms: a relative rule means a path under it. A record left behind
+after a move would offer the new directory's answers to somebody resuming in the old one, which is
+a yes for a directory nobody was ever asked about. Writing it immediately is what makes the session
+resumable in its new home at all: until it is saved there, there is nothing there to find.
+
+`verified-by: bravebot_tui::sessions::a_session_that_changes_directory_is_recorded_where_it_moved_to`
+
 ## Known costs
 
 - **Two working directories can share a session store.** The directory name is derived by mapping

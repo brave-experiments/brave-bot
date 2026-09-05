@@ -70,6 +70,9 @@ const THEME_COMMAND: &str = "/theme";
 /// The line that opens another directory, taking the path to open as its argument.
 const ADD_DIR_COMMAND: &str = "/add-dir";
 
+/// The line that moves the session to another working directory, taking the path as its argument.
+const CD_COMMAND: &str = "/cd";
+
 /// The line that reports what this session is and what it may touch.
 const STATUS_COMMAND: &str = "/status";
 
@@ -104,7 +107,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 9] {
+pub fn commands() -> [Command; 10] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -125,6 +128,11 @@ pub fn commands() -> [Command; 9] {
             name: ADD_DIR_COMMAND,
             argument: "<path>",
             description: t!(command_add_dir),
+        },
+        Command {
+            name: CD_COMMAND,
+            argument: "<path>",
+            description: t!(command_cd),
         },
         Command {
             name: RENAME_COMMAND,
@@ -209,6 +217,9 @@ pub enum Action {
     SetTheme(String),
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
     AddDirectory(String),
+    /// Work somewhere else from now on. Needs the workspace, the trust map and the session
+    /// record, all of which the loop owns.
+    ChangeDirectory(String),
     /// Summarise the conversation so far. Needs the conversation and the network, which the loop
     /// owns.
     Compact,
@@ -686,6 +697,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
                 .to_string();
             session.clear_input();
             Action::AddDirectory(directory)
+        }
+        KeyCode::Enter if argument_to(session.input(), CD_COMMAND).is_some() => {
+            let directory = argument_to(session.input(), CD_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            Action::ChangeDirectory(directory)
         }
         KeyCode::Enter if argument_to(session.input(), RENAME_COMMAND).is_some() => {
             let name = argument_to(session.input(), RENAME_COMMAND)
@@ -1569,6 +1587,35 @@ fn event_loop(
             Action::AddDirectory(directory) => {
                 add_directory(&mut session, &mut workspace, &mut trust, &directory);
             }
+            Action::ChangeDirectory(directory) => {
+                if change_directory(&mut session, &mut workspace, &mut trust, &directory)
+                    && session.turns > 0
+                {
+                    // Written now rather than after the next turn, because the record has just
+                    // moved: until it is saved in its new home there is nothing there to resume,
+                    // and a session that moved and then slept would be findable only from the
+                    // directory it has left. Nothing yet if no turn has been had, since a session
+                    // that was opened and abandoned should not leave a record anywhere.
+                    stored.move_to(workspace.root());
+                    let title = stored.title().to_string();
+                    stored.save(
+                        &title,
+                        crate::sessions::Standing {
+                            conversation: &conversation.snapshot(),
+                            turns: session.turns,
+                            tokens: session.tokens,
+                            spend: session.spend_by_turn(),
+                            timing: session.timing_by_turn(),
+                            model: session.served_model(),
+                            todos: &session.todos_by_turn(),
+                            trust: &trust,
+                            programs: &programs,
+                            directories: workspace.added_directories(),
+                            manifest: None,
+                        },
+                    );
+                }
+            }
             Action::Rename(name) => {
                 if name.is_empty() {
                     session.note(t!(session_rename_needs_a_name));
@@ -1774,6 +1821,69 @@ fn add_directory(
             problem = error
         )),
     }
+}
+
+/// Work somewhere else from now on, and vouch for it, for the rest of this session.
+///
+/// The primary root is what a relative path means, where commands run, and where `AGENTS.md` and
+/// the project's skills are looked for, so moving it moves the whole of what the session is about.
+/// Says whether it moved, since the session record has to move with it.
+///
+/// Three things happen together, and the order matters. The workspace moves, closing whatever
+/// overlapped the new root. The trust map is re-spelled against the new root, so every rule the
+/// session already held goes on saying what it said about the same files: a no given inside the
+/// new directory is still a no, and a yes given for the old one does not become a yes for this
+/// one. Only then is the new directory vouched for, which is the one thing this grants, and it is
+/// granted for the same reason `/add-dir` grants it: a person typed the path themselves, and a
+/// later decision replaces an earlier one.
+///
+/// Session-scoped like everything else the map holds. A later session in the directory the user
+/// started in is asked the opening question there, exactly as it would have been.
+fn change_directory(
+    session: &mut Session,
+    workspace: &mut Workspace,
+    trust: &mut TrustStore,
+    directory: &str,
+) -> bool {
+    if directory.is_empty() {
+        session.note(t!(session_cd_needs_a_path));
+        return false;
+    }
+
+    // Against where the session is now, which is what changing directory means everywhere else: a
+    // command that only took an absolute path would refuse `/cd crates/tui` and `/cd ..`, which are
+    // the two ways anybody would think to say it.
+    let named = against_workspace(workspace.root(), &expand_home(directory));
+    let from = workspace.root().to_path_buf();
+
+    let moved = match workspace.change_root(&named) {
+        Ok(moved) => moved,
+        Err(problem) => {
+            session.note(t!(
+                session_directory_not_changed,
+                directory = directory,
+                problem = problem
+            ));
+            return false;
+        }
+    };
+
+    *trust = trust.rebased(&from, &moved.root);
+    trust.trust(".");
+    session.now_in_workspace(&moved.root);
+    session.note(t!(
+        session_directory_changed,
+        directory = moved.root.display().to_string()
+    ));
+    // Said one directory at a time, because each one is something the session could read a moment
+    // ago and now cannot. A person is entitled to know which, and to open it again by name.
+    for closed in &moved.closed {
+        session.note(t!(
+            session_directory_closed,
+            directory = closed.display().to_string()
+        ));
+    }
+    true
 }
 
 /// The name a settings file gave a directory, as an absolute path.
@@ -4878,6 +4988,69 @@ mod tests {
         );
     }
 
+    /// The argument is the point of this one too, so it must arrive with the action.
+    #[test]
+    fn the_cd_command_carries_its_directory() {
+        let mut session = Session::new("none");
+        for c in "/cd ~/projects/other".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::ChangeDirectory("~/projects/other".to_string())
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+    }
+
+    /// With no argument there is nowhere to move to, and the loop says so rather than moving to
+    /// the home directory the way a shell would.
+    #[test]
+    fn the_bare_cd_command_is_still_the_command() {
+        let mut session = Session::new("none");
+        for c in CD_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::ChangeDirectory(String::new())
+        );
+    }
+
+    /// A longer word beginning with it is a prompt, or "/cdn caching is slow" would try to work in
+    /// a directory called "n caching is slow".
+    #[test]
+    fn a_longer_word_starting_with_cd_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/cdn caching is slow".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/cdn caching is slow".to_string())
+        );
+    }
+
+    /// Asking about the command has to stay a question.
+    #[test]
+    fn a_prompt_containing_the_cd_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /cd do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /cd do".to_string())
+        );
+    }
+
     /// With no argument there is nothing to open, and the loop says so rather than doing nothing.
     #[test]
     fn the_bare_add_dir_command_is_still_the_command() {
@@ -5301,7 +5474,7 @@ mod tests {
 
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(COMPACT_COMMAND),
+            Some(CD_COMMAND),
             "the cursor did not return to the top of what now matches"
         );
     }
@@ -6535,6 +6708,137 @@ mod tests {
             trust.is_trusted(&canonical.display().to_string()),
             "a directory a settings file named was not vouched for"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Both halves of what `/cd` does, together: the working directory moves, and the directory
+    /// moved to is vouched for, which is what a relative path means and what decides a write there.
+    #[test]
+    fn changing_directory_moves_the_workspace_and_vouches_for_where_it_moved() {
+        let root = std::env::temp_dir().join("bravebot-cd-test");
+        let project = root.join("project");
+        let other = root.join("other");
+        std::fs::create_dir_all(&project).expect("scratch");
+        std::fs::create_dir_all(&other).expect("scratch");
+
+        let mut workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+        let mut trust = TrustStore::new();
+
+        assert!(change_directory(
+            &mut session,
+            &mut workspace,
+            &mut trust,
+            other.to_str().expect("utf-8 path")
+        ));
+
+        let canonical = other.canonicalize().expect("canonical");
+        assert_eq!(workspace.root(), canonical);
+        assert!(
+            trust.is_trusted("."),
+            "the directory moved to was not vouched for"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The map goes with the session, so it has to keep saying what it said about the same files
+    /// once the working directory has moved. A yes given for the directory left behind must not
+    /// become a yes for the one arrived at, which is what carrying it across unchanged would do.
+    #[test]
+    fn changing_directory_leaves_the_previous_answer_where_it_was_given() {
+        let root = std::env::temp_dir().join("bravebot-cd-rules-test");
+        let project = root.join("project");
+        let other = root.join("other");
+        std::fs::create_dir_all(project.join("vendor")).expect("scratch");
+        std::fs::create_dir_all(&other).expect("scratch");
+
+        let mut workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+        let mut trust = TrustStore::new();
+        trust.trust(".");
+        trust.distrust("vendor");
+
+        let left = workspace.root().to_path_buf();
+        assert!(change_directory(
+            &mut session,
+            &mut workspace,
+            &mut trust,
+            other.to_str().expect("utf-8 path")
+        ));
+
+        assert!(
+            trust.is_trusted(&left.display().to_string()),
+            "the answer given for the directory left behind was forgotten"
+        );
+        assert!(
+            !trust.is_trusted(&left.join("vendor").display().to_string()),
+            "a no given inside the directory left behind was forgotten"
+        );
+        assert_eq!(
+            trust.integrity_of("vendor"),
+            Some(bravebot_core::label::Integrity::Trusted),
+            "a rule about the old vendor directory decided a path in the new one"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Moving into a directory keeps the nos given inside it. They are about the same files after
+    /// the move as before, and vouching for the directory moved to is not vouching for a subtree
+    /// somebody has already refused.
+    #[test]
+    fn moving_into_a_directory_keeps_the_answers_given_inside_it() {
+        let root = std::env::temp_dir().join("bravebot-cd-inner-test");
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("src/vendor")).expect("scratch");
+
+        let mut workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+        let mut trust = TrustStore::new();
+        trust.trust(".");
+        trust.distrust("src/vendor");
+
+        assert!(change_directory(
+            &mut session,
+            &mut workspace,
+            &mut trust,
+            "src"
+        ));
+
+        assert!(
+            trust.is_trusted("main.rs"),
+            "the directory moved into was not vouched for"
+        );
+        assert!(
+            !trust.is_trusted("vendor/lib.js"),
+            "an untrusted subtree became trusted by moving into its parent"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A path that names nothing moves nothing, and says so. Half a move would leave the session
+    /// vouching for a directory it is not in.
+    #[test]
+    fn a_directory_that_is_not_there_moves_nothing() {
+        let root = std::env::temp_dir().join("bravebot-cd-missing-test");
+        std::fs::create_dir_all(&root).expect("scratch");
+
+        let mut workspace = Workspace::new(&root).expect("workspace");
+        let mut session = Session::new("none");
+        let mut trust = TrustStore::new();
+        let before = workspace.root().to_path_buf();
+
+        assert!(!change_directory(
+            &mut session,
+            &mut workspace,
+            &mut trust,
+            "nowhere"
+        ));
+        assert_eq!(workspace.root(), before);
+        assert!(trust.is_empty(), "a refused move vouched for something");
 
         std::fs::remove_dir_all(&root).ok();
     }

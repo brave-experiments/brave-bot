@@ -14,7 +14,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 |---|---|---|---|
 | [labels.md](labels.md) | `LABEL` | 9 | the lattice, taint, who may read what, and how a first label is assigned |
 | [routing.md](routing.md) | `ROUTE` | 7 | where an effect may land and what may decide it |
-| [trust-map.md](trust-map.md) | `TRUST` | 12 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
+| [trust-map.md](trust-map.md) | `TRUST` | 13 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
 | [permissions.md](permissions.md) | `PERM` | 12 | rules written in advance about what to ask about and what to refuse |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |
 | [turns.md](turns.md) | `TURN` | 2 | how long a turn may go on, and what happens when it does not stop |
@@ -38,7 +38,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [backends.md](backends.md) | `BACKEND` | 19 | which service answers a request, and what a person may choose between |
 | [compaction.md](compaction.md) | `COMPACT` | 10 | shortening a long conversation into a summary of itself, in the request only |
 | [loop.md](loop.md) | `LOOP` | 13 | sending one prompt again and again until somebody stops it |
-| [sessions.md](sessions.md) | `SESSION` | 12 | what is kept between runs: the record of a session, and the prompts a person typed |
+| [sessions.md](sessions.md) | `SESSION` | 13 | what is kept between runs: the record of a session, and the prompts a person typed |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |
 | [layering.md](layering.md) | `LAYER` | 3 | which crate is allowed to do what |

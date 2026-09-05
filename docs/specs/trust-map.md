@@ -12,6 +12,7 @@ governs:
 guards:
   - symbol: TrustStore::trust
   - symbol: TrustStore::distrust
+  - symbol: TrustStore::rebased
   - symbol: Policy::reconcile_after_write
   - symbol: Policy::vouch_for_named_path
 ---
@@ -260,6 +261,43 @@ remembered.
 
 `verified-by: bravebot_tui::status::an_added_directory_is_reported`
 `verified-by: bravebot_tui::status::every_trust_rule_is_listed_however_many_there_are`
+
+## Moving the working directory
+
+<a id="TRUST-13"></a>
+### TRUST-13: `/cd` moves the working directory, and the map moves with it
+
+`/cd ~/projects/other` makes that directory the working directory: it is what a relative path
+means from then on, where commands run, and where the project's own instructions are looked for.
+The directory left behind closes, and so does any directory opened by name that holds the new one
+or sits inside it, each said out loud as it happens.
+
+The map does not travel unchanged. Every rule is re-spelled to say what it always said about the
+same files: a rule inside the new working directory becomes a rule relative to it, and a rule
+outside becomes an absolute one. Only then is the new directory vouched for, on the same footing
+as `/add-dir`: the person typed the path, and a later decision replaces an earlier one.
+
+**Why.** A relative rule means a path under the working directory, so a working directory that
+moved without them would leave every one of them pointing at a file nobody decided anything about:
+the yes given for one project would vouch for another, and every no given inside the old one would
+be forgotten. Re-spelling grants and withdraws nothing, which is what makes it something this can
+do without asking.
+
+Nothing may overlap the new working directory, and that is not tidiness. A file reachable both
+relatively and by absolute path has one rule in each namespace, and the two namespaces are kept
+apart (TRUST-3) precisely so that one file has one answer.
+
+`verified-by: bravebot_core::trust::a_yes_for_one_project_does_not_follow_a_move_to_another`
+`verified-by: bravebot_core::trust::a_no_inside_the_new_directory_survives_the_move`
+`verified-by: bravebot_core::trust::a_rule_in_an_added_directory_becomes_relative_when_it_is_moved_into`
+`verified-by: bravebot_core::trust::rebasing_neither_grants_nor_withdraws_anything`
+`verified-by: bravebot_agent::workspace::a_relative_path_means_the_new_working_directory_once_it_has_moved`
+`verified-by: bravebot_agent::workspace::moving_closes_the_directory_left_behind`
+`verified-by: bravebot_agent::workspace::moving_closes_an_added_directory_that_overlaps_the_new_one`
+`verified-by: bravebot_agent::workspace::moving_leaves_an_unrelated_added_directory_open`
+`verified-by: bravebot_tui::app::changing_directory_moves_the_workspace_and_vouches_for_where_it_moved`
+`verified-by: bravebot_tui::app::changing_directory_leaves_the_previous_answer_where_it_was_given`
+`verified-by: bravebot_tui::app::moving_into_a_directory_keeps_the_answers_given_inside_it`
 
 ## Known costs
 

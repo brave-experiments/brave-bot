@@ -31,6 +31,7 @@
 
 use crate::label::Integrity;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// A user's decisions about which paths are trustworthy.
 ///
@@ -95,6 +96,42 @@ impl TrustStore {
         self.rules
             .iter()
             .map(|(prefix, integrity)| (prefix.as_str(), *integrity))
+    }
+
+    /// The same decisions, said about the same files, once the working directory has moved.
+    ///
+    /// A relative rule means a path under the working directory, so a working directory that moves
+    /// takes every relative rule with it and leaves each one pointing at a file nobody decided
+    /// anything about. Carrying the map across unchanged would be the worst of both: the yes given
+    /// for one project would vouch for another, and every no given inside the old one would be
+    /// forgotten.
+    ///
+    /// So each rule is resolved to the file it was always about, and then written down again the
+    /// way the new working directory names it: relatively where it is inside `to`, absolutely
+    /// where it is not. Nothing is granted and nothing is withdrawn; the same files come out with
+    /// the same answers, which is what makes this a re-spelling rather than a decision.
+    ///
+    /// `from` and `to` are absolute paths, and the caller is responsible for having canonicalised
+    /// them: two spellings of one directory would rebase into two rules about one tree.
+    pub fn rebased(&self, from: &Path, to: &Path) -> Self {
+        let mut moved = Self::new();
+        for (key, integrity) in self.rules() {
+            let absolute = match is_absolute(key) {
+                true => PathBuf::from(key),
+                false => from.join(key),
+            };
+            // Component-wise, so `/work/srcfoo` is not taken to be inside `/work/src`, which is the
+            // same whole-segment rule `covers` applies and for the same reason.
+            let rekeyed = match absolute.strip_prefix(to) {
+                Ok(inside) => inside.to_string_lossy().into_owned(),
+                Err(_) => absolute.to_string_lossy().into_owned(),
+            };
+            match integrity {
+                Integrity::Trusted => moved.trust(&rekeyed),
+                Integrity::Untrusted => moved.distrust(&rekeyed),
+            }
+        }
+        moved
     }
 }
 
@@ -376,5 +413,92 @@ mod tests {
             !store.is_trusted("/Users/me/notes/todo.md"),
             "a differently spelled path became a second rule"
         );
+    }
+
+    /// Moving the working directory must not carry the yes given for one project into another. The
+    /// rule is still about the project it was given for, which is now somewhere else, so that is
+    /// where it is written down.
+    #[test]
+    fn a_yes_for_one_project_does_not_follow_a_move_to_another() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+
+        let moved = store.rebased(Path::new("/work"), Path::new("/other"));
+        assert_eq!(
+            moved.integrity_of("src/main.rs"),
+            None,
+            "the answer given for /work vouched for /other"
+        );
+        assert!(moved.is_trusted("/work/src/main.rs"));
+    }
+
+    /// And a no given inside the project is not forgotten by moving into it. `vendor` was
+    /// untrusted before the move and names the same files after it, so it stays untrusted.
+    #[test]
+    fn a_no_inside_the_new_directory_survives_the_move() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("src/vendor");
+
+        let moved = store.rebased(Path::new("/work"), Path::new("/work/src"));
+        assert_eq!(
+            moved.integrity_of("vendor/lib.js"),
+            Some(Integrity::Untrusted),
+            "an untrusted subtree became trusted by moving into its parent"
+        );
+    }
+
+    /// The other direction: a rule about a directory the user added by name becomes an ordinary
+    /// relative rule once that directory is the working directory.
+    #[test]
+    fn a_rule_in_an_added_directory_becomes_relative_when_it_is_moved_into() {
+        let mut store = TrustStore::new();
+        store.trust("/Users/me/notes");
+        store.distrust("/Users/me/notes/private");
+
+        let moved = store.rebased(Path::new("/work"), Path::new("/Users/me/notes"));
+        assert!(moved.is_trusted("todo.md"));
+        assert_eq!(
+            moved.integrity_of("private/diary.md"),
+            Some(Integrity::Untrusted)
+        );
+    }
+
+    /// Whole segments decide what is inside the new directory, exactly as they decide what a rule
+    /// covers. A prefix test on the characters would move `srcfoo` in as though it were `src`.
+    #[test]
+    fn a_sibling_with_a_longer_name_is_not_taken_to_be_inside() {
+        let mut store = TrustStore::new();
+        store.distrust("srcfoo");
+
+        let moved = store.rebased(Path::new("/work"), Path::new("/work/src"));
+        assert_eq!(
+            moved.integrity_of("foo"),
+            None,
+            "a sibling directory was rebased as though it were inside the new one"
+        );
+        assert_eq!(
+            moved.integrity_of("/work/srcfoo"),
+            Some(Integrity::Untrusted)
+        );
+    }
+
+    /// Rebasing decides nothing. Every rule that went in comes out, saying the same thing about
+    /// the same files, which is what makes it safe to do without asking anybody.
+    #[test]
+    fn rebasing_neither_grants_nor_withdraws_anything() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("vendor");
+        store.trust("/Users/me/notes");
+
+        let moved = store.rebased(Path::new("/work"), Path::new("/other"));
+        assert_eq!(moved.rules().count(), 3);
+        assert!(moved.is_trusted("/work/src/main.rs"));
+        assert_eq!(
+            moved.integrity_of("/work/vendor/lib.js"),
+            Some(Integrity::Untrusted)
+        );
+        assert!(moved.is_trusted("/Users/me/notes/todo.md"));
     }
 }

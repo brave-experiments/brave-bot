@@ -2002,3 +2002,149 @@ fn a_directory_cannot_be_attached() {
         .expect_err("a directory must not attach");
     assert!(matches!(error, WorkspaceError::Invalid { .. }));
 }
+
+/// The point of moving: a relative path means the new directory afterwards, and it is the
+/// directory a person named rather than the one the session started in.
+#[test]
+fn a_relative_path_means_the_new_working_directory_once_it_has_moved() {
+    let scratch = Scratch::new("moved-read");
+    std::fs::create_dir_all(scratch.path.join("inner")).unwrap();
+    std::fs::write(scratch.path.join("notes.md"), "the old one").unwrap();
+    std::fs::write(scratch.path.join("inner/notes.md"), "the new one").unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let moved = workspace
+        .change_root(scratch.path.join("inner").to_str().expect("utf-8 path"))
+        .expect("the working directory moves");
+    assert_eq!(workspace.root(), moved.root);
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let contents = workspace
+        .read(&mut policy, &Labelled::trusted("notes.md".to_string()))
+        .expect("readable from the new working directory");
+    let proof = policy.authorise_content_release("test", "contents");
+    assert_eq!(contents.declassify(&proof), "the new one");
+}
+
+/// The directory left behind closes, and says so. It is reachable by absolute path only while it
+/// is open, and a person who is no longer allowed to read something has to hear about it.
+#[test]
+fn moving_closes_the_directory_left_behind() {
+    let scratch = Scratch::new("moved-closes");
+    std::fs::create_dir_all(scratch.path.join("inner")).unwrap();
+    std::fs::write(scratch.path.join("notes.md"), "the old one").unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let left = workspace.root().to_path_buf();
+    let moved = workspace
+        .change_root(scratch.path.join("inner").to_str().expect("utf-8 path"))
+        .expect("the working directory moves");
+    assert_eq!(moved.closed, vec![left.clone()]);
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let path = Labelled::trusted(left.join("notes.md").display().to_string());
+    let error = workspace
+        .read(&mut policy, &path)
+        .expect_err("the directory left behind is no longer open");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }));
+}
+
+/// An added directory that holds the new working directory closes with it. Leaving it open would
+/// give every file under the new root two spellings, one relative and one absolute, and the trust
+/// map keeps those in separate namespaces precisely so that one file has one answer.
+#[test]
+fn moving_closes_an_added_directory_that_overlaps_the_new_one() {
+    let scratch = Scratch::new("moved-overlap");
+    let other = outside("moved-overlap");
+    std::fs::create_dir_all(other.path.join("inner")).unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let moved = workspace
+        .change_root(added.join("inner").to_str().expect("utf-8 path"))
+        .expect("the working directory moves");
+
+    assert!(
+        workspace.added_directories().is_empty(),
+        "a directory containing the new root stayed open"
+    );
+    assert!(
+        moved.closed.contains(&added),
+        "closing it was not reported: {:?}",
+        moved.closed
+    );
+}
+
+/// An added directory that overlaps nothing stays open. The user opened it by name, and working
+/// somewhere else does not withdraw that.
+#[test]
+fn moving_leaves_an_unrelated_added_directory_open() {
+    let scratch = Scratch::new("moved-unrelated");
+    let other = outside("moved-unrelated");
+    let elsewhere = outside("moved-unrelated-target");
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    workspace
+        .change_root(elsewhere.path.to_str().expect("utf-8 path"))
+        .expect("the working directory moves");
+
+    assert_eq!(workspace.added_directories(), [added]);
+}
+
+/// Moving to where the session already is is a slip worth a word, not a no-op: it would otherwise
+/// close the directory and reopen it as itself, and report that nothing had happened.
+#[test]
+fn moving_to_the_current_working_directory_is_refused() {
+    let scratch = Scratch::new("moved-nowhere");
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let here = workspace.root().display().to_string();
+
+    let error = workspace
+        .change_root(&here)
+        .expect_err("moving nowhere is refused");
+    assert!(matches!(error, WorkspaceError::Invalid { .. }));
+}
+
+/// A file is not a working directory, and neither is a path that is not there.
+#[test]
+fn moving_to_something_that_is_not_a_directory_is_refused() {
+    let scratch = Scratch::new("moved-not-a-directory");
+    std::fs::write(scratch.path.join("notes.md"), "a note").unwrap();
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let root = workspace.root().to_path_buf();
+
+    let error = workspace
+        .change_root(root.join("notes.md").to_str().expect("utf-8 path"))
+        .expect_err("a file is not a working directory");
+    assert!(matches!(error, WorkspaceError::Invalid { .. }));
+
+    let error = workspace
+        .change_root(root.join("nowhere").to_str().expect("utf-8 path"))
+        .expect_err("a path that is not there is not a working directory");
+    assert!(matches!(error, WorkspaceError::Io { .. }));
+
+    assert_eq!(workspace.root(), root, "a refused move moved the workspace");
+}
