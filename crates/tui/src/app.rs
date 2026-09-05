@@ -480,6 +480,67 @@ fn walk_the_matches(session: &mut Session, forwards: bool) {
     session.to_a_match(&found, forwards);
 }
 
+/// Interpret one key press while the prompt history is being searched.
+///
+/// Every letter narrows the list, so the keys that do anything else are the ones a letter cannot
+/// be: the arrows, Enter, Escape, Backspace, and two chords. Nothing here sends anything, which is
+/// why the same list answers whether or not a turn is running.
+fn history_search_key(session: &mut Session, key: KeyEvent) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if ctrl {
+        return match key.code {
+            // Every prompt, or the ones sent from this workspace. The chord Claude Code uses for
+            // it, since somebody arriving from there reaches for that one.
+            KeyCode::Char('s') => {
+                session.scope_history_search();
+                Action::Redraw
+            }
+            // The nearest thing there is to stop is the search, and the turn behind it goes on
+            // running: the press that reaches it is the next one.
+            KeyCode::Char('c') | KeyCode::Char('r') => {
+                session.close_history_search();
+                Action::Redraw
+            }
+            _ => Action::None,
+        };
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            session.close_history_search();
+            Action::Redraw
+        }
+        // Into the box, never into a request. What was chosen off a list is read by the person
+        // whose next keystroke sends it, which is the whole of what makes a stored line usable.
+        KeyCode::Enter => {
+            session.take_history_match();
+            Action::Redraw
+        }
+        KeyCode::Up => {
+            session.history_search_older();
+            Action::Redraw
+        }
+        KeyCode::Down => {
+            session.history_search_newer();
+            Action::Redraw
+        }
+        // Backspacing past the start leaves, which is what the key means once there is nothing
+        // left of the thing it deletes. The same ladder the scroller's search walks.
+        KeyCode::Backspace => {
+            if !session.backspace_history_search() {
+                session.close_history_search();
+            }
+            Action::Redraw
+        }
+        KeyCode::Char(c) => {
+            session.type_into_history_search(c);
+            Action::Redraw
+        }
+        _ => Action::None,
+    }
+}
+
 /// Interpret a key press against the session.
 ///
 /// Separated from the loop so it can be tested without a terminal.
@@ -488,6 +549,12 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     // is no line being edited, and the keys belong to it.
     if session.scrolling() {
         return scroller_key(session, key);
+    }
+
+    // On the same footing, and for the same reason: while a search is open every letter is
+    // narrowing a list rather than being typed into a box nobody can see.
+    if session.searching_history() {
+        return history_search_key(session, key);
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -535,6 +602,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         // keys for it are letters and the box takes letters.
         KeyCode::Char('o') if ctrl => {
             session.open_scroller();
+            Action::Redraw
+        }
+        // The other way into the history, and the one that scales: Up walks a prompt at a time,
+        // which is no way to reach the hundredth. The chord every shell answers with this same
+        // question, so the muscle memory is already there.
+        KeyCode::Char('r') if ctrl => {
+            session.open_history_search();
             Action::Redraw
         }
         // The paste that can carry a picture. Command-V is the terminal's own, goes through the
@@ -820,6 +894,12 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
         return scroller_key(session, key);
     }
 
+    // Searching sends nothing either, and mid-turn is when the prompt somebody wants back is most
+    // likely to be one they can no longer see: the turn they are watching has filled the screen.
+    if session.searching_history() {
+        return history_search_key(session, key);
+    }
+
     // Before the modifier guard, since the readline bindings are how the caret moves on a terminal
     // that sends nothing for the named keys, and a line that can be typed mid-turn has to be
     // editable mid-turn: the alternative is a box that takes words and will not let them be fixed.
@@ -844,6 +924,13 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
     // person reading back through a turn that is going wrong is reading because it is going wrong.
     if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
         session.open_scroller();
+        return Action::Redraw;
+    }
+
+    // Before the modifier guard for the same reason. Searching the history sends nothing, and the
+    // prompt somebody wants back mid-turn is the one the turn they are watching came from.
+    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        session.open_history_search();
         return Action::Redraw;
     }
 
@@ -5817,7 +5904,7 @@ mod tests {
         fn answered(session: &Session, action: Action) -> String {
             format!(
                 "{action:?} input={:?} caret={} scroll={} shell={} shortcuts={} trail={} \
-                 stashed={:?} scrolling={} queued={} browsing={}",
+                 stashed={:?} scrolling={} queued={} browsing={} searching={}",
                 session.input(),
                 session.caret(),
                 session.scroll,
@@ -5828,6 +5915,7 @@ mod tests {
                 session.scrolling(),
                 session.queued.len(),
                 session.history.is_browsing(),
+                session.searching_history(),
             )
         }
 
@@ -5930,6 +6018,145 @@ mod tests {
         handle_key(&mut session, key(KeyCode::Esc));
         assert!(!session.history.is_browsing());
         assert!(session.input().is_empty());
+    }
+
+    /// A session that has sent `prompts`, with nothing running.
+    fn having_sent(prompts: &[&str]) -> Session {
+        let mut session = Session::new("none");
+        for prompt in prompts {
+            type_line(&mut session, prompt);
+            handle_key(&mut session, key(KeyCode::Enter));
+            session.complete("ok", Vec::new(), 0);
+        }
+        session
+    }
+
+    /// Up walks a prompt at a time, which is no way to reach the hundredth. Ctrl-R is the chord
+    /// every shell answers with this question, so it is the one to answer it with here.
+    #[test]
+    fn ctrl_r_searches_the_prompts_already_sent() {
+        let mut session = having_sent(&["first question", "second question"]);
+        handle_key(&mut session, ctrl('r'));
+        assert!(session.searching_history());
+        assert_eq!(
+            session.history_match().expect("a prompt").prompt,
+            "second question"
+        );
+    }
+
+    /// Mid-turn is when the prompt somebody wants back is most likely to be one they can no longer
+    /// see, and nothing about searching sends anything, which is the whole of what a turn refuses.
+    #[test]
+    fn the_prompts_can_be_searched_while_a_turn_is_running() {
+        let mut session = having_sent(&["first question"]);
+        type_line(&mut session, "second question");
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        handle_key_while_working(&mut session, ctrl('r'));
+        assert!(session.searching_history());
+    }
+
+    /// With nothing sent there is nothing to search, and a panel saying so is a mode a person then
+    /// has to get out of.
+    #[test]
+    fn ctrl_r_with_nothing_sent_yet_opens_nothing() {
+        let mut session = Session::new("none");
+        handle_key(&mut session, ctrl('r'));
+        assert!(!session.searching_history());
+    }
+
+    /// Somebody who typed half a prompt and then reached for the history has already said what
+    /// they are looking for.
+    #[test]
+    fn the_search_starts_from_what_was_already_typed() {
+        let mut session = having_sent(&["run the tests", "commit that"]);
+        type_line(&mut session, "tests");
+        handle_key(&mut session, ctrl('r'));
+
+        assert_eq!(
+            session.history_match().expect("a prompt").prompt,
+            "run the tests"
+        );
+    }
+
+    /// While the search is open a letter narrows the list. Typed into the box instead it would go
+    /// somewhere nobody can see, and the list would never narrow.
+    #[test]
+    fn a_letter_narrows_the_search_rather_than_reaching_the_box() {
+        let mut session = having_sent(&["run the tests", "commit that"]);
+        handle_key(&mut session, ctrl('r'));
+        type_line(&mut session, "run");
+
+        assert!(session.input().is_empty(), "the box took the letters");
+        assert_eq!(
+            session.history_match().expect("a prompt").prompt,
+            "run the tests"
+        );
+    }
+
+    /// Into the box rather than into a request: a history file can be edited, on a shared machine
+    /// by somebody else, so the keystroke that sends a stored line has to be the person's own.
+    #[test]
+    fn enter_puts_the_chosen_prompt_in_the_box_without_sending_it() {
+        let mut session = having_sent(&["run the tests", "commit that"]);
+        handle_key(&mut session, ctrl('r'));
+        type_line(&mut session, "run");
+        let action = handle_key(&mut session, key(KeyCode::Enter));
+
+        assert_eq!(action, Action::Redraw, "the prompt was sent");
+        assert!(!session.searching_history());
+        assert_eq!(session.input(), "run the tests");
+        assert_eq!(
+            session.status,
+            Status::Idle,
+            "a turn was started from the list"
+        );
+    }
+
+    /// Escape means "stop what is happening", and what is happening is the search. The line in the
+    /// box was never taken away, so there is nothing to put back.
+    #[test]
+    fn escape_closes_the_search_and_leaves_the_box_as_it_was() {
+        let mut session = having_sent(&["run the tests"]);
+        type_line(&mut session, "half a thought");
+        handle_key(&mut session, ctrl('r'));
+        handle_key(&mut session, key(KeyCode::Esc));
+
+        assert!(!session.searching_history());
+        assert_eq!(session.input(), "half a thought");
+    }
+
+    /// Backspacing past the start leaves, which is what the key means once there is nothing left of
+    /// the thing it deletes. The same ladder the scroller's search walks.
+    #[test]
+    fn backspacing_past_the_start_of_the_search_closes_it() {
+        let mut session = having_sent(&["run the tests"]);
+        handle_key(&mut session, ctrl('r'));
+        type_line(&mut session, "ru");
+
+        handle_key(&mut session, key(KeyCode::Backspace));
+        assert!(session.searching_history());
+        handle_key(&mut session, key(KeyCode::Backspace));
+        assert!(session.searching_history());
+        handle_key(&mut session, key(KeyCode::Backspace));
+        assert!(!session.searching_history(), "the search would not close");
+    }
+
+    /// The arrows walk the matches while the search is open, rather than the history behind it or
+    /// the transcript behind that.
+    #[test]
+    fn the_arrows_walk_the_matches_while_the_search_is_open() {
+        let mut session = having_sent(&["first question", "second question"]);
+        handle_key(&mut session, ctrl('r'));
+        handle_key(&mut session, key(KeyCode::Up));
+
+        assert_eq!(
+            session.history_match().expect("a prompt").prompt,
+            "first question"
+        );
+        assert_eq!(session.scroll, 0, "the transcript scrolled instead");
+        assert!(!session.history.is_browsing(), "the box walked the history");
     }
 
     /// With nothing typed the prompt has nowhere to go, so the keys are the transcript's, which is

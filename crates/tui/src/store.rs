@@ -21,6 +21,7 @@
 //! surface, on the footing [`bravebot_core::policy::Policy::label_user_configuration`] describes, and
 //! that a name the server does not recognise is reset to `automatic` rather than obeyed.
 
+use crate::history::Entry;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -57,6 +58,18 @@ const MAX_ENTRIES: usize = 1_000;
 /// past what the input box can show at once.
 const MAX_ENTRY_BYTES: usize = 4_096;
 
+/// The longest stored line worth reading back.
+///
+/// A line holds the prompt and the two facts recorded beside it, so it is the prompt's cap plus
+/// room for a stamp and a path rather than the cap itself.
+const MAX_LINE_BYTES: usize = MAX_ENTRY_BYTES + 1_024;
+
+/// What separates the fields of a stored line.
+///
+/// A tab because a path may hold spaces, and because a prompt that holds tabs is stored with them
+/// escaped, so nothing inside a field can be read as the end of it.
+const FIELD: char = '\t';
+
 /// The global state directory, or `None` when there is no home to put it in.
 ///
 /// Delegated rather than computed again here: the agent reads standing instructions and skills
@@ -70,7 +83,7 @@ pub fn directory() -> Option<PathBuf> {
 /// Returns an empty list when there is nothing to read, or when what is there cannot be parsed.
 /// Lines are trimmed of the newline they are stored with; blank lines are skipped so a
 /// hand-edited file cannot inject empty entries.
-pub fn load_history() -> Vec<String> {
+pub fn load_history() -> Vec<Entry> {
     let Some(path) = directory().map(|dir| dir.join(HISTORY_FILE)) else {
         return Vec::new();
     };
@@ -85,12 +98,15 @@ pub fn load_history() -> Vec<String> {
 /// Separate from the I/O so the decoding is testable, and because the rules matter: a prompt
 /// containing a newline was stored escaped, and an over-long line is dropped rather than truncated
 /// to half a question.
-pub fn parse_history(contents: &str) -> Vec<String> {
-    let mut entries: Vec<String> = contents
+pub fn parse_history(contents: &str) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = contents
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .filter(|line| line.len() <= MAX_ENTRY_BYTES)
-        .map(unescape)
+        // The line first, which bounds the work, and then the prompt inside it, which is what the
+        // cap is about: a pasted file is not worth storing and would not be worth recalling.
+        .filter(|line| line.len() <= MAX_LINE_BYTES)
+        .map(parse_entry)
+        .filter(|entry| entry.prompt.len() <= MAX_ENTRY_BYTES)
         .collect();
 
     // A file longer than the cap is read from its end: those are the entries recall reaches first.
@@ -100,12 +116,54 @@ pub fn parse_history(contents: &str) -> Vec<String> {
     entries
 }
 
+/// One stored line as an entry.
+///
+/// Two shapes are read. The one written here is three fields: when it was sent, where from, and
+/// the prompt. A line that is not that shape is a prompt on its own, which is what every line of a
+/// file written before those two facts were kept looks like. Read rather than discarded, because
+/// somebody's history is the one file here whose loss they would notice.
+///
+/// The prompt is last so that a tab inside it needs no thought: only the first two are split on.
+fn parse_entry(line: &str) -> Entry {
+    let mut fields = line.splitn(3, FIELD);
+    let (Some(at), Some(project), Some(prompt)) = (fields.next(), fields.next(), fields.next())
+    else {
+        return Entry::recalled(unescape(line));
+    };
+    let Ok(at) = at.parse::<u64>() else {
+        // A first field that is not a number is not a stamp, so the line is a prompt that happens
+        // to hold tabs rather than a record written by this program.
+        return Entry::recalled(unescape(line));
+    };
+
+    let project = unescape(project);
+    Entry {
+        prompt: unescape(prompt),
+        at: Some(at),
+        project: (!project.is_empty()).then_some(project),
+    }
+}
+
+/// One entry as a line, without its newline.
+fn encode(entry: &Entry) -> String {
+    match entry.at {
+        // Written back the way it was read, since inventing a time for it would date a prompt to
+        // whenever the file was next rewritten.
+        None => escape(&entry.prompt),
+        Some(at) => format!(
+            "{at}{FIELD}{}{FIELD}{}",
+            escape(entry.project.as_deref().unwrap_or_default()),
+            escape(&entry.prompt)
+        ),
+    }
+}
+
 /// Append one prompt to the history file.
 ///
 /// Best-effort by design: a failure here must not interrupt a session, so nothing is reported.
 /// Appending rather than rewriting keeps the cost independent of how much history exists.
-pub fn append_history(prompt: &str) {
-    if prompt.trim().is_empty() || prompt.len() > MAX_ENTRY_BYTES {
+pub fn append_history(entry: &Entry) {
+    if entry.prompt.trim().is_empty() || entry.prompt.len() > MAX_ENTRY_BYTES {
         return;
     }
     let Some(dir) = directory() else {
@@ -115,7 +173,7 @@ pub fn append_history(prompt: &str) {
         return;
     }
 
-    let line = format!("{}\n", escape(prompt));
+    let line = format!("{}\n", encode(entry));
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -127,7 +185,7 @@ pub fn append_history(prompt: &str) {
 ///
 /// Used to drop a cancelled prompt and to enforce the cap. Written to a temporary file and
 /// renamed so an interrupted write cannot leave a half-truncated history.
-pub fn save_history(entries: &[String]) {
+pub fn save_history(entries: &[Entry]) {
     let Some(dir) = directory() else {
         return;
     };
@@ -138,8 +196,8 @@ pub fn save_history(entries: &[String]) {
     let start = entries.len().saturating_sub(MAX_ENTRIES);
     let body: String = entries[start..]
         .iter()
-        .filter(|entry| !entry.trim().is_empty() && entry.len() <= MAX_ENTRY_BYTES)
-        .map(|entry| format!("{}\n", escape(entry)))
+        .filter(|entry| !entry.prompt.trim().is_empty() && entry.prompt.len() <= MAX_ENTRY_BYTES)
+        .map(|entry| format!("{}\n", encode(entry)))
         .collect();
 
     let temporary = dir.join("history.tmp");
@@ -233,7 +291,11 @@ pub fn save_theme(theme: &str) {
 /// A prompt may contain newlines, which would otherwise become several entries on the way back
 /// in. Backslash is escaped first so the encoding round-trips.
 fn escape(prompt: &str) -> String {
-    prompt.replace('\\', "\\\\").replace('\n', "\\n")
+    prompt
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        // A tab ends a field, so one inside a prompt has to stop looking like the end of it.
+        .replace('\t', "\\t")
 }
 
 /// Decode one stored line.
@@ -250,6 +312,7 @@ fn unescape(line: &str) -> String {
         }
         match chars.next() {
             Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
             Some('\\') => out.push('\\'),
             Some(other) => {
                 out.push('\\');
@@ -265,29 +328,90 @@ fn unescape(line: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The prompts of what was parsed, for the tests that are about the prompt surviving rather
+    /// than about what is recorded beside it.
+    fn prompts(entries: &[Entry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.prompt.as_str()).collect()
+    }
+
+    /// One line as this program writes it.
+    fn stored(entry: &Entry) -> String {
+        format!("{}\n", encode(entry))
+    }
+
     #[test]
     fn entries_round_trip_through_the_file_format() {
-        let entries = vec!["first".to_string(), "second".to_string()];
-        let encoded: String = entries.iter().map(|e| format!("{}\n", escape(e))).collect();
+        let entries = vec![
+            Entry::sent("first", Some("/work/here".to_string())),
+            Entry::sent("second", None),
+        ];
+        let encoded: String = entries.iter().map(stored).collect();
         assert_eq!(parse_history(&encoded), entries);
+    }
+
+    /// When a prompt was sent and where from are what the search shows beside it, so both have to
+    /// survive the file: an age read back as nothing is a column of blanks.
+    #[test]
+    fn when_and_where_a_prompt_was_sent_survive_a_round_trip() {
+        let entry = Entry {
+            prompt: "why is this slow?".to_string(),
+            at: Some(1_700_000_000),
+            project: Some("/Users/somebody/projects/thing".to_string()),
+        };
+        let read = parse_history(&stored(&entry));
+        assert_eq!(read, vec![entry]);
+    }
+
+    /// Every line of a history written before those two facts were kept is a bare prompt, and
+    /// somebody's history is the one file here whose loss they would notice.
+    #[test]
+    fn a_line_from_an_older_history_is_still_a_prompt() {
+        let read = parse_history(
+            "what does this do?
+and this?
+",
+        );
+        assert_eq!(prompts(&read), ["what does this do?", "and this?"]);
+        assert_eq!(read[0].at, None, "an age was invented for it");
+        assert_eq!(read[0].project, None, "a project was invented for it");
+    }
+
+    /// A prompt is written back the way it was read, so a rewrite for any other reason does not
+    /// date every old prompt to whenever that happened.
+    #[test]
+    fn a_prompt_with_no_stamp_is_not_given_one_on_the_way_out() {
+        let read = parse_history(&stored(&Entry::recalled("from before")));
+        assert_eq!(read, vec![Entry::recalled("from before")]);
+    }
+
+    /// A tab ends a field, so one inside a prompt has to stop looking like the end of it. A line
+    /// of a hand-written file whose first field is not a stamp is a prompt, tabs and all.
+    #[test]
+    fn a_prompt_holding_tabs_is_still_one_prompt() {
+        let prompt = "fix this:\n\tif (x) {\n\t\treturn;";
+        let read = parse_history(&stored(&Entry::sent(prompt, None)));
+        assert_eq!(prompts(&read), [prompt]);
+
+        let hand_written = parse_history("a\tb\tc\n");
+        assert_eq!(prompts(&hand_written), ["a\tb\tc"]);
     }
 
     /// A prompt with a newline must come back as one entry, not two.
     #[test]
     fn a_multiline_prompt_stays_one_entry() {
         let prompt = "explain this:\nfn main() {}";
-        let encoded = format!("{}\n", escape(prompt));
-        assert_eq!(parse_history(&encoded), vec![prompt.to_string()]);
+        let encoded = stored(&Entry::sent(prompt, None));
+        assert_eq!(prompts(&parse_history(&encoded)), [prompt]);
     }
 
     /// The escape itself must survive, or a prompt about backslashes would corrupt on reload.
     #[test]
     fn backslashes_round_trip() {
         for prompt in [r"a\b", r"trailing\", r"\n literal", r"\\"] {
-            let encoded = format!("{}\n", escape(prompt));
+            let encoded = stored(&Entry::sent(prompt, None));
             assert_eq!(
-                parse_history(&encoded),
-                vec![prompt.to_string()],
+                prompts(&parse_history(&encoded)),
+                [prompt],
                 "{prompt:?} did not round-trip"
             );
         }
@@ -296,10 +420,7 @@ mod tests {
     /// A hand-edited file must not produce empty entries, which would look like broken recall.
     #[test]
     fn blank_lines_are_skipped() {
-        assert_eq!(
-            parse_history("one\n\n   \ntwo\n"),
-            vec!["one".to_string(), "two".to_string()]
-        );
+        assert_eq!(prompts(&parse_history("one\n\n   \ntwo\n")), ["one", "two"]);
     }
 
     /// An unreadable or absent file is not an error: the session works without history.
@@ -319,8 +440,8 @@ mod tests {
         assert_eq!(entries.len(), MAX_ENTRIES);
         // Kept from the end, since recall walks backwards from the newest.
         assert_eq!(
-            entries.last().unwrap(),
-            &format!("prompt {}", MAX_ENTRIES + 499)
+            entries.last().unwrap().prompt,
+            format!("prompt {}", MAX_ENTRIES + 499)
         );
     }
 
@@ -329,17 +450,14 @@ mod tests {
     fn over_long_entries_are_dropped_on_read() {
         let huge = "x".repeat(MAX_ENTRY_BYTES + 1);
         let contents = format!("keep\n{huge}\nkeep too\n");
-        assert_eq!(
-            parse_history(&contents),
-            vec!["keep".to_string(), "keep too".to_string()]
-        );
+        assert_eq!(prompts(&parse_history(&contents)), ["keep", "keep too"]);
     }
 
     /// A prompt exactly at the limit is kept, so the boundary is not off by one.
     #[test]
     fn an_entry_at_the_limit_is_kept() {
         let exact = "x".repeat(MAX_ENTRY_BYTES);
-        assert_eq!(parse_history(&format!("{exact}\n")), vec![exact]);
+        assert_eq!(prompts(&parse_history(&format!("{exact}\n"))), [&exact]);
     }
 
     #[test]

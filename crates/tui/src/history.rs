@@ -7,12 +7,77 @@
 //! Browsing is a mode rather than an edit: while it is active the box shows a stored prompt and
 //! reports the position, and leaving the mode restores whatever was being typed before. That way
 //! pressing Up out of curiosity cannot destroy a half-written line.
+//!
+//! Walking back one at a time is no way to reach the hundredth prompt, so each entry also carries
+//! when it was sent and which workspace it was sent from. Both are for
+//! [`crate::history_search`], which is the other way in: a list a person reads and narrows, where
+//! an age says which of two similar prompts is the one they mean and the workspace says whether a
+//! prompt belongs to what they are doing now.
+
+/// One prompt as it was sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    /// What was typed, newlines and all.
+    pub prompt: String,
+    /// When it was sent, in seconds since the epoch.
+    ///
+    /// `None` for an entry stored before times were kept. Read as "no age to show" rather than as
+    /// the epoch, which would date every old prompt to 1970.
+    pub at: Option<u64>,
+    /// The workspace it was sent from.
+    ///
+    /// `None` for an entry stored before that was kept, and for one sent from nowhere in
+    /// particular. Such an entry belongs to no project and so is never what a narrowed search
+    /// answers with, but it is still there under the wider one.
+    pub project: Option<String>,
+}
+
+impl Entry {
+    /// A prompt sent now, from `project`.
+    pub fn sent(prompt: impl Into<String>, project: Option<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            at: Some(now()),
+            project,
+        }
+    }
+
+    /// A prompt read back from a file that stored nothing else about it.
+    pub fn recalled(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            at: None,
+            project: None,
+        }
+    }
+
+    /// The first line, which is what a one-row list can show of a paragraph.
+    pub fn opening(&self) -> &str {
+        self.prompt.lines().next().unwrap_or("")
+    }
+
+    /// How many lines the prompt runs to.
+    pub fn lines(&self) -> usize {
+        self.prompt.lines().count().max(1)
+    }
+}
+
+/// Seconds since the epoch, or zero on a clock that cannot say.
+///
+/// Zero rather than a failure: a prompt is still worth storing on a machine whose clock is wrong,
+/// and an age nobody can compute is a missing column rather than a reason to lose the prompt.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
+}
 
 /// Prompts already sent, and where the user is looking.
 #[derive(Debug, Default)]
 pub struct History {
     /// Oldest first, so the newest is at the end.
-    entries: Vec<String>,
+    entries: Vec<Entry>,
     /// How far back the user has walked. `None` means they are editing, not browsing.
     ///
     /// Counted from the newest entry: 1 is the most recent prompt. Stored as a distance rather
@@ -28,7 +93,7 @@ impl History {
     }
 
     /// Start from prompts stored by earlier sessions, oldest first.
-    pub fn from_entries(entries: Vec<String>) -> Self {
+    pub fn from_entries(entries: Vec<Entry>) -> Self {
         Self {
             entries,
             back: None,
@@ -36,30 +101,36 @@ impl History {
         }
     }
 
-    /// Every stored prompt, oldest first, for writing back to disk.
-    pub fn entries(&self) -> &[String] {
+    /// Every stored prompt, oldest first, for writing back to disk and for searching.
+    pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    /// Record a submitted prompt.
+    /// Record a submitted prompt, sent now from `project`.
     ///
     /// Consecutive duplicates are collapsed: sending the same thing twice is usually a retry, and
-    /// two identical entries make walking back slower without adding anything.
-    pub fn push(&mut self, prompt: impl Into<String>) {
-        let prompt = prompt.into();
-        if self.entries.last().is_some_and(|last| *last == prompt) {
-            self.leave();
-            return;
-        }
-        self.entries.push(prompt);
+    /// two identical entries make walking back slower without adding anything. The kept entry is
+    /// the older one, since the prompt is the same and the first time it was asked is when the
+    /// question was new.
+    pub fn push(&mut self, prompt: impl Into<String>, project: Option<String>) -> Option<&Entry> {
+        let entry = Entry::sent(prompt, project);
         self.leave();
+        if self
+            .entries
+            .last()
+            .is_some_and(|last| last.prompt == entry.prompt)
+        {
+            return None;
+        }
+        self.entries.push(entry);
+        self.entries.last()
     }
 
     /// Remove the newest entry, for a prompt whose turn was cancelled.
     ///
     /// The text goes back into the input box, so keeping it in history too would offer the user
     /// the same line from two places.
-    pub fn pop(&mut self) -> Option<String> {
+    pub fn pop(&mut self) -> Option<Entry> {
         self.leave();
         self.entries.pop()
     }
@@ -108,7 +179,9 @@ impl History {
         };
 
         self.back = Some(back);
-        self.entries.get(self.entries.len() - back).cloned()
+        self.entries
+            .get(self.entries.len() - back)
+            .map(|entry| entry.prompt.clone())
     }
 
     /// Step one prompt forward, returning what to show.
@@ -124,7 +197,9 @@ impl History {
             }
             Some(back) => {
                 self.back = Some(back - 1);
-                self.entries.get(self.entries.len() - (back - 1)).cloned()
+                self.entries
+                    .get(self.entries.len() - (back - 1))
+                    .map(|entry| entry.prompt.clone())
             }
         }
     }
@@ -143,7 +218,7 @@ mod tests {
     fn with(prompts: &[&str]) -> History {
         let mut history = History::new();
         for prompt in prompts {
-            history.push(*prompt);
+            history.push(*prompt, None);
         }
         history
     }
@@ -217,7 +292,7 @@ mod tests {
     fn the_position_counts_from_the_oldest() {
         let mut history = History::new();
         for n in 1..=83 {
-            history.push(format!("prompt {n}"));
+            history.push(format!("prompt {n}"), None);
         }
 
         // One press shows the newest, which is the 83rd of 83.
@@ -244,7 +319,7 @@ mod tests {
         let mut history = with(&["first", "second"]);
         history.older("");
         assert!(history.is_browsing());
-        history.push("third");
+        history.push("third", None);
         assert!(!history.is_browsing(), "still browsing after a submission");
     }
 
@@ -253,7 +328,10 @@ mod tests {
     #[test]
     fn popping_removes_the_newest_entry() {
         let mut history = with(&["first", "second"]);
-        assert_eq!(history.pop().as_deref(), Some("second"));
+        assert_eq!(
+            history.pop().map(|entry| entry.prompt).as_deref(),
+            Some("second")
+        );
         assert_eq!(history.len(), 1);
         assert_eq!(history.older("").as_deref(), Some("first"));
     }
@@ -270,7 +348,7 @@ mod tests {
     fn appending_while_browsing_does_not_shift_the_view() {
         let mut history = with(&["a", "b"]);
         history.older("");
-        history.push("c");
+        history.push("c", None);
 
         // No longer browsing, and a fresh walk back sees the new entry first.
         assert!(!history.is_browsing());

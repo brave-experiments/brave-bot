@@ -425,6 +425,13 @@ pub fn draw(frame: &mut Frame, session: &Session) -> Laid {
         return draw_scroller(frame, session);
     }
 
+    // The same shape for the same reason: while the history is being searched the box takes no
+    // keys, and the rows it would have had go to the list of prompts standing in for it. The
+    // transcript stays, because a prompt is recognised by what it was asked about.
+    if session.searching_history() {
+        return draw_history_search(frame, session);
+    }
+
     // What is running sits above the box rather than in place of it, so the two are measured
     // together: whatever the indicator takes is height the input no longer has.
     let status_height = status_height(session, frame.area().height);
@@ -475,6 +482,22 @@ pub fn draw(frame: &mut Frame, session: &Session) -> Laid {
         crate::select::highlight(frame.buffer_mut(), selection);
     }
 
+    laid
+}
+
+/// Draw the history search: the transcript, and the list of prompts where the box was.
+fn draw_history_search(frame: &mut Frame, session: &Session) -> Laid {
+    let panel = crate::history_search::height(session, frame.area());
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),        // transcript
+            Constraint::Length(panel), // the search
+        ])
+        .split(frame.area());
+
+    let laid = draw_transcript(frame, areas[0], session);
+    crate::history_search::draw(frame, areas[1], session);
     laid
 }
 
@@ -1339,9 +1362,22 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
 
     if let Some((index, total)) = session.history.position() {
         block = block.title_top(Line::from(Span::styled(
-            format!(" History {index}/{total} "),
+            format!(
+                " {} ",
+                t!(input_history_position, index = index, total = total)
+            ),
             dim(),
         )));
+        // The other way in, said where somebody has just shown they are looking for an old prompt.
+        // A search nobody can find is a search nobody has, and walking back one at a time is what
+        // a person does until they learn there is something better.
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" {} ", t!(input_history_search)),
+                dim(),
+            ))
+            .right_aligned(),
+        );
     }
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -1586,7 +1622,7 @@ const SHORTCUTS_HINT: &str = "? for shortcuts";
 /// The meanings are kept short deliberately. The longest of them sets the column, so a word saved
 /// here is what lets two columns fit a terminal eighty wide, and that halves the rows the list takes
 /// out of the transcript.
-const SHORTCUTS: [(&str, &str); 17] = [
+const SHORTCUTS: [(&str, &str); 18] = [
     ("!", "run a shell command"),
     ("/", "commands"),
     ("@", "name a file"),
@@ -1600,6 +1636,7 @@ const SHORTCUTS: [(&str, &str); 17] = [
     ("ctrl-c", "stop, clear, then exit"),
     ("ctrl-d", "exit"),
     ("ctrl-g", "write prompt in $EDITOR"),
+    ("ctrl-r", "search earlier prompts"),
     ("ctrl-s", "stash, or bring it back"),
     ("ctrl-t", "show what a turn did"),
     ("ctrl-v", "paste, pictures too"),
@@ -3205,6 +3242,46 @@ mod tests {
             assert!(output.contains(key), "{key} missing");
             assert!(output.contains(meaning), "{key} has no meaning on screen");
         }
+    }
+
+    /// The transcript stays behind the search, because a prompt is recognised by what it was asked
+    /// about: a list of prompts on an empty screen is a list of sentences out of context.
+    #[test]
+    fn the_prompt_search_is_drawn_over_the_transcript_rather_than_instead_of_it() {
+        let mut session = Session::new("none");
+        for c in "why is the picker slow?".chars() {
+            session.type_char(c);
+        }
+        session.submit().expect("the prompt is sent");
+        session.complete("because it wraps every line", Vec::new(), 0);
+        assert!(session.open_history_search());
+
+        let output = rendered_at(&session, 100, 24);
+        assert!(
+            output.contains("because it wraps every line"),
+            "the transcript went: {output}"
+        );
+        assert!(output.contains(t!(history_search_title)), "{output}");
+    }
+
+    /// A search nobody can find is a search nobody has. Both places somebody looks say it: the key
+    /// list, and the border of the box at the moment they have shown they want an older prompt by
+    /// walking back to one.
+    #[test]
+    fn how_to_search_the_prompts_is_said_where_somebody_would_look() {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit().expect("the prompt is sent");
+        session.complete("ok", Vec::new(), 0);
+
+        session.type_char('?');
+        let listed = rendered_at(&session, 120, 40);
+        assert!(listed.contains("ctrl-r"), "{listed}");
+        session.clear_input();
+
+        session.recall_older();
+        let browsing = rendered_at(&session, 120, 40);
+        assert!(browsing.contains(t!(input_history_search)), "{browsing}");
     }
 
     /// The list folds into columns, so it does not push the transcript off a short terminal the way

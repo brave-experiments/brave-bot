@@ -33,6 +33,7 @@ cli-keys-heading = Interactive keys:
 cli-key-send = Send
 cli-key-audit = Toggle the audit trail
 cli-key-history = Walk back through sent prompts
+cli-key-history-search = Search every prompt sent
 cli-key-scroll = Scroll the transcript
 cli-key-jump = Jump to the start or the latest
 cli-key-cancel = Cancel a running turn, clear the input, or leave
@@ -187,6 +188,28 @@ picker-service-brave = Brave
 # the Brave roster already says of the models it serves through its own account.
 picker-service-bedrock-profile = Bedrock, your { $profile } AWS profile
 picker-service-bedrock = Bedrock, your AWS account
+# Ctrl-R over the prompts already sent.
+history-search-title = Search prompts
+history-scope-everywhere = everywhere
+history-scope-here = this project
+history-search-placeholder = Filter history…
+history-search-keys = ↑↓ to move  ·  Enter to use  ·  ctrl-s to scope  ·  Esc to cancel
+history-search-nothing-matches = nothing matches that
+history-search-more-lines =
+    { $count ->
+        [one] … +1 line
+       *[other] … +{ $count } lines
+    }
+# An age in a gutter beside every row rather than in a sentence, so it is short enough to leave the
+# prompt the width. The session list says the same thing at length, where there is room for it.
+history-age-now = now
+history-age-minutes = { $count }m ago
+history-age-hours = { $count }h ago
+history-age-days = { $count }d ago
+history-age-months = { $count }mo ago
+# In the border of the box while a stored prompt is being walked to, saying what the other way in is.
+input-history-position = History { $index }/{ $total }
+input-history-search = ctrl-r to search
 resume-heading = Resume session
 resume-search-placeholder = Search…
 resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session

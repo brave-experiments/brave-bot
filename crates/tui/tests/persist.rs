@@ -2,8 +2,22 @@
 //!
 //! Uses a temporary HOME so the developer's own history is never read or written.
 
+use bravebot_tui::history::Entry;
 use bravebot_tui::store;
 use std::sync::Mutex;
+
+/// The prompts of what was read back, which is what these tests are about.
+///
+/// When each was sent and where from are stored beside them and checked where that is the point;
+/// everywhere else they are noise around the question of whether the prompt survived.
+fn prompts(entries: &[Entry]) -> Vec<&str> {
+    entries.iter().map(|entry| entry.prompt.as_str()).collect()
+}
+
+/// A prompt sent now from nowhere in particular.
+fn sent(prompt: &str) -> Entry {
+    Entry::sent(prompt, None)
+}
 
 /// One lock for the whole file, not one per test.
 ///
@@ -39,13 +53,13 @@ fn an_appended_prompt_is_read_back_next_session() {
     with_temp_home("append", || {
         assert!(store::load_history().is_empty(), "started with history");
 
-        store::append_history("what does this do?");
-        store::append_history("and this?");
+        store::append_history(&sent("what does this do?"));
+        store::append_history(&sent("and this?"));
 
         // A fresh load is what the next session does.
         assert_eq!(
-            store::load_history(),
-            vec!["what does this do?".to_string(), "and this?".to_string()]
+            prompts(&store::load_history()),
+            ["what does this do?", "and this?"]
         );
     });
 }
@@ -57,9 +71,9 @@ fn the_directory_is_created_on_first_write() {
         let dir = store::directory().expect("a home");
         assert!(!dir.exists(), "the directory existed already");
 
-        store::append_history("first ever prompt");
+        store::append_history(&sent("first ever prompt"));
         assert!(dir.exists(), "the directory was not created");
-        assert_eq!(store::load_history(), vec!["first ever prompt".to_string()]);
+        assert_eq!(prompts(&store::load_history()), ["first ever prompt"]);
     });
 }
 
@@ -69,8 +83,8 @@ fn the_directory_is_created_on_first_write() {
 fn a_multiline_prompt_survives_a_round_trip_on_disk() {
     with_temp_home("multiline", || {
         let prompt = "explain this:\n\nfn main() {\n    println!(\"hi\");\n}";
-        store::append_history(prompt);
-        assert_eq!(store::load_history(), vec![prompt.to_string()]);
+        store::append_history(&sent(prompt));
+        assert_eq!(prompts(&store::load_history()), [prompt]);
     });
 }
 
@@ -78,15 +92,12 @@ fn a_multiline_prompt_survives_a_round_trip_on_disk() {
 #[test]
 fn saving_replaces_what_was_stored() {
     with_temp_home("save", || {
-        store::append_history("one");
-        store::append_history("two");
-        store::append_history("three");
+        store::append_history(&sent("one"));
+        store::append_history(&sent("two"));
+        store::append_history(&sent("three"));
 
-        store::save_history(&["one".to_string(), "two".to_string()]);
-        assert_eq!(
-            store::load_history(),
-            vec!["one".to_string(), "two".to_string()]
-        );
+        store::save_history(&[sent("one"), sent("two")]);
+        assert_eq!(prompts(&store::load_history()), ["one", "two"]);
     });
 }
 
@@ -94,13 +105,15 @@ fn saving_replaces_what_was_stored() {
 #[test]
 fn the_stored_history_is_capped() {
     with_temp_home("cap", || {
-        let entries: Vec<String> = (0..1_500).map(|n| format!("prompt {n}")).collect();
+        let entries: Vec<Entry> = (0..1_500)
+            .map(|n| Entry::sent(format!("prompt {n}"), None))
+            .collect();
         store::save_history(&entries);
 
         let loaded = store::load_history();
         assert_eq!(loaded.len(), 1_000);
-        assert_eq!(loaded.last().unwrap(), "prompt 1499");
-        assert_eq!(loaded.first().unwrap(), "prompt 500");
+        assert_eq!(loaded.last().unwrap().prompt, "prompt 1499");
+        assert_eq!(loaded.first().unwrap().prompt, "prompt 500");
     });
 }
 
@@ -131,8 +144,8 @@ fn no_home_directory_is_not_an_error() {
     assert!(store::directory().is_none());
     assert!(store::load_history().is_empty());
     // Must not panic.
-    store::append_history("nowhere to go");
-    store::save_history(&["nor here".to_string()]);
+    store::append_history(&sent("nowhere to go"));
+    store::save_history(&[sent("nor here")]);
 
     if let Some(value) = previous {
         unsafe { std::env::set_var("HOME", value) };
@@ -144,7 +157,7 @@ fn no_home_directory_is_not_an_error() {
 fn a_session_recalls_a_prompt_stored_by_an_earlier_session() {
     with_temp_home("session", || {
         // An earlier session left this behind.
-        store::append_history("a question from before");
+        store::append_history(&sent("a question from before"));
 
         let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
         session.recall_older();
@@ -164,7 +177,47 @@ fn a_prompt_sent_now_is_stored_for_next_time() {
         }
         session.submit().expect("submitted");
 
-        assert_eq!(store::load_history(), vec!["asked now".to_string()]);
+        assert_eq!(prompts(&store::load_history()), ["asked now"]);
+    });
+}
+
+/// The search shows an age beside every prompt and narrows to one workspace, and neither survives
+/// a restart unless the file holds them.
+#[test]
+fn when_and_where_a_prompt_was_sent_outlive_the_session() {
+    with_temp_home("session-recorded", || {
+        let mut session = bravebot_tui::state::Session::new("test")
+            .in_workspace("/work/here")
+            .with_stored_history();
+        for c in "asked here".chars() {
+            session.type_char(c);
+        }
+        session.submit().expect("submitted");
+
+        let stored = store::load_history();
+        assert_eq!(prompts(&stored), ["asked here"]);
+        assert_eq!(stored[0].project.as_deref(), Some("/work/here"));
+        assert!(stored[0].at.is_some(), "no time was stored");
+    });
+}
+
+/// A history written before either was kept is still somebody's history, and it is the one file
+/// here whose loss they would notice.
+#[test]
+fn a_history_from_an_older_version_is_still_read() {
+    with_temp_home("session-older", || {
+        let dir = store::directory().expect("a home");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("history"),
+            "a question from before
+",
+        )
+        .expect("write");
+
+        let mut session = bravebot_tui::state::Session::new("test").with_stored_history();
+        session.recall_older();
+        assert_eq!(session.input(), "a question from before");
     });
 }
 
@@ -177,7 +230,7 @@ fn a_cancelled_prompt_is_removed_from_the_stored_history() {
             session.type_char(c);
         }
         let prompt = session.submit().expect("submitted");
-        assert_eq!(store::load_history(), vec!["abandoned".to_string()]);
+        assert_eq!(prompts(&store::load_history()), ["abandoned"]);
 
         session.restore(prompt);
         assert!(

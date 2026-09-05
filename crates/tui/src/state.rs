@@ -433,6 +433,11 @@ pub struct Session {
     /// `None` at rest, which is what every key in the box is answered against: the mode is the
     /// one thing that decides whether a letter is a letter or a movement.
     scroller: Option<Scroller>,
+    /// The search over the prompt history, while it is open.
+    ///
+    /// `None` at rest, on the same footing as the scroller: a mode is what decides whether a
+    /// letter typed is a letter in the box or one narrowing a list.
+    history_search: Option<crate::history_search::Search>,
     /// What the last frame laid the transcript out to.
     pub laid: Laid,
     /// Confinement in force, reported so the user knows what they have.
@@ -672,6 +677,7 @@ impl Session {
             show_trail: false,
             scroll: 0,
             scroller: None,
+            history_search: None,
             laid: Laid::default(),
             confinement: confinement.into(),
             // The free tier until a caller says otherwise, which is what a build with no premium
@@ -2031,13 +2037,36 @@ impl Session {
         self.set_input(String::new());
         self.shell = false;
         self.completion = 0;
-        self.history.push(line.clone());
-        if self.persist {
-            crate::store::append_history(&line);
-        }
+        self.remember(&line);
         self.transcript.push(Entry::shell(line.clone()));
         self.scroll = 0;
         Some(line)
+    }
+
+    /// Record a prompt as sent, in this session and on disk.
+    ///
+    /// One place rather than three, because a prompt reaches the history from three of them and
+    /// what is recorded beside it has to be the same each time. Nothing is written for a prompt
+    /// the history collapsed into the one before it: the file would hold the second copy that the
+    /// session in front of the person does not.
+    fn remember(&mut self, prompt: &str) {
+        let project = self.project();
+        let stored = self.history.push(prompt, project).cloned();
+        if let (true, Some(entry)) = (self.persist, stored) {
+            crate::store::append_history(&entry);
+        }
+    }
+
+    /// The workspace a prompt is recorded as having been sent from.
+    ///
+    /// `None` for a session built without one, which is every session in a test: a prompt recorded
+    /// against the process's working directory would file the suite's prompts under whatever
+    /// directory cargo happened to run in.
+    fn project(&self) -> Option<String> {
+        match self.workspace.as_os_str().is_empty() {
+            true => None,
+            false => Some(self.workspace.display().to_string()),
+        }
     }
 
     /// The spinner glyph for this moment, for a command in flight.
@@ -2093,10 +2122,7 @@ impl Session {
         let taken = self.take_line(&prompt);
         // Recorded here rather than in `begin_turn`, because a queued prompt was recorded when it
         // was queued: from the person's side that is when they sent it.
-        self.history.push(prompt.clone());
-        if self.persist {
-            crate::store::append_history(&prompt);
-        }
+        self.remember(&prompt);
         Some(self.begin_turn(prompt, taken))
     }
 
@@ -2119,10 +2145,7 @@ impl Session {
         // Resolved before the line is taken, because taking it clears what the markers stand for.
         let resolved = self.resolved(&prompt);
         let (attached, pasted) = self.take_line(&prompt);
-        self.history.push(prompt.clone());
-        if self.persist {
-            crate::store::append_history(&prompt);
-        }
+        self.remember(&prompt);
         // Into the turn's reach the moment it is typed, rather than when the turn next asks. The
         // turn asks between rounds and a round can be a long wait; put there now, the line is
         // taken at the first boundary after it was sent, which is the soonest anything could act
@@ -2684,6 +2707,113 @@ impl Session {
 
     pub fn is_quitting(&self) -> bool {
         self.status == Status::Quitting
+    }
+
+    /// Open the search over the prompt history.
+    ///
+    /// Seeded with whatever is in the box, when that is one line of it: somebody who typed half a
+    /// prompt and then reached for the history has already said what they are looking for, and a
+    /// pasted paragraph is not that. The line stays in the box, so leaving puts nothing back.
+    ///
+    /// Nothing to search is nothing to open. A panel over the transcript saying a person has never
+    /// sent a prompt is a mode they then have to get out of.
+    pub fn open_history_search(&mut self) -> bool {
+        if self.history.is_empty() {
+            return false;
+        }
+        let seed = match self.input.contains('\n') {
+            true => String::new(),
+            false => self.input.trim().to_string(),
+        };
+        self.history_search = Some(crate::history_search::Search::looking_for(seed));
+        true
+    }
+
+    /// Close it, leaving the box as it was.
+    pub fn close_history_search(&mut self) {
+        self.history_search = None;
+    }
+
+    pub fn searching_history(&self) -> bool {
+        self.history_search.is_some()
+    }
+
+    /// What is being searched for, for the renderer and for a test.
+    pub fn history_search(&self) -> Option<&crate::history_search::Search> {
+        self.history_search.as_ref()
+    }
+
+    /// The prompts the open search answers with, oldest first.
+    ///
+    /// Empty when nothing is open, so a caller need not ask twice.
+    pub fn history_matches(&self) -> Vec<&crate::history::Entry> {
+        match &self.history_search {
+            Some(search) => search.matching(self.history.entries(), self.project().as_deref()),
+            None => Vec::new(),
+        }
+    }
+
+    /// The prompt under the cursor in the open search.
+    pub fn history_match(&self) -> Option<&crate::history::Entry> {
+        let matching = self.history_matches();
+        let at = self.history_search.as_ref()?.at(matching.len())?;
+        matching.get(at).copied()
+    }
+
+    /// Narrow the search by one character.
+    pub fn type_into_history_search(&mut self, c: char) {
+        if let Some(search) = &mut self.history_search {
+            search.typed(c);
+        }
+    }
+
+    /// Widen it by one, reporting whether there was anything to remove.
+    pub fn backspace_history_search(&mut self) -> bool {
+        match &mut self.history_search {
+            Some(search) => search.backspace(),
+            None => false,
+        }
+    }
+
+    /// Move the cursor to an older match.
+    pub fn history_search_older(&mut self) {
+        let matches = self.history_matches().len();
+        if let Some(search) = &mut self.history_search {
+            search.older(matches);
+        }
+    }
+
+    /// Move the cursor to a newer match.
+    pub fn history_search_newer(&mut self) {
+        if let Some(search) = &mut self.history_search {
+            search.newer();
+        }
+    }
+
+    /// Swap between every prompt and the ones sent from this workspace.
+    pub fn scope_history_search(&mut self) {
+        if let Some(search) = &mut self.history_search {
+            search.scope();
+        }
+    }
+
+    /// Take the prompt under the cursor into the box, and close the search.
+    ///
+    /// Into the box rather than sent, because a stored line is content: the file it came from can
+    /// be edited, and on a shared machine by somebody else. The keystroke that sends it is the
+    /// person's, exactly as it would have been had they typed the line.
+    ///
+    /// It replaces what was in the box, since what was in the box is what the search was seeded
+    /// with: keeping both would leave the person editing their own half-typed line with the
+    /// recalled one appended to it.
+    pub fn take_history_match(&mut self) -> bool {
+        let Some(prompt) = self.history_match().map(|entry| entry.prompt.clone()) else {
+            return false;
+        };
+        self.close_history_search();
+        self.set_input(prompt);
+        self.history.leave();
+        true
     }
 
     /// Open the scroller on the view already on the screen.
@@ -3700,10 +3830,26 @@ mod tests {
 
     /// A recalled prompt taken through an editor is the working line now, exactly as it would be
     /// after a keystroke. Left browsing, the next Up would step away from the edit.
+    /// The search shows when a prompt was sent and can narrow to the workspace it was sent from,
+    /// so both have to be recorded as it is sent: neither can be worked out afterwards.
+    #[test]
+    fn a_sent_prompt_records_when_and_where_it_was_sent() {
+        let mut session = Session::new("none").in_workspace("/work/here");
+        for c in "why is this slow?".chars() {
+            session.type_char(c);
+        }
+        session.submit().expect("submitted");
+
+        let entry = session.history.entries().last().expect("an entry");
+        assert_eq!(entry.prompt, "why is this slow?");
+        assert_eq!(entry.project.as_deref(), Some("/work/here"));
+        assert!(entry.at.is_some(), "no time was recorded");
+    }
+
     #[test]
     fn editing_a_recalled_prompt_stops_browsing_history() {
         let mut s = session();
-        s.history.push("an older prompt".to_string());
+        s.history.push("an older prompt".to_string(), None);
         s.recall_older();
         assert!(s.history.is_browsing());
 

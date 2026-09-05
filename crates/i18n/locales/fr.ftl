@@ -43,6 +43,7 @@ cli-keys-heading = Touches interactives :
 cli-key-send = Envoyer
 cli-key-audit = Afficher ou masquer le journal d'audit
 cli-key-history = Revenir sur les invites envoyées
+cli-key-history-search = Rechercher parmi les messages envoyés
 cli-key-scroll = Faire défiler la transcription
 cli-key-jump = Aller au début ou au plus récent
 cli-key-cancel = Annuler un tour en cours, vider la saisie, ou partir
@@ -193,6 +194,25 @@ picker-premium = premium
 picker-service-brave = Brave
 picker-service-bedrock-profile = Bedrock, votre profil AWS { $profile }
 picker-service-bedrock = Bedrock, votre compte AWS
+history-search-title = Rechercher un message
+history-scope-everywhere = partout
+history-scope-here = ce projet
+history-search-placeholder = Filtrer l'historique…
+history-search-keys =
+    ↑↓ pour se déplacer  ·  Entrée pour utiliser  ·  ctrl-s pour la portée  ·  Échap pour annuler
+history-search-nothing-matches = aucune correspondance
+history-search-more-lines =
+    { $count ->
+        [one] … +1 ligne
+       *[other] … +{ $count } lignes
+    }
+history-age-now = à l'instant
+history-age-minutes = il y a { $count } min
+history-age-hours = il y a { $count } h
+history-age-days = il y a { $count } j
+history-age-months = il y a { $count } mois
+input-history-position = Historique { $index }/{ $total }
+input-history-search = ctrl-r pour rechercher
 resume-heading = Reprendre une session
 resume-search-placeholder = Rechercher…
 resume-keys =

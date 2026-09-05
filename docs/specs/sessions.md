@@ -98,7 +98,24 @@ not be saved would trade something that matters for something that does not.
 Prompts persist across runs and are capped, consecutive duplicates collapse into one, and a prompt
 that was cancelled is removed again.
 
+Each is stored with when it was sent and which workspace it was sent from, both of which the search
+over the history reads ([terminal-input.md](terminal-input.md#INPUT-20)). A line written before
+either was kept is read as a prompt with neither, rather than being dropped or given an invented
+time, and is written back out the way it came in.
+
+**Why.** Neither fact can be worked out afterwards: a file's own timestamp says when the newest
+prompt was added and nothing about the rest, and a prompt's workspace is gone the moment the session
+that sent it ends. Somebody's history is also the one file here whose loss they would notice, so a
+format that could not read the previous one would be paid for in exactly the thing this is for.
+
 `verified-by: bravebot_tui::persist::a_prompt_sent_now_is_stored_for_next_time`
+`verified-by: bravebot_tui::persist::when_and_where_a_prompt_was_sent_outlive_the_session`
+`verified-by: bravebot_tui::persist::a_history_from_an_older_version_is_still_read`
+`verified-by: bravebot_tui::state::a_sent_prompt_records_when_and_where_it_was_sent`
+`verified-by: bravebot_tui::store::when_and_where_a_prompt_was_sent_survive_a_round_trip`
+`verified-by: bravebot_tui::store::a_line_from_an_older_history_is_still_a_prompt`
+`verified-by: bravebot_tui::store::a_prompt_with_no_stamp_is_not_given_one_on_the_way_out`
+`verified-by: bravebot_tui::store::a_prompt_holding_tabs_is_still_one_prompt`
 `verified-by: bravebot_tui::persist::a_session_recalls_a_prompt_stored_by_an_earlier_session`
 `verified-by: bravebot_tui::persist::an_appended_prompt_is_read_back_next_session`
 `verified-by: bravebot_tui::persist::a_cancelled_prompt_is_removed_from_the_stored_history`

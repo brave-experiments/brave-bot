@@ -82,6 +82,7 @@ fn print_help() {
         ("Enter", t!(cli_key_send)),
         ("Ctrl-T", t!(cli_key_audit)),
         ("Up/Down", t!(cli_key_history)),
+        ("Ctrl-R", t!(cli_key_history_search)),
         ("Wheel, PageUp/Down", t!(cli_key_scroll)),
         ("Home/End", t!(cli_key_jump)),
         ("Esc", t!(cli_key_cancel)),

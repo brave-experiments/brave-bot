@@ -7,6 +7,7 @@ governs:
   - crates/tui/src/state.rs
   - crates/tui/src/wrap.rs
   - crates/tui/src/editor.rs
+  - crates/tui/src/history_search.rs
 ---
 
 ## Scope
@@ -614,3 +615,78 @@ flight, which is aimed at something else entirely and costs the answer being wri
   behind a `tmux` or `screen` configured to keep flow control, or an ssh session that does, the key
   can be taken before it arrives, and then it does nothing here. Nothing is lost when that happens,
   since the line stays in the box.
+
+<a id="INPUT-19"></a>
+### INPUT-19: Ctrl-R searches every prompt sent, and what is chosen goes into the box
+
+Ctrl-R opens a search over the prompt history, at rest and while a turn is running, and closes it
+again along with Escape and Ctrl-C. It opens on the newest prompt, seeded with whatever single line
+was in the box. While it is open every letter narrows the list rather than reaching the box, and
+each word typed has to appear somewhere in a prompt for it to be offered; the arrows walk the
+matches, Ctrl-S swaps between every prompt and the ones sent from this workspace, and backspacing
+past the start closes the search as the scroller's does. The chord is on the key list (INPUT-13),
+and in the border of the box while an older prompt is being walked back to, which is the moment
+somebody has shown they want one.
+
+Enter puts the prompt under the cursor into the box. It does not send it, and it replaces what was
+in the box, that line being what the search was seeded with.
+
+**Why.** Up walks one prompt at a time, which is the right way in when the wanted prompt is the last
+one and no way in at all when it is the hundredth: what a person remembers of an old prompt is a
+word out of the middle of it rather than how far back it was. Ctrl-R because every shell answers
+that chord with this question.
+
+A stored prompt is content, not an instruction: the file can be edited, on a shared machine by
+somebody else. Landing it in the box rather than in a request means the keystroke that sends it is
+the person's own, after they have read it, exactly as if they had typed it
+([sessions.md](sessions.md)).
+
+Mid-turn is when the wanted prompt is most likely to be one that has scrolled away, and searching
+sends nothing, which is the whole of what a running turn refuses (INPUT-9).
+
+`verified-by: bravebot_tui::app::ctrl_r_searches_the_prompts_already_sent`
+`verified-by: bravebot_tui::render::how_to_search_the_prompts_is_said_where_somebody_would_look`
+`verified-by: bravebot_tui::app::the_prompts_can_be_searched_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::ctrl_r_with_nothing_sent_yet_opens_nothing`
+`verified-by: bravebot_tui::app::the_search_starts_from_what_was_already_typed`
+`verified-by: bravebot_tui::app::a_letter_narrows_the_search_rather_than_reaching_the_box`
+`verified-by: bravebot_tui::app::enter_puts_the_chosen_prompt_in_the_box_without_sending_it`
+`verified-by: bravebot_tui::app::escape_closes_the_search_and_leaves_the_box_as_it_was`
+`verified-by: bravebot_tui::app::backspacing_past_the_start_of_the_search_closes_it`
+`verified-by: bravebot_tui::app::the_arrows_walk_the_matches_while_the_search_is_open`
+`verified-by: bravebot_tui::history_search::typing_narrows_the_list_to_the_prompts_that_match`
+`verified-by: bravebot_tui::history_search::every_word_typed_has_to_match`
+`verified-by: bravebot_tui::history_search::narrowing_puts_the_cursor_on_the_newest_match`
+`verified-by: bravebot_tui::history_search::the_search_opens_on_the_newest_prompt`
+`verified-by: bravebot_tui::history_search::the_cursor_stops_at_the_oldest_and_at_the_newest`
+`verified-by: bravebot_tui::history_search::backspacing_widens_the_list`
+`verified-by: bravebot_tui::history_search::the_scope_narrows_to_the_prompts_sent_from_this_workspace`
+`verified-by: bravebot_tui::history_search::a_prompt_from_before_workspaces_were_kept_is_in_the_wide_list_only`
+
+<a id="INPUT-20"></a>
+### INPUT-20: the list says which prompt each row is
+
+The search is drawn over the transcript in place of the box, newest at the bottom. Each row carries
+how long ago that prompt was sent, and nothing where the entry predates times being kept. The
+prompt under the cursor is drawn in full beside the list, with a word for how many lines did not
+fit; where the terminal is too narrow for two columns the list is what is kept. A window over more
+matches than fit says so, the scope in force is named, and a search matching nothing says that
+rather than showing an empty panel.
+
+**Why.** A row is one line of what may be a paragraph, and two prompts about the same thing begin
+alike: what tells them apart is the rest of the text and when each was sent. An age is the one thing
+about an old prompt everybody is sure of, and it is compact here rather than in the words the
+session list uses, since it sits in a gutter beside every row rather than in a sentence.
+
+Empty panels are the failure mode of every mode: nothing on screen and no word for it reads as an
+interface that has stopped responding rather than as a search that is too narrow.
+
+`verified-by: bravebot_tui::render::the_prompt_search_is_drawn_over_the_transcript_rather_than_instead_of_it`
+`verified-by: bravebot_tui::history_search::an_age_is_drawn_beside_every_prompt_that_has_one`
+`verified-by: bravebot_tui::history_search::a_prompt_with_no_age_is_drawn_without_one`
+`verified-by: bravebot_tui::history_search::the_prompt_under_the_cursor_is_drawn_in_full`
+`verified-by: bravebot_tui::history_search::a_prompt_too_long_for_the_panel_says_how_much_is_left`
+`verified-by: bravebot_tui::history_search::a_narrow_panel_keeps_the_list_and_drops_the_full_prompt`
+`verified-by: bravebot_tui::history_search::a_list_taller_than_the_panel_says_there_is_more_above`
+`verified-by: bravebot_tui::history_search::a_search_matching_nothing_says_so`
+`verified-by: bravebot_tui::history_search::the_scope_is_named_on_the_panel`

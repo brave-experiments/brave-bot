@@ -13,6 +13,7 @@ pub mod dropped;
 pub mod editor;
 pub mod entries;
 pub mod history;
+pub mod history_search;
 pub mod indicator;
 pub mod logo;
 pub mod loops;
