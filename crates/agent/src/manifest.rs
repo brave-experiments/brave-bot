@@ -1047,6 +1047,7 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
     let trust = policy.trust().clone();
     let programs = policy.programs().clone();
     Ok(Outcome {
+        answer: reply.clone(),
         reply,
         attempt: Some(attempt.clone()),
         model,

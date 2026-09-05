@@ -1661,6 +1661,155 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(spec)
     }
 
+    /// Fix what a delegate is before it exists.
+    ///
+    /// **A run whose own context has met something untrusted cannot delegate at all.** That is
+    /// the clause the rest of this rests on. A delegate is a planner, so its context holds
+    /// nothing an attacker wrote, and the whole of what steers it is a task this run composed. A
+    /// run that has itself met untrusted bytes composes tasks that are a function of them, so
+    /// letting one delegate would put untrusted content in a planner's context by the long way
+    /// round. Refusing is the right answer rather than a limitation: nothing makes a context
+    /// untrusted today, and if something ever does, this is what stops it reaching a second
+    /// planner.
+    ///
+    /// It is why the arguments are read here rather than checked against a label. What reaches
+    /// this call is a tool argument, and the tool layer labels those pessimistically because it
+    /// cannot know where they came from. The kernel tracked what entered the context and does
+    /// know, so the integrity of this run is the honest question and the argument's own label is
+    /// not. Both must still be public: content of the user's cannot become another planner's
+    /// prompt, whatever this run has met.
+    ///
+    /// The capabilities are the kind's, narrowed by what this run holds. Delegation redistributes
+    /// authority and never creates it, so the intersection is taken here rather than trusted to
+    /// be empty: a kind asking for something the parent lacks gets a delegate without it, and the
+    /// trail says what was dropped.
+    pub fn before_delegate(
+        &mut self,
+        id: &str,
+        kind: &Labelled<String>,
+        task: &Labelled<String>,
+    ) -> Gated<crate::delegate::DelegateSpec> {
+        if self.context != Integrity::Trusted {
+            return Err(self.deny(
+                "delegate",
+                Principle::IntegrityGate,
+                format!(
+                    "{id}: this run's context has met something untrusted, so nothing it says \
+                     may become a planner's prompt"
+                ),
+            ));
+        }
+
+        for (field, value) in [("kind", kind), ("task", task)] {
+            let label = value.label();
+            if !label.is_public() {
+                return Err(self.deny(
+                    "delegate",
+                    Principle::Confinement,
+                    format!(
+                        "{id}: {field} is {label} and private content must not become a \
+                         planner's prompt; say what to do rather than pasting what was read"
+                    ),
+                ));
+            }
+        }
+
+        // Read, not carried, and only now: a name has to be compared against the enumerated set
+        // to select anything at all. Comparing it decides nothing an attacker steers, because
+        // this run has met nothing an attacker wrote.
+        let (name, _) = kind.clone().into_parts_for_decoding();
+        let Some(selected) = crate::delegate::Kind::from_name(&name) else {
+            return Err(self.deny(
+                "delegate",
+                Principle::Capability,
+                format!(
+                    "{id}: there is no kind of delegate called '{name}'; the kinds are {}",
+                    crate::delegate::Kind::NAMES.join(", ")
+                ),
+            ));
+        };
+
+        let wanted = selected.capabilities();
+        let held: CapabilitySet = wanted
+            .iter()
+            .filter(|capability| self.capabilities.contains(*capability))
+            .collect();
+        let dropped: Vec<&str> = wanted
+            .iter()
+            .filter(|capability| !self.capabilities.contains(*capability))
+            .map(Capability::as_str)
+            .collect();
+        if !dropped.is_empty() {
+            self.allow(
+                "delegate",
+                format!(
+                    "{id}: a {selected} asks for {} which this run does not hold, so it is \
+                     delegated without them",
+                    dropped.join(", ")
+                ),
+            );
+        }
+
+        let (task, _) = task.clone().into_parts_for_decoding();
+        let spec = crate::delegate::DelegateSpec::new(id, selected, task, held, selected.rounds());
+
+        self.allow(
+            "delegate",
+            format!(
+                "{}, from a context that has met nothing untrusted, with a prompt it cannot \
+                 choose and no way to delegate again",
+                spec.describe()
+            ),
+        );
+        Ok(spec)
+    }
+
+    /// Lend the audit trail to a nested run.
+    ///
+    /// A delegate is a run of its own and needs a policy of its own, which needs somewhere to
+    /// record what it decided. One trail records both: a nested run whose gates reported
+    /// somewhere else would leave a hole in the session's record exactly where somebody most
+    /// wants to read it, which is the part of the turn they did not watch.
+    ///
+    /// Hands out no content. A sink takes events, and an event carries the driver's own
+    /// description of a decision, never the bytes it was about.
+    pub fn sink(&mut self) -> &mut S {
+        self.sink
+    }
+
+    /// Take back what a person decided inside a nested run.
+    ///
+    /// The trust map and the vouched programs, and nothing the delegate itself produced. Both are
+    /// standing decisions a person made about their own machine, and the map belongs to the
+    /// session rather than to whichever run happened to be going when they made it: a delegate
+    /// told once that the build may run must not leave the next one asking again.
+    ///
+    /// Replacing rather than merging is sound because the two records have the same ancestor and
+    /// only one of them could have moved. A delegate starts from a copy of this run's, and this
+    /// run is blocked for as long as the delegate exists, so there is no version of this map to
+    /// lose.
+    ///
+    /// **No label crosses here and none could.** A trust rule is a path a person answered about
+    /// and a vouched program is a command they approved, so both were `(T,pub)` before either run
+    /// existed. Nothing a delegate read, produced or was told is in either record.
+    pub fn adopt_from_delegate(
+        &mut self,
+        trust: TrustStore,
+        programs: crate::programs::TrustedPrograms,
+    ) {
+        self.allow(
+            "delegate",
+            format!(
+                "what a person vouched for inside a delegate is kept: {} trust rules, {} \
+                 commands",
+                trust.rules().count(),
+                programs.len()
+            ),
+        );
+        self.trust = trust;
+        self.programs = programs;
+    }
+
     /// Assemble a processor's input from the slots its spec names.
     ///
     /// Runs here because the bytes must be concatenated and the driver may not hold them. What
@@ -5876,6 +6025,155 @@ mod tests {
                     |e| matches!(e, Event::Declassified { slot, .. } if slot.as_str() == "ref:2")
                 ),
                 "the release was not recorded"
+            );
+        }
+    }
+
+    mod delegates {
+        use super::*;
+        use crate::delegate::Kind;
+
+        /// What a planner's own words look like by the time a tool hands them over: the tool layer
+        /// labels every argument pessimistically, because it cannot know where one came from.
+        fn argument(text: &str) -> Labelled<String> {
+            Labelled::new(text.to_string(), Label::untrusted_public())
+        }
+
+        /// A delegate is a planner, so its task must come from a context holding nothing an
+        /// attacker wrote. A run that has met untrusted bytes composes tasks that are a function
+        /// of them, so it may not delegate at all: narrowing the delegate would not help, since
+        /// what is wrong is the sentence steering it rather than what it holds.
+        #[test]
+        fn a_run_that_has_met_something_untrusted_cannot_delegate() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "look into it"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap()
+            .resuming(Integrity::Untrusted);
+
+            let err = policy
+                .before_delegate("delegate", &argument("reader"), &argument("find the bug"))
+                .expect_err("a fallen context must not steer a second planner");
+            assert_eq!(err.principle, Principle::IntegrityGate);
+            assert!(!policy.finish());
+        }
+
+        /// The same run, with the context it ordinarily has, delegates. Without this the test
+        /// above would pass against a gate that refused everything.
+        #[test]
+        fn a_clean_context_delegates() {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+
+            let spec = policy
+                .before_delegate("delegate", &argument("reader"), &argument("find the bug"))
+                .expect("a clean context may delegate");
+            assert_eq!(spec.kind(), Kind::Reader);
+            assert_eq!(spec.task(), "find the bug");
+        }
+
+        /// Private content may not become another planner's prompt. It would be read by a model
+        /// and reported back in words, which is the user's data leaving by the long way round.
+        #[test]
+        fn a_private_task_cannot_direct_a_delegate() {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+
+            let private = Labelled::new(
+                "here is what the file said: ...".to_string(),
+                Label::untrusted_private(),
+            );
+            let err = policy
+                .before_delegate("delegate", &argument("reader"), &private)
+                .expect_err("private content must not become a prompt");
+            assert_eq!(err.principle, Principle::Confinement);
+            assert!(!policy.finish());
+        }
+
+        /// The kind is the field that decides what the run holds, so it selects from the driver's
+        /// list or it selects nothing. A name naming a capability, a path, or a kind somebody
+        /// wished existed reaches no capability set.
+        #[test]
+        fn a_kind_nobody_enumerated_is_refused() {
+            for name in ["planner", "admin", "file_write", "../worker", "Worker", ""] {
+                let mut sink = RecordingSink::new();
+                let mut policy = open_policy(&mut sink);
+
+                let err = policy
+                    .before_delegate("delegate", &argument(name), &argument("do it"))
+                    .expect_err("a name nobody enumerated must reach no capability set");
+                assert_eq!(err.principle, Principle::Capability, "for '{name}'");
+                assert!(!policy.finish());
+            }
+        }
+
+        /// Delegation redistributes authority and never creates it. A worker asks for writing and
+        /// running; a run holding neither hands on neither, and the delegate is built without them
+        /// rather than refused, so a narrow run can still delegate the reading.
+        #[test]
+        fn a_delegate_holds_no_more_than_the_run_that_spawned_it() {
+            let mut sink = RecordingSink::new();
+            let mut policy = Policy::begin(
+                routing_with("task", "look into it"),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .unwrap();
+
+            let spec = policy
+                .before_delegate("delegate", &argument("worker"), &argument("fix it"))
+                .expect("a narrow run may still delegate");
+
+            assert!(spec.capabilities().contains(Capability::FileRead));
+            assert!(
+                !spec.capabilities().contains(Capability::FileWrite),
+                "a delegate was handed writing by a run that could not write"
+            );
+            assert!(
+                !spec.capabilities().contains(Capability::ShellExec),
+                "a delegate was handed running by a run that could not run"
+            );
+        }
+
+        /// The bound belongs to the kind, so nothing about a call can lengthen it. A planner that
+        /// could set it would be setting its own delegate's budget from a sentence it wrote.
+        #[test]
+        fn a_delegates_bound_comes_from_its_kind() {
+            for name in Kind::NAMES {
+                let mut sink = RecordingSink::new();
+                let mut policy = open_policy(&mut sink);
+
+                let spec = policy
+                    .before_delegate("delegate", &argument(name), &argument("do it"))
+                    .expect("an enumerated kind");
+                let kind = Kind::from_name(name).expect("enumerated");
+                assert_eq!(spec.rounds(), kind.rounds(), "{name} was bounded elsewhere");
+            }
+        }
+
+        /// A person answering about their own machine has answered for the session, not for
+        /// whichever run was going at the time. Losing it would leave the next delegate asking
+        /// again about the build the last one was told it could run.
+        #[test]
+        fn what_a_person_vouched_for_inside_a_delegate_is_kept() {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+            assert!(!policy.trust().is_trusted("vendor/lib.js"));
+
+            // What the delegate's own run came back with: the same map, plus the answer a person
+            // gave inside it.
+            let mut inside = policy.trust().clone();
+            inside.trust("vendor/lib.js");
+            policy.adopt_from_delegate(inside, policy.programs().clone());
+
+            assert!(
+                policy.trust().is_trusted("vendor/lib.js"),
+                "an answer a person gave inside a delegate was thrown away with it"
             );
         }
     }

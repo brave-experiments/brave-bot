@@ -17,6 +17,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [trust-map.md](trust-map.md) | `TRUST` | 13 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
 | [permissions.md](permissions.md) | `PERM` | 12 | rules written in advance about what to ask about and what to refuse |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |
+| [delegation.md](delegation.md) | `DELEGATE` | 13 | a second planner, narrower than the first, and what crosses back from one |
 | [turns.md](turns.md) | `TURN` | 2 | how long a turn may go on, and what happens when it does not stop |
 | [prompting.md](prompting.md) | `PROMPT` | 10 | every moment the system stops and puts something to a human, and what an answer grants |
 | [naming-files.md](naming-files.md) | `NAME` | 7 | writing `@path` in a prompt: what it puts into the turn and what it vouches for |
@@ -58,6 +59,7 @@ the routing-versus-content split they share.
 | [tools/write-file.md](tools/write-file.md) | `WRITE` | 4 | `write_file` |
 | [tools/edit-file.md](tools/edit-file.md) | `EDIT` | 3 | `edit_file` |
 | [tools/spawn-processor.md](tools/spawn-processor.md) | `SPAWN` | 3 | `spawn_processor` |
+| [tools/spawn-agent.md](tools/spawn-agent.md) | `AGENT` | 3 | `spawn_agent` |
 | [tools/run.md](tools/run.md) | `RUN` | 12 | `run` |
 | [tools/read-output.md](tools/read-output.md) | `OUTPUT` | 2 | `read_output` |
 | [tools/load-skill.md](tools/load-skill.md) | `LOAD` | 3 | `load_skill` |

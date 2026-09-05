@@ -460,6 +460,31 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                 "required": ["ref"]
             }),
         ),
+        Tool::function(
+            "spawn_agent",
+            "Hand a whole sub-task to a second agent and get back one report. It has its own              context, so everything it reads stays with it and only what it says at the end              reaches you. That is what this is for: running a build reads the whole log, and              asking a delegate to run the build tells you what failed. Use it when finding              something out would cost you more context than the answer is worth, or when a              sub-task is separable enough to describe in a paragraph. It cannot ask the user              anything and it cannot spawn one of its own, so give it everything it needs in the              task. Its writes and its runs are still shown to the user for approval, so this              saves you context and never an approval. Do not use it for something one read would              answer: it is a whole second agent and costs like one.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": "Which kind of agent, narrowest first. \"reader\" reads, \
+                                        lists, searches and runs processors: use it to find \
+                                        something out. \"checker\" also runs programs, so it \
+                                        can build, test and lint, but writes nothing: use it to \
+                                        find out whether something works. \"worker\" also \
+                                        writes files: use it to finish a sub-task. Pick the \
+                                        narrowest one that can do the job.",
+                        "enum": ["reader", "checker", "worker"]
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "What it has to do, in your own words, as the whole of                                         what it will know. It cannot see this conversation, your                                         references, the user's prompt or anything you have read,                                         and it cannot come back for more, so name the paths, the                                         commands, the symptom and what a finished answer has to                                         contain. Say what you want reported, not just what you                                         want done."
+                    }
+                },
+                "required": ["kind", "task"]
+            }),
+        ),
     ];
 
     if self_paced {
@@ -503,6 +528,39 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
     }
 
     tools
+}
+
+/// The tools a delegate of one kind is offered.
+///
+/// Filtered from the one table rather than written again, so a schema improved for the planner is
+/// improved for a delegate on the same line. What a capability reaches is the rule, because a tool
+/// offered to a run whose gates refuse it on every call is a tool the model has to be told to
+/// ignore.
+///
+/// Four are left out by name, each for its own reason:
+///
+/// - `spawn_agent`, because a delegate cannot delegate. The bound on a tree of them is the
+///   product of the bounds, which is a number nobody chose, and a person approving a write at
+///   the third level has no way to see which task it belongs to.
+/// - `ask_user`, because a delegate's task came from a planner rather than from the person, so a
+///   question about it asks somebody to arbitrate something they never set up.
+/// - `todo_write`, because the list on the screen belongs to the turn the person is watching, and
+///   a delegate writing to it would replace what they were reading with the steps of a sub-task
+///   they did not ask about.
+/// - `schedule_next`, because only a tick of a self-paced loop may say when the next is due, and
+///   a delegate is not one.
+pub fn for_delegate(capabilities: &bravebot_core::capability::CapabilitySet) -> Vec<Tool> {
+    use bravebot_core::capability::Capability;
+
+    available(false)
+        .into_iter()
+        .filter(|tool| match tool.function.name.as_str() {
+            "spawn_agent" | "ask_user" | "todo_write" | "schedule_next" => false,
+            "write_file" | "edit_file" => capabilities.contains(Capability::FileWrite),
+            "run" | "read_output" => capabilities.contains(Capability::ShellExec),
+            _ => capabilities.contains(Capability::FileRead),
+        })
+        .collect()
 }
 
 /// A read a tool decided not to perform yet.
@@ -610,6 +668,20 @@ pub struct Tools<'a> {
     /// Read by dispatch as well as by the tool table, so a call to a tool this turn was not
     /// offered is answered the way any other unknown name is rather than quietly working.
     pub self_paced: bool,
+    /// The user's own directory, where their standing instructions and skills live.
+    ///
+    /// Carried so a delegate discovers the same ones this turn did. Without it a delegate would
+    /// find only what the workspace holds, and a user whose conventions live in their home
+    /// directory would have them apply to the turn and not to the work it handed on.
+    pub home: Option<&'a std::path::Path>,
+    /// Whether this turn is itself a delegate's, and so may not spawn one.
+    ///
+    /// Read by dispatch as well as by the tool table, for the reason `self_paced` is: a delegate
+    /// is offered no way to delegate, and a call it makes anyway has to be answered the way any
+    /// other unknown name is rather than quietly starting a second level. Two refusals rather
+    /// than one, because the depth is what bounds the whole tree and a bound that rests on the
+    /// tool list alone rests on the model reading it.
+    pub delegated: bool,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -1027,6 +1099,11 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
+        // A delegate is never offered this, so a call to it from one is answered the way any
+        // other unknown name is rather than quietly starting a second level.
+        "spawn_agent" if !tools.delegated => {
+            spawn_agent(policy, tools, confirmer, reporter, &arguments)
+        }
         "load_skill" => load_skill(policy, tools.skills, &arguments),
         "ask_user" => ask_user(policy, confirmer, &arguments),
         "run" => run(policy, tools, confirmer, &arguments),
@@ -2515,6 +2592,83 @@ fn spawn_processor<S: Sink>(
     }
 }
 
+/// Hand a sub-task to a second planner and bring back one report.
+///
+/// Everything about the delegate is fixed by the kernel before it exists: which capabilities it
+/// holds, which prompt it reads, and how many rounds it may take. What arrives here is a name out
+/// of an enumerated set and a paragraph, and neither can widen anything.
+///
+/// The report comes back as a labelled value and is presented like any other tool result, so the
+/// kernel decides whether the planner is shown the words or a reference to them. Nothing here
+/// reads it, and nothing here could: a delegate's answer is model output, and which of the two
+/// shapes it takes is settled by the label its own context gave it.
+fn spawn_agent<S: Sink, C: Confirmer, R: Reporter>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    confirmer: &mut C,
+    reporter: &mut R,
+    arguments: &Value,
+) -> Produced {
+    let Some(kind) = argument(arguments, "kind") else {
+        return problem(format!(
+            "error: 'kind' is required and must be one of {}",
+            bravebot_core::delegate::Kind::NAMES.join(", ")
+        ));
+    };
+    let Some(task) = argument(arguments, "task") else {
+        return problem(
+            "error: 'task' is required and must be a string saying what the delegate has to do",
+        );
+    };
+
+    // The trail's name for it is the driver's own word, not the task: a task is a paragraph, and
+    // it would be in every line of the trail that mentions this run.
+    let spec = match policy.before_delegate("delegate", &kind, &task) {
+        Ok(spec) => spec,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
+    let asked_at = std::time::Instant::now();
+    let done = crate::delegate::run(
+        policy,
+        tools.chat.config,
+        tools.chat.egress,
+        tools.workspace,
+        tools.home,
+        tools.chat.model,
+        tools.cancel,
+        confirmer,
+        reporter,
+        &spec,
+    );
+    // Taken around the run rather than inside it, so a delegate that failed still reports the
+    // time it spent failing: it kept the turn waiting just as long.
+    let waited = asked_at.elapsed();
+
+    match done {
+        Ok(done) => {
+            let note = format!(
+                "a {} delegate answered after {}",
+                done.kind,
+                tally(done.rounds, "round", "rounds")
+            );
+            // Its inference, not the wall clock: what the delegate spent waiting on the model
+            // belongs in the turn's inference figure, and the rest of its seconds are the tool
+            // time this call really took.
+            Produced::new(done.report, format!("a {} delegate", done.kind), note)
+                .costing(done.usage)
+                .waiting(done.inference)
+        }
+        // The seconds are still charged, because the turn waited them. Nothing else survives: a
+        // delegate that failed part-way may have written files, and each of those was approved
+        // from a diff on its own, so there is nothing here to unwind and nothing to report but
+        // what went wrong.
+        Err(error) => {
+            problem(format!("error: the delegate could not finish: {error}")).waiting(waited)
+        }
+    }
+}
+
 /// Read a skill the planner was listed.
 ///
 /// The name arrives as model output, so it is promoted the way a read path is: the operation
@@ -2945,9 +3099,87 @@ mod tests {
                 "load_skill",
                 "ask_user",
                 "run",
-                "read_output"
+                "read_output",
+                "spawn_agent"
             ]
         );
+    }
+
+    /// The depth is what bounds a whole tree of delegates, and a bound resting on the tool list
+    /// alone rests on the model reading it. This pins half of it; the other half is dispatch,
+    /// which answers the call as an unknown name.
+    #[test]
+    fn a_delegate_is_never_offered_a_way_to_delegate() {
+        for name in bravebot_core::delegate::Kind::NAMES {
+            let kind = bravebot_core::delegate::Kind::from_name(name).expect("enumerated");
+            let offered: Vec<String> = for_delegate(&kind.capabilities())
+                .iter()
+                .map(|t| t.function.name.clone())
+                .collect();
+            assert!(
+                !offered.iter().any(|t| t == "spawn_agent"),
+                "a {name} was offered a way to delegate"
+            );
+        }
+    }
+
+    /// A tool a run's gates would refuse on every call is a tool the model has to be told to
+    /// ignore, so the set follows the capabilities rather than being listed per kind.
+    #[test]
+    fn a_delegate_is_offered_only_the_tools_its_capabilities_reach() {
+        use bravebot_core::delegate::Kind;
+
+        let names = |kind: Kind| -> Vec<String> {
+            for_delegate(&kind.capabilities())
+                .iter()
+                .map(|t| t.function.name.clone())
+                .collect()
+        };
+
+        let reader = names(Kind::Reader);
+        assert!(reader.contains(&"read_file".to_string()));
+        assert!(reader.contains(&"spawn_processor".to_string()));
+        assert!(!reader.contains(&"run".to_string()));
+        assert!(!reader.contains(&"read_output".to_string()));
+        assert!(!reader.contains(&"write_file".to_string()));
+        assert!(!reader.contains(&"edit_file".to_string()));
+
+        let checker = names(Kind::Checker);
+        assert!(checker.contains(&"run".to_string()));
+        assert!(checker.contains(&"read_output".to_string()));
+        assert!(!checker.contains(&"write_file".to_string()));
+        assert!(!checker.contains(&"edit_file".to_string()));
+
+        let worker = names(Kind::Worker);
+        assert!(worker.contains(&"write_file".to_string()));
+        assert!(worker.contains(&"edit_file".to_string()));
+        assert!(worker.contains(&"run".to_string()));
+    }
+
+    /// Neither tool has an audience from inside a delegate. The question would put a task the
+    /// person never set to them, and the list would replace the one they are watching with the
+    /// steps of a sub-task they did not ask about.
+    #[test]
+    fn a_delegate_is_offered_no_task_list_and_no_way_to_ask() {
+        for name in bravebot_core::delegate::Kind::NAMES {
+            let kind = bravebot_core::delegate::Kind::from_name(name).expect("enumerated");
+            let offered: Vec<String> = for_delegate(&kind.capabilities())
+                .iter()
+                .map(|t| t.function.name.clone())
+                .collect();
+            assert!(
+                !offered.iter().any(|t| t == "ask_user"),
+                "a {name} was offered a question to put to somebody"
+            );
+            assert!(
+                !offered.iter().any(|t| t == "todo_write"),
+                "a {name} was offered the task list a person is watching"
+            );
+            assert!(
+                !offered.iter().any(|t| t == "schedule_next"),
+                "a {name} was offered a way to pace a loop it is not a tick of"
+            );
+        }
     }
 
     /// A **shell** stays absent, and this is the distinction the whole tool turns on. A shell

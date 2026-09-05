@@ -114,7 +114,7 @@ impl CapabilityToken {
 ///
 /// Deliberately immutable once built: a run cannot acquire new capabilities partway
 /// through, which is what stops a compromised step from escalating.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilitySet {
     granted: Vec<Capability>,
 }

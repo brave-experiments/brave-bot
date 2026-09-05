@@ -488,6 +488,21 @@ fn a_missing_file_fails_the_turn() {
 }
 
 /// Serve a sequence of replies, one per request, so a multi-step loop can be driven.
+/// The request bodies of the first `n` rounds, or a failure saying how many there really were.
+///
+/// `recv` blocks forever when a turn made fewer rounds than the test expected, which turns a
+/// wrong assertion into a hung suite. This says what happened instead.
+fn rounds(received: &mpsc::Receiver<String>, n: usize) -> Vec<String> {
+    let mut bodies = Vec::with_capacity(n);
+    for round in 0..n {
+        match received.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(body) => bodies.push(body),
+            Err(_) => panic!("expected {n} rounds, the turn sent {round}"),
+        }
+    }
+    bodies
+}
+
 fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
     serve_sequence_losing_the_first(0, replies)
 }
@@ -8471,5 +8486,348 @@ fn compacting_on_request_grants_itself_nothing_but_reaching_the_model() {
     assert!(
         granted.iter().all(|line| line.contains("web_fetch")),
         "compacting granted itself more than reaching the model: {granted:?}"
+    );
+}
+
+/// What the whole feature is for. The delegate reads a file, says one sentence about it, and the
+/// sentence is what the planner is given: the round the planner sends afterwards carries the
+/// report and none of the file.
+///
+/// The file's body is deliberately distinctive, because the assertion is about a body of bytes
+/// never appearing rather than about a summary being present.
+#[test]
+fn what_a_delegate_read_never_reaches_the_planner_that_asked() {
+    let scratch = Scratch::new("delegate-context");
+    std::fs::write(
+        scratch.path.join("build.log"),
+        "PECULIAR-LOG-BODY\nline two of the log\n",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        // The planner delegates.
+        tool_request(
+            "spawn_agent",
+            r#"{"kind":"reader","task":"read build.log and say what the first line is"}"#,
+        ),
+        // The delegate's own rounds: it reads, then answers.
+        tool_request("read_file", r#"{"path":"build.log"}"#),
+        reply_with("the first line reads PECULIAR-LOG-BODY"),
+        // The planner answers on what it was told.
+        reply_with("the log starts with a peculiar line"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut trust = bravebot_core::trust::TrustStore::new();
+    trust.trust(".");
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("find out what the log says"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trust,
+    )
+    .expect("turn runs");
+
+    let bodies = rounds(&received, 4);
+
+    // The delegate really did read it, or the test below would pass for the wrong reason.
+    assert!(
+        bodies[2].contains("PECULIAR-LOG-BODY"),
+        "the delegate never saw the file it was sent to read"
+    );
+
+    // And the planner's last round has the report without the log.
+    assert!(
+        bodies[3].contains("the first line reads"),
+        "the report did not reach the planner"
+    );
+    assert!(
+        !bodies[3].contains("line two of the log"),
+        "what the delegate read followed its report into the planner's context"
+    );
+}
+
+/// A delegate's answer travels as a tool result and is presented like any other. Its context met
+/// nothing untrusted, so the planner is shown the words rather than a reference to them.
+#[test]
+fn a_delegates_report_reaches_the_planner_that_asked_for_it() {
+    let scratch = Scratch::new("delegate-report");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "spawn_agent",
+            r#"{"kind":"reader","task":"say something short"}"#,
+        ),
+        reply_with("REPORTED BACK"),
+        reply_with("relayed"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("delegate something"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let bodies = rounds(&received, 3);
+    assert!(
+        bodies[2].contains("REPORTED BACK"),
+        "the report was not put in front of the planner"
+    );
+    assert!(
+        !bodies[2].contains("could not be shown to you"),
+        "a report from a clean context was quarantined from the planner"
+    );
+    assert_eq!(outcome.reply_for_display(), "relayed");
+}
+
+/// A delegate is a planner, so a file nobody vouched for is quarantined from it exactly as it
+/// would be from the turn that spawned it. This is the clause that separates a delegate from a
+/// processor: it holds tools, so it must not hold untrusted content.
+#[test]
+fn what_a_delegate_could_not_read_is_quarantined_from_it_too() {
+    let scratch = Scratch::new("delegate-quarantine");
+    std::fs::write(scratch.path.join("notes.txt"), "UNVOUCHED-BODY\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "spawn_agent",
+            r#"{"kind":"reader","task":"read notes.txt"}"#,
+        ),
+        tool_request("read_file", r#"{"path":"notes.txt"}"#),
+        reply_with("it is quarantined from me too"),
+        reply_with("noted"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // No trust map at all, so nothing in the workspace is vouched for.
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look at the notes"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let bodies = rounds(&received, 4);
+    assert!(
+        !bodies[2].contains("UNVOUCHED-BODY"),
+        "a delegate was shown a file nobody vouched for"
+    );
+    assert!(
+        bodies[2].contains("could not be shown to you"),
+        "the delegate was not handed a reference in its place"
+    );
+}
+
+/// The depth is what bounds a tree of delegates. The tool is not offered inside one, and a call
+/// to it anyway is answered as an unknown name rather than quietly starting a second level.
+#[test]
+fn a_call_to_spawn_agent_from_inside_a_delegate_does_nothing() {
+    let scratch = Scratch::new("delegate-depth");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("spawn_agent", r#"{"kind":"worker","task":"do the work"}"#),
+        // The delegate asks for one of its own.
+        tool_request(
+            "spawn_agent",
+            r#"{"kind":"worker","task":"do it for me instead"}"#,
+        ),
+        reply_with("I could not delegate"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("delegate the work"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let bodies = rounds(&received, 4);
+    assert!(
+        received.try_recv().is_err(),
+        "a second level of delegation ran"
+    );
+
+    // The delegate's request offered no such tool, and the call it made anyway was refused.
+    assert!(
+        !bodies[1].contains("spawn_agent"),
+        "a delegate was offered a way to delegate"
+    );
+    assert!(
+        bodies[2].contains("no such tool"),
+        "a delegate's call to spawn_agent was not refused: {}",
+        bodies[2]
+    );
+}
+
+/// Delegation saves context and never an approval. The write happens inside the delegate and
+/// still goes to a person, with the path and the diff, exactly as it would from the turn.
+#[test]
+fn a_delegates_write_is_approved_on_its_own() {
+    let scratch = Scratch::new("delegate-write");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("spawn_agent", r#"{"kind":"worker","task":"write out.txt"}"#),
+        tool_request(
+            "write_file",
+            r#"{"path":"out.txt","contents":"from the delegate"}"#,
+        ),
+        reply_with("wrote it"),
+        reply_with("the delegate wrote it"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("have a delegate write it"),
+        &mut confirmer,
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        confirmer.seen.len(),
+        1,
+        "a delegate's write did not reach a person"
+    );
+    assert!(
+        confirmer.seen[0].path.ends_with("out.txt"),
+        "the person was asked about the wrong path"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("out.txt")).unwrap(),
+        "from the delegate"
+    );
+}
+
+/// A refused write inside a delegate is refused, and nothing about being one round further in
+/// changes that. The endorsement is minted from the person's answer, so there is nothing for the
+/// delegate to hold instead.
+#[test]
+fn a_delegates_write_is_refused_when_the_person_refuses() {
+    let scratch = Scratch::new("delegate-write-refused");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("spawn_agent", r#"{"kind":"worker","task":"write out.txt"}"#),
+        tool_request(
+            "write_file",
+            r#"{"path":"out.txt","contents":"from the delegate"}"#,
+        ),
+        reply_with("it was refused"),
+        reply_with("the write was refused"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::rejecting();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("have a delegate write it"),
+        &mut confirmer,
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(confirmer.seen.len(), 1);
+    assert!(
+        !scratch.path.join("out.txt").exists(),
+        "a delegate wrote a file a person refused"
+    );
+}
+
+/// One record, covering the part of the turn nobody watched. The delegate's own gates report into
+/// the trail the turn opened, so a person reading it afterwards can see what the delegate was
+/// allowed to hold and what it did.
+#[test]
+fn one_trail_records_the_delegate_and_the_turn_that_spawned_it() {
+    let scratch = Scratch::new("delegate-trail");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "spawn_agent",
+            r#"{"kind":"checker","task":"say something"}"#,
+        ),
+        reply_with("said"),
+        reply_with("relayed"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("delegate something"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let described: Vec<String> = sink
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            Event::GatePassed { gate, detail } if *gate == "delegate" => Some(detail.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        described
+            .iter()
+            .any(|d| d.contains("checker") && d.contains("file_read")),
+        "the trail does not say what the delegate was allowed to hold: {described:?}"
+    );
+
+    // And the delegate's own turn precommitted its routing into the same trail, which is what
+    // makes the record continuous rather than two records with a gap between them.
+    let precommits = sink
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::GatePassed { gate, .. } if *gate == "precommit"))
+        .count();
+    assert!(
+        precommits >= 2,
+        "the delegate's own run recorded nothing in the turn's trail"
     );
 }

@@ -604,6 +604,7 @@ verb-load-skill = Skill
 verb-ask-user = Ask
 verb-run = Run
 verb-read-output = Read output
+verb-spawn-agent = Delegate
 verb-schedule-next = Schedule
 verb-unknown = Tool
 

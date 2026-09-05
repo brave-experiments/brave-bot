@@ -27,6 +27,7 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 | [`write_file`](write-file.md) | `path`, `path_ref`, `contents_ref` | `contents` | confirmation |
 | [`edit_file`](edit-file.md) | `path`, `path_ref`, `replace_all` | `old_text`, `new_text` | confirmation |
 | [`spawn_processor`](spawn-processor.md) | `reads`, `about` | `instruction` | a reference |
+| [`spawn_agent`](spawn-agent.md) | `kind` | `task` | one report |
 | [`run`](run.md) | every stage's program and arguments | standard input | a reference |
 | [`read_output`](read-output.md) | the reference naming the result | none | the bytes, if a person allows it |
 | [`load_skill`](load-skill.md) | `name` | none | the skill's text |
@@ -36,6 +37,11 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 
 Reads return content when it is trusted and a reference when it is not. Writes are silent or shown
 according to the trust map.
+
+`spawn_agent`'s `task` is the one content argument that may not be untrusted. It decides no
+destination, so it is not routing, but it becomes a second planner's prompt rather than a payload
+something carries, and a planner's context holds nothing untrusted.
+[delegation.md](../delegation.md) is where that is settled.
 
 `verified-by: bravebot_core::policy::routing_refuses_untrusted_values`
 `verified-by: bravebot_core::policy::routing_refuses_private_values`

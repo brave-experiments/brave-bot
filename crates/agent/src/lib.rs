@@ -8,6 +8,7 @@ pub mod backend;
 pub mod compact;
 pub mod confirm;
 pub mod conversation;
+pub mod delegate;
 pub mod diff;
 pub mod exec;
 pub mod glob;
@@ -31,6 +32,7 @@ pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, Unattended, WriteRequest};
 pub use conversation::Conversation;
+pub use delegate::Delegated;
 pub use mode::Mode;
 pub use processor::ProcessorError;
 pub use report::{Activity, IgnoreReports, Reporter};

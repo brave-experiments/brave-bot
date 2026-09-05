@@ -601,6 +601,7 @@ verb-load-skill = Compétence
 verb-ask-user = Demander
 verb-run = Exécuter
 verb-read-output = Lire la sortie
+verb-spawn-agent = Déléguer
 verb-schedule-next = Programmer
 verb-unknown = Outil
 

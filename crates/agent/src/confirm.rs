@@ -558,12 +558,12 @@ impl Confirmer for ReadsOutput {
 /// What is measured is the wait, not the decision. A refusal takes as long to arrive as an approval,
 /// and the person was equally away from their desk either way. Nothing here reads a request or an
 /// answer: it starts a clock, hands the question straight through, and stops it.
-pub struct Timed<'a, C: Confirmer> {
+pub struct Timed<'a, C: Confirmer + ?Sized> {
     inner: &'a mut C,
     waited: std::time::Duration,
 }
 
-impl<'a, C: Confirmer> Timed<'a, C> {
+impl<'a, C: Confirmer + ?Sized> Timed<'a, C> {
     pub fn new(inner: &'a mut C) -> Self {
         Self {
             inner,
@@ -585,7 +585,7 @@ impl<'a, C: Confirmer> Timed<'a, C> {
     }
 }
 
-impl<C: Confirmer> Confirmer for Timed<'_, C> {
+impl<C: Confirmer + ?Sized> Confirmer for Timed<'_, C> {
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
         self.timing(|inner| inner.confirm_write(request))
     }
