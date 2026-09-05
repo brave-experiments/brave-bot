@@ -184,12 +184,15 @@ quit = quitter
 theme-picker-title = thèmes
 theme-picker-keys = ↑↓ choisir  ·  Entrée valider  ·  Échap garder l'actuel
 model-picker-heading = Choisir un modèle
-model-picker-keys = ↑↓ pour choisir  ·  Entrée pour valider  ·  Échap pour garder l'actuel
+model-picker-keys =
+    ↑↓ choisir  ·  Entrée valider  ·  tapez pour rechercher  ·  Échap garder l'actuel
+model-picker-search-placeholder = Rechercher
+model-picker-nothing-matches = aucune correspondance
 picker-current = actuel
 picker-premium = premium
-picker-model-bedrock-profile = { $tier } (votre profil AWS { $profile })
-picker-model-bedrock = { $tier } (votre compte AWS)
-picker-model-gateway = { $model } (via { $gateway })
+picker-service-brave = Brave
+picker-service-bedrock-profile = Bedrock, votre profil AWS { $profile }
+picker-service-bedrock = Bedrock, votre compte AWS
 resume-heading = Reprendre une session
 resume-search-placeholder = Rechercher…
 resume-keys =
@@ -466,6 +469,7 @@ session-directory-added = { $directory } ajouté, et approuvé pour cette sessio
 session-permission-rule-ignored = règle de permission ignorée dans settings.json : { $problem }
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }
+session-using-model-from = utilise { $model } via { $service }
 session-signing-in =
     connexion à AWS ; suivez les instructions ci-dessous, cela reprend une fois terminé
 session-context-budget = compactage au-delà de { $budget } jetons, selon ce que ce modèle annonce

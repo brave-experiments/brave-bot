@@ -117,17 +117,23 @@ request fails unsigned.
 <a id="BACKEND-6"></a>
 ### BACKEND-6: a row says which service will answer it
 
-Where the same model is reachable through more than one service, what a person reads says which one
-a given row is, in terms that cannot collide with a name a service chose for itself.
+Where the same model is reachable through more than one service, every model offered carries which
+service answers it, in terms that cannot collide with a name a service chose for itself. Brave's own
+roster carries nothing, being the one every build has. What a person reads is drawn from that,
+under [VIEW-15](terminal-transcript.md#VIEW-15), and the note left when a model is chosen says it
+too, since the row that carried it is gone by the time that note is read.
 
 **Why.** The two are billed differently and authenticate differently, so which one answers is the
 whole of what is being chosen between. Naming the service is not enough: Brave serves part of its own
 roster through Bedrock and says so in the names it sends, so that word appeared on both halves of the
-list and distinguished nothing.
+list and distinguished nothing. Carried beside the name rather than composed into it, because a
+roster of several services is read as sections, and a service composed into every name is that name
+repeated down a hundred rows.
 
 `verified-by: bravebot_tui::app::a_configured_tier_is_not_confusable_with_a_brave_model_served_through_bedrock`
 `verified-by: bravebot_tui::app::a_tier_with_no_profile_configured_still_names_the_account`
 `verified-by: bravebot_tui::app::a_gateway_row_says_which_service_answers_it`
+`verified-by: bravebot_aichat::models::a_fetched_row_carries_the_gateway_that_serves_it`
 
 <a id="BACKEND-7"></a>
 ### BACKEND-7: the conversation budget belongs to the model in force

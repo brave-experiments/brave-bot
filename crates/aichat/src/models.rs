@@ -25,6 +25,12 @@ pub struct Model {
     pub display_name: String,
     /// Whether a subscription is needed for it.
     pub premium: bool,
+    /// Which service answers for it, where that is not Brave's own endpoint.
+    ///
+    /// What tells two rows offering the same slug apart, and what a picker files the row under.
+    /// `None` is the Brave roster, whose name belongs to the layer that draws it: this field
+    /// carries only what a configuration already called a service, never words composed here.
+    pub provider: Option<String>,
     /// How large a request may get, in prompt tokens, as the endpoint advertises it.
     ///
     /// `None` for an entry that did not say, and for `automatic`, where the server picks the model
@@ -48,6 +54,8 @@ impl Model {
             key: bravebot_config::DEFAULT_MODEL.to_string(),
             display_name: "Automatic".to_string(),
             premium: false,
+            // Brave's own endpoint resolves it per request, and that is the roster it belongs to.
+            provider: None,
             // The server chooses per request, so there is no one model whose limit this could be.
             conversation_tokens: None,
         }
@@ -235,6 +243,9 @@ fn offered_by_gateway(
             // A gateway is reached with the person's own bearer token, so a Leo subscription has
             // nothing to do with it.
             premium: false,
+            // The name the block gave this service, which is what a person recognises it by and
+            // what a configured model from the same gateway is filed under.
+            provider: Some(provider.display_name().to_string()),
             // What the block said about this model outranks what the gateway reports, because a
             // stated window is somebody pinning a figure they know better than the roster does.
             // Failing that the reported one, and failing that the conservative default: a window
@@ -264,6 +275,7 @@ fn usable(listed: Vec<Listed>) -> Vec<Model> {
                     key: entry.key?,
                     display_name: entry.display_name,
                     premium: entry.options.access == PREMIUM_ACCESS,
+                    provider: None,
                     conversation_tokens: entry
                         .options
                         .long_conversation_warning_character_limit
@@ -481,6 +493,20 @@ mod tests {
         );
         // The bare name, for whoever composes the row a person reads.
         assert_eq!(models[0].display_name, "z-ai/glm-4.6");
+    }
+
+    /// The same slug is reachable through more than one service, billed and credentialled
+    /// differently. A fetched row is the one place nothing written down could say which is which,
+    /// so the gateway it came from travels with it.
+    #[test]
+    fn a_fetched_row_carries_the_gateway_that_serves_it() {
+        let models = from_gateway(&gateway(), r#"{"data": [{"id": "z-ai/glm-4.6"}]}"#);
+        assert_eq!(models[0].provider.as_deref(), Some("openrouter"));
+        assert_eq!(
+            Model::automatic().provider,
+            None,
+            "the Brave roster names no service of its own"
+        );
     }
 
     /// A window the gateway reports is worth having: it is the one fact about a fetched model that

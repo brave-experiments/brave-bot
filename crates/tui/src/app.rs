@@ -1772,9 +1772,8 @@ fn fetch_models(config: &Config) -> Result<Vec<bravebot_aichat::models::Model>, 
 
 /// Ask one gateway what it offers, for a block that named no models.
 ///
-/// The row a person reads is composed here rather than in the client, because the words shown to
-/// somebody belong to the layer that draws them, and it has to match the row a configured model gets
-/// or the same gateway would name itself two ways in one list.
+/// What comes back names the gateway the same way a configured model from it does, so one service
+/// does not appear twice under two names in the same list.
 ///
 /// A gateway nothing holds a credential for is not asked. The listing would come back refused, and
 /// the useful thing to say about that gateway is what `doctor` already says: no credential found.
@@ -1794,7 +1793,7 @@ fn fetch_gateway_models(
     routing.insert_trusted("models", provider.models_url());
     routing.insert_trusted("account-models", provider.account_models_url());
 
-    let mut listed = bravebot_core::policy::Policy::begin(
+    bravebot_core::policy::Policy::begin(
         routing,
         bravebot_core::policy::ReleasePlan::new(),
         bravebot_core::capability::CapabilitySet::from_iter([
@@ -1806,16 +1805,7 @@ fn fetch_gateway_models(
     .and_then(|mut policy| {
         bravebot_aichat::models::list_from_gateway(&mut policy, provider, &token, &egress)
             .map_err(|error| error.to_string())
-    })?;
-
-    for model in &mut listed {
-        model.display_name = t!(
-            picker_model_gateway,
-            model = model.display_name.as_str(),
-            gateway = provider.display_name()
-        );
-    }
-    Ok(listed)
+    })
 }
 
 /// A fetched gateway roster in the order a person should meet it: what a session would use, then
@@ -1854,11 +1844,11 @@ fn in_reading_order(
 /// Every entry is marked free. Premium here means a Leo subscription, and reaching a model through
 /// somebody's own AWS account does not involve one.
 ///
-/// The name says whose account answers. Both rosters are offered together and a bare tier name would
-/// sit beside a Brave entry for the same model, where the two are reached and billed differently and
-/// nothing on the row would say which was about to answer.
+/// Every entry says whose account answers. Both rosters are offered together and a bare tier name
+/// would sit beside a Brave entry for the same model, where the two are reached and billed
+/// differently and nothing else would say which was about to answer.
 ///
-/// Not "(Bedrock)": the Brave roster already says that of models it serves through its own AWS
+/// Not "Bedrock" alone: the Brave roster already says that of models it serves through its own AWS
 /// account, so the word distinguishes nothing. The profile is the useful thing, being what decides
 /// which credentials sign the request, and the account is all that can be said without one.
 fn bedrock_models(
@@ -1869,15 +1859,14 @@ fn bedrock_models(
         .iter()
         .map(|(tier, name)| bravebot_aichat::models::Model {
             key: name.clone(),
-            display_name: match bedrock.profile.as_deref() {
-                Some(profile) => t!(
-                    picker_model_bedrock_profile,
-                    tier = tier.display_name(),
-                    profile = profile
-                ),
-                None => t!(picker_model_bedrock, tier = tier.display_name()),
-            },
+            // The tier alone, because the account it is reached through is the same for all of them
+            // and is said once, over the section these rows sit in.
+            display_name: tier.display_name().to_string(),
             premium: false,
+            provider: Some(match bedrock.profile.as_deref() {
+                Some(profile) => t!(picker_service_bedrock_profile, profile = profile),
+                None => t!(picker_service_bedrock).to_string(),
+            }),
             // The same figure for every tier, because it is a property of what an opaque profile
             // ARN gets rather than of a particular model.
             conversation_tokens: Some(bravebot_config::bedrock::CONTEXT_WINDOW),
@@ -1894,9 +1883,9 @@ fn bedrock_models(
 /// Every entry is marked free. Premium means a Leo subscription, and a gateway reached with somebody's
 /// own bearer token does not involve one. What it costs them is between them and the gateway.
 ///
-/// The name says which service answers, because the same slug may be reachable more than one way:
-/// `anthropic/claude-sonnet-4.5` through a gateway and Brave's own Sonnet are different bills and
-/// different credentials, and nothing else on the row would say which was about to answer.
+/// Every entry says which service answers it, because the same slug may be reachable more than one
+/// way: `anthropic/claude-sonnet-4.5` through a gateway and Brave's own Sonnet are different bills
+/// and different credentials, and nothing else about the model would say which was about to answer.
 fn provider_models(
     provider: &bravebot_config::provider::Provider,
 ) -> Vec<bravebot_aichat::models::Model> {
@@ -1908,12 +1897,11 @@ fn provider_models(
             // and what later selects a backend. The same slug may be reachable through more than one
             // service, and the bare name says nothing about which was picked.
             key: format!("{}/{}", provider.id, model.id),
-            display_name: t!(
-                picker_model_gateway,
-                model = model.id.as_str(),
-                gateway = provider.display_name()
-            ),
+            // The slug whole, since it is what a request names, and unqualified, since the gateway
+            // is said over the section rather than on every row under it.
+            display_name: model.id.clone(),
             premium: false,
+            provider: Some(provider.display_name().to_string()),
             // Stated or assumed, never absent: a window is what the budget is taken from, and
             // reporting nothing would leave the session on a default chosen for a different service.
             conversation_tokens: Some(model.window()),
@@ -1961,15 +1949,28 @@ fn choose_model(
 ) {
     match list_models(config, session.model()) {
         Ok(models) => {
-            if let Some(chosen) = crate::model_prompt::choose(terminal, models, session.model()) {
+            let chosen = crate::model_prompt::choose(terminal, models, session.model(), |frame| {
+                render::draw(frame, session);
+            });
+            if let Some(chosen) = chosen {
                 // The listing is the only place a window is ever reported, so the budget is taken
                 // here, while the entry that named it is in hand. Said once when it changes, since
                 // a budget belongs to the model rather than to a turn.
                 if config.adopt_window(chosen.conversation_tokens) {
                     session.note(t!(session_context_budget, budget = config.context_budget));
                 }
+                // Which service answers is said here as well as in the picker: the row that
+                // carried it is gone by the time the note is read, and the same slug reached
+                // through two services is two bills.
+                session.note(match chosen.provider.as_deref() {
+                    Some(service) => t!(
+                        session_using_model_from,
+                        model = &chosen.display_name,
+                        service = service
+                    ),
+                    None => t!(session_using_model, model = &chosen.display_name),
+                });
                 session.choose_model(chosen.key);
-                session.note(t!(session_using_model, model = &chosen.display_name));
             }
         }
         Err(detail) => session.note(t!(session_models_unavailable, problem = detail)),
@@ -2738,6 +2739,7 @@ mod tests {
             key: key.to_string(),
             display_name: key.to_string(),
             premium: false,
+            provider: None,
             conversation_tokens: window,
         }
     }
@@ -2770,12 +2772,8 @@ mod tests {
             (env_var::BEDROCK_HAIKU_MODEL, "haiku-arn"),
         ]));
 
-        let shown: Vec<&String> = models.iter().map(|m| &m.display_name).collect();
-        let expected: Vec<String> = ["Opus", "Sonnet", "Haiku"]
-            .iter()
-            .map(|tier| t!(picker_model_bedrock, tier = *tier))
-            .collect();
-        assert_eq!(shown, expected.iter().collect::<Vec<&String>>());
+        let shown: Vec<&str> = models.iter().map(|m| m.display_name.as_str()).collect();
+        assert_eq!(shown, ["Opus", "Sonnet", "Haiku"]);
         // The key is what lands in the request's model field, and it has to be the ARN.
         assert_eq!(models[0].key, "opus-arn");
     }
@@ -2801,11 +2799,14 @@ mod tests {
         )
         .expect("a roster");
 
-        let shown: Vec<&str> = roster.iter().map(|m| m.display_name.as_str()).collect();
-        assert_eq!(shown.len(), 2);
+        assert_eq!(roster.len(), 2);
         // The profile is what decides which credentials sign, and no name off the wire carries it.
-        assert!(shown[0].contains("some-profile"), "{shown:?}");
-        assert!(!shown[1].contains("some-profile"), "{shown:?}");
+        let configured = roster[0].provider.as_deref().expect("a service");
+        assert!(configured.contains("some-profile"), "{configured}");
+        assert_eq!(
+            roster[1].provider, None,
+            "the Brave roster names no service"
+        );
     }
 
     /// A profile is optional, and a row still has to say the tier is reached through the person's own
@@ -2819,9 +2820,10 @@ mod tests {
             (env_var::AWS_REGION, "us-west-2"),
             (env_var::BEDROCK_OPUS_MODEL, "opus-arn"),
         ]));
+        assert_eq!(models[0].display_name, "Opus");
         assert_eq!(
-            models[0].display_name,
-            t!(picker_model_bedrock, tier = "Opus")
+            models[0].provider.as_deref(),
+            Some(t!(picker_service_bedrock))
         );
     }
 
@@ -2838,10 +2840,7 @@ mod tests {
         ]));
 
         assert_eq!(models.len(), 1);
-        assert_eq!(
-            models[0].display_name,
-            t!(picker_model_bedrock, tier = "Sonnet")
-        );
+        assert_eq!(models[0].display_name, "Sonnet");
     }
 
     /// A settings block adds to the roster rather than replacing it. Replacing it left a person who
@@ -2979,15 +2978,8 @@ mod tests {
     #[test]
     fn a_gateway_row_says_which_service_answers_it() {
         let models = provider_models(&gateway(r#"{"anthropic/claude-sonnet-4.5": {}}"#));
-        assert_eq!(
-            models[0].display_name,
-            t!(
-                picker_model_gateway,
-                model = "anthropic/claude-sonnet-4.5",
-                gateway = "openrouter"
-            )
-        );
-        assert!(models[0].display_name.contains("openrouter"));
+        assert_eq!(models[0].display_name, "anthropic/claude-sonnet-4.5");
+        assert_eq!(models[0].provider.as_deref(), Some("openrouter"));
     }
 
     /// Premium means a Leo subscription. A gateway reached with somebody's own bearer token does not

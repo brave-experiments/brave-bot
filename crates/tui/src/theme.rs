@@ -189,6 +189,31 @@ pub fn brand_primary() -> Color {
     with_palette(|p| p.primary)
 }
 
+/// The ink to draw on top of a fill of brand primary.
+///
+/// A row filled with the accent colour needs its text picked for that fill rather than for the
+/// background it covers: the palette's own text ink is chosen to contrast with the page, which is
+/// the one thing that colour is no longer behind. Black or white, by how light the fill is, so the
+/// same rule holds for a theme whose primary is pale and one whose primary is nearly black.
+///
+/// A primary that is a named slot rather than a shade is drawn on in black, since the terminal is
+/// free to paint that slot anything and the brighter half of the sixteen is the usual choice.
+pub fn on_primary() -> Color {
+    match brand_primary() {
+        Color::Rgb(red, green, blue) if !is_light(red, green, blue) => Color::White,
+        _ => Color::Black,
+    }
+}
+
+/// Whether a shade is light enough to want dark text on it.
+///
+/// The usual weighting of the channels by how much each contributes to perceived brightness, which
+/// is what decides legibility rather than the arithmetic mean of three numbers.
+fn is_light(red: u8, green: u8, blue: u8) -> bool {
+    let luminance = 0.299 * f32::from(red) + 0.587 * f32::from(green) + 0.114 * f32::from(blue);
+    luminance > 128.0
+}
+
 pub fn paints_background() -> bool {
     with_palette(|p| p.paints_background)
 }
@@ -865,6 +890,28 @@ mod tests {
     #[test]
     fn a_light_background_takes_the_deeper_brand_primary() {
         assert_eq!(brand_primary_on(true), Color::Rgb(0x43, 0x4F, 0xCF));
+    }
+
+    /// A row filled with brand primary is the one place the palette's text ink is wrong: it was
+    /// chosen against the page, which that fill covers. Both shades are in the tree, one for a light
+    /// terminal and one for a dark one, and the same text on both leaves one of them unreadable.
+    #[test]
+    fn text_drawn_on_a_brand_primary_fill_contrasts_with_the_fill() {
+        let _guard = exclusive();
+
+        apply(&Theme::builtin("pale", {
+            let mut palette = brave_palette(false);
+            palette.primary = Color::Rgb(0x76, 0x86, 0xEC);
+            palette
+        }));
+        assert_eq!(on_primary(), Color::Black);
+
+        apply(&Theme::builtin("deep", {
+            let mut palette = brave_palette(false);
+            palette.primary = Color::Rgb(0x43, 0x4F, 0xCF);
+            palette
+        }));
+        assert_eq!(on_primary(), Color::White);
     }
 
     #[test]

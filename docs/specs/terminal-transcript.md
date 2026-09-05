@@ -7,6 +7,7 @@ governs:
   - crates/tui/src/state.rs
   - crates/tui/src/theme.rs
   - crates/tui/src/theme_prompt.rs
+  - crates/tui/src/model_prompt.rs
 ---
 
 ## Scope
@@ -265,3 +266,54 @@ identical in scrollback, and the difference is most of the explanation.
 `verified-by: bravebot_tui::state::starting_another_turn_forgets_the_last_one`
 `verified-by: bravebot_tui::state::a_session_that_has_not_run_a_turn_reports_none_finished`
 `verified-by: bravebot_tui::state::clearing_a_session_forgets_the_turn_that_finished`
+
+<a id="VIEW-14"></a>
+### VIEW-14: the model picker narrows as it is typed into
+
+`/model` draws a bordered panel in the middle of the screen, over the session it was opened from,
+with a search box above the list. Typing narrows the list rather than walking it, matching without
+regard to case anywhere in the name shown, in the name a request would carry, and in the service
+that answers; every word typed has to match something. The cursor stays on the model it was on
+where that model still matches, and falls to the first match where it does not. A search matching
+nothing says so, and there is nothing to select while it does.
+
+**Why.** A gateway's roster runs to hundreds of models, and the picker offers it alongside Brave's
+own and whatever a settings file configured. No arrangement of a list that long makes arrowing to
+one row reasonable, and a name is remembered by a word out of the middle of it, or by the service
+it is reached through, rather than by how it starts. A cursor that stayed at its index would land
+on an unrelated model with every keystroke, which is worst exactly where the list is long enough to
+need searching.
+
+`verified-by: bravebot_tui::model_prompt::typing_narrows_the_list_to_the_models_that_match`
+`verified-by: bravebot_tui::model_prompt::a_search_matches_the_service_and_the_requestable_name_too`
+`verified-by: bravebot_tui::model_prompt::a_search_ignores_case`
+`verified-by: bravebot_tui::model_prompt::backspace_widens_the_list_again`
+`verified-by: bravebot_tui::model_prompt::the_cursor_stays_on_the_model_it_was_on_while_the_search_narrows`
+`verified-by: bravebot_tui::model_prompt::the_cursor_falls_to_the_first_match_when_what_it_was_on_is_filtered_out`
+`verified-by: bravebot_tui::model_prompt::a_search_matching_nothing_leaves_nothing_to_choose`
+`verified-by: bravebot_tui::model_prompt::a_search_matching_nothing_says_so`
+`verified-by: bravebot_tui::model_prompt::the_picker_is_drawn_as_a_centred_panel`
+`verified-by: bravebot_tui::model_prompt::the_panel_stays_inside_a_tiny_terminal`
+
+<a id="VIEW-15"></a>
+### VIEW-15: every model is drawn under the service that will answer it
+
+The picker groups its rows by service, one heading per service, in the order the roster first
+mentions each one. The models Brave's own endpoint serves are named as a service like any other.
+A service that the roster mentions in more than one place is still one section. Where a section is
+scrolled through, its heading is held on the top line of the list, so no row on screen is without
+the name of what answers it.
+
+**Why.** The same name is reachable through more than one service, billed and credentialled
+differently, and which of them answers is the whole of what is being chosen between. Said once over
+a section rather than on every row, because the alternative repeats a gateway's name down hundreds
+of rows and pushes the part that identifies the model off the panel. Holding the heading while the
+section scrolls is what keeps that true of a roster too long to see at once, which is the only kind
+a gateway has.
+
+`verified-by: bravebot_tui::model_prompt::every_service_heads_its_own_section`
+`verified-by: bravebot_tui::model_prompt::a_service_that_appears_twice_in_the_roster_is_still_one_section`
+`verified-by: bravebot_tui::model_prompt::a_heading_stays_above_the_rows_when_the_list_is_scrolled`
+`verified-by: bravebot_tui::model_prompt::the_model_in_use_is_marked`
+`verified-by: bravebot_tui::model_prompt::a_premium_model_says_so`
+`verified-by: bravebot_tui::model_prompt::the_list_shows_names_a_person_reads`

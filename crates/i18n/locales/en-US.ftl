@@ -174,17 +174,19 @@ quit = quit
 theme-picker-title = themes
 theme-picker-keys = ↑↓ choose  ·  Enter select  ·  Esc keep current
 model-picker-heading = Select model
-model-picker-keys = ↑↓ to choose  ·  Enter to select  ·  Esc to keep the current one
+model-picker-keys = ↑↓ choose  ·  Enter select  ·  type to search  ·  Esc keep current
+model-picker-search-placeholder = Search
+model-picker-nothing-matches = nothing matches that
 picker-current = current
 picker-premium = premium
+# The heading over the models Brave's own endpoint serves. Named rather than left blank, because a
+# list whose other sections name a service reads as though the unlabelled rows came from nowhere.
+picker-service-brave = Brave
 # Both rosters are offered at once, and a tier name alone does not say which of the two it is: the
-# same model is reachable through either, billed and reached differently. Not "(Bedrock)", which the
-# Brave roster already says of the models it serves through its own account.
-picker-model-bedrock-profile = { $tier } (your { $profile } AWS profile)
-picker-model-bedrock = { $tier } (your AWS account)
-# The slug whole rather than shortened: it is what a request names, and the same model reached through
-# a gateway and through Brave is a different bill and a different credential.
-picker-model-gateway = { $model } (via { $gateway })
+# same model is reachable through either, billed and reached differently. Not "Bedrock" alone, which
+# the Brave roster already says of the models it serves through its own account.
+picker-service-bedrock-profile = Bedrock, your { $profile } AWS profile
+picker-service-bedrock = Bedrock, your AWS account
 resume-heading = Resume session
 resume-search-placeholder = Search…
 resume-keys = ↑↓ to choose  ·  Enter to resume  ·  type to search  ·  Esc for a new session
@@ -460,6 +462,9 @@ session-directory-added = added { $directory }, and trusting it for this session
 session-permission-rule-ignored = ignoring a permission rule in settings.json: { $problem }
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }
+# The picker row that said which service answers is gone by the time this is read, and the same
+# name reached through two services is two bills and two credentials.
+session-using-model-from = using { $model } from { $service }
 # Said before the screen is handed to the AWS CLI, so a terminal filling with its output, and a
 # browser opening, are accounted for rather than looking like something having gone wrong.
 session-signing-in = signing in to AWS; follow the instructions below, and this returns when it is done

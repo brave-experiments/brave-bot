@@ -29,7 +29,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [manifest.md](manifest.md) | `MANIFEST` | 9 | plan the whole run first, then execute it with no model in the control path |
 | [terminal-input.md](terminal-input.md) | `INPUT` | 18 | what the user types into: the box, the keys, and where a terminal's own limits show through |
 | [commands.md](commands.md) | `CMD` | 7 | a line beginning with `/`: where one may come from, when a line is one, and what it does to the line |
-| [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 13 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
+| [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 15 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
 | [scroller.md](scroller.md) | `SCROLL` | 9 | reading back through what happened: the mode Ctrl-O opens over the transcript, and the keys inside it |
 | [premium-credentials.md](premium-credentials.md) | `PREM` | 9 | importing a Leo Premium subscription and spending its credentials |
 | [sandboxing.md](sandboxing.md) | `SANDBOX` | 5 | operating-system confinement for processes running code we did not write |
