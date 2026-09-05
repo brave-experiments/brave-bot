@@ -41,6 +41,9 @@ fn main() -> ExitCode {
             Some(id) => resume_named(id),
             None => interactive(bravebot_tui::app::Start::Choose),
         },
+        // The same, for the session somebody was in a moment ago, which is the one they mean
+        // often enough that asking them to find its id is asking for nothing.
+        Some("--continue" | "-c") => continue_here(),
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
         Some("-p" | "--print" | "--mode" | "--file" | "--trace") => run_task(&args),
@@ -72,6 +75,7 @@ fn print_help() {
         ("bravebot \"<task>\" [--file <path>]...", t!(cli_usage_task)),
         ("cat file | bravebot -p \"<task>\"", t!(cli_usage_piped)),
         ("bravebot --resume [id]", t!(cli_usage_resume)),
+        ("bravebot --continue", t!(cli_usage_continue)),
         ("bravebot doctor", t!(cli_usage_doctor)),
         ("bravebot import-leo-creds [channel]", t!(cli_usage_import)),
     ] {
@@ -610,6 +614,27 @@ fn resume_named(id: &str) -> ExitCode {
         Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
         None => {
             eprintln!("{}", t!(cli_no_such_session, id = id));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Pick up the most recent session under this directory, without anybody naming one.
+///
+/// Where there is none, this says so and fails. Starting a fresh session instead would answer a
+/// different question than the one asked, and it would answer it by throwing away the request:
+/// somebody who meant to carry on and got an empty transcript has lost the thing they asked for.
+fn continue_here() -> ExitCode {
+    let Ok(directory) = std::env::current_dir() else {
+        eprintln!("{}", t!(cli_directory_unknown));
+        return ExitCode::FAILURE;
+    };
+    match bravebot_tui::sessions::most_recent(&directory) {
+        // By the id, so this arrives at the interface the way a named resume does, down to a
+        // record that went away between the list and the read.
+        Some(session) => resume_named(&session.id),
+        None => {
+            eprintln!("{}", t!(cli_nothing_to_continue));
             ExitCode::FAILURE
         }
     }

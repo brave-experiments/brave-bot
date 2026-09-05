@@ -39,7 +39,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [backends.md](backends.md) | `BACKEND` | 19 | which service answers a request, and what a person may choose between |
 | [compaction.md](compaction.md) | `COMPACT` | 10 | shortening a long conversation into a summary of itself, in the request only |
 | [loop.md](loop.md) | `LOOP` | 13 | sending one prompt again and again until somebody stops it |
-| [sessions.md](sessions.md) | `SESSION` | 13 | what is kept between runs: the record of a session, and the prompts a person typed |
+| [sessions.md](sessions.md) | `SESSION` | 14 | what is kept between runs: the record of a session, and the prompts a person typed |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |
 | [layering.md](layering.md) | `LAYER` | 3 | which crate is allowed to do what |

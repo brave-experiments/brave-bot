@@ -284,6 +284,26 @@ resumable in its new home at all: until it is saved there, there is nothing ther
 
 `verified-by: bravebot_tui::sessions::a_session_that_changes_directory_is_recorded_where_it_moved_to`
 
+<a id="SESSION-14"></a>
+### SESSION-14: the session someone was just in can be picked up without naming it
+
+`--continue` takes the most recently written session under the working directory, the one the
+picker offers first, and picks it up exactly as naming its id would. A manifest run is passed over
+rather than refused, since there is no conversation inside one to carry on from. Where the
+directory holds no session that can be continued, it says so and fails rather than starting a fresh
+one.
+
+**Why.** An id is the answer to "resume that one", and the question people actually have most of
+the time is "carry on with what I was just doing". Answering it with an id means finding the line
+that printed one, in a terminal that is often the thing that went away. Starting fresh instead
+would be answering a different question by discarding the one asked: an empty transcript is
+indistinguishable from a session that was lost, and the way to reach an older one is the picker.
+
+`verified-by: bravebot_tui::sessions::continuing_takes_the_most_recent_session`
+`verified-by: bravebot_tui::sessions::continuing_passes_over_a_manifest_run`
+`verified-by: bravebot_tui::sessions::a_list_with_nothing_continuable_in_it_offers_nothing`
+`verified-by: bravebot_tui::sessions::the_session_continued_is_the_one_written_here`
+
 ## Known costs
 
 - **Two working directories can share a session store.** The directory name is derived by mapping

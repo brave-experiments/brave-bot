@@ -26,6 +26,7 @@ cli-usage-interactive = Start an interactive session
 cli-usage-task = Run a single task
 cli-usage-piped = ...with piped input, never trusted
 cli-usage-resume = Pick up a session in this directory
+cli-usage-continue = Pick up the most recent session in this directory
 cli-usage-doctor = Check configuration and confinement
 cli-usage-import = Import a Leo Premium subscription
 
@@ -63,6 +64,7 @@ cli-workspace-problem = workspace error: { $problem }
 cli-interface-problem = interface error: { $problem }
 cli-directory-unknown = cannot tell which directory this is
 cli-no-such-session = no session { $id } in this directory
+cli-nothing-to-continue = no session to continue in this directory
 cli-piped-input-unreadable = warning: could not read piped input: { $problem }
 cli-piped-input-too-large =
     piped input is larger than { $limit } MiB. Write it to a file and name that instead

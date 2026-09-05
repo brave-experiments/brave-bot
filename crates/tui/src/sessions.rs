@@ -685,6 +685,23 @@ fn newest_first(summaries: &mut [Summary]) {
     summaries.sort_by_key(|s| std::cmp::Reverse(s.updated));
 }
 
+/// The session to pick up when nobody named one: the most recent one worth continuing.
+///
+/// A manifest run is passed over rather than refused. It is a session in every other respect, but
+/// it holds no conversation, so continuing it is not a thing that exists; the alternative is
+/// answering a request to carry on with a complaint about a session the person never asked for.
+pub fn most_recent(project: &Path) -> Option<Summary> {
+    continuable(list(project))
+}
+
+/// The first entry of a newest-first list that can be carried on from.
+///
+/// Separate from the lookup above so the choice can be tested without a filesystem: which entry
+/// of a list is taken is the behaviour, and it is silent when it is wrong.
+fn continuable(sessions: Vec<Summary>) -> Option<Summary> {
+    sessions.into_iter().find(|session| !session.manifest)
+}
+
 /// Read one session back, by the id the list gave.
 pub fn load(project: &Path, id: &str) -> Option<Record> {
     let directory = project_directory(project)?;
@@ -1170,17 +1187,6 @@ mod tests {
     /// the session they last touched a month ago. Nothing else in the suite pins the direction.
     #[test]
     fn a_list_puts_the_most_recently_written_session_first() {
-        fn at(updated: u64) -> Summary {
-            Summary {
-                id: format!("s-{updated}"),
-                title: "a session".to_string(),
-                branch: None,
-                updated,
-                bytes: 0,
-                manifest: false,
-            }
-        }
-
         let mut summaries = vec![at(10), at(30), at(20)];
         newest_first(&mut summaries);
 
@@ -1188,6 +1194,55 @@ mod tests {
             summaries.iter().map(|s| s.updated).collect::<Vec<_>>(),
             vec![30, 20, 10]
         );
+    }
+
+    /// `--continue` names no session, so the list it is handed decides which one somebody gets.
+    /// Taking any entry but the first would hand them work they finished last week, and the
+    /// mistake is invisible until they read the transcript they were given.
+    #[test]
+    fn continuing_takes_the_most_recent_session() {
+        let taken = continuable(vec![at(30), at(20), at(10)]).expect("a session to continue");
+
+        assert_eq!(taken.updated, 30);
+    }
+
+    /// A manifest run has no conversation behind it, so there is nothing to carry on from. It is
+    /// passed over rather than refused: a run planned in one directory would otherwise block
+    /// every later `--continue` there, and the session underneath it is the one being asked for.
+    #[test]
+    fn continuing_passes_over_a_manifest_run() {
+        let mut planned = at(30);
+        planned.manifest = true;
+
+        let taken = continuable(vec![planned, at(20)]).expect("a session to continue");
+
+        assert_eq!(
+            taken.updated, 20,
+            "a manifest run was offered as continuable"
+        );
+    }
+
+    /// Both cases where there is nothing to continue: nothing has run here, and nothing that ran
+    /// here can be continued. Neither is an older session to fall back to.
+    #[test]
+    fn a_list_with_nothing_continuable_in_it_offers_nothing() {
+        assert_eq!(continuable(Vec::new()), None);
+
+        let mut planned = at(30);
+        planned.manifest = true;
+        assert_eq!(continuable(vec![planned]), None);
+    }
+
+    /// One row of a list, distinguished by when it was written.
+    fn at(updated: u64) -> Summary {
+        Summary {
+            id: format!("s-{updated}"),
+            title: "a session".to_string(),
+            branch: None,
+            updated,
+            bytes: 0,
+            manifest: false,
+        }
     }
 
     /// A transcript is read after the fact, and the first question about a strange one is

@@ -799,6 +799,86 @@ fn a_manifest_run_is_recorded_and_cannot_be_resumed() {
     assert!(report.contains("the plan is not well formed"), "{report}");
 }
 
+/// `--continue` names no session, so what it picks up is decided by what is on the disk under the
+/// directory it was run in. A manifest run is not it: the record is there and readable, and there
+/// is no conversation inside it to carry on from.
+#[test]
+fn the_session_continued_is_the_one_written_here() {
+    let scratch = Scratch::new("continue-latest");
+
+    assert!(
+        sessions::most_recent(&scratch.project).is_none(),
+        "a directory nothing has run in offered a session to continue"
+    );
+
+    let conversation = a_conversation();
+    let mut handle = Handle::begin(&scratch.project);
+    handle.save(
+        "make a space invaders game",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 1_200,
+            spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
+            model: None,
+            todos: &a_plan(),
+            trust: &a_trust_map(),
+            programs: &a_program_list(),
+            directories: &[],
+            manifest: None,
+        },
+    );
+
+    let taken = sessions::most_recent(&scratch.project).expect("a session to continue");
+    assert_eq!(taken.id, handle.id());
+    assert_eq!(taken.title, "make a space invaders game");
+
+    // And the id it offers is the one that fetches the conversation, which is what a resume needs.
+    let record = sessions::load(&scratch.project, &taken.id).expect("the session loads");
+    assert_eq!(record.conversation.messages.len(), 2);
+
+    // A directory holding nothing but a manifest run has nothing to continue.
+    let planned = scratch.project.parent().expect("a parent").join("planned");
+    std::fs::create_dir_all(&planned).expect("create");
+    let stored = StoredManifest::of(
+        &bravebot_agent::manifest::Attempt {
+            shape: Some("1. Read it.".into()),
+            proposed: None,
+            plan: None,
+            steps: Vec::new(),
+        },
+        None,
+    );
+    let mut run = Handle::begin(&planned);
+    run.save(
+        "summarise the docs",
+        Standing {
+            conversation: &bravebot_agent::Conversation::new().snapshot(),
+            turns: 1,
+            tokens: 0,
+            spend: &BTreeMap::new(),
+            timing: &BTreeMap::new(),
+            model: None,
+            todos: &BTreeMap::new(),
+            trust: &TrustStore::new(),
+            programs: &TrustedPrograms::new(),
+            directories: &[],
+            manifest: Some(&stored),
+        },
+    );
+
+    assert_eq!(
+        sessions::list(&planned).len(),
+        1,
+        "the run was not recorded"
+    );
+    assert!(
+        sessions::most_recent(&planned).is_none(),
+        "a manifest run was offered to continue"
+    );
+}
+
 /// A session that changes its working directory is recorded under the directory it moved to.
 ///
 /// The record carries the trust map, and the map is written in the working directory's terms: a
