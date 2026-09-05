@@ -301,9 +301,8 @@ impl Config {
         // A blank endpoint only reaches here when Bedrock is configured, where no aichat URL is
         // ever built. Checking the scheme of a value nothing will use would refuse a working
         // configuration over a field it does not have.
-        if !endpoint.is_empty()
-            && !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
-        {
+        let names_a_scheme = endpoint.starts_with("https://") || endpoint.starts_with("http://");
+        if !endpoint.is_empty() && !names_a_scheme {
             return Err(ConfigError::InvalidEndpoint { value: endpoint });
         }
 
