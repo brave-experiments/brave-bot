@@ -156,6 +156,26 @@ run that said nothing about it.
 `verified-by: bravebot_agent::turn::what_did_not_load_reaches_the_interface_when_it_is_learned`
 `verified-by: bravebot_agent::turn::what_did_not_load_is_reported_even_when_the_turn_never_finishes`
 
+<a id="SKILL-12"></a>
+### SKILL-12: a built-in skill is the program's own text, and is the least specific source
+
+Some skills are written into this program rather than found anywhere. There is no file, no
+directory and nobody to have vouched for one, so a built-in passes no trust gate, can never be
+skipped, and never produces a notice. It is offered in every session, including one in a
+directory nobody trusts and one with no home directory at all.
+
+Built-ins are added before any source is read, so a skill of the user's own with the same name
+shadows one, which is the same "most specific wins" every other source follows.
+
+**Why this is different in kind.** A name read out of a directory is content: it comes from
+whoever wrote the directory, it may not be trusted, and that is why an untrusted skill is counted
+rather than named. A name written here comes from this repository, cannot be added to or changed
+by anything a turn does, and is the only kind of skill name that may also be a word the interface
+itself claims.
+
+`verified-by: bravebot_agent::skills::a_built_in_skill_is_offered_wherever_a_session_runs`
+`verified-by: bravebot_agent::skills::a_skill_of_the_users_own_shadows_a_built_in_of_the_same_name`
+
 ## Known costs
 
 - **A skill downloaded into `~/.bravebot/skills` is trusted exactly as far as a config file the

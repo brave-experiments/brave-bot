@@ -1058,6 +1058,8 @@ fn execute<S: Sink, C: Confirmer, R: Reporter>(
         output_tokens,
         context_tokens: 0,
         premium,
+        // A manifest run has no loop to pace and is offered no way to ask for one.
+        wakeup: None,
         timing: spent.finish(),
         display: shown,
         notices: Vec::new(),

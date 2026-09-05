@@ -74,7 +74,13 @@ fn the_home_agents_file_is_read_before_the_project_one() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, Some(&home), &Catalogue::default())
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            Some(&home),
+            &Catalogue::default(),
+            None,
+        )
     };
 
     let global = preamble
@@ -109,7 +115,7 @@ fn an_added_directory_contributes_no_standing_instructions() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default())
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
     };
 
     assert!(
@@ -131,7 +137,7 @@ fn a_file_written_after_one_turn_is_read_by_the_next() {
     let mut sink = RecordingSink::new();
     let before = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default())
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
     };
     assert!(
         !before.text.contains("LATE-CONVENTION"),
@@ -142,7 +148,7 @@ fn a_file_written_after_one_turn_is_read_by_the_next() {
 
     let after = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default())
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
     };
     assert!(
         after.text.contains("LATE-CONVENTION"),

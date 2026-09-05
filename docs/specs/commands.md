@@ -70,6 +70,9 @@ stay a question. Prefix matching would have made `/add-dirs are useful` open a d
 `verified-by: bravebot_tui::app::a_prompt_containing_the_exit_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::the_bare_add_dir_command_is_still_the_command`
 `verified-by: bravebot_tui::app::the_bare_rename_command_is_still_the_command`
+`verified-by: bravebot_tui::app::a_prompt_containing_the_loop_command_is_still_a_prompt`
+`verified-by: bravebot_tui::app::a_longer_word_starting_with_loop_is_a_prompt`
+`verified-by: bravebot_tui::app::the_bare_loop_command_is_still_the_command`
 
 
 <a id="CMD-3"></a>
@@ -105,6 +108,7 @@ the network to list models. Neither sends the typed line.
 `verified-by: bravebot_tui::app::typing_the_theme_command_opens_the_picker`
 `verified-by: bravebot_tui::app::the_theme_command_carries_its_name`
 `verified-by: bravebot_tui::app::typing_the_exit_command_quits`
+`verified-by: bravebot_tui::app::the_loop_command_sends_what_is_left_after_the_interval`
 
 
 <a id="CMD-5"></a>
@@ -155,5 +159,11 @@ Offering those names in a completion list would put exactly that text in front o
 though this program had written it, one keystroke from a line that decides something. If skills
 are ever wanted here, the name still may not come from the directory: this clause is what the
 change has to answer to.
+
+`/loop` is what that answer looks like. The word is a string literal in this table like every
+other command, and the skill it shares a name with is one written into this program too, so
+nothing about either came from a directory. A skill somebody installs still has no line here,
+whatever it is called, and installing one called `loop` shadows the built-in body without
+touching this table.
 
 `verified-by: by-construction (the table is an array of string literals fixed at compile time, and no directory listing, configuration value or turn output reaches it)`

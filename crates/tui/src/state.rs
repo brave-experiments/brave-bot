@@ -551,6 +551,17 @@ pub struct Session {
     /// and each moves into the transcript at the moment it reaches the planner, whether that is
     /// inside the running turn or as a turn of its own.
     pub queued: Vec<Queued>,
+    /// The loop repeating a prompt, where the person started one.
+    ///
+    /// Private, because every part of it has to move together: a tick is dispatched, the turn
+    /// runs, and only then is the next one armed. A field anybody could set would let the three
+    /// disagree, and the disagreement a caller would reach for first is arming a tick while one
+    /// is still running.
+    ///
+    /// Not in [`crate::sessions::Standing`], so nothing about it is written down. A schedule that
+    /// outlived the session that set it would start sending prompts at somebody who resumed a
+    /// conversation to read it.
+    looping: Option<crate::loops::Running>,
     /// The same prompts, resolved, for the turn in flight to take between rounds.
     ///
     /// Shared with the worker rather than sent down a channel, because a queued prompt can be
@@ -686,6 +697,7 @@ impl Session {
             phase: None,
             running: None,
             queued: Vec::new(),
+            looping: None,
             pending: crate::remote_confirm::Interjections::new(),
             streaming: String::new(),
             answers: Vec::new(),
@@ -884,6 +896,10 @@ impl Session {
         // A standing condition is worth saying once per session, and this is now a new one: the
         // reason a skill was left out applies to the next turn as much as it did to the last.
         self.said.clear();
+        // The loop goes with the conversation it was started in. A schedule surviving into a
+        // session that knows nothing about it would send a prompt whose context has been thrown
+        // away, which is neither what was asked for nor recognisable as a mistake.
+        self.looping = None;
     }
 
     /// The task list each turn finished with, by turn number, for writing the session down.
@@ -2200,6 +2216,110 @@ impl Session {
         // the very turn this line started.
         self.pending.take();
         Some(self.begin_turn(next.prompt, (next.attached, next.pasted)))
+    }
+
+    /// The loop repeating a prompt, where one is running.
+    pub fn looping(&self) -> Option<&crate::loops::Running> {
+        self.looping.as_ref()
+    }
+
+    /// Start repeating a prompt, and give back the first tick to send now.
+    ///
+    /// The first tick goes immediately rather than after a wait. Somebody who has just asked for
+    /// something every five minutes wants to see it happen, and a loop whose first sign of life
+    /// is five minutes of nothing is one nobody can tell is running.
+    ///
+    /// `None` where the session is not free to start a turn, since the first tick is a turn like
+    /// any other and there is nowhere to put it.
+    pub fn start_loop(&mut self, request: crate::loops::Request) -> Option<String> {
+        if self.status != Status::Idle {
+            self.note(t!(loop_busy));
+            return None;
+        }
+        if self.looping.is_some() {
+            self.note(t!(loop_replaced));
+        }
+
+        match request.adjusted {
+            Some(crate::loops::Held::Raised(every)) => {
+                self.note(t!(loop_interval_raised, every = crate::loops::spell(every)))
+            }
+            Some(crate::loops::Held::Capped(every)) => {
+                self.note(t!(loop_interval_capped, every = crate::loops::spell(every)))
+            }
+            None => {}
+        }
+        match request.pacing {
+            crate::loops::Pacing::Every(every) => {
+                self.note(t!(loop_started_every, every = crate::loops::spell(every)))
+            }
+            crate::loops::Pacing::SelfPaced => self.note(t!(loop_started_self_paced)),
+        }
+
+        self.looping = Some(crate::loops::Running::begin(request));
+        self.dispatch_tick()
+    }
+
+    /// Stop the loop, and say whether there was one.
+    pub fn stop_loop(&mut self) -> bool {
+        let stopped = self.looping.take().is_some();
+        if stopped {
+            self.note(t!(loop_stopped));
+        }
+        stopped
+    }
+
+    /// Send the next tick, if one is due and the session is free to take it.
+    ///
+    /// Called on the way round the interface's own loop, so a tick waits for the turn in flight
+    /// and for everything the person queued behind it. A schedule is a request to be asked
+    /// again, not a licence to interrupt.
+    pub fn loop_tick(&mut self) -> Option<String> {
+        let now = Instant::now();
+        let running = self.looping.as_ref()?;
+        if running.aged_out(now) {
+            self.looping = None;
+            self.note(t!(loop_aged_out));
+            return None;
+        }
+        if self.status != Status::Idle || !self.queued.is_empty() || !running.due(now) {
+            return None;
+        }
+        self.dispatch_tick()
+    }
+
+    /// Arm the next tick from the turn that has just ended.
+    ///
+    /// `wakeup` is what a self-paced turn asked for. Nothing happens where the finished turn was
+    /// not a tick: a person typing their own prompt in the middle of a loop is not a tick of it,
+    /// and must not reset the clock.
+    pub fn loop_turn_ended(&mut self, wakeup: Option<crate::loops::Wakeup>) {
+        let Some(running) = self.looping.as_mut() else {
+            return;
+        };
+        if !running.ended(wakeup, Instant::now()) {
+            self.looping = None;
+            self.note(t!(loop_unpaced));
+        }
+    }
+
+    /// Send a tick, announcing which one it is.
+    ///
+    /// The line is the loop's own, taken from what the person typed, and it carries no files or
+    /// pictures: what was staged in the box belonged to the line it was staged in. A `@path` in
+    /// the prompt is read back out of it every tick, the way it is for any other prompt.
+    fn dispatch_tick(&mut self) -> Option<String> {
+        let running = self.looping.as_mut()?;
+        running.dispatched();
+        let count = running.ticks();
+        let quiet = running.quiet();
+        let prompt = running.prompt().to_string();
+        if quiet > 0 {
+            self.note(t!(loop_tick_quiet, count = count, quiet = quiet));
+        } else {
+            self.note(t!(loop_tick, count = count));
+        }
+        Some(self.begin_turn(prompt, (Vec::new(), Vec::new())))
     }
 
     /// Take every waiting prompt back out of the queue and into the box.
@@ -3720,6 +3840,121 @@ mod tests {
         assert_eq!(s.transcript.len(), 1);
         assert_eq!(s.transcript[0].speaker, Speaker::User);
         assert_eq!(s.status, Status::Working);
+    }
+
+    /// A loop starts by doing the thing, not by waiting to. Somebody who has just asked for
+    /// something every five minutes wants to see it happen once before they decide it is right.
+    #[test]
+    fn the_first_tick_of_a_loop_goes_immediately() {
+        let mut s = session();
+        let request = crate::loops::parse("5m check the deploy").expect("a request");
+
+        assert_eq!(s.start_loop(request).as_deref(), Some("check the deploy"));
+        assert_eq!(s.status, Status::Working);
+        assert_eq!(
+            s.transcript
+                .iter()
+                .filter(|entry| entry.speaker == Speaker::User)
+                .count(),
+            1
+        );
+    }
+
+    /// A tick comes from a timer, and a command comes from a key press. So a loop over a line
+    /// that reads like a command sends the characters, and this program acts on none of them.
+    #[test]
+    fn a_loop_whose_prompt_looks_like_a_command_still_sends_it_as_a_prompt() {
+        let mut s = session();
+        let request = crate::loops::parse("5m /status").expect("a request");
+
+        assert_eq!(s.start_loop(request).as_deref(), Some("/status"));
+        assert_eq!(s.looping().expect("a loop").prompt(), "/status");
+    }
+
+    /// A schedule is a request to be asked again, not a licence to interrupt. A tick that fired
+    /// into a running turn would share its state with a turn nobody had finished reading.
+    #[test]
+    fn a_tick_waits_for_the_turn_in_flight_and_for_what_is_queued() {
+        let mut s = session();
+        s.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        s.complete("done", Vec::new(), 0);
+
+        // Due, but the person has started something of their own.
+        for c in "their own question".chars() {
+            s.type_char(c);
+        }
+        s.submit();
+        assert!(s.loop_tick().is_none(), "a tick interrupted a running turn");
+
+        for c in "and another".chars() {
+            s.type_char(c);
+        }
+        s.queue();
+        s.complete("done", Vec::new(), 0);
+        assert!(s.loop_tick().is_none(), "a tick jumped the queue");
+    }
+
+    /// The person's own prompt is not a tick of the loop, so finishing it must not re-arm one.
+    /// Otherwise a loop would keep time from whatever its user happened to be doing.
+    #[test]
+    fn a_prompt_typed_during_a_loop_is_not_a_tick_of_it() {
+        let mut s = session();
+        s.start_loop(crate::loops::parse("watch").expect("a request"));
+        assert!(s.looping().expect("a loop").ticking());
+        s.complete("done", Vec::new(), 0);
+        s.loop_turn_ended(Some(crate::loops::Wakeup::asked(120, false)));
+
+        for c in "their own question".chars() {
+            s.type_char(c);
+        }
+        s.submit();
+        assert!(!s.looping().expect("a loop").ticking());
+        s.complete("done", Vec::new(), 0);
+        s.loop_turn_ended(None);
+
+        assert!(
+            s.looping().is_some(),
+            "a prompt of their own ended the loop"
+        );
+    }
+
+    /// A tick that says when to wake arms the next one, and the wait it named is the wait.
+    #[test]
+    fn a_tick_that_says_when_to_wake_arms_the_next_one() {
+        let mut s = session();
+        s.start_loop(crate::loops::parse("watch the build").expect("a request"));
+        s.complete("done", Vec::new(), 0);
+        s.loop_turn_ended(Some(crate::loops::Wakeup::asked(900, false)));
+
+        let running = s.looping().expect("a loop");
+        assert!(!running.ticking());
+        assert!(
+            running
+                .until(std::time::Instant::now())
+                .is_some_and(|until| until > std::time::Duration::from_secs(880)),
+            "the next tick was not armed for the wait the turn named"
+        );
+    }
+
+    /// The loop belongs to the conversation it was started in. Surviving into a cleared session
+    /// it would send a prompt whose context has been thrown away.
+    #[test]
+    fn clearing_the_session_ends_the_loop() {
+        let mut s = session();
+        s.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        s.clear();
+        assert!(s.looping().is_none());
+    }
+
+    #[test]
+    fn stopping_a_loop_says_so_and_says_nothing_when_there_was_none() {
+        let mut s = session();
+        assert!(!s.stop_loop());
+        assert!(s.transcript.is_empty());
+
+        s.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        assert!(s.stop_loop());
+        assert!(s.looping().is_none());
     }
 
     #[test]

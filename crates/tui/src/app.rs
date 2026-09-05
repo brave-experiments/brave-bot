@@ -82,6 +82,9 @@ const CLEAR_COMMAND: &str = "/clear";
 /// The line that renames this session, taking the new name as its argument.
 const RENAME_COMMAND: &str = "/rename";
 
+/// The line that repeats a prompt, taking the prompt and any interval as its argument.
+const LOOP_COMMAND: &str = "/loop";
+
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
 
@@ -101,7 +104,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 8] {
+pub fn commands() -> [Command; 9] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -137,6 +140,11 @@ pub fn commands() -> [Command; 8] {
             name: CLEAR_COMMAND,
             argument: "",
             description: t!(command_clear),
+        },
+        Command {
+            name: LOOP_COMMAND,
+            argument: "[interval] <prompt>",
+            description: t!(command_loop),
         },
         Command {
             name: EXIT_COMMAND,
@@ -496,14 +504,22 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
 
     match key.code {
         // Ctrl-C is read against what there is to stop, nearest first: the turn in flight, then
-        // the line in the box, then the session. A person who wants the answer to stop gets that
-        // from the first press, and nothing they were part way through writing is taken with it.
+        // the line in the box, then the loop that keeps sending prompts, then the session. A
+        // person who wants the answer to stop gets that from the first press, and nothing they
+        // were part way through writing is taken with it.
         KeyCode::Char('c') if ctrl && session.status == Status::Working => Action::Cancel,
         KeyCode::Char('c') if ctrl && !session.input().is_empty() => {
             session.clear_input();
             // Said only here. A press that leaves is not one to explain, and the hint is the
             // answer to what a person has just done rather than standing advice.
             session.cleared_by_interrupt = true;
+            Action::Redraw
+        }
+        // Before leaving, because a loop is a thing still happening and leaving is what a person
+        // reaches for when nothing else will stop it. Reversed, the key that ends a loop would be
+        // the key that ends the session, and there would be no way to keep one without the other.
+        KeyCode::Char('c') if ctrl && session.looping().is_some() => {
+            session.stop_loop();
             Action::Redraw
         }
         KeyCode::Char('c') if ctrl => {
@@ -603,6 +619,25 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
                 .to_string();
             session.clear_input();
             Action::Rename(name)
+        }
+        // The command that sends a prompt rather than the line it was typed on. `/loop 5m check
+        // the deploy` arms the loop and hands back "check the deploy", which is what every tick
+        // sends from here on.
+        KeyCode::Enter if argument_to(session.input(), LOOP_COMMAND).is_some() => {
+            let argument = argument_to(session.input(), LOOP_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            match crate::loops::parse(&argument) {
+                Some(request) => match session.start_loop(request) {
+                    Some(prompt) => Action::Submit(prompt),
+                    None => Action::Redraw,
+                },
+                None => {
+                    session.note(t!(loop_needs_a_prompt));
+                    Action::Redraw
+                }
+            }
         }
         // A half-typed command, after every arm that recognises a whole one. Enter takes the
         // highlighted row rather than sending "/mod" to the planner, which is never what was meant.
@@ -1387,25 +1422,35 @@ fn event_loop(
             return Ok(left_behind(&stored));
         }
 
-        if !event::poll(POLL)? {
-            continue;
-        }
-
-        let action = match event::read()? {
-            // Presses only. Asking for disambiguated keys asks for releases as well, and a release
-            // handled as a press types every character twice.
-            TermEvent::Key(key) if key.kind == KeyEventKind::Release => Action::None,
-            TermEvent::Key(key) => handle_key(&mut session, key),
-            TermEvent::Mouse(mouse) => handle_mouse(&mut session, mouse),
-            TermEvent::Paste(text) => handle_paste(&mut session, &text),
-            // Coming back from copying something is the moment a picture appears on the clipboard,
-            // and the cheapest moment to notice: once per switch away and back, rather than a
-            // clipboard tool spawned on a timer for the whole life of the session.
-            TermEvent::FocusGained => {
-                session.image_on_clipboard = crate::clipboard::holds_an_image();
-                Action::Redraw
+        // A loop's next tick, looked at before the interface settles down to wait for a key.
+        // Nobody is going to press anything to make it happen, so a tick taken only after input
+        // arrives would sit there until somebody typed something unrelated. It becomes an
+        // ordinary submission, because that is what it is: the line the person typed at `/loop`,
+        // sent again.
+        let action = match session.loop_tick() {
+            Some(prompt) => Action::Submit(prompt),
+            None => {
+                if !event::poll(POLL)? {
+                    continue;
+                }
+                match event::read()? {
+                    // Presses only. Asking for disambiguated keys asks for releases as well, and a
+                    // release handled as a press types every character twice.
+                    TermEvent::Key(key) if key.kind == KeyEventKind::Release => Action::None,
+                    TermEvent::Key(key) => handle_key(&mut session, key),
+                    TermEvent::Mouse(mouse) => handle_mouse(&mut session, mouse),
+                    TermEvent::Paste(text) => handle_paste(&mut session, &text),
+                    // Coming back from copying something is the moment a picture appears on the
+                    // clipboard, and the cheapest moment to notice: once per switch away and back,
+                    // rather than a clipboard tool spawned on a timer for the whole life of the
+                    // session.
+                    TermEvent::FocusGained => {
+                        session.image_on_clipboard = crate::clipboard::holds_an_image();
+                        Action::Redraw
+                    }
+                    _ => Action::None,
+                }
             }
-            _ => Action::None,
         };
 
         needs_draw |= !matches!(action, Action::None);
@@ -1464,6 +1509,7 @@ fn event_loop(
                     timing: session.timing_total(),
                     trust: &trust,
                     programs: &programs,
+                    looping: session.looping(),
                 });
                 session.report(report);
                 needs_draw = true;
@@ -2315,11 +2361,15 @@ fn run_turn_animated(
     let sent = session.unfolded(prompt);
     // No round limit: the person reading this screen is the bound, and a stop reaches a turn
     // mid-round. A number here would only interrupt work that was going fine.
+    // Which tick of a loop this is, where it is one at all. A prompt the person typed in the
+    // middle of a loop is not a tick of it and carries nothing.
+    let tick = session.looping().and_then(|running| running.tick());
     let mut task = Task::new(&sent)
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string))
-        .with_permissions(permissions.clone());
+        .with_permissions(permissions.clone())
+        .ticking(tick);
     for file in crate::entries::referenced(&sent) {
         task = task.with_file(file);
     }
@@ -2703,12 +2753,30 @@ fn fold_outcome(
                     served = &outcome.model
                 ));
             }
+            // Where the turn was a tick, this is what arms the next one: an interval from the
+            // driver's own clock, or the wait the turn asked for. Measured from here rather than
+            // from when the tick went out, so the gap is between runs and a turn that outlasts
+            // its own interval is not immediately due again.
+            session.loop_turn_ended(outcome.wakeup);
+
             // Carries forward any rule the turn recorded, so a path that received untrusted
             // data cannot be read back as trusted by the next turn, and any program the user
             // vouched for during it, so they are not asked about it again.
             (outcome.trust, outcome.programs)
         }
         Err(error) => {
+            // Stopping a turn stops the loop it was part of, and stops one the person was not
+            // part way through: the key means "stop what is happening", and a schedule that
+            // survived it would send the next prompt as though nothing had been said.
+            if matches!(error, turn::TurnError::Cancelled) {
+                session.stop_loop();
+            } else {
+                // Any other failure is a tick that ended, and a self-paced loop that was told
+                // nothing falls back to the driver's own wait. A loop must not end because one
+                // request failed, and must not run forever on failures either.
+                session.loop_turn_ended(None);
+            }
+
             // The trail is kept on failure too: a refusal is exactly when a user wants
             // to see what happened.
             let trail = sink
@@ -4897,6 +4965,107 @@ mod tests {
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("what does /rename do".to_string())
         );
+    }
+
+    /// The command that does not send the line it was typed on. What goes to the planner is what
+    /// was left after the interval was read off, which is what every later tick sends too.
+    #[test]
+    fn the_loop_command_sends_what_is_left_after_the_interval() {
+        let mut session = Session::new("none");
+        for c in "/loop 5m check the deploy".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("check the deploy".to_string())
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
+        assert_eq!(
+            session.looping().map(|running| running.prompt()),
+            Some("check the deploy")
+        );
+    }
+
+    /// With nothing to repeat there is no loop to start, and the interface says what it needs
+    /// rather than quietly doing nothing.
+    #[test]
+    fn the_bare_loop_command_is_still_the_command() {
+        for line in [LOOP_COMMAND, "/loop 5m"] {
+            let mut session = Session::new("none");
+            for c in line.chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+
+            assert_eq!(
+                handle_key(&mut session, key(KeyCode::Enter)),
+                Action::Redraw
+            );
+            assert!(session.looping().is_none(), "{line} started a loop");
+            assert_eq!(session.transcript.len(), 1, "{line} said nothing");
+        }
+    }
+
+    /// A sentence mentioning it is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_loop_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /loop do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /loop do".to_string())
+        );
+        assert!(session.looping().is_none());
+    }
+
+    #[test]
+    fn a_longer_word_starting_with_loop_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/looper is a good name".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/looper is a good name".to_string())
+        );
+    }
+
+    /// The key that means "stop what is happening" has to reach the thing that keeps happening
+    /// before it reaches the thing that would take the session with it.
+    #[test]
+    fn interrupting_stops_the_loop_before_it_leaves() {
+        let mut session = Session::new("none");
+        session.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        session.complete("done", Vec::new(), 0);
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Redraw);
+        assert!(
+            session.looping().is_none(),
+            "the loop survived the interrupt"
+        );
+        assert!(!session.is_quitting(), "the session left as well");
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Quit);
+    }
+
+    /// A half-written line is nearer than the loop, so stopping the loop does not cost somebody
+    /// the sentence they were in the middle of.
+    #[test]
+    fn interrupting_clears_the_line_before_it_stops_the_loop() {
+        let mut session = Session::new("none");
+        session.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        session.complete("done", Vec::new(), 0);
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        handle_key(&mut session, ctrl('c'));
+        assert!(session.input().is_empty());
+        assert!(session.looping().is_some(), "the loop went with the line");
     }
 
     /// One parser serves every command that takes an argument, so its rules are worth pinning

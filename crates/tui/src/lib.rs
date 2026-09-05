@@ -15,6 +15,7 @@ pub mod entries;
 pub mod history;
 pub mod indicator;
 pub mod logo;
+pub mod loops;
 pub mod markdown;
 pub mod model_prompt;
 pub mod remote_confirm;

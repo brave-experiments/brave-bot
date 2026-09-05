@@ -23,7 +23,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [pasting.md](pasting.md) | `PASTE` | 9 | what Ctrl-V puts into a turn, text or picture, and on what footing |
 | [dropping.md](dropping.md) | `DROP` | 8 | what dragging a file onto the terminal puts into a turn, and on what footing |
 | [shell-mode.md](shell-mode.md) | `SHELL` | 5 | the `!` prompt: a line the user typed, and why the planner can never reach it |
-| [skills.md](skills.md) | `SKILL` | 9 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
+| [skills.md](skills.md) | `SKILL` | 10 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
 | [instructions.md](instructions.md) | `INSTR` | 7 | which instruction files are looked for, where, in what order, and where what they say ends up |
 | [cli.md](cli.md) | `CLI` | 8 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
 | [manifest.md](manifest.md) | `MANIFEST` | 9 | plan the whole run first, then execute it with no model in the control path |
@@ -37,6 +37,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [network-egress.md](network-egress.md) | `NET` | 6 | every request that leaves this process, and what comes back |
 | [backends.md](backends.md) | `BACKEND` | 19 | which service answers a request, and what a person may choose between |
 | [compaction.md](compaction.md) | `COMPACT` | 10 | shortening a long conversation into a summary of itself, in the request only |
+| [loop.md](loop.md) | `LOOP` | 13 | sending one prompt again and again until somebody stops it |
 | [sessions.md](sessions.md) | `SESSION` | 12 | what is kept between runs: the record of a session, and the prompts a person typed |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |
@@ -61,6 +62,7 @@ the routing-versus-content split they share.
 | [tools/read-output.md](tools/read-output.md) | `OUTPUT` | 2 | `read_output` |
 | [tools/load-skill.md](tools/load-skill.md) | `LOAD` | 3 | `load_skill` |
 | [tools/todo-write.md](tools/todo-write.md) | `TODO` | 2 | `todo_write` |
+| [tools/schedule-next.md](tools/schedule-next.md) | `SCHED` | 5 | `schedule_next` |
 | [tools/ask-user.md](tools/ask-user.md) | `ASK` | 8 | `ask_user` |
 
 Topics with no spec yet are ordinary code. Adding one is how a topic becomes review-required.

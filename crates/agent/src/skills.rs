@@ -292,6 +292,70 @@ impl Catalogue {
     }
 }
 
+/// A skill written into this program rather than found on a disk.
+///
+/// The name is a string literal here, which is what makes it different in kind from every other
+/// skill. A name read out of a directory is content: it comes from whoever wrote the directory,
+/// it may not be trusted, and it is why an untrusted skill is counted rather than named. A name
+/// written here comes from this repository, cannot be added to or changed by anything a turn
+/// does, and is the only kind that may also be a word the interface itself claims.
+struct BuiltIn {
+    name: &'static str,
+    description: &'static str,
+    body: &'static str,
+}
+
+/// The skills every session has, whatever is on the disk.
+const BUILT_IN: [BuiltIn; 1] = [BuiltIn {
+    name: "loop",
+    description: "How a repeating turn works: what one tick is, what to do in it, and how to \
+                  say when the next is due. Load it when this turn is a tick of a loop, and when \
+                  the user asks for something to be watched or repeated.",
+    body: LOOP,
+}];
+
+/// What the planner is told about being inside a loop.
+const LOOP: &str = "\
+A loop repeats one prompt: the line the user typed when they started it. Every tick sends that \
+same line again, unchanged, and nothing you do alters it. You are being asked the same question \
+about a world that may have moved since the last time.
+
+Each tick is a turn of its own in the same conversation, so what earlier ticks did is still \
+there to read. Read it. A tick that repeats work the last one did has spent a request to learn \
+nothing, and a tick that answers as though the question were new is the commonest way to waste \
+one.
+
+Do this tick's work, and only this tick's. A loop is not a way to ask for the whole job at once: \
+if the line says to watch something, look at it as it is now and say what changed.
+
+Keep the answer short. A tick that found nothing says so in a line rather than restating the \
+situation, and somebody reading twenty of these should be able to see at a glance which one \
+mattered.
+
+There are two kinds of loop, and the turn you are in says which this is.
+
+Where the user gave an interval, the timing is theirs. There is nothing for you to decide about \
+it and no tool for it, so do not go looking for one and do not tell the user a tool is missing: \
+the interval is already keeping time. Work the tick and answer.
+
+Where they gave none, you are offered schedule_next, and the loop runs for exactly as long as \
+you keep calling it. Call it once, at the end of the turn, after the work is done:
+
+- delay_seconds from what you are actually waiting on rather than from a round number. Something \
+  that takes ten minutes to change is not worth looking at in sixty seconds, and something that \
+  changes hourly is not worth looking at in five minutes. The wait is held to between a minute \
+  and an hour.
+- noop true where this tick found nothing to do and changed nothing, false where something \
+  happened worth keeping: an edit, a message, a finding. Runs of quiet ticks are counted and \
+  shown to the user as a single line, so an honest noop is what keeps a long watch readable.
+- reason in a few words, saying what you are waiting on. The user reads it.
+
+Not calling it ends the loop, and that is the right answer once there is nothing left to watch. \
+Say so in your answer rather than scheduling a tick to say it again.
+
+Either kind stops when the user stops it. You never need to ask them to.
+";
+
 /// The directory holding skills, inside the user's own directory and inside a project.
 const SKILLS: &str = "skills";
 const WORKSPACE_SKILLS: &str = ".bravebot/skills";
@@ -317,6 +381,21 @@ pub fn discover<S: Sink>(
 ) -> (Catalogue, Vec<Notice>) {
     let mut catalogue = Catalogue::default();
     let mut notices = Vec::new();
+
+    // First, so that a skill of the user's own with the same name shadows one of these, which is
+    // the same "most specific wins" every other source follows. There is no gate to pass and
+    // nothing to vouch for: this is the program's own text, not a source somebody supplied, so it
+    // can neither be refused nor be missing, and there is never a notice about it.
+    for built_in in BUILT_IN {
+        catalogue.insert(Skill {
+            name: built_in.name.to_string(),
+            description: built_in.description.to_string(),
+            // A string literal in this file, derived from nothing that arrived from anywhere. It
+            // is trusted for being this program's own words, which is what the label says.
+            body: Labelled::trusted(built_in.body.to_string()),
+            origin: "built-in".to_string(),
+        });
+    }
 
     if let Some(home) = home {
         discover_home(policy, &home.join(SKILLS), &mut catalogue, &mut notices);

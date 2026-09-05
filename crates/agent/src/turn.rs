@@ -412,6 +412,23 @@ pub struct Task {
     /// caller's business. Empty by default, which is a session that behaves as it did before a
     /// settings file could say anything.
     pub permissions: Permissions,
+    /// Which tick of a loop this turn is, where a caller is running one.
+    ///
+    /// `None` for an ordinary turn, and for a prompt the person typed in the middle of a loop.
+    /// It changes two things and nothing else: the planner is told it is being asked the same
+    /// question again, and a self-paced tick is offered a way to say when the next is due. It
+    /// cannot say what the next tick asks, because the line belongs to the person who typed it
+    /// and the caller holds it.
+    pub tick: Option<Tick>,
+}
+
+/// One tick of a loop, as the turn running it needs to know about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tick {
+    /// Which tick this is, counting the first.
+    pub number: usize,
+    /// Whether nobody gave an interval, so this turn says when the next tick is due.
+    pub self_paced: bool,
 }
 
 /// An image on its way into a prompt, before it has been encoded for the wire.
@@ -440,6 +457,7 @@ impl Task {
             piped: None,
             home: None,
             model: None,
+            tick: None,
             // Bounded unless a caller says otherwise. The unbounded case needs somebody watching,
             // and a default cannot know whether anybody is, so the default is the one that is
             // wrong in the cheaper direction.
@@ -507,6 +525,51 @@ impl Task {
         self.permissions = permissions;
         self
     }
+
+    /// Say which tick of a loop this turn is.
+    pub fn ticking(mut self, tick: Option<Tick>) -> Self {
+        self.tick = tick;
+        self
+    }
+}
+
+/// When the next tick of a self-paced loop is due, as the turn that has just ended asked for it.
+///
+/// A duration and a flag, and deliberately nothing else. What the next tick *says* is the line
+/// the person typed, held by whoever started the loop, so there is no field here for a turn to
+/// write its own next prompt into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wakeup {
+    /// How long to wait, already held to the bounds below.
+    pub after: std::time::Duration,
+    /// Whether the turn found nothing to do, as it reported.
+    pub quiet: bool,
+}
+
+impl Wakeup {
+    /// The shortest wait a turn may ask for.
+    ///
+    /// A tick is a request to an endpoint and a turn can run for minutes, so anything faster is a
+    /// way to spend a rate limit rather than a way to watch something.
+    pub const FLOOR: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// The longest.
+    ///
+    /// A person started the loop and is entitled to see it do something. A turn that wants longer
+    /// can say so in its answer, where somebody reads it, rather than by going quiet for a day.
+    pub const CEILING: std::time::Duration = std::time::Duration::from_secs(3_600);
+
+    /// What a turn asked for, held to the bounds.
+    ///
+    /// Held here rather than where the loop is kept, so the seconds the planner is told back are
+    /// the seconds it gets. A tool that echoed the number it was given would be reporting a wait
+    /// that is not going to happen.
+    pub fn asked(seconds: u64, quiet: bool) -> Self {
+        Self {
+            after: std::time::Duration::from_secs(seconds).clamp(Self::FLOOR, Self::CEILING),
+            quiet,
+        }
+    }
 }
 
 /// The result of a turn.
@@ -550,6 +613,11 @@ pub struct Outcome {
     /// premium host used to report itself as premium, so a session whose credentials could not be
     /// read said "premium" while being answered by whatever the free tier serves.
     pub premium: bool,
+    /// When the planner asked for the next tick, where this turn was a tick of a self-paced loop.
+    ///
+    /// `None` from every other turn, and from one that was offered the chance and said nothing.
+    /// The caller decides what that silence means; nothing here waits for it.
+    pub wakeup: Option<Wakeup>,
     /// Where the turn's wall clock went.
     ///
     /// Beside the token figures because it answers the other half of the same question. Tokens say
@@ -876,6 +944,10 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         .with_permissions(task.permissions.clone())
         .resuming(conversation.context());
 
+    // Read once. A tick of a loop nobody gave an interval for is the only turn that may say when
+    // the next one happens.
+    let self_paced = task.tick.is_some_and(|tick| tick.self_paced);
+
     // Found once per turn and reused for every round. Per turn rather than per session so a
     // skill written or edited while the session is open takes effect on the next one, including
     // one this agent wrote itself.
@@ -885,8 +957,13 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // Built once and put in front of every round of this turn. Nothing here is stored in the
     // conversation, so a session running many turns holds one copy of AGENTS.md rather than one
     // per turn.
-    let preamble =
-        crate::preamble::compose(&mut policy, workspace, task.home.as_deref(), &catalogue);
+    let preamble = crate::preamble::compose(
+        &mut policy,
+        workspace,
+        task.home.as_deref(),
+        &catalogue,
+        task.tick,
+    );
     notices.extend(preamble.notices.iter().cloned());
 
     // Said here rather than only on the outcome. These describe what the turn is about to work
@@ -1029,7 +1106,9 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // worse answer to an unreadable credential file.
     let mut subscription = discover_subscription(config, reporter);
 
-    let offered = tools::available();
+    // The tool that says when the next tick is due is offered to a tick of a self-paced loop and
+    // to no other turn. Nothing else about the turn changes.
+    let offered = tools::available(self_paced);
 
     let mut steps = 0;
     // Whether the planner may ask for another round of tools. Cleared once, when the budget
@@ -1048,6 +1127,8 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
     // Cleared only by a failure. A summary that could not be made once will not be made on the
     // next round either, and a turn should not spend a request per round finding that out.
     let mut may_compact = true;
+    // When the planner asked for the next tick, where this turn is one and it asked at all.
+    let mut wakeup = None;
     let completion = loop {
         // Checked before each request rather than mid-flight: a request already on the wire has
         // to finish, but nothing new needs to start.
@@ -1305,6 +1386,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
                         cancel: Some(cancel),
                     },
                     cancel,
+                    self_paced,
                 },
                 &mut asking,
                 reporter,
@@ -1327,6 +1409,12 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
             // having cost almost nothing.
             tokens += output.usage.total();
             output_tokens += output.usage.completion_tokens;
+            // Kept as the turn goes rather than read off the last round, and overwritten by each
+            // call: a turn that says when to wake twice meant the second one, which is the answer
+            // it ended on.
+            if let Some(asked) = output.wakeup {
+                wakeup = Some(asked);
+            }
             // As with a context file: what the turn has seen belongs to the conversation the
             // moment it sees it, not once the turn happens to end well.
             conversation.observed(policy.context_integrity());
@@ -1624,6 +1712,7 @@ fn run_inner<S: Sink, C: Confirmer, R: Reporter>(
         // Whether a credential was actually presented, which is what `route` decides from. A
         // subscription that was found is one that will be spent on every round of this turn.
         premium: subscription.is_some(),
+        wakeup,
         timing: spent.finish(),
         clean: policy.finish(),
         display,

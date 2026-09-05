@@ -443,6 +443,7 @@ pub(crate) fn verb_for(tool: &str) -> &'static str {
         "ask_user" => t!(verb_ask_user),
         "run" => t!(verb_run),
         "read_output" => t!(verb_read_output),
+        "schedule_next" => t!(verb_schedule_next),
         _ => t!(verb_unknown),
     }
 }
@@ -534,7 +535,10 @@ mod tests {
     /// shows up in the transcript as the fallback, which tells the user nothing.
     #[test]
     fn every_offered_tool_has_its_own_verb() {
-        for tool in crate::tools::available() {
+        for tool in crate::tools::available(false)
+            .into_iter()
+            .chain(crate::tools::available(true))
+        {
             let name = &tool.function.name;
             assert_ne!(
                 verb_for(name),

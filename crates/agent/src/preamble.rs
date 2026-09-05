@@ -51,6 +51,7 @@ pub fn compose<S: Sink>(
     workspace: &Workspace,
     home: Option<&Path>,
     skills: &Catalogue,
+    tick: Option<crate::turn::Tick>,
 ) -> Preamble {
     let mut preamble = Preamble::default();
 
@@ -81,11 +82,33 @@ pub fn compose<S: Sink>(
 
     if !skills.is_empty() {
         preamble.text.push_str(
-            "\n\nSkills. Each is a set of instructions the user wrote for a kind of task. When a \
-             task matches one, call load_skill with its name before starting that work and follow \
-             what it says. These names are the only ones that exist.\n\n",
+            "\n\nSkills. Each is a set of instructions for a kind of task, most of them written \
+             by the user. When a task matches one, call load_skill with its name before starting \
+             that work and follow what it says. These names are the only ones that exist.\n\n",
         );
         preamble.text.push_str(&skills.describe_for_prompt());
+    }
+
+    // Last, and only where there is one. A turn that is a tick has to be told so: the driver is
+    // the only thing that knows, and a planner that cannot tell answers as though somebody had
+    // just typed the line for the first time. Which kind of loop it is matters as much, because
+    // the tool for saying when to run again is offered to one of the two and a turn that does
+    // not know that will look for a tool it was never given.
+    if let Some(tick) = tick {
+        preamble.text.push_str(&format!(
+            "\n\nThis turn is tick {} of a loop the user started. Every tick sends the same line \
+             they typed, so you are being asked this again about a world that may have moved; \
+             what earlier ticks did is above, so read it rather than repeating it. Load the loop \
+             skill before working.\n\n",
+            tick.number
+        ));
+        preamble.text.push_str(if tick.self_paced {
+            "Nobody gave an interval, so this loop runs for exactly as long as you keep pacing \
+             it: call schedule_next once, at the end of this turn, or the loop ends.\n"
+        } else {
+            "The user gave the interval, so the timing is theirs. There is nothing here for you \
+             to schedule and no tool for it: do this tick's work and answer.\n"
+        });
     }
 
     preamble

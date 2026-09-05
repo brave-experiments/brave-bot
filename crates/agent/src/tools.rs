@@ -43,8 +43,13 @@ use crate::workspace::{Page, Workspace};
 const TODO_STATUSES: [&str; 3] = Status::NAMES;
 
 /// The tools the model may call.
-pub fn available() -> Vec<Tool> {
-    vec![
+///
+/// `self_paced` says this turn is a tick of a loop nobody gave an interval for, which is the one
+/// turn that may say when the next one happens. Offered rather than always present because a tool
+/// that does nothing outside one situation is a tool the planner has to be told to ignore, and a
+/// planner that calls it anyway would have been told it worked.
+pub fn available(self_paced: bool) -> Vec<Tool> {
+    let mut tools = vec![
         Tool::function(
             "read_file",
             "Read a UTF-8 text file from the workspace. Returns its lines. Long files come \
@@ -455,7 +460,49 @@ pub fn available() -> Vec<Tool> {
                 "required": ["ref"]
             }),
         ),
-    ]
+    ];
+
+    if self_paced {
+        tools.push(Tool::function(
+            "schedule_next",
+            "Say when this loop should run again. The user started a loop with no interval, so \
+             each turn sets the pace for the next one. Call this once, at the end of the turn, \
+             after the work is done. You are choosing only the moment: the prompt is the user's \
+             own line and it is sent again unchanged, so there is nothing here to say what the \
+             next turn asks. Pick the wait from what you are actually waiting on, not from a \
+             round number: something that takes ten minutes to change is not worth looking at in \
+             one. Not calling it ends the loop, which is the right answer once there is nothing \
+             left to watch.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "delay_seconds": {
+                        "type": "integer",
+                        "description": "How long to wait before the next run. Held to between \
+                                        60 and 3600 seconds, so anything outside that becomes \
+                                        the nearest of the two."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "What you are waiting on, in a few words, e.g. \"watching \
+                                        the release build\". The user reads this; it is not sent \
+                                        anywhere and nothing acts on it."
+                    },
+                    "noop": {
+                        "type": "boolean",
+                        "description": "True when this run found nothing to do and changed \
+                                        nothing, false when something happened worth keeping: an \
+                                        edit, a message, a finding. Runs of quiet ticks are \
+                                        counted, so the user can see the loop is healthy without \
+                                        reading every one."
+                    }
+                },
+                "required": ["delay_seconds", "noop"]
+            }),
+        ));
+    }
+
+    tools
 }
 
 /// A read a tool decided not to perform yet.
@@ -535,6 +582,11 @@ pub struct Output {
     /// Recorded on the slot by the turn loop, since only a slot minted from a command may be
     /// offered to the user for reading.
     pub printed_by: Option<String>,
+    /// When the planner asked for the next tick of a self-paced loop.
+    ///
+    /// Travels back to whoever started the loop, which is the only thing that knows there is one.
+    /// A turn that says it twice is taken at its last word, since that is the one it ended on.
+    pub wakeup: Option<crate::turn::Wakeup>,
 }
 
 /// Everything a tool works with that is not the policy.
@@ -553,6 +605,11 @@ pub struct Tools<'a> {
     pub chat: Chat<'a>,
     /// The turn's stop token, so a slow program does not have to be waited out.
     pub cancel: &'a bravebot_core::cancel::Cancel,
+    /// Whether this turn is a tick of a self-paced loop, and so may say when the next is due.
+    ///
+    /// Read by dispatch as well as by the tool table, so a call to a tool this turn was not
+    /// offered is answered the way any other unknown name is rather than quietly working.
+    pub self_paced: bool,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -610,6 +667,8 @@ struct Produced {
     /// Recorded on the slot by the turn loop, because only a slot minted from a command may be
     /// offered to the user for reading.
     printed_by: Option<String>,
+    /// When the planner asked for the next tick of a self-paced loop.
+    wakeup: Option<crate::turn::Wakeup>,
 }
 
 impl Produced {
@@ -632,6 +691,7 @@ impl Produced {
             usage: Usage::default(),
             inference: std::time::Duration::ZERO,
             printed_by: None,
+            wakeup: None,
         }
     }
 
@@ -691,6 +751,12 @@ impl Produced {
     /// Say how long the tool waited on the model for this.
     fn waiting(mut self, inference: std::time::Duration) -> Self {
         self.inference = inference;
+        self
+    }
+
+    /// Say when the planner asked for the next tick of a self-paced loop.
+    fn scheduling(mut self, wakeup: crate::turn::Wakeup) -> Self {
+        self.wakeup = Some(wakeup);
         self
     }
 }
@@ -943,6 +1009,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 usage: produced.usage,
                 inference: produced.inference,
                 printed_by: produced.printed_by,
+                wakeup: produced.wakeup,
             };
         }
     };
@@ -964,6 +1031,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "ask_user" => ask_user(policy, confirmer, &arguments),
         "run" => run(policy, tools, confirmer, &arguments),
         "read_output" => read_output(policy, tools, confirmer, &arguments),
+        "schedule_next" if tools.self_paced => schedule_next(policy, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
 
@@ -991,6 +1059,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         usage: produced.usage,
         inference: produced.inference,
         printed_by: produced.printed_by,
+        wakeup: produced.wakeup,
     }
 }
 
@@ -1013,6 +1082,7 @@ fn problem(text: impl Into<String>) -> Produced {
         unchanged_from: None,
         answers_for: None,
         said: None,
+        wakeup: None,
         content: false,
         usage: Usage::default(),
         inference: std::time::Duration::ZERO,
@@ -1944,6 +2014,62 @@ fn todo_write<S: Sink, R: Reporter>(
     Produced::new(summary, "", note)
 }
 
+/// Say when the next tick of a self-paced loop is due.
+///
+/// The narrowest tool here. Nothing is read, nothing is written, and there is no path to endorse:
+/// the whole of what it decides is how long the caller waits before sending the same prompt
+/// again. What that prompt says is not on this surface at all, which is what makes the decision
+/// one a person could have approved on its own. "Ask me that again in twenty minutes" is
+/// readable without knowing what "that" is, and a field for the next prompt would have made it
+/// unreadable.
+///
+/// The wait is held to its bounds where it is turned into a [`crate::turn::Wakeup`], so what the
+/// planner is told back is what will actually happen rather than what it asked for.
+fn schedule_next<S: Sink>(policy: &mut Policy<'_, S>, arguments: &Value) -> Produced {
+    let Some(seconds) = arguments.get("delay_seconds").and_then(Value::as_u64) else {
+        return problem("error: 'delay_seconds' is required, as a whole number of seconds");
+    };
+    let Some(quiet) = arguments.get("noop").and_then(Value::as_bool) else {
+        return problem(
+            "error: 'noop' is required: true where this run found nothing to do, false where \
+             something happened",
+        );
+    };
+
+    let wakeup = crate::turn::Wakeup::asked(seconds, quiet);
+    let held = wakeup.after.as_secs();
+
+    // The planner's own words about what it is waiting on, at the integrity of the context they
+    // came from. They reach a screen and stop there: nothing waits on them, and no later turn
+    // reads them back.
+    let reason = policy.label_model_output(
+        "schedule_next",
+        arguments
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    );
+    let note = note_for(policy, "schedule_next", &reason, move |reason| {
+        let reason = reason.trim().to_string();
+        if reason.is_empty() {
+            format!("next in {held}s")
+        } else {
+            format!("next in {held}s: {reason}")
+        }
+    });
+
+    Produced::new(
+        Labelled::trusted(format!(
+            "scheduled: this loop runs again in {held} seconds, sending the user's own prompt \
+             unchanged"
+        )),
+        "",
+        note,
+    )
+    .scheduling(wakeup)
+}
+
 /// Hand quarantined content to an isolated model and quarantine what comes back.
 ///
 /// The tool that makes an untrusted workspace workable. Everything the planner cannot read, a
@@ -2802,7 +2928,7 @@ mod tests {
 
     #[test]
     fn the_tool_set_is_reads_plus_gated_writes() {
-        let names: Vec<String> = available()
+        let names: Vec<String> = available(false)
             .iter()
             .map(|t| t.function.name.clone())
             .collect();
@@ -2834,7 +2960,7 @@ mod tests {
     /// remembering: a test pinning the old reason for a rule outlives the reason.
     #[test]
     fn no_shell_is_offered() {
-        for tool in available() {
+        for tool in available(false) {
             let name = tool.function.name;
             assert!(!name.contains("shell"), "{name} takes a shell string");
             assert!(!name.contains("exec"), "{name} takes a shell string");
@@ -2845,7 +2971,7 @@ mod tests {
     /// command line by another name, and everything the design rests on would go with it.
     #[test]
     fn run_takes_argv_and_never_a_command_line() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "run")
             .expect("run is offered");
@@ -2877,7 +3003,7 @@ mod tests {
     /// reason to run a build. Vouching is the way out and the description has to say so.
     #[test]
     fn run_says_a_vouched_command_comes_back_readable() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "run")
             .expect("run is offered");
@@ -2916,7 +3042,7 @@ mod tests {
             "sh",
         ];
 
-        for tool in available() {
+        for tool in available(false) {
             let name = tool.function.name;
             let Some(properties) = tool.function.parameters["properties"].as_object() else {
                 continue;
@@ -2943,7 +3069,7 @@ mod tests {
     /// One session opened by asking where Brave was installed rather than looking.
     #[test]
     fn asking_is_described_as_a_last_resort_after_looking() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "ask_user")
             .expect("ask_user is offered");
@@ -2963,7 +3089,7 @@ mod tests {
     /// what made front-loading questions look obligatory.
     #[test]
     fn ask_user_says_that_looking_first_does_not_forfeit_the_question() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "ask_user")
             .expect("ask_user is offered");
@@ -2981,7 +3107,7 @@ mod tests {
     /// browser never started, the error was quarantined, and the turn reported success.
     #[test]
     fn run_says_the_arguments_exclude_the_program_name() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "run")
             .expect("run is offered");
@@ -3003,7 +3129,7 @@ mod tests {
     /// things to read results that never come back to it.
     #[test]
     fn run_says_its_output_does_not_come_back_to_the_planner() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "run")
             .expect("run is offered");
@@ -3023,7 +3149,7 @@ mod tests {
     #[test]
     fn the_mutating_tools_state_that_approval_is_required() {
         for name in ["write_file", "edit_file"] {
-            let tool = available()
+            let tool = available(false)
                 .into_iter()
                 .find(|t| t.function.name == name)
                 .unwrap_or_else(|| panic!("{name} is offered"));
@@ -3039,7 +3165,7 @@ mod tests {
     /// matching will propose passages that are refused.
     #[test]
     fn the_edit_tool_states_that_matching_is_exact() {
-        let edit = available()
+        let edit = available(false)
             .into_iter()
             .find(|t| t.function.name == "edit_file")
             .expect("edit_file is offered");
@@ -3054,7 +3180,7 @@ mod tests {
 
     #[test]
     fn every_tool_declares_a_schema() {
-        for tool in available() {
+        for tool in available(false) {
             assert_eq!(tool.kind, "function");
             assert_eq!(tool.function.parameters["type"], "object");
             assert!(!tool.function.description.is_empty());
@@ -3082,7 +3208,7 @@ mod tests {
     /// vocabulary the parser does not read.
     #[test]
     fn the_todo_schema_advertises_the_statuses_the_kernel_parses() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "todo_write")
             .expect("todo_write is offered");
@@ -3105,7 +3231,7 @@ mod tests {
     /// and the finished tasks will vanish from the display.
     #[test]
     fn the_todo_tool_states_that_the_whole_list_is_required() {
-        let tool = available()
+        let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "todo_write")
             .expect("todo_write is offered");
@@ -3630,6 +3756,104 @@ mod tests {
                 }]}),
             ));
             assert!(told.starts_with("error:"), "{told}");
+        }
+    }
+
+    mod scheduling {
+        use super::*;
+        use bravebot_core::capability::{Capability, CapabilitySet};
+        use bravebot_core::event::RecordingSink;
+        use bravebot_core::policy::{ReleasePlan, Routing};
+
+        fn call(arguments: Value) -> Produced {
+            let mut sink = RecordingSink::new();
+            let mut routing = Routing::new();
+            routing.insert_trusted("task", "watch the build");
+            let mut policy = Policy::begin(
+                routing,
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead]),
+                &mut sink,
+            )
+            .expect("policy");
+            schedule_next(&mut policy, &arguments)
+        }
+
+        /// The whole reason this tool can exist. A turn may choose the moment and nothing else,
+        /// so the field a person would have to read the loop's prompt to approve is not here to
+        /// be filled in.
+        #[test]
+        fn nothing_on_this_tool_says_what_the_next_turn_asks() {
+            let tool = available(true)
+                .into_iter()
+                .find(|t| t.function.name == "schedule_next")
+                .expect("schedule_next is offered to a self-paced tick");
+            let properties = tool.function.parameters["properties"]
+                .as_object()
+                .expect("properties");
+            let mut fields: Vec<&str> = properties.keys().map(String::as_str).collect();
+            fields.sort_unstable();
+            assert_eq!(fields, ["delay_seconds", "noop", "reason"]);
+        }
+
+        /// A tool that does nothing outside one situation is a tool the planner has to be told to
+        /// ignore, and one it calls anyway is one it was told worked.
+        #[test]
+        fn the_tool_that_paces_a_loop_is_offered_only_to_a_tick_of_one() {
+            assert!(
+                !available(false)
+                    .iter()
+                    .any(|t| t.function.name == "schedule_next"),
+                "an ordinary turn was offered a way to schedule the next one"
+            );
+        }
+
+        /// The planner has to be told the wait it is getting, not the wait it asked for, or its
+        /// next answer describes a schedule that is not happening.
+        #[test]
+        fn a_wait_outside_the_bounds_is_reported_as_the_one_that_will_happen() {
+            for (asked, held) in [(1u64, 60u64), (86_400, 3_600)] {
+                let produced = call(json!({"delay_seconds": asked, "noop": false}));
+                assert_eq!(
+                    produced.wakeup.expect("a wakeup").after,
+                    std::time::Duration::from_secs(held)
+                );
+                assert!(
+                    produced.note.contains(&format!("{held}s")),
+                    "asked for {asked}: {}",
+                    produced.note
+                );
+            }
+        }
+
+        #[test]
+        fn what_the_turn_is_waiting_on_reaches_the_person_watching() {
+            let produced = call(json!({
+                "delay_seconds": 300,
+                "noop": true,
+                "reason": "watching the release build"
+            }));
+            assert!(
+                produced.note.contains("watching the release build"),
+                "{}",
+                produced.note
+            );
+            assert!(produced.wakeup.expect("a wakeup").quiet);
+        }
+
+        /// Whether a tick found anything is what the count of quiet ones is built from, so a turn
+        /// that leaves it out is asking for a number to be invented.
+        #[test]
+        fn a_schedule_missing_what_it_needs_is_refused() {
+            for arguments in [
+                json!({"noop": false}),
+                json!({"delay_seconds": 300}),
+                json!({"delay_seconds": "soon", "noop": false}),
+            ] {
+                let produced = call(arguments.clone());
+                assert!(produced.failed, "{arguments} was accepted");
+                assert!(produced.wakeup.is_none(), "{arguments} still scheduled one");
+            }
         }
     }
 

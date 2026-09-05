@@ -90,6 +90,12 @@ pub struct Facts<'a> {
     pub timing: bravebot_agent::timing::Timing,
     pub trust: &'a TrustStore,
     pub programs: &'a TrustedPrograms,
+    /// The loop repeating a prompt, where the person started one.
+    ///
+    /// Absent from the report entirely when there is none, rather than reported as "no loop": a
+    /// line saying a thing is not happening is a line on every report for the sake of the few
+    /// where it is.
+    pub looping: Option<&'a crate::loops::Running>,
 }
 
 /// Compose the report.
@@ -172,6 +178,23 @@ pub fn report(facts: &Facts<'_>) -> Report {
     );
 
     lines.push(Line::new(t!(status_confinement), facts.confinement));
+
+    // What is going to happen without anybody typing anything, which is the one thing about a
+    // session that a person cannot read off the transcript.
+    if let Some(running) = facts.looping {
+        let pace = match running.pacing() {
+            crate::loops::Pacing::Every(every) => {
+                t!(status_loop_every, every = crate::loops::spell(every))
+            }
+            crate::loops::Pacing::SelfPaced => t!(status_loop_self_paced).to_string(),
+        };
+        let when = match running.until(std::time::Instant::now()) {
+            Some(until) => t!(status_loop_next, next = crate::loops::spell(until)),
+            None if running.ticking() => t!(status_loop_running).to_string(),
+            None => t!(status_loop_unpaced).to_string(),
+        };
+        lines.push(Line::new(t!(status_loop), pace).with_note(when));
+    }
 
     lines.push(Line::new(
         t!(status_this_session),
@@ -377,7 +400,50 @@ mod tests {
             timing: bravebot_agent::timing::Timing::default(),
             trust,
             programs: &NOTHING_VOUCHED,
+            // Nothing repeating, which is every session that has not been asked to. Tests about
+            // the loop line set this themselves.
+            looping: None,
         }
+    }
+
+    /// The one thing about a session that cannot be read off the transcript: what is going to
+    /// happen next without anybody typing anything.
+    #[test]
+    fn the_report_says_what_is_repeating_and_when_it_is_next_due() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let mut running = crate::loops::Running::begin(
+            crate::loops::parse("5m check the deploy").expect("a request"),
+        );
+        running.dispatched();
+        running.ended(None, std::time::Instant::now());
+
+        let mut facts = facts(&config, &trust);
+        facts.looping = Some(&running);
+        let report = report(&facts);
+
+        let line = report
+            .lines
+            .iter()
+            .find(|line| line.label.trim() == t!(status_loop))
+            .expect("the loop is reported");
+        assert!(line.value.contains("5m"), "{}", line.value);
+        assert!(!line.note.trim().is_empty(), "nothing said when it is next");
+    }
+
+    /// A session nobody asked to repeat anything says nothing about loops, rather than carrying a
+    /// line about a thing that is not happening.
+    #[test]
+    fn a_session_with_no_loop_does_not_mention_one() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let report = report(&facts(&config, &trust));
+        assert!(
+            !report
+                .lines
+                .iter()
+                .any(|line| line.label.trim() == t!(status_loop))
+        );
     }
 
     /// The one standing permission that stops announcing itself. Every other prompt in a session

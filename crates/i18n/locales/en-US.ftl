@@ -314,6 +314,12 @@ status-premium-in-use = premium, a credential was spent
 status-premium-not-spent = free tier: no subscription was used
 status-free-tier = free tier only
 status-confinement = Confinement
+status-loop = Loop
+status-loop-every = every { $every }
+status-loop-self-paced = paced by each turn
+status-loop-next = next in { $next }
+status-loop-running = running now
+status-loop-unpaced = waiting for the turn to say when
 status-this-session = This session
 # Where a session's wall clock went. Four figures, because the whole is unactionable: a session
 # that took an hour on the model, an hour on subprocesses, and an hour waiting for its user to
@@ -447,6 +453,7 @@ command-add-dir = Open another directory, and trust it for this session
 command-rename = Call this conversation something else
 command-compact = Summarise the conversation so far, keeping the recent part
 command-clear = Start a new session here, keeping this one resumable
+command-loop = Send a prompt again and again, on your interval or at a pace each turn sets
 command-exit = Leave
 
 
@@ -485,6 +492,28 @@ session-model-substituted =
     subscription was expected.
 session-error = error: { $problem }
 session-no-output = no output
+
+
+## Repeating a prompt
+
+loop-needs-a-prompt =
+    /loop needs something to repeat, as in /loop 5m check the deploy, or /loop watch the build to
+    let each turn say when to run again
+loop-started-every = repeating every { $every }; ctrl-c stops it, and so does leaving
+loop-started-self-paced =
+    repeating at a pace each turn sets; ctrl-c stops it, and so does leaving
+loop-interval-raised = the interval was raised to { $every }, which is as fast as a loop goes
+loop-interval-capped = the interval was capped at { $every }, which is as long as a loop lives
+loop-replaced = the loop that was running has been replaced
+loop-tick = loop { $count }
+loop-tick-quiet = { $quiet ->
+    [one] loop { $count }, after { $quiet } tick that found nothing
+   *[other] loop { $count }, after { $quiet } ticks that found nothing
+    }
+loop-stopped = the loop is stopped
+loop-aged-out = the loop has run for a week and stopped itself
+loop-unpaced = that turn did not say when to run again, so the loop has stopped
+loop-busy = /loop starts with a turn of its own, so it waits until this one is done
 
 
 ## Pasting, dropping and attaching
@@ -542,6 +571,7 @@ verb-load-skill = Skill
 verb-ask-user = Ask
 verb-run = Run
 verb-read-output = Read output
+verb-schedule-next = Schedule
 verb-unknown = Tool
 
 ## Where what a call produced ended up, said at the end of the line about it

@@ -809,6 +809,132 @@ fn a_runaway_tool_loop_stops_when_it_is_cancelled() {
     );
 }
 
+/// A tick of a self-paced loop may say when the next one is due, and the answer travels back to
+/// whoever is keeping the loop. What it may not do is say what the next tick asks: there is no
+/// field for that, and the line belongs to the person who typed it.
+#[test]
+fn a_tick_of_a_self_paced_loop_says_when_to_run_again() {
+    let scratch = Scratch::new("schedule-next");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "schedule_next",
+            r#"{"delay_seconds": 900, "noop": true, "reason": "watching the build"}"#,
+        ),
+        reply_with("nothing has changed yet"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("watch the build").ticking(Some(turn::Tick {
+        number: 1,
+        self_paced: true,
+    }));
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let wakeup = outcome.wakeup.expect("the turn said when to run again");
+    assert_eq!(wakeup.after, std::time::Duration::from_secs(900));
+    assert!(wakeup.quiet, "the turn reported finding nothing");
+
+    let first = received.recv().expect("first request");
+    assert!(
+        first.contains("schedule_next"),
+        "a tick was not offered the tool: {first}"
+    );
+}
+
+/// The driver is the only thing that knows a turn is a tick, so it has to say so. A planner that
+/// cannot tell answers as though somebody had just typed the line for the first time, which is
+/// the whole failure a loop is supposed to avoid.
+#[test]
+fn a_tick_is_told_that_it_is_one_and_which_kind_of_loop_it_is_in() {
+    for (self_paced, expected, absent) in [
+        (true, "schedule_next", "timing is theirs"),
+        (false, "timing is theirs", "call schedule_next"),
+    ] {
+        let scratch = Scratch::new(&format!("tick-preamble-{self_paced}"));
+        let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+        let (endpoint, received) = serve(&reply_with("nothing has changed"));
+        let config = config_for(&endpoint);
+        let egress = bravebot_net::Egress::new();
+        let mut sink = RecordingSink::new();
+
+        let task = Task::new("watch the build").ticking(Some(turn::Tick {
+            number: 3,
+            self_paced,
+        }));
+        turn::run(
+            &config,
+            &egress,
+            &workspace,
+            &task,
+            &mut bravebot_agent::confirm::ApproveWrites,
+            &mut sink,
+        )
+        .expect("turn runs");
+
+        let request = received.recv().expect("the request");
+        assert!(
+            request.contains("tick 3 of a loop"),
+            "a tick was not told it is one: {request}"
+        );
+        assert!(request.contains(expected), "self_paced {self_paced}");
+        assert!(
+            !request.contains(absent),
+            "self_paced {self_paced} was told about the other kind of loop"
+        );
+    }
+}
+
+/// Every other turn is offered no way to schedule one,/// Every other turn is offered no way to schedule one, and a call to it is answered the way any
+/// other name nobody offered is. A tool that quietly worked where it was not offered would let a
+/// turn nobody is looping schedule itself.
+#[test]
+fn a_turn_that_is_not_a_tick_cannot_schedule_one() {
+    let scratch = Scratch::new("schedule-next-unoffered");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("schedule_next", r#"{"delay_seconds": 900, "noop": true}"#),
+        reply_with("there was no loop to pace"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("do the thing once");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(outcome.wakeup.is_none(), "an ordinary turn scheduled one");
+
+    let first = received.recv().expect("first request");
+    assert!(
+        !first.contains("schedule_next"),
+        "an ordinary turn was offered the tool: {first}"
+    );
+    let second = received.recv().expect("second request");
+    assert!(second.contains("no such tool"), "got: {second}");
+}
+
 /// An unknown tool is reported back as text rather than failing the turn.
 #[test]
 fn an_unknown_tool_is_reported_to_the_model() {

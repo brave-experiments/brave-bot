@@ -325,6 +325,12 @@ status-premium-in-use = premium, un jeton a été dépensé
 status-premium-not-spent = offre gratuite : aucun abonnement utilisé
 status-free-tier = offre gratuite seulement
 status-confinement = Confinement
+status-loop = Boucle
+status-loop-every = toutes les { $every }
+status-loop-self-paced = cadencée par chaque tour
+status-loop-next = prochaine dans { $next }
+status-loop-running = en cours
+status-loop-unpaced = en attente que le tour dise quand
 status-this-session = Cette session
 status-time = Temps
 status-time-inference = sur le modèle
@@ -454,6 +460,7 @@ command-add-dir = Ouvrir un autre répertoire, et l'approuver pour cette session
 command-rename = Appeler cette conversation autrement
 command-compact = Résumer la conversation jusqu'ici, en gardant la partie récente
 command-clear = Démarrer une nouvelle session ici, celle-ci restant reprenable
+command-loop = Renvoyer une consigne encore et encore, à votre intervalle ou au rythme de chaque tour
 command-exit = Partir
 
 
@@ -489,6 +496,28 @@ session-model-substituted =
     `bravebot doctor` si un abonnement était attendu.
 session-error = erreur : { $problem }
 session-no-output = aucune sortie
+
+
+## Répéter une consigne
+
+loop-needs-a-prompt =
+    /loop demande quelque chose à répéter, comme /loop 5m vérifie le déploiement, ou
+    /loop surveille la compilation pour laisser chaque tour dire quand recommencer
+loop-started-every = répétition toutes les { $every } ; ctrl-c l'arrête, et partir aussi
+loop-started-self-paced =
+    répétition au rythme que fixe chaque tour ; ctrl-c l'arrête, et partir aussi
+loop-interval-raised = l'intervalle a été relevé à { $every }, le plus rapide qu'une boucle aille
+loop-interval-capped = l'intervalle a été plafonné à { $every }, le plus long qu'une boucle vive
+loop-replaced = la boucle qui tournait a été remplacée
+loop-tick = boucle { $count }
+loop-tick-quiet = { $quiet ->
+    [one] boucle { $count }, après { $quiet } passage sans rien trouver
+   *[other] boucle { $count }, après { $quiet } passages sans rien trouver
+    }
+loop-stopped = la boucle est arrêtée
+loop-aged-out = la boucle a tourné une semaine et s'est arrêtée d'elle-même
+loop-unpaced = ce tour n'a pas dit quand recommencer, la boucle est donc arrêtée
+loop-busy = /loop commence par un tour à lui, il attend donc la fin de celui-ci
 
 
 ## Coller, déposer et joindre
@@ -542,6 +571,7 @@ verb-load-skill = Compétence
 verb-ask-user = Demander
 verb-run = Exécuter
 verb-read-output = Lire la sortie
+verb-schedule-next = Programmer
 verb-unknown = Outil
 
 

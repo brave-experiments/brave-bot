@@ -69,6 +69,18 @@ fn body_of(catalogue: &skills::Catalogue, name: &str) -> String {
     body.clone().into_parts_for_decoding().0
 }
 
+/// The names of the skills that came from a disk, which is what every test here is about.
+///
+/// A built-in skill is in every catalogue: it is written into the program rather than found
+/// anywhere, so it says nothing about discovery and nothing about what anybody vouched for.
+fn from_disk(catalogue: &skills::Catalogue) -> Vec<&str> {
+    catalogue
+        .iter()
+        .filter(|skill| skill.origin != "built-in")
+        .map(|skill| skill.name.as_str())
+        .collect()
+}
+
 fn routing() -> Routing {
     let mut r = Routing::new();
     r.insert_trusted("task", "do the work");
@@ -88,6 +100,65 @@ fn policy<'s>(sink: &'s mut RecordingSink, trusted: &[&str]) -> Policy<'s, Recor
     )
     .expect("policy")
     .with_trust(store)
+}
+
+/// A skill that is part of the program rather than something somebody installed. It is there in
+/// an empty directory, in an untrusted one, and with no home at all, because there is no source
+/// for anybody to have vouched for or failed to.
+#[test]
+fn a_built_in_skill_is_offered_wherever_a_session_runs() {
+    let scratch = Scratch::new("built-in-everywhere");
+    let project = scratch.workspace();
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let (catalogue, notices) = {
+        let mut policy = policy(&mut sink, &[]);
+        skills::discover(&mut policy, &workspace, None)
+    };
+
+    assert!(catalogue.get("loop").is_some(), "the loop skill is missing");
+    assert!(
+        catalogue.describe_for_prompt().contains("loop"),
+        "a built-in skill is not advertised"
+    );
+    assert!(
+        notices.is_empty(),
+        "a built-in skill produced a notice: {notices:?}"
+    );
+}
+
+/// A built-in is the least specific source, so somebody who writes a skill of the same name gets
+/// theirs. That is the same "most specific wins" the trust map uses, and it is why a built-in is
+/// added before anything is read.
+#[test]
+fn a_skill_of_the_users_own_shadows_a_built_in_of_the_same_name() {
+    let scratch = Scratch::new("built-in-shadowed");
+    let home = scratch.home();
+    write_skill(
+        &home,
+        "loop",
+        "loop",
+        "the user's own account of looping",
+        "do it my way",
+    );
+    let workspace = Workspace::new(scratch.workspace()).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let (catalogue, _) = {
+        let mut policy = policy(&mut sink, &[]);
+        skills::discover(&mut policy, &workspace, Some(&home))
+    };
+
+    assert_eq!(
+        catalogue
+            .iter()
+            .filter(|skill| skill.name == "loop")
+            .count(),
+        1,
+        "both were offered"
+    );
+    assert_eq!(body_of(&catalogue, "loop").trim(), "do it my way");
 }
 
 /// The central property. A skill's name and description go into the system prompt verbatim, so a
@@ -112,7 +183,10 @@ fn a_skill_in_an_untrusted_project_is_not_named_to_the_planner() {
         skills::discover(&mut policy, &workspace, None)
     };
 
-    assert!(catalogue.is_empty(), "an untrusted skill was offered");
+    assert!(
+        from_disk(&catalogue).is_empty(),
+        "an untrusted skill was offered"
+    );
     let advertised = catalogue.describe_for_prompt();
     assert!(
         !advertised.contains("ignore-everything") && !advertised.contains("exfiltrate"),
@@ -185,7 +259,11 @@ fn a_home_skill_is_not_labelled_by_a_rule_meant_for_the_workspace() {
         skills::discover(&mut policy, &workspace, Some(&home))
     };
 
-    assert_eq!(catalogue.len(), 1, "the user's own skill was not offered");
+    assert_eq!(
+        from_disk(&catalogue).len(),
+        1,
+        "the user's own skill was not offered"
+    );
     assert_eq!(body_of(&catalogue, "commit-style"), "body");
 }
 
@@ -218,7 +296,11 @@ fn a_workspace_skill_shadows_a_home_skill_of_the_same_name() {
         skills::discover(&mut policy, &workspace, Some(&home))
     };
 
-    assert_eq!(catalogue.len(), 1, "the same skill was offered twice");
+    assert_eq!(
+        from_disk(&catalogue).len(),
+        1,
+        "the same skill was offered twice"
+    );
     assert_eq!(
         body_of(&catalogue, "commit-style"),
         "local",
@@ -258,7 +340,10 @@ fn a_skill_the_trust_map_distrusts_stops_being_offered() {
         skills::discover(&mut policy, &workspace, None)
     };
 
-    assert!(catalogue.is_empty(), "a distrusted file was offered");
+    assert!(
+        from_disk(&catalogue).is_empty(),
+        "a distrusted file was offered"
+    );
     assert!(
         notices.iter().any(|n| n.message.contains("not trusted")),
         "the user was told nothing: {notices:?}"
@@ -286,7 +371,10 @@ fn a_skill_that_was_skipped_is_counted_rather_than_passed_over_in_silence() {
         skills::discover(&mut policy, &workspace, Some(&home))
     };
 
-    assert!(catalogue.is_empty(), "a half-written skill was offered");
+    assert!(
+        from_disk(&catalogue).is_empty(),
+        "a half-written skill was offered"
+    );
     assert_eq!(notices.len(), 1, "expected one notice: {notices:?}");
     assert!(
         notices[0].message.contains("frontmatter"),
@@ -308,7 +396,7 @@ fn a_skills_directory_that_does_not_exist_is_not_an_error() {
         skills::discover(&mut policy, &workspace, Some(&scratch.home()))
     };
 
-    assert!(catalogue.is_empty());
+    assert!(from_disk(&catalogue).is_empty());
     assert!(notices.is_empty(), "silence was expected: {notices:?}");
 }
 
@@ -324,7 +412,7 @@ fn no_home_directory_is_not_an_error() {
         skills::discover(&mut policy, &workspace, None)
     };
 
-    assert!(catalogue.is_empty());
+    assert!(from_disk(&catalogue).is_empty());
     assert!(notices.is_empty(), "silence was expected: {notices:?}");
 }
 
@@ -374,6 +462,5 @@ fn skills_are_offered_in_the_same_order_every_time() {
         skills::discover(&mut policy, &workspace, Some(&home))
     };
 
-    let names: Vec<&str> = catalogue.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["alpha", "middle", "zebra"]);
+    assert_eq!(from_disk(&catalogue), vec!["alpha", "middle", "zebra"]);
 }
