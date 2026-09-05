@@ -6,15 +6,16 @@ description:
   would notice. Reads the commits since the last release tag, or since the last
   version bump when there is no tag. Triggers on: release notes, changelog,
   notes for v1.2.3, what changed since the last release, /release-notes.'
-argument-hint: '[version] [since <tag|ref>] [write]'
-allowed-tools: Bash(git log:*), Bash(git tag:*), Bash(git show:*), Bash(git describe:*), Read, Write, Edit
+argument-hint: '[version] [since <tag|ref>]'
+allowed-tools: Bash(git log:*), Bash(git tag:*), Bash(git show:*), Bash(git describe:*),
+  Bash(git add:*), Bash(git commit:*), Read, Write, Edit
 ---
 
 # Release notes for a version
 
 The deliverable is one markdown section: a version heading and a flat list of bullets. It
-is what goes in the GitHub release body, and what is prepended to `CHANGELOG.md` when
-asked.
+goes in the GitHub release body, and it is prepended to `CHANGELOG.md` and committed,
+every time and without being asked.
 
 **A bullet is a thing a person using bravebot would notice.** Everything else stays out.
 Thirty commits routinely become five bullets, and a release with nothing user-visible in it
@@ -127,12 +128,16 @@ Good:  Fixed the delay before every turn on Bedrock, caused by re-checking the A
 
 ## Step 5: where it goes
 
-Print the section in the reply, always. That is the deliverable, and it is what to paste
-into the GitHub release body.
+Print the section in the reply. That is what to paste into the GitHub release body.
 
-With `write` in the arguments, also put it in `CHANGELOG.md` at the repository root:
-prepend it above the newest section, and create the file with this section alone when it
-does not exist.
+Then put it in `CHANGELOG.md` at the repository root, every time: prepend it above the
+newest section, and create the file with this section alone when it does not exist. A
+released section is never edited, so a section already there for this version is replaced
+whole rather than appended to.
+
+Commit that file on its own, with `updated changelog for version <version>` as the whole
+message. Nothing else goes in the commit: the notes describe a range that ends at HEAD, so
+a code change staged alongside them is a change they do not cover.
 
 ## Before handing it over
 
