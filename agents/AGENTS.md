@@ -109,18 +109,29 @@ alone. If they could not, it does not get built.
 
 No co-attribution markers for Claude Code.
 
-**`make check` must pass before every commit.** Not after it, not in the next one, and not
-"probably fine". It runs fmt, clippy with `-D warnings`, and the tests, and a commit made without
-it is a broken state that somebody else finds later, from the history, which is the worst place
-to find one. There is no exemption for a change that only touched a comment, a document, or a
-name: fmt and clippy fail on those as readily as on anything else. If a check cannot pass for a
-reason outside the change, say so in the commit message rather than leaving it to be discovered.
+**fmt and clippy before every commit; the tests that cover the change, not all of them.** fmt and
+clippy with `-D warnings` take seconds and have no exemption for a change that only touched a
+comment, a document, or a name: they fail on those as readily as on anything else, and `make init`
+installs a pre-commit hook that refuses a commit failing either. Then run the tests the diff is
+under, scoped as tightly as the diff is: `cargo test -p bravebot-tui --lib` for the interface,
+`cargo test -p bravebot-agent --test workspace` for one test binary. A commit still has to be a
+state that stands up, and a change nothing covers is a change to be suspicious of.
 
-Run it on its own and read what it exits with. Piped into a filter, the status you see belongs to
-the filter: `make check | grep error` reports success on a formatting failure, because a fmt diff
-says nothing matching that pattern and grep exited happily. `make init` installs a pre-commit hook
-that refuses a commit failing fmt or clippy, but it stops there. The tests are too slow to run on
-every commit, so nothing but running `make check` tells you about those.
+`make check` runs the whole suite and takes minutes. It is what to run before pushing a branch and
+what CI runs, not what to run between two edits to the same file, and never twice to confirm the
+same thing. Reaching for it out of caution is not free: it is the difference between a review that
+takes a minute and one that takes twenty, and the reviewer is the person waiting.
+
+Read what a command exits with rather than a filter over it: `make check | grep error` reports
+success on a formatting failure, because a fmt diff says nothing matching that pattern and grep
+exited happily. If a check cannot pass for a reason outside the change, say so in the commit
+message rather than leaving it to be discovered.
+
+**A test that fails on the parent commit is not yours to fix.** Establish that once, cheaply, and
+move on: name the test, say it reproduces without the change, and carry on with the work. Do not
+bisect it, do not build a baseline worktree for it, and do not re-run the suite hoping. Some tests
+here spawn real processes against a wall clock, so they fail on a loaded machine and pass on the
+next run; that is a flake, not a signal, and chasing one costs more than the failure does.
 
 **One change per commit, with its tests in that same commit.** A commit is the unit somebody
 reads, reverts, and bisects on, so it has to stand up alone: the change, the tests that pin it,
