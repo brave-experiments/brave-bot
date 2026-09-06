@@ -193,12 +193,22 @@ answer came from is close enough to its own stated expiry to be no use to the re
 the same question is answered without running anything. A session that is not good is never reported
 as one, and an answer with no stated expiry is not kept.
 
+A kept answer is dropped the moment a request proves it wrong, and the next check runs the tool
+again.
+
 **Why.** The check happens before every turn, and the tool that answers it takes most of a second, so
 paid each time it is a pause between pressing Enter and seeing the line appear. The expiry is the
 credential's own word about how long the answer stays true, which is why it and not a fixed interval
 is what bounds this. Stopping short of it matters because the answer is used to decide whether to
 sign in before work that then has to be signed: taken at the last second, the request that follows
 carries a credential that has already expired.
+
+An expiry is what the credential says, not a promise. A session can be revoked, ended from another
+machine, or lose what it granted, and then a kept answer is wrong before the time it named. Held on
+to, it is worse than never having cached at all: every check before every turn repeats the stale yes,
+so the sign-in that a person can see never runs, and each turn instead fails to one that reports to
+nobody. Dropping it on the first request that disproves it is what keeps the caching an optimisation
+rather than a way to get stuck.
 
 `verified-by: bravebot_bedrock::credentials::a_session_already_shown_to_be_good_is_not_asked_about_again`
 `verified-by: bravebot_bedrock::credentials::a_session_that_has_run_out_is_asked_about_again`
@@ -209,6 +219,8 @@ carries a credential that has already expired.
 `verified-by: bravebot_bedrock::credentials::an_expiry_is_converted_to_the_instant_it_names`
 `verified-by: bravebot_bedrock::credentials::the_expiry_the_cli_reports_is_read_from_the_process_format`
 `verified-by: bravebot_bedrock::credentials::an_expiry_that_is_not_the_expected_shape_is_not_guessed_at`
+`verified-by: bravebot_bedrock::credentials::a_session_shown_to_be_bad_is_no_longer_remembered_as_good`
+`verified-by: bravebot_bedrock::credentials::forgetting_one_profile_leaves_the_others_alone`
 
 <a id="BACKEND-11"></a>
 ### BACKEND-11: a settings file names the model above what the build baked in

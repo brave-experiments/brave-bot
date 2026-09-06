@@ -104,6 +104,11 @@ pub fn resolve(profile: Option<&str>) -> Result<Credentials, CredentialError> {
         // browser. Attempted once: a second login would open a second window for whatever the first
         // one failed to fix.
         Err(CredentialError::Refused { detail }) => {
+            // Whatever a cached answer said about this session, an export has just proved it wrong.
+            // Forgotten here so the next check before a turn asks the CLI rather than repeating the
+            // stale yes, which is what puts the sign-in back in front of the person: the login
+            // below reports to nobody.
+            known_good().forget(profile);
             login(profile, |_| {}).map_err(|_| CredentialError::Refused { detail })?;
             export(profile)
         }
@@ -171,6 +176,18 @@ impl KnownGood {
                 profile.map(str::to_string),
                 expires_at.saturating_sub(MARGIN),
             );
+        }
+    }
+
+    /// Drop what was kept for a profile, because it has since been shown to be wrong.
+    ///
+    /// A credential can stop working before the expiry it stated: revoked, a session ended
+    /// elsewhere, a role that no longer grants what it did. Without this the kept answer goes on
+    /// saying the session is good until that expiry passes, so the check before each turn never
+    /// asks again and the sign-in a person can see never runs.
+    fn forget(&self, profile: Option<&str>) {
+        if let Ok(mut known) = self.0.lock() {
+            known.remove(&profile.map(str::to_string));
         }
     }
 }
@@ -442,6 +459,37 @@ fn first_line(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A credential can stop working before the expiry it stated. Kept anyway, the check before
+    /// every turn goes on answering yes from that stale note, so the sign-in a person can see never
+    /// runs and each turn fails to a login reporting to nobody.
+    #[test]
+    fn a_session_shown_to_be_bad_is_no_longer_remembered_as_good() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), Some(now() + 3_600));
+        assert!(
+            known.holds(Some("work"), now()),
+            "a good export was not kept"
+        );
+
+        known.forget(Some("work"));
+        assert!(
+            !known.holds(Some("work"), now()),
+            "a session proved bad was still remembered as good"
+        );
+    }
+
+    /// Forgetting one profile must not forget another: a session is signed in to one and not the
+    /// next, and they are asked about separately.
+    #[test]
+    fn forgetting_one_profile_leaves_the_others_alone() {
+        let known = KnownGood::default();
+        known.keep(Some("work"), Some(now() + 3_600));
+        known.keep(Some("personal"), Some(now() + 3_600));
+
+        known.forget(Some("work"));
+        assert!(known.holds(Some("personal"), now()));
+    }
 
     /// The shape the CLI's `--format process` actually emits, which is what this has to read.
     #[test]
