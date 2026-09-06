@@ -338,3 +338,26 @@ where the wrong half is the one its author never sees.
 `verified-by: bravebot_tui::theme::an_arm_of_a_pair_resolves_through_defs_and_none`
 `verified-by: bravebot_tui::theme::a_pair_missing_an_arm_is_not_a_theme`
 `verified-by: bravebot_tui::theme::a_theme_says_whether_any_of_its_inks_came_from_the_sensed_background`
+
+<a id="VIEW-17"></a>
+### VIEW-17: a scheme published in both polarities is one row, and each half stays reachable
+
+Where a built-in scheme was published for a light terminal and a dark one, the picker lists a
+single row under the family's name, painted from the half matching the background sensed at
+startup. Both fixed halves keep the names they had and still resolve through `/theme`, each with
+the palette its name says, whichever background was sensed. A half is not listed, with one
+exception: the half already in force is, since a picker that cannot show the current theme has no
+row to open on. A scheme published in one polarity only, and a second dark scheme from the same
+authors, are each their own row as before.
+
+**Why.** Two rows for one scheme make a person work out which of them their terminal wants, and
+answer it again on the next machine. Sensing the background answers it for them, but sensing is a
+guess wherever a terminal will not say, and a guess that cannot be overruled is worse than the two
+rows were. Keeping the halves resolvable is what makes the adapting row safe to prefer: being
+guessed wrong about costs one `/theme` and it stays fixed.
+
+`verified-by: bravebot_tui::theme::a_family_replaces_the_two_rows_it_was_published_as`
+`verified-by: bravebot_tui::theme::a_family_takes_the_half_for_the_background_sensed`
+`verified-by: bravebot_tui::theme::a_pinned_half_keeps_its_own_palette_whichever_background_was_sensed`
+`verified-by: bravebot_tui::theme::the_pinned_half_in_use_is_listed`
+`verified-by: bravebot_tui::theme::the_list_is_brave_and_eighteen_named_schemes`

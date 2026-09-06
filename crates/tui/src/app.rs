@@ -2225,8 +2225,8 @@ fn choose_model(
 
 /// Open the theme picker and persist what the person chose.
 fn choose_theme(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: &mut Session) {
-    let themes = crate::theme::offered();
     let current = crate::theme::name();
+    let themes = crate::theme::listed(&current);
     if let Some(chosen) = crate::theme_prompt::choose(terminal, themes, &current, |frame| {
         render::draw(frame, session);
     }) {

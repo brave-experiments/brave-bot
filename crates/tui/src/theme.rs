@@ -88,6 +88,8 @@ pub struct Theme {
     /// Whether these inks were picked for the background sensed at startup, which is the one
     /// thing about a theme that a person cannot read off its name.
     pub adapts: bool,
+    /// Whether the picker lists this theme, as against only resolving it by name.
+    pub listed: bool,
 }
 
 impl Theme {
@@ -96,11 +98,17 @@ impl Theme {
             name: name.to_string(),
             palette,
             adapts: false,
+            listed: true,
         }
     }
 
     fn adapting(mut self) -> Self {
         self.adapts = true;
+        self
+    }
+
+    fn pinned(mut self) -> Self {
+        self.listed = false;
         self
     }
 }
@@ -304,6 +312,19 @@ pub fn offered() -> Vec<Theme> {
     themes
 }
 
+/// The themes the picker lists.
+///
+/// Everything on offer but the polarity-pinned half of a family, which would double three rows
+/// into six for a choice almost nobody makes. The half in use is listed even so, since a picker
+/// that cannot show what is already in force has nothing to open on.
+pub fn listed(current: &str) -> Vec<Theme> {
+    let current = canonical(current);
+    offered()
+        .into_iter()
+        .filter(|theme| theme.listed || theme.name == current)
+        .collect()
+}
+
 /// Find a theme by name among those on offer.
 pub fn find(name: &str) -> Option<Theme> {
     let name = canonical(name);
@@ -318,18 +339,6 @@ pub fn builtins() -> Vec<Theme> {
     let mut themes = vec![
         Theme::builtin(BRAVE, brave_palette(light)).adapting(),
         named(
-            "catppuccin-mocha",
-            (0x1e, 0x1e, 0x2e),
-            (0xcd, 0xd6, 0xf4),
-            (0x6c, 0x70, 0x86),
-            (0xa6, 0xe3, 0xa1),
-            (0xf3, 0x8b, 0xa8),
-            (0xf9, 0xe2, 0xaf),
-            (0xcb, 0xa6, 0xf7),
-            (0xfa, 0xb3, 0x87),
-            (0x89, 0xb4, 0xfa),
-        ),
-        named(
             "catppuccin-macchiato",
             (0x24, 0x27, 0x3a),
             (0xca, 0xd3, 0xf5),
@@ -340,18 +349,6 @@ pub fn builtins() -> Vec<Theme> {
             (0xc6, 0xa0, 0xf6),
             (0xf5, 0xa9, 0x7f),
             (0x8a, 0xad, 0xf4),
-        ),
-        named(
-            "catppuccin-latte",
-            (0xef, 0xf1, 0xf5),
-            (0x4c, 0x4f, 0x69),
-            (0x9c, 0xa0, 0xb0),
-            (0x40, 0xa0, 0x2b),
-            (0xd2, 0x0f, 0x39),
-            (0xdf, 0x8e, 0x1d),
-            (0x88, 0x39, 0xef),
-            (0xfe, 0x64, 0x0b),
-            (0x1e, 0x66, 0xf5),
         ),
         named(
             "tokyonight",
@@ -376,30 +373,6 @@ pub fn builtins() -> Vec<Theme> {
             (0xbb, 0x9a, 0xf7),
             (0xff, 0x9e, 0x64),
             (0x7a, 0xa2, 0xf7),
-        ),
-        named(
-            "gruvbox-dark",
-            (0x28, 0x28, 0x28),
-            (0xeb, 0xdb, 0xb2),
-            (0x92, 0x83, 0x74),
-            (0xb8, 0xbb, 0x26),
-            (0xfb, 0x49, 0x34),
-            (0xfa, 0xbd, 0x2f),
-            (0xd3, 0x86, 0x9b),
-            (0xfe, 0x80, 0x19),
-            (0x83, 0xa5, 0x98),
-        ),
-        named(
-            "gruvbox-light",
-            (0xfb, 0xf1, 0xc7),
-            (0x3c, 0x38, 0x36),
-            (0x92, 0x83, 0x74),
-            (0x79, 0x74, 0x0e),
-            (0x9d, 0x00, 0x06),
-            (0xb5, 0x76, 0x14),
-            (0x8f, 0x3f, 0x71),
-            (0xaf, 0x3a, 0x03),
-            (0x07, 0x66, 0x78),
         ),
         named(
             "dracula",
@@ -486,30 +459,6 @@ pub fn builtins() -> Vec<Theme> {
             (0x61, 0xaf, 0xef),
         ),
         named(
-            "solarized-dark",
-            (0x00, 0x2b, 0x36),
-            (0x83, 0x94, 0x96),
-            (0x58, 0x6e, 0x75),
-            (0x85, 0x99, 0x00),
-            (0xdc, 0x32, 0x2f),
-            (0xb5, 0x89, 0x00),
-            (0xd3, 0x36, 0x82),
-            (0xcb, 0x4b, 0x16),
-            (0x26, 0x8b, 0xd2),
-        ),
-        named(
-            "solarized-light",
-            (0xfd, 0xf6, 0xe3),
-            (0x65, 0x7b, 0x83),
-            (0x93, 0xa1, 0xa1),
-            (0x85, 0x99, 0x00),
-            (0xdc, 0x32, 0x2f),
-            (0xb5, 0x89, 0x00),
-            (0xd3, 0x36, 0x82),
-            (0xcb, 0x4b, 0x16),
-            (0x26, 0x8b, 0xd2),
-        ),
-        named(
             "github-dark",
             (0x0d, 0x11, 0x17),
             (0xe6, 0xed, 0xf3),
@@ -571,8 +520,112 @@ pub fn builtins() -> Vec<Theme> {
             (0x00, 0x88, 0xff),
         ),
     ];
+    themes.extend(family(
+        "catppuccin",
+        named(
+            "catppuccin-mocha",
+            (0x1e, 0x1e, 0x2e),
+            (0xcd, 0xd6, 0xf4),
+            (0x6c, 0x70, 0x86),
+            (0xa6, 0xe3, 0xa1),
+            (0xf3, 0x8b, 0xa8),
+            (0xf9, 0xe2, 0xaf),
+            (0xcb, 0xa6, 0xf7),
+            (0xfa, 0xb3, 0x87),
+            (0x89, 0xb4, 0xfa),
+        ),
+        named(
+            "catppuccin-latte",
+            (0xef, 0xf1, 0xf5),
+            (0x4c, 0x4f, 0x69),
+            (0x9c, 0xa0, 0xb0),
+            (0x40, 0xa0, 0x2b),
+            (0xd2, 0x0f, 0x39),
+            (0xdf, 0x8e, 0x1d),
+            (0x88, 0x39, 0xef),
+            (0xfe, 0x64, 0x0b),
+            (0x1e, 0x66, 0xf5),
+        ),
+        light,
+    ));
+    themes.extend(family(
+        "gruvbox",
+        named(
+            "gruvbox-dark",
+            (0x28, 0x28, 0x28),
+            (0xeb, 0xdb, 0xb2),
+            (0x92, 0x83, 0x74),
+            (0xb8, 0xbb, 0x26),
+            (0xfb, 0x49, 0x34),
+            (0xfa, 0xbd, 0x2f),
+            (0xd3, 0x86, 0x9b),
+            (0xfe, 0x80, 0x19),
+            (0x83, 0xa5, 0x98),
+        ),
+        named(
+            "gruvbox-light",
+            (0xfb, 0xf1, 0xc7),
+            (0x3c, 0x38, 0x36),
+            (0x92, 0x83, 0x74),
+            (0x79, 0x74, 0x0e),
+            (0x9d, 0x00, 0x06),
+            (0xb5, 0x76, 0x14),
+            (0x8f, 0x3f, 0x71),
+            (0xaf, 0x3a, 0x03),
+            (0x07, 0x66, 0x78),
+        ),
+        light,
+    ));
+    themes.extend(family(
+        "solarized",
+        named(
+            "solarized-dark",
+            (0x00, 0x2b, 0x36),
+            (0x83, 0x94, 0x96),
+            (0x58, 0x6e, 0x75),
+            (0x85, 0x99, 0x00),
+            (0xdc, 0x32, 0x2f),
+            (0xb5, 0x89, 0x00),
+            (0xd3, 0x36, 0x82),
+            (0xcb, 0x4b, 0x16),
+            (0x26, 0x8b, 0xd2),
+        ),
+        named(
+            "solarized-light",
+            (0xfd, 0xf6, 0xe3),
+            (0x65, 0x7b, 0x83),
+            (0x93, 0xa1, 0xa1),
+            (0x85, 0x99, 0x00),
+            (0xdc, 0x32, 0x2f),
+            (0xb5, 0x89, 0x00),
+            (0xd3, 0x36, 0x82),
+            (0xcb, 0x4b, 0x16),
+            (0x26, 0x8b, 0xd2),
+        ),
+        light,
+    ));
     sort_brave_first(&mut themes);
     themes
+}
+
+/// A scheme its authors published in both polarities: one row that follows the terminal, and the
+/// two fixed palettes.
+///
+/// The fixed halves stay reachable by name rather than being folded away, because sensing the
+/// background is a guess on a terminal that will not answer, and a person who has been guessed
+/// wrong about needs a way to say so that outlives the session.
+fn family(name: &'static str, dark: Theme, pale: Theme, light: bool) -> [Theme; 3] {
+    let following = Theme {
+        name: name.to_string(),
+        palette: if light {
+            pale.palette.clone()
+        } else {
+            dark.palette.clone()
+        },
+        adapts: true,
+        listed: true,
+    };
+    [following, dark.pinned(), pale.pinned()]
 }
 
 /// `brave` first, every other name alphabetical. Used for both the compiled-in set and the list
@@ -735,6 +788,7 @@ pub fn parse_user_theme(name: &str, contents: &str) -> Option<Theme> {
     Some(Theme {
         name: name.to_string(),
         adapts,
+        listed: true,
         palette: Palette {
             background,
             text,
@@ -1178,18 +1232,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Twenty-one named schemes plus `brave`, with `brave` first and the rest alphabetical.
+    /// Eighteen named schemes plus `brave` in the list, `brave` first and the rest alphabetical.
+    /// Three of those eighteen are families, so more themes are on offer than are listed, and the
+    /// gap is exactly the six pinned halves.
     #[test]
-    fn the_built_in_set_is_brave_and_twenty_one_named() {
-        let names: Vec<_> = builtins().into_iter().map(|t| t.name).collect();
+    fn the_list_is_brave_and_eighteen_named_schemes() {
+        let names: Vec<_> = listed(BRAVE).into_iter().map(|t| t.name).collect();
         assert_eq!(names[0], BRAVE);
-        assert_eq!(names.len(), 22);
+        assert_eq!(names.len(), 19);
         assert!(names.contains(&"nord".to_string()));
-        assert!(names.contains(&"catppuccin-mocha".to_string()));
-        assert!(names.contains(&"cobalt2".to_string()));
+        assert!(names.contains(&"catppuccin".to_string()));
+        assert!(names.contains(&"catppuccin-macchiato".to_string()));
         let rest = &names[1..];
         let mut sorted = rest.to_vec();
         sorted.sort();
         assert_eq!(rest, sorted.as_slice(), "named themes are not alphabetical");
+
+        assert_eq!(builtins().len(), names.len() + 6);
+    }
+
+    /// A scheme published for both terminals is one row, not two, and the halves are the rows that
+    /// stop being listed.
+    #[test]
+    fn a_family_replaces_the_two_rows_it_was_published_as() {
+        let names: Vec<_> = listed(BRAVE).into_iter().map(|t| t.name).collect();
+        for half in [
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "gruvbox-dark",
+            "gruvbox-light",
+            "solarized-dark",
+            "solarized-light",
+        ] {
+            assert!(!names.contains(&half.to_string()), "{half} is still listed");
+            assert!(find(half).is_some(), "{half} stopped resolving");
+        }
+    }
+
+    /// Sensing the background is a guess on a terminal that will not answer, so the fixed halves
+    /// have to stay reachable, and reaching one has to actually pin the palette rather than land
+    /// back on the row that follows the terminal.
+    #[test]
+    fn a_pinned_half_keeps_its_own_palette_whichever_background_was_sensed() {
+        let _held = exclusive();
+        for sensed in [false, true] {
+            let _background = Background::sensed_as_light(sensed);
+            let dark = find("gruvbox-dark").expect("gruvbox-dark");
+            let pale = find("gruvbox-light").expect("gruvbox-light");
+            assert_eq!(dark.palette.background, Color::Rgb(0x28, 0x28, 0x28));
+            assert_eq!(pale.palette.background, Color::Rgb(0xfb, 0xf1, 0xc7));
+            assert!(!dark.adapts);
+            assert!(!pale.adapts);
+        }
+    }
+
+    /// The family row is the one that moves with the terminal.
+    #[test]
+    fn a_family_takes_the_half_for_the_background_sensed() {
+        let _held = exclusive();
+        {
+            let _background = Background::sensed_as_light(false);
+            let theme = find("gruvbox").expect("gruvbox");
+            assert_eq!(theme.palette.background, Color::Rgb(0x28, 0x28, 0x28));
+            assert!(theme.adapts);
+        }
+        {
+            let _background = Background::sensed_as_light(true);
+            let theme = find("gruvbox").expect("gruvbox");
+            assert_eq!(theme.palette.background, Color::Rgb(0xfb, 0xf1, 0xc7));
+            assert!(theme.adapts);
+        }
+    }
+
+    /// A picker that cannot show what is already in force has nothing to open on, so the one
+    /// pinned half a person is actually using is listed even though its siblings are not.
+    #[test]
+    fn the_pinned_half_in_use_is_listed() {
+        let names: Vec<_> = listed("solarized-light")
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"solarized-light".to_string()));
+        assert!(!names.contains(&"solarized-dark".to_string()));
     }
 }

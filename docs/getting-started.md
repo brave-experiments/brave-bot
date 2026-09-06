@@ -38,7 +38,13 @@ A line that is exactly a word beginning with `/` is acted on here rather than se
 `/model` chooses which model to think with. `/theme` opens a centred panel over the session and
 live-previews as you move; Enter keeps the choice, Escape keeps what you had. `/theme nord`
 applies a named theme without opening the panel. The choice is stored in `~/.bravebot` and applies
-in every directory. Custom themes are JSON files under `~/.bravebot/themes/`. See
+in every directory.
+
+Schemes published for both a light and a dark terminal are one row, such as `gruvbox`, and follow
+whichever background is sensed at startup. Where that guess is wrong, name the half you want:
+`/theme gruvbox-dark` and `/theme gruvbox-light` stay put. Custom themes are JSON files under
+`~/.bravebot/themes/`, and an ink there may be a pair, `{"dark": "#282828", "light": "#fbf1c7"}`,
+to follow the terminal the same way. See
 [specs/commands.md](specs/commands.md) for what makes a line a command, and
 [specs/terminal-transcript.md](specs/terminal-transcript.md) for how themes paint the interface.
 
