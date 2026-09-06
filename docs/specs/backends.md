@@ -515,6 +515,34 @@ certainly does not read.
 `verified-by: bravebot_agent::turn::a_chosen_effort_is_the_one_requested`
 
 
+<a id="BACKEND-22"></a>
+### BACKEND-22: a level is sent only where the roster says it is read
+
+Where the listing describing the model in force states which parameters it takes and an effort level
+is not among them, no level is sent and the person is told the model reads none. The choice itself is
+kept: it applies again the moment a model that reads one is chosen, so what a request carries does
+not depend on the order two commands were typed in.
+
+A model the listing does not describe is not a model stated to read nothing. A name that came from a
+settings file, a roster that reports no parameters at all, and a listing that could not be fetched
+all leave the level to go out and be judged at the far end.
+
+**Why.** A service that reads the field and one that discards it are indistinguishable from the
+outside: both answer, and the reply of a model that ignored the level looks exactly like the reply of
+one that honoured it. So a level sent where it is not read is a charge somebody chose and did not
+get, reported to them as in force. Where a roster answers the question there is no reason to guess,
+and where it does not, withholding what somebody asked for on the strength of a listing that never
+mentioned the subject would be deciding against them from silence.
+
+`verified-by: bravebot_aichat::models::a_gateway_model_that_does_not_take_the_effort_parameter_says_so`
+`verified-by: bravebot_aichat::models::a_gateway_that_states_no_parameters_is_not_taken_to_read_no_level`
+`verified-by: bravebot_tui::app::a_level_is_withheld_from_a_model_that_reads_none`
+`verified-by: bravebot_tui::app::a_level_a_model_cannot_use_is_kept_rather_than_forgotten`
+`verified-by: bravebot_tui::app::asking_for_a_level_a_model_cannot_use_says_so`
+`verified-by: bravebot_tui::app::a_model_the_listing_did_not_describe_still_takes_a_level`
+`verified-by: bravebot_tui::status::a_level_the_model_does_not_read_is_reported_as_unread`
+
+
 ## Known costs
 
 - **The aichat endpoint Brave runs discards the effort level.** Measured against that endpoint: a
@@ -526,15 +554,10 @@ certainly does not read.
   model is therefore carried, sent, and dropped, while the interface goes on reporting it as in
   force. Bedrock is unaffected, `output_config.effort` being the field that API defines.
 
-- **A gateway takes the effort level only for the models that advertise it.** OpenRouter's listing
-  reports `reasoning_effort` as a supported parameter on 161 of the 431 models it serves, while 304
-  advertise the gateway's own `reasoning` parameter, so a model can reason and still not read the
-  field this sends. Which is which is stated in the `supported_parameters` of each row, the same
-  field already read to decide whether a model can call tools, so unlike the aichat endpoint above
-  this is answerable before a request goes out rather than only by measuring. Nothing does that yet:
-  the level is sent to every gateway model alike, and one that does not advertise the parameter drops
-  it. Whether the vocabulary matches is a second question this does not settle, `xhigh` and `max`
-  being levels the Anthropic API defines rather than words every gateway's field accepts.
+- **A level a service does advertise may still not mean what this sends.** `xhigh` and `max` are
+  levels the Anthropic API defines, and a gateway row advertising `reasoning_effort` says it reads
+  the parameter without saying which words it accepts. A model may reject or silently round a level
+  it does not know, and no listing distinguishes that from honouring it.
 
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that
   expire during a session, and the tool that holds them is the one the person already signs in

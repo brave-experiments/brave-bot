@@ -640,6 +640,11 @@ pub struct Session {
     /// model: how hard to think is a preference about the work rather than a property of a
     /// checkout.
     effort: Option<Effort>,
+    /// Whether the model in force reads the effort level, as its roster row stated.
+    ///
+    /// True until a listing says otherwise, so a session that has never reached one sends what the
+    /// person asked for rather than withholding it on a fact nobody established.
+    model_reads_effort: bool,
     /// Which offered command is under the cursor while one is being typed.
     ///
     /// An index into what [`Session::offered`] returns for the current input rather than a copy of
@@ -722,6 +727,7 @@ impl Session {
             started: None,
             model: None,
             effort: None,
+            model_reads_effort: true,
             completion: 0,
             workspace: std::path::PathBuf::new(),
             attached: Vec::new(),
@@ -788,8 +794,32 @@ impl Session {
     }
 
     /// How hard to think, or `None` to leave the service its own default.
+    ///
+    /// What the person chose, which is not always what a request carries. For reporting the choice
+    /// and for opening the picker on it.
     pub fn effort(&self) -> Option<Effort> {
         self.effort
+    }
+
+    /// The level a turn will actually send, which is nothing where the model does not read one.
+    ///
+    /// Sending a level to a model whose roster row says it reads none is a field that is dropped at
+    /// the far end, so the choice is kept and the request is not given it.
+    pub fn effort_in_force(&self) -> Option<Effort> {
+        self.effort.filter(|_| self.model_reads_effort)
+    }
+
+    /// Whether the model in force reads a level at all.
+    ///
+    /// For saying so where it does not: a level reported as in force while the service discards it
+    /// is the interface telling somebody they bought something they did not.
+    pub fn model_reads_effort(&self) -> bool {
+        self.model_reads_effort
+    }
+
+    /// Record what the roster said about the model now in force.
+    pub fn note_model_reads_effort(&mut self, reads: bool) {
+        self.model_reads_effort = reads;
     }
 
     /// Record the level the user picked, keeping it for later sessions.

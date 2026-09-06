@@ -69,6 +69,8 @@ pub struct Facts<'a> {
     /// How hard the model is asked to think, or `None` where nothing is asked and the service
     /// applies its own default.
     pub effort: Option<bravebot_aichat::protocol::Effort>,
+    /// Whether the model in force reads that level, as its roster row stated.
+    pub model_reads_effort: bool,
     /// What the server reported using on the last turn, or `None` before one has run.
     ///
     /// Observed rather than configured, which is the whole point: the endpoint answers a model name
@@ -161,11 +163,19 @@ pub fn report(facts: &Facts<'_>) -> Report {
 
     // Beside the model, because the two together are what a turn costs: the same question asked of
     // the same model bills differently at either end of this range.
-    lines.push(match facts.effort {
-        Some(level) => {
+    lines.push(match (facts.effort, facts.model_reads_effort) {
+        // A level the model will not read is still the level somebody chose, so it is named rather
+        // than hidden. What changes is the note: reporting it as in force would be this panel
+        // telling them a request carries something it does not.
+        (Some(level), false) => {
+            Line::new(t!(status_effort), level.as_str()).with_note(t!(status_effort_not_read))
+        }
+        (Some(level), true) => {
             Line::new(t!(status_effort), level.as_str()).with_note(t!(status_effort_chosen))
         }
-        None => Line::new(t!(status_effort), t!(effort_unset)).with_note(t!(status_effort_default)),
+        (None, _) => {
+            Line::new(t!(status_effort), t!(effort_unset)).with_note(t!(status_effort_default))
+        }
     });
 
     lines.push(Line::new(t!(status_theme), facts.theme).with_note(t!(status_theme_chosen)));
@@ -399,6 +409,7 @@ mod tests {
             added_directories: &[],
             model: None,
             effort: None,
+            model_reads_effort: true,
             // Nothing observed, which is what a session looks like before its first turn. Tests
             // about the tier and the served model set these themselves.
             served_model: None,
@@ -715,6 +726,27 @@ mod tests {
         let shown = rendered(&report(&chosen));
         assert!(shown.contains("xhigh"), "{shown}");
         assert!(shown.contains("chosen with /effort"), "{shown}");
+    }
+
+    /// A level the model will not read is still named, since it is what somebody chose, but the
+    /// note must not call it in force: a request does not carry it.
+    #[test]
+    fn a_level_the_model_does_not_read_is_reported_as_unread() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+
+        let mut unread = facts(&config, &trust);
+        unread.effort = Some(bravebot_aichat::protocol::Effort::Max);
+        unread.model_reads_effort = false;
+
+        let shown = rendered(&report(&unread));
+        assert!(shown.contains("max"), "the choice was hidden: {shown}");
+        assert!(shown.contains("this model reads none"), "{shown}");
+        assert!(
+            !shown.contains("chosen with /effort, but this model reads none")
+                || !shown.contains("whatever the service"),
+            "{shown}"
+        );
     }
 
     /// The markings a write recorded are the part nothing else reports: a poisoned file is otherwise

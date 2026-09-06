@@ -42,6 +42,14 @@ pub struct Model {
     /// by a fifth, and reading it as characters would divide a budget that has already been made
     /// safe. Usable as a budget with no conversion.
     pub conversation_tokens: Option<u64>,
+    /// Whether this model reads the effort level a request may carry.
+    ///
+    /// True where nothing is known, which is the same reading the tool filter gives an absent
+    /// capability list: a roster that says nothing is not a roster claiming none, and withholding
+    /// somebody's choice on the strength of a listing that never mentioned the subject would be
+    /// this program deciding against them from silence. False only where a row states its
+    /// parameters and this is not among them, which is the roster saying so.
+    pub reads_effort: bool,
 }
 
 impl Model {
@@ -58,6 +66,8 @@ impl Model {
             provider: None,
             // The server chooses per request, so there is no one model whose limit this could be.
             conversation_tokens: None,
+            // Brave's endpoint resolves this per request, so no row describes what will answer.
+            reads_effort: true,
         }
     }
 
@@ -109,6 +119,12 @@ const PREMIUM_ACCESS: &str = "premium";
 /// Not everything the endpoint lists has it. The rest are chat-only models, and choosing one would
 /// produce an agent that cannot read or write anything.
 const TOOLS_CAPABILITY: &str = "tools";
+
+/// The parameter a gateway names when a model reads an effort level.
+///
+/// Distinct from the gateway's own `reasoning` parameter, which far more models take: a row
+/// advertising that and not this reasons without reading anything sent in this field.
+const EFFORT_PARAMETER: &str = "reasoning_effort";
 
 /// Ask the endpoint what it offers, newest answer each time.
 ///
@@ -257,6 +273,13 @@ fn offered_by_gateway(
                     .or(entry.context_length)
                     .unwrap_or(bravebot_config::provider::CONTEXT_WINDOW),
             ),
+            // A gateway states its parameters per model, and reasoning is not one field but two:
+            // many rows take the gateway's own reasoning parameter and not this one, so a model
+            // that reasons is not thereby a model that reads a level sent this way.
+            reads_effort: match entry.supported_parameters.as_ref() {
+                Some(parameters) => parameters.iter().any(|it| it == EFFORT_PARAMETER),
+                None => true,
+            },
         })
         .collect()
 }
@@ -282,6 +305,9 @@ fn usable(listed: Vec<Listed>) -> Vec<Model> {
                         // The endpoint sends 1 where a model reports no window at all, and zero is
                         // not a budget either: both mean "it did not say" rather than "no room".
                         .filter(|limit| *limit > 1),
+                    // This roster describes what a model can do and never which request fields it
+                    // reads, so nothing here states the subject either way.
+                    reads_effort: true,
                 })
             })
             // The endpoint has no reason to list one name twice, but the choice is a person's and
@@ -571,6 +597,36 @@ mod tests {
 
     /// A gateway that reports no capabilities at all is not claiming its models have none. Filtering
     /// on a field the shape does not require would empty the picker for every gateway but one.
+    /// A gateway states its parameters per model, and many rows reason through a parameter this
+    /// does not send. Sending a level to one of those is a field dropped at the far end.
+    #[test]
+    fn a_gateway_model_that_does_not_take_the_effort_parameter_says_so() {
+        let models = from_gateway(
+            &gateway(),
+            r#"{"data": [
+                {"id": "takes-it", "supported_parameters": ["tools", "reasoning", "reasoning_effort"]},
+                {"id": "reasons-only", "supported_parameters": ["tools", "reasoning"]}
+            ]}"#,
+        );
+
+        assert!(
+            models[0].reads_effort,
+            "a row advertising it was not believed"
+        );
+        assert!(
+            !models[1].reads_effort,
+            "a row that reasons without the parameter was treated as reading a level"
+        );
+    }
+
+    /// A roster that says nothing about parameters is not a roster claiming none, which is the
+    /// same reading the tool filter already gives an absent list.
+    #[test]
+    fn a_gateway_that_states_no_parameters_is_not_taken_to_read_no_level() {
+        let models = from_gateway(&gateway(), r#"{"data": [{"id": "unstated"}]}"#);
+        assert!(models[0].reads_effort);
+    }
+
     #[test]
     fn a_gateway_that_reports_no_capabilities_still_offers_its_models() {
         let models = from_gateway(&gateway(), r#"{"data": [{"id": "z-ai/glm-4.6"}]}"#);

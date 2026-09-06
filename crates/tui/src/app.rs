@@ -1668,6 +1668,7 @@ fn event_loop(
                     added_directories: workspace.added_directories(),
                     model: session.model(),
                     effort: session.effort(),
+                    model_reads_effort: session.model_reads_effort(),
                     served_model: session.served_model(),
                     premium: session.premium(),
                     theme: &theme,
@@ -2148,6 +2149,8 @@ fn bedrock_models(
             // The same figure for every tier, because it is a property of what an opaque profile
             // ARN gets rather than of a particular model.
             conversation_tokens: Some(bravebot_config::bedrock::CONTEXT_WINDOW),
+            // The API this reaches defines the field, so a level sent there is read.
+            reads_effort: true,
         })
         .collect()
 }
@@ -2183,6 +2186,9 @@ fn provider_models(
             // Stated or assumed, never absent: a window is what the budget is taken from, and
             // reporting nothing would leave the session on a default chosen for a different service.
             conversation_tokens: Some(model.window()),
+            // A block names models and never their parameters, so nothing here states the subject
+            // and the level goes out to be judged at the far end.
+            reads_effort: true,
         })
         .collect()
 }
@@ -2203,6 +2209,23 @@ fn adopt_budget_for_current_model(session: &mut Session, config: &mut Config) {
     if config.adopt_window(advertised_window(&models, session.model())) {
         session.note(t!(session_context_budget, budget = config.context_budget));
     }
+    session.note_model_reads_effort(reads_effort(&models, session.model()));
+}
+
+/// Whether the roster says `chosen` reads an effort level.
+///
+/// Split from the fetch so the matching is testable without a server. True for a model no listing
+/// described, which covers a name from a settings file and a listing that could not be fetched:
+/// neither is the roster saying a level would be ignored, and only the roster saying so is a reason
+/// to withhold what somebody asked for.
+fn reads_effort(models: &[bravebot_aichat::models::Model], chosen: Option<&str>) -> bool {
+    let Some(name) = chosen else {
+        return true;
+    };
+    models
+        .iter()
+        .find(|model| model.key == name)
+        .is_none_or(|model| model.reads_effort)
 }
 
 /// The window advertised for `chosen`, or `None` where the listing does not describe it.
@@ -2248,6 +2271,10 @@ fn choose_model(
                     ),
                     None => t!(session_using_model, model = &chosen.display_name),
                 });
+                session.note_model_reads_effort(chosen.reads_effort);
+                if !chosen.reads_effort && session.effort().is_some() {
+                    session.note(t!(session_effort_not_read));
+                }
                 session.choose_model(chosen.key);
             }
         }
@@ -2274,6 +2301,17 @@ fn choose_effort(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session:
     }) {
         session.choose_effort(row.0);
         session.note(said_of(row.0));
+        say_if_unread(session);
+    }
+}
+
+/// Say that the model in force reads no level, where one has just been asked for.
+///
+/// The choice is kept either way: a person may be about to change model, and throwing away what
+/// they just picked would make the two commands depend on the order they were typed in.
+fn say_if_unread(session: &mut Session) {
+    if session.effort().is_some() && !session.model_reads_effort() {
+        session.note(t!(session_effort_not_read));
     }
 }
 
@@ -2286,6 +2324,7 @@ fn set_effort(session: &mut Session, word: &str) {
         Some(level) => {
             session.choose_effort(Some(level));
             session.note(said_of(Some(level)));
+            say_if_unread(session);
         }
         None => session.note(t!(session_no_such_effort, effort = word)),
     }
@@ -2632,7 +2671,7 @@ fn run_turn_animated(
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string))
-        .with_effort(session.effort())
+        .with_effort(session.effort_in_force())
         .with_permissions(permissions.clone())
         .ticking(tick);
     for file in crate::entries::referenced(&sent) {
@@ -3074,6 +3113,7 @@ mod tests {
             premium: false,
             provider: None,
             conversation_tokens: window,
+            reads_effort: true,
         }
     }
 
@@ -5100,6 +5140,84 @@ mod tests {
                 .any(|entry| entry.text.contains("highest")),
             "nothing was said about the word"
         );
+    }
+
+    /// A level is sent only where the roster says the model reads one. Sending it anywhere else is
+    /// a field dropped at the far end while the session reports it as in force.
+    #[test]
+    fn a_level_is_withheld_from_a_model_that_reads_none() {
+        let mut session = Session::new("none");
+        set_effort(&mut session, "max");
+        assert_eq!(
+            session.effort_in_force(),
+            Some(bravebot_aichat::protocol::Effort::Max)
+        );
+
+        session.note_model_reads_effort(false);
+        assert_eq!(
+            session.effort_in_force(),
+            None,
+            "a dropped field was still sent"
+        );
+    }
+
+    /// The choice survives the model that cannot use it: somebody may be about to change model,
+    /// and discarding it would make the two commands depend on the order they were typed in.
+    #[test]
+    fn a_level_a_model_cannot_use_is_kept_rather_than_forgotten() {
+        let mut session = Session::new("none");
+        session.note_model_reads_effort(false);
+        set_effort(&mut session, "max");
+
+        assert_eq!(
+            session.effort(),
+            Some(bravebot_aichat::protocol::Effort::Max),
+            "the choice was thrown away"
+        );
+        session.note_model_reads_effort(true);
+        assert_eq!(
+            session.effort_in_force(),
+            Some(bravebot_aichat::protocol::Effort::Max),
+            "the choice did not come back with a model that reads it"
+        );
+    }
+
+    /// Picking a level a model cannot use says so. Taking it silently would leave somebody
+    /// believing every later turn was thinking harder.
+    #[test]
+    fn asking_for_a_level_a_model_cannot_use_says_so() {
+        let mut session = Session::new("none");
+        session.note_model_reads_effort(false);
+        set_effort(&mut session, "max");
+
+        assert!(
+            session
+                .transcript
+                .iter()
+                .any(|entry| entry.text.contains("reads no effort level")),
+            "nothing was said about the model reading none"
+        );
+    }
+
+    /// A model no listing described is not a model stated to read nothing, so the level still goes
+    /// out: a name from a settings file, and a listing nobody could fetch, both land here.
+    #[test]
+    fn a_model_the_listing_did_not_describe_still_takes_a_level() {
+        let described = vec![bravebot_aichat::models::Model {
+            key: "openrouter/reasons-only".to_string(),
+            display_name: "reasons-only".to_string(),
+            premium: false,
+            provider: Some("OpenRouter".to_string()),
+            conversation_tokens: None,
+            reads_effort: false,
+        }];
+
+        assert!(reads_effort(&described, Some("openrouter/not-listed")));
+        assert!(
+            reads_effort(&described, None),
+            "automatic was withheld a level"
+        );
+        assert!(!reads_effort(&described, Some("openrouter/reasons-only")));
     }
 
     /// A longer word that only starts with the command is a prompt, not the command.

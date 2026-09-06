@@ -549,6 +549,7 @@ mod tests {
             premium,
             provider: None,
             conversation_tokens: None,
+            reads_effort: true,
         }
     }
 
