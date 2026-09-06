@@ -2162,6 +2162,16 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         None => String::new(),
     };
 
+    // The way into the delegates, for as long as the session has any. The row that reports what
+    // the turn is doing names the key too, but that row goes when the turn ends, and a delegate
+    // is most worth opening afterwards: the block it left behind is one sentence about work
+    // somebody may want to read. The count is there because a key with nothing behind it does
+    // nothing at all, and this line is read at a glance.
+    let delegates = match session.delegates().len() {
+        0 => String::new(),
+        count => format!("  ·  {}", t!(watching_hint, count = count)),
+    };
+
     // Not a list of bindings any more. Every one of them, with what it does, is a `?` away, which
     // is both more than this line could hold and the moment a person wants to know; what stays here
     // is what the session is doing, which is the part they cannot ask for.
@@ -2171,10 +2181,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // here they have no other way to see.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!(
-                "  {trail}  ·  confinement {}{context}  ·  {SHORTCUTS_HINT}",
-                session.confinement
-            ),
+            format!("  {trail}{context}{delegates}  ·  {SHORTCUTS_HINT}"),
             dim(),
         ))),
         area,
@@ -3808,16 +3815,52 @@ mod tests {
         );
     }
 
-    /// The way to the bindings sits after the confinement, so it is the first thing a narrow
-    /// terminal cuts off. Asserted at a width an ordinary terminal actually has, and against that
-    /// row alone: the heading names the confinement too, so matching it anywhere on the screen says
-    /// nothing about whether the hint line still carries it. Widening this to make it pass would be
-    /// hiding the truncation, and so would asserting against the whole screen again.
+    /// The way to the bindings sits at the end of the line, so it is the first thing a narrow
+    /// terminal cuts off. Asserted at a width an ordinary terminal actually has, against that row
+    /// alone. Widening this to make it pass would be hiding the truncation, and so would asserting
+    /// against the whole screen.
     #[test]
-    fn the_hint_line_says_how_to_find_the_bindings_and_reports_confinement() {
+    fn the_hint_line_says_how_to_find_the_bindings() {
         let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
         assert!(hint.contains(SHORTCUTS_HINT), "{hint}");
-        assert!(hint.contains("confinement kernel-enforced"), "{hint}");
+    }
+
+    /// The confinement is settled by the platform before the session opens and cannot change
+    /// while it runs, so a permanent readout of it is a row of the screen spent on a constant.
+    /// The mark says it once at startup and `/status` answers for it on request.
+    #[test]
+    fn the_hint_line_does_not_report_the_confinement() {
+        let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
+        assert!(
+            !hint.contains("confinement"),
+            "the hint line is still reporting the confinement: {hint}"
+        );
+    }
+
+    /// The row that names this key belongs to a turn in flight, and a delegate is most worth
+    /// opening once the turn is over: what it left behind is one sentence about work nobody has
+    /// read.
+    #[test]
+    fn the_hint_line_names_the_delegate_key_once_one_has_run() {
+        let mut session = Session::new("kernel-enforced");
+        assert!(
+            !hint_row_at(&session, 120, 24).contains("ctrl-l"),
+            "a session with no delegate offered the key anyway"
+        );
+
+        let id = bravebot_agent::report::DelegateId::nth(1);
+        session.delegate_started(bravebot_agent::report::Delegation {
+            id,
+            kind: "reader",
+            task: "find the parser".to_string(),
+        });
+        session.delegate_finished(id, "answered".to_string(), false);
+
+        let hint = hint_row_at(&session, 120, 24);
+        assert!(
+            hint.contains("ctrl-l") && hint.contains("1 delegate"),
+            "the hint line does not say a delegate can be opened: {hint}"
+        );
     }
 
     /// The point of moving the bindings off the hint line: it has to fit where it used to be cut,

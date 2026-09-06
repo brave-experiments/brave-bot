@@ -510,6 +510,12 @@ watching-calls = { $count ->
     }
 # Said on the row that reports what the turn is doing, so the key is findable without the list.
 watching-invitation = ctrl-l watches
+# Said on the bottom line once any delegate has run, where the row above has gone with the turn
+# that drew it. The count is there because a key with nothing behind it is not worth pressing.
+watching-hint = { $count ->
+    [one] ctrl-l { $count } delegate
+   *[other] ctrl-l { $count } delegates
+    }
 
 
 ## The commands a line beginning with a slash may be

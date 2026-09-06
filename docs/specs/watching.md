@@ -202,17 +202,22 @@ answered or did not finish, and names the way out. Nothing a model wrote is quot
 delegate was asked stands above the lines, where the conventions for drawing content apply. The
 position and the keys for moving between delegates appear only where there is more than one.
 
-While a delegate is working, the row saying what the turn is doing names the key, and the key is
-in the shortcut list.
+While a delegate is working, the row saying what the turn is doing names the key. Once the session
+has spawned any, the hint line names it and says how many there are. The key is in the shortcut
+list.
 
 **Why.** The turn's transcript shows one block and three rows of it, so somebody who does not
-already know the key has no way to find out there is anything more to see.
+already know the key has no way to find out there is anything more to see. The row that reports
+what the turn is doing goes when the turn ends, and a delegate is most worth opening afterwards:
+what it leaves behind is a sentence about work nobody has read. The count is on the hint line
+because a key with nothing behind it does nothing, and that line is read at a glance.
 
 `verified-by: bravebot_tui::render::the_footer_says_which_delegate_this_is_and_whether_it_is_working`
 `verified-by: bravebot_tui::render::one_delegate_is_given_no_position_and_no_key_for_moving`
 `verified-by: bravebot_tui::render::the_list_names_every_delegate_and_what_each_was_asked`
 `verified-by: bravebot_tui::render::a_narrow_row_keeps_the_count_and_loses_the_end_of_the_task`
 `verified-by: bravebot_tui::render::the_indicator_says_which_key_watches_a_delegate_at_work`
+`verified-by: bravebot_tui::render::the_hint_line_names_the_delegate_key_once_one_has_run`
 `verified-by: bravebot_tui::render::the_shortcut_list_names_the_key_that_watches`
 
 <a id="WATCH-12"></a>
