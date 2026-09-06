@@ -490,6 +490,30 @@ scroller-footer-keys = q closes  ·  ? keys
 scroller-footer-search = / search
 
 
+## Watching what a delegate is doing
+
+# The footer of one delegate's own view. The kind and the number are the driver's words for it,
+# never anything the model wrote.
+watching-footer = { $kind } delegate { $number }
+watching-working = working
+watching-answered = answered
+watching-failed = did not finish
+watching-position = { $at } of { $total }
+watching-keys = q closes  ·  n / p another delegate
+watching-keys-one = q closes
+watching-keys-back = q goes back  ·  n / p another delegate
+watching-nothing-yet = nothing yet
+# The list of every delegate this turn has spawned.
+watching-list-title = delegates
+watching-list-keys = up / down moves  ·  enter opens  ·  q closes
+watching-calls = { $count ->
+    [one] { $count } call
+   *[other] { $count } calls
+    }
+# Said on the row that reports what the turn is doing, so the key is findable without the list.
+watching-invitation = ctrl-l watches
+
+
 ## The commands a line beginning with a slash may be
 
 command-status = Report this session, what it may touch, and what it has spent
