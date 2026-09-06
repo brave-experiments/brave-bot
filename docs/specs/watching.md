@@ -11,20 +11,19 @@ governs:
 
 What a person sees of the delegates a turn started: where their lines go, how much of them is
 kept, and what is left when one finishes. What a delegate is, how many run at once and what
-crosses back to the planner is [delegation.md](delegation.md), and none of it changes here: this
-is the same run reaching a person's eyes rather than a model's context.
+crosses back to the planner is [delegation.md](delegation.md). Nothing here changes any of it:
+the subject is what reaches a screen, not what reaches a model.
 
 What is drawn for the turn itself is [terminal-transcript.md](terminal-transcript.md).
 
 ## Why it exists
 
-A delegate is the one part of a run whose work is deliberately thrown away. The planner is told a
-sentence, and everything behind it, the reading, the commands, the narration, ends with the
-delegate. That is the feature. It also means the person watching had nothing at all: one line
-saying a delegate answered, about work they never saw, in a workspace they own.
+A delegate's work is discarded by design: the planner is told a sentence, and the reading, the
+commands and the narration behind it end with the delegate. Drawn nowhere, that leaves the person
+with a single line about work they cannot see, done in a directory they own.
 
-Several of them work at once, so there is no one thing to look at. What a person needs is all of
-them on the screen they are already reading, each saying what it is doing now.
+Several delegates run at once, so there is no single thing to look at. Each is drawn on the
+screen the person is already reading, showing what it is doing.
 
 ## Clauses
 
@@ -34,11 +33,11 @@ them on the screen they are already reading, each saying what it is doing now.
 Each one has a block of its own, where the call that started it happened, and what it reads and
 runs is drawn inside that block. Nothing of it is drawn in the turn's own sequence.
 
-**Why.** Interleaved, neither sequence can be read. The turn that asked a delegate to run the
-build would have the build log in the middle of it, which is the context problem the whole design
-exists to avoid, reappearing on the screen. With several delegates going it is worse than
-unreadable: two of the same kind produce lines that are identical, so a person could not tell
-which run had touched which file.
+**Why.** Interleaved, neither sequence can be read: a turn that asked a delegate to run the build
+would have the build log in the middle of it, which is the context problem the whole design
+exists to avoid, reappearing on the screen. With several delegates running it is also ambiguous,
+since two of the same kind produce identical lines and nothing on the row says which run touched
+which file.
 
 `verified-by: bravebot_tui::state::a_delegates_work_goes_under_its_own_block_and_not_into_the_turns_lines`
 `verified-by: bravebot_tui::state::each_delegates_work_lands_under_the_delegate_that_did_it`
@@ -65,10 +64,9 @@ order lines arrive in is the order the work happened rather than the order it wa
 The last few of its calls are kept and the rest are counted, so a block says both what is
 happening now and how much has happened. A delegate that has done more than is drawn says so.
 
-**Why.** The whole of a delegate's work is what delegating exists to absorb, and keeping it on
-the screen would be keeping a second transcript of every run whose purpose was to be forgotten.
-Three rows under a delegate that has made thirty calls would read as a delegate doing very
-little, which is why the count is there.
+**Why.** The whole of a delegate's work is what delegating exists to absorb, so keeping it on the
+screen would mean holding a second transcript of every run. Three rows under a delegate that has
+made thirty calls read as a delegate doing very little, which is what the count answers.
 
 `verified-by: bravebot_tui::state::a_delegates_block_keeps_the_last_of_its_work_and_counts_the_rest`
 `verified-by: bravebot_tui::render::a_delegate_that_has_done_more_than_is_drawn_says_so`
@@ -78,10 +76,9 @@ little, which is why the count is there.
 
 Its block ends on that sentence and stops drawing the work behind it.
 
-**Why.** What anybody acts on is what it concluded, and a block that stopped without saying how
-leaves somebody looking at a last tool call, unable to tell an answer from a failure. Several
-blocks sitting open at their last command would also be several delegates' worth of rows for work
-that is over.
+**Why.** What anybody acts on is the conclusion, and a block that stops without saying how it
+ended leaves a reader looking at a last tool call, unable to tell an answer from a failure.
+Several blocks left open at their last command also spend rows on work that is over.
 
 `verified-by: bravebot_tui::state::what_a_delegate_ended_with_closes_its_block`
 `verified-by: bravebot_tui::render::a_finished_delegate_collapses_to_what_the_turn_was_told`
@@ -89,12 +86,11 @@ that is over.
 <a id="WATCH-5"></a>
 ### WATCH-5: a reply a delegate is writing is drawn nowhere
 
-A delegate says a great deal on its way to an answer, and none of it is drawn. What it concluded
-arrives as the report, which is the sentence its block ends on.
+What a delegate writes between its tool calls is not drawn. Its conclusion reaches the screen as
+the report, which is the sentence its block ends on.
 
-**Why.** The turn's own half-written reply is drawn at the tail of the screen, and one model
-writes at a time. A delegate's sentence appearing there would read as the planner writing
-something it never wrote.
+**Why.** The turn's own half-written reply is drawn at the tail of the screen. A delegate's
+sentence drawn there would read as the planner writing something it never wrote.
 
 `verified-by: bravebot_tui::state::a_reply_a_delegate_is_writing_is_not_drawn_over_the_turn`
 
@@ -105,10 +101,9 @@ A delegate's lines go to a screen and stop there. The planner that asked is told
 nothing else, and no block is part of the record a session is resumed from, so a resumed session
 has no delegates in it. Starting a new conversation forgets them.
 
-**Why.** This is the clause that keeps the view from undoing what delegating is for. A screen is
-not a context: the person owns the workspace and is entitled to see what their agent did in it.
-What must not happen is those lines reaching a planner's context by any route, and a record read
-back into a later turn is exactly such a route.
+**Why.** A screen is not a context. The person owns the directory and may see what their agent
+did in it; what must not happen is those lines reaching a planner's context by any route. A
+record read back into a later turn is such a route, which is why nothing here is written down.
 
 `verified-by: bravebot_agent::turn::what_a_delegate_read_never_reaches_the_planner_that_asked`
 `verified-by: bravebot_tui::state::clearing_forgets_the_delegates`

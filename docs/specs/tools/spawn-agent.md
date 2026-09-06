@@ -43,8 +43,9 @@ planner has its round back. What the delegate says arrives as a message of its o
 planner is next asked what to do.
 
 Not as the result of this call. A result answers a call once, and by the time a delegate has
-anything to say the call it came from was answered rounds ago. A call that waited instead would
-mean a turn could only ever have one delegate working, which is the thing being removed.
+anything to say the call it came from was answered rounds earlier. A call that waited for the
+report would hold the turn still until the delegate finished, so a turn could have one delegate
+working and no more.
 
 `verified-by: bravebot_agent::turn::two_delegates_work_at_the_same_time`
 `verified-by: bravebot_agent::turn::a_delegates_report_reaches_the_planner_that_asked_for_it`

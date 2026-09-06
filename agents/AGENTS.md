@@ -193,6 +193,16 @@ No co-attribution markers for Claude Code or other tools.
   one, read docs/specs/README.md: it is the specification for specs, covering clause ids, the
   front matter, coverage, and how a spec is allowed to refer to anything outside itself. Follow it
   rather than the shape of whatever spec you happen to be editing.
+- **A spec says what is true, never what changed.** No "no longer", "used to", "previously", "it
+  now does X". A spec is read by somebody who has never seen any other version of this system,
+  and what changed is in the commit that changed it. This binds the commentary and the **Why** of
+  a clause as much as the clause itself: argue from what the alternative costs, in the present
+  tense, not from what the code did last week. The same goes for a known cost, which describes a
+  limitation that exists, not one that arrived.
+- **A spec is written to be checked, not admired.** A clause is read by somebody deciding whether
+  a diff obeys it, so every sentence should be one they could hold a diff against. Cut the
+  cadence, the flourishes and the sentences that only set a mood: plain declarative statements,
+  and a **Why** that gives the reason rather than performing it.
 - No new dependencies without a reason that survives scrutiny. Patterns that arrive through a
   turn are attack surface: prefer literal matching and hand-written, non-backtracking
   matchers to a regex engine.
