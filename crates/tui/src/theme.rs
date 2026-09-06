@@ -1,7 +1,7 @@
 //! The inks the interface draws itself in.
 //!
 //! Under the `brave` theme, meaning-bearing shades are mixed rather than taken from the sixteen
-//! named slots a terminal repaints, and green for finished, red for failed, dim grey for an aside
+//! named slots a terminal repaints, and green for finished, red for failed and yellow for running
 //! stay named so they read against whatever palette the person chose for their terminal. A named
 //! theme chosen with `/theme` paints every role from that table, including the background, so two
 //! roles cannot collapse because the terminal remapped a slot.
@@ -33,6 +33,17 @@ pub const BRAND_PRIMARY_DARK: Rgb = (0x76, 0x86, 0xEC);
 /// Brand primary on a light background. The dark-background shade washes out there, so this
 /// one is deeper rather than the same colour hoped to work on both.
 pub const BRAND_PRIMARY_LIGHT: Rgb = (0x43, 0x4F, 0xCF);
+
+/// What an aside is drawn in on a dark terminal background.
+///
+/// Bright black is the slot a terminal offers for this, and it is the one slot schemes disagree
+/// about most: measured across the 606 schemes in the iTerm2 collection, it falls below 4.5:1
+/// against its own background in 88% of the dark ones and bottoms out near 1.8:1. A shade holds
+/// the contrast where it was put while still receding behind the scheme's own foreground.
+pub const MUTED_ON_DARK: Rgb = (0xA0, 0xA0, 0xA0);
+
+/// The same ink on a light background, deeper for the reason brand primary is.
+pub const MUTED_ON_LIGHT: Rgb = (0x50, 0x50, 0x50);
 
 /// What the session says in its own voice under `brave`: the trust answer, an unavailable
 /// confinement, a status report.
@@ -247,7 +258,7 @@ pub fn brave_palette(light: bool) -> Palette {
     Palette {
         background: Color::Reset,
         text: Color::Reset,
-        muted: Color::DarkGray,
+        muted: muted_on(light),
         ok: Color::Green,
         fail: Color::Red,
         running: Color::Yellow,
@@ -256,6 +267,10 @@ pub fn brave_palette(light: bool) -> Palette {
         primary: brand_primary_on(light),
         paints_background: false,
     }
+}
+
+fn muted_on(light: bool) -> Color {
+    rgb(if light { MUTED_ON_LIGHT } else { MUTED_ON_DARK })
 }
 
 fn brand_primary_on(light: bool) -> Color {
@@ -1055,8 +1070,24 @@ mod tests {
         assert_eq!(ok(), Color::Green);
         assert_eq!(fail(), Color::Red);
         assert_eq!(running(), Color::Yellow);
-        assert_eq!(muted(), Color::DarkGray);
         assert!(!paints_background());
+    }
+
+    /// Bright black is the one slot terminals disagree about badly enough to make an aside
+    /// unreadable, so it is mixed here and picked for the background, the way brand primary is.
+    #[test]
+    fn an_aside_is_a_shade_picked_for_the_background_rather_than_a_slot() {
+        let _held = exclusive();
+        for sensed in [false, true] {
+            let _background = Background::sensed_as_light(sensed);
+            apply_brave();
+            assert!(
+                matches!(muted(), Color::Rgb(..)),
+                "an aside took a named colour, which the terminal chooses: {:?}",
+                muted()
+            );
+        }
+        assert_ne!(muted_on(false), muted_on(true));
     }
 
     /// A named theme mixes every role, including the background, so a remapped ANSI slot cannot

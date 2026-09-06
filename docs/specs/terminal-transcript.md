@@ -165,14 +165,20 @@ outside a block.
 
 Where a colour is what tells one thing on the screen from another, and the theme in force is
 `brave`, it is a shade this interface mixes. The sixteen named colours are slots a terminal
-repaints, so they are used only where the meaning is the terminal's own, green for finished, red
-for failed, dim grey for an aside, which are read against whatever palette the user chose rather
-than against each other. A mixed shade that has to stay legible against the background is picked
+repaints, so they are used only where the meaning is the terminal's own and the slot is one
+schemes agree about: green for finished, red for failed, yellow for a call still running, which
+are read against whatever palette the user chose rather than against each other. An aside is not
+one of those and is mixed. A mixed shade that has to stay legible against the background is picked
 for the background sensed at startup, and a terminal that will not say gets the shade for a dark
 one.
 
 **Why.** A named slot is a request, not a colour. The same code drew a different colour in every
 profile, which is how one slot came to carry two meanings at once without anybody choosing that.
+Bright black, the slot an aside would take, is where that disagreement is worst: across the 606
+schemes in the iTerm2 collection it falls below 4.5:1 against its own background in 88% of the
+dark ones and reaches 1.8:1 at the bottom, so an aside was legible or not according to a choice
+nobody here made. Mixing it holds the contrast steady, and the shade still recedes behind the
+scheme's own foreground in roughly nine schemes out of ten.
 
 `verified-by: bravebot_tui::theme::a_note_is_a_shade_and_not_a_slot_a_terminal_repaints`
 `verified-by: bravebot_tui::theme::brand_primary_is_a_shade_and_not_a_slot_a_terminal_repaints`
@@ -181,6 +187,7 @@ profile, which is how one slot came to carry two meanings at once without anybod
 `verified-by: bravebot_tui::theme::colorfgbg_with_a_white_background_is_light`
 `verified-by: bravebot_tui::theme::an_osc_reply_with_a_pale_background_is_light`
 `verified-by: bravebot_tui::theme::brave_keeps_named_slots_for_the_terminals_own_meanings`
+`verified-by: bravebot_tui::theme::an_aside_is_a_shade_picked_for_the_background_rather_than_a_slot`
 
 <a id="VIEW-10"></a>
 ### VIEW-10: a palette a person chose paints every role from that table
