@@ -65,7 +65,7 @@
 //! conversation to resume: the planner is never shown a result, so there is nothing for a second
 //! turn to continue. A manifest run is one run, start to finish.
 
-use bravebot_aichat::protocol::{ChatRequest, Message};
+use bravebot_aichat::protocol::{ChatRequest, Effort, Message};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::capability::{Capability, CapabilitySet};
@@ -730,6 +730,7 @@ fn plan<S: Sink, R: Reporter>(
         subscription.as_deref_mut(),
         cancel,
         chosen,
+        task.effort,
         "shape",
         SHAPE_PROMPT,
         &history,
@@ -758,6 +759,7 @@ fn plan<S: Sink, R: Reporter>(
         subscription,
         cancel,
         chosen,
+        task.effort,
         "fit",
         &format!("{FIT_PROMPT}\n\n{MANIFEST_PROMPT}\n\n{}", catalogue()),
         &history,
@@ -814,6 +816,7 @@ fn ask<S: Sink, R: Reporter>(
     subscription: Option<&mut crate::ImportedSubscription>,
     cancel: &Cancel,
     chosen: &str,
+    effort: Option<Effort>,
     round: &'static str,
     system: &str,
     history: &Conversation,
@@ -832,7 +835,7 @@ fn ask<S: Sink, R: Reporter>(
 
     // No tools on the request. There is nothing for a planner to call, and no result for a
     // reply to be steered by.
-    let request = ChatRequest::new(chosen, history.with_system(system));
+    let request = ChatRequest::new(chosen, history.with_system(system)).with_effort(effort);
 
     let written_before = *output_tokens;
     let asked_at = std::time::Instant::now();

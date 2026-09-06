@@ -6347,6 +6347,62 @@ fn a_chosen_model_is_the_one_requested() {
     );
 }
 
+/// A level the user chose must reach the service, or the choice is decoration.
+#[test]
+fn a_chosen_effort_is_the_one_requested() {
+    let scratch = Scratch::new("chosen-effort");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("anything").with_effort(Some(bravebot_aichat::protocol::Effort::Xhigh));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        body.contains(r#""reasoning_effort":"xhigh""#),
+        "the chosen level was not requested: {body}"
+    );
+}
+
+/// A turn nobody asked a level of must send the request it always sent, so adding the field
+/// changes nothing for an endpoint that has never seen it.
+#[test]
+fn without_a_chosen_effort_no_level_is_requested() {
+    let scratch = Scratch::new("default-effort");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("anything"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        !body.contains("reasoning_effort"),
+        "a level was sent by a turn that was asked for none: {body}"
+    );
+}
+
 /// Choosing nothing is not choosing "", so a turn with no choice falls back to the configured
 /// default rather than sending an empty field the server would reset anyway.
 #[test]

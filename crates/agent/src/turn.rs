@@ -13,7 +13,7 @@
 //! each turn, resuming a conversation that outlives it.
 
 use base64::Engine;
-use bravebot_aichat::protocol::{ChatRequest, ImageUrl, Message, Part, ToolCall};
+use bravebot_aichat::protocol::{ChatRequest, Effort, ImageUrl, Message, Part, ToolCall};
 use bravebot_config::Config;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::capability::{Capability, CapabilitySet};
@@ -430,6 +430,12 @@ pub struct Task {
     /// the same reason as `home`: where the choice is stored is the caller's business, and a turn
     /// should not differ from the same turn elsewhere for reasons the task does not state.
     pub model: Option<String>,
+    /// How hard to think, when the user has asked for a level.
+    ///
+    /// `None` leaves the service its own default, which is what a build nobody has asked sends.
+    /// Supplied per turn for the reason `model` is: where the choice is kept is the caller's
+    /// business.
+    pub effort: Option<Effort>,
     /// How many tool-calling rounds this turn may make, or `None` for no bound.
     ///
     /// The caller's business, like `model` and `home`, because the right answer depends on who is
@@ -496,6 +502,7 @@ impl Task {
             piped: None,
             home: None,
             model: None,
+            effort: None,
             tick: None,
             // Bounded unless a caller says otherwise. The unbounded case needs somebody watching,
             // and a default cannot know whether anybody is, so the default is the one that is
@@ -562,6 +569,12 @@ impl Task {
     /// Request a particular model rather than the configured default.
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Ask for a particular amount of thinking rather than the service's own default.
+    pub fn with_effort(mut self, effort: Option<Effort>) -> Self {
+        self.effort = effort;
         self
     }
 
@@ -1327,7 +1340,8 @@ fn run_inner<S: Sink, C: Confirmer + ?Sized, R: Reporter>(
         reporter.phase(round);
 
         let model = task.model.as_deref().unwrap_or(&config.default_model);
-        let request = ChatRequest::new(model, conversation.with_system(&system));
+        let request =
+            ChatRequest::new(model, conversation.with_system(&system)).with_effort(task.effort);
         let request = if may_call_tools {
             request.with_tools(offered.clone())
         } else {

@@ -466,6 +466,50 @@ the same conservative default a stated roster gets.
 `verified-by: bravebot_tui::app::a_fetched_roster_leads_with_the_model_in_force`
 `verified-by: bravebot_tui::app::a_fetched_roster_nobody_has_chosen_from_is_still_sorted`
 
+<a id="BACKEND-20"></a>
+### BACKEND-20: how hard to think is carried, never inferred
+
+A request says how hard the model should think only where a turn was given a level. Nothing derives
+one from the prompt, from how long the conversation is, from which tools are offered, or from what a
+previous turn cost. Where no level was given the field is absent and the service applies its own
+default, so a build nobody has asked sends the body it always sent.
+
+**Why.** How hard to think is a bill, and inferring one is this program spending somebody's money on
+a guess about work it has not done yet. The absent case is what keeps the field honest: an endpoint
+that has never seen it is not sent it, so adding it cannot break a service that would reject it.
+
+A level is not content. It comes from a person picking off a list they read, on the footing the
+model name beside it arrives on, and a word that names no level is no choice at all rather than a
+choice of something.
+
+`verified-by: bravebot_aichat::protocol::a_request_nobody_asked_a_level_of_mentions_no_effort`
+`verified-by: bravebot_aichat::protocol::a_word_naming_no_level_is_not_a_choice`
+`verified-by: bravebot_aichat::protocol::a_level_is_named_whatever_case_it_was_written_in`
+`verified-by: bravebot_bedrock::protocol::a_request_nobody_asked_a_level_of_carries_no_output_config`
+`verified-by: bravebot_agent::turn::without_a_chosen_effort_no_level_is_requested`
+
+
+<a id="BACKEND-21"></a>
+### BACKEND-21: each service is asked in the spelling it reads
+
+The same choice reaches each service in that service's own field. One word ranks the levels; where
+that word goes is the wire protocol's business, and no service is sent the other's shape.
+
+| Service | Where the level goes |
+|---|---|
+| The aichat endpoint Brave runs | `reasoning_effort`, beside the model |
+| An OpenAI-compatible gateway | `reasoning_effort`, beside the model |
+| Claude on AWS Bedrock | `effort`, inside `output_config` |
+
+**Why.** The two protocols state the same idea differently, and the conversion between them already
+happens in one place for every other field. Sending one service the other's shape is a field it does
+not read, which is a request that quietly ignores what somebody chose.
+
+`verified-by: bravebot_aichat::protocol::a_level_is_sent_in_the_name_this_protocol_gives_the_field`
+`verified-by: bravebot_bedrock::protocol::a_level_is_sent_inside_the_object_this_api_states`
+`verified-by: bravebot_agent::turn::a_chosen_effort_is_the_one_requested`
+
+
 ## Known costs
 
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that

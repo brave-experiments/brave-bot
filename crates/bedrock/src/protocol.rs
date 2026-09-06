@@ -14,6 +14,7 @@
 //! Nothing here inspects content to make a decision. Text is moved between shapes and handed on with
 //! whatever label it arrived under.
 
+use bravebot_aichat::protocol::Effort;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -41,6 +42,29 @@ pub struct InvokeRequest {
     pub messages: Vec<BedrockMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<BedrockTool>>,
+    /// How hard to think, which this API states inside an object of its own.
+    ///
+    /// Absent unless somebody asked for a level, so a build nobody has asked sends the body it
+    /// always sent and the model keeps its own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
+}
+
+/// What this API wraps the effort level in.
+///
+/// An object with one field rather than a bare word, because that is the shape the API states, and
+/// a request field is written the way the service reads it rather than the way the other one does.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct OutputConfig {
+    pub effort: Effort,
+}
+
+impl InvokeRequest {
+    /// Ask for a particular amount of thinking, or leave the model to its own default.
+    pub fn with_effort(mut self, effort: Option<Effort>) -> Self {
+        self.output_config = effort.map(|effort| OutputConfig { effort });
+        self
+    }
 }
 
 /// Serialised only: `role` is a fixed string this crate chooses, never one it reads back.
@@ -211,6 +235,7 @@ pub fn request_from(
         system: (!system.is_empty()).then(|| system.join("\n\n")),
         messages: converted,
         tools: tools.map(|tools| tools.iter().map(tool_from).collect()),
+        output_config: None,
     }
 }
 
@@ -366,6 +391,24 @@ mod tests {
         assert_eq!(request.system.as_deref(), Some("be helpful"));
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, "user");
+    }
+
+    /// A build nobody has asked for a level must send the body it always sent, or adding the
+    /// field would change every request to an account that has never seen it.
+    #[test]
+    fn a_request_nobody_asked_a_level_of_carries_no_output_config() {
+        let request = request_from(&[Message::user("hello")], None);
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("output_config").is_none());
+    }
+
+    /// This API states the level inside an object of its own, which is not how the other backend
+    /// reads the same choice.
+    #[test]
+    fn a_level_is_sent_inside_the_object_this_api_states() {
+        let request = request_from(&[Message::user("hello")], None).with_effort(Some(Effort::Max));
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["output_config"]["effort"], "max");
     }
 
     /// Several system turns accumulate over a session. They are joined in the order they would have

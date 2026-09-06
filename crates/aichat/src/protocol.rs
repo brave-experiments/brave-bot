@@ -218,6 +218,58 @@ impl Tool {
     }
 }
 
+/// How hard the model is asked to think before it answers.
+///
+/// Five levels rather than a token count. A count is a number about a model's internals that only
+/// somebody who already knows the model can set, and the same figure means something different on
+/// the next one; a word ranks the same way whatever answers.
+///
+/// Not content, and nothing derived from content. The word comes from a person picking off a list
+/// they read, on the same footing as the model name beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    /// Every level, cheapest first, which is the order a picker offers them in.
+    pub const ALL: [Effort; 5] = [
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Xhigh,
+        Effort::Max,
+    ];
+
+    /// The word this level is sent and stored as.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+
+    /// The level a word names, or `None` for a word that names none of them.
+    ///
+    /// Case-insensitive, because this reads a word somebody typed or a file they may have edited,
+    /// and `High` is the same request as `high`. Anything else is no choice at all rather than a
+    /// choice of something: an unrecognised word must not become a request field.
+    pub fn named(word: &str) -> Option<Effort> {
+        let word = word.trim();
+        Effort::ALL
+            .into_iter()
+            .find(|level| level.as_str().eq_ignore_ascii_case(word))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub model: String,
@@ -229,6 +281,12 @@ pub struct ChatRequest {
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    /// How hard to think, in the name this protocol gives the field.
+    ///
+    /// Absent unless somebody asked for a level, so a build nobody has asked sends exactly what it
+    /// sent before and every service keeps its own default.
+    #[serde(rename = "reasoning_effort", skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 /// Options that only apply to a streamed request.
@@ -247,11 +305,18 @@ impl ChatRequest {
             stream: None,
             stream_options: None,
             tools: None,
+            effort: None,
         }
     }
 
     pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
         self.tools = if tools.is_empty() { None } else { Some(tools) };
+        self
+    }
+
+    /// Ask for a particular amount of thinking, or leave the service to its own default.
+    pub fn with_effort(mut self, effort: Option<Effort>) -> Self {
+        self.effort = effort;
         self
     }
 
@@ -699,6 +764,46 @@ mod tests {
         assert_eq!(json["messages"][0]["content"], "hello");
         // Omitted rather than sent as null, since the server has its own default.
         assert!(json.get("stream").is_none());
+    }
+
+    /// A build nobody has asked for a level must send what it always sent, or adding the field
+    /// would change every request on every endpoint that has never seen it.
+    #[test]
+    fn a_request_nobody_asked_a_level_of_mentions_no_effort() {
+        let request = ChatRequest::new("automatic", vec![Message::user("hello")]);
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn a_level_is_sent_in_the_name_this_protocol_gives_the_field() {
+        let request = ChatRequest::new("automatic", vec![Message::user("hello")])
+            .with_effort(Some(Effort::Xhigh));
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["reasoning_effort"], "xhigh");
+    }
+
+    #[test]
+    fn every_level_has_a_word_that_reads_back_as_itself() {
+        for level in Effort::ALL {
+            assert_eq!(Effort::named(level.as_str()), Some(level));
+        }
+    }
+
+    /// The word is read back from a file a person may have edited by hand, so the case they
+    /// happened to type must not be the difference between a choice and none.
+    #[test]
+    fn a_level_is_named_whatever_case_it_was_written_in() {
+        assert_eq!(Effort::named("  HIGH \n"), Some(Effort::High));
+    }
+
+    /// An unrecognised word is no choice at all rather than a choice of something: it must never
+    /// become a request field.
+    #[test]
+    fn a_word_naming_no_level_is_not_a_choice() {
+        for word in ["", "  ", "highest", "xxhigh", "3"] {
+            assert_eq!(Effort::named(word), None, "{word:?} became a level");
+        }
     }
 
     #[test]

@@ -362,10 +362,10 @@ impl<'a> BedrockClient<'a> {
     ) -> Result<(Request, String), BedrockError> {
         let model = self.model_for(request)?;
 
-        let body = serde_json::to_vec(&protocol::request_from(
-            &request.messages,
-            request.tools.as_deref(),
-        ))
+        let body = serde_json::to_vec(
+            &protocol::request_from(&request.messages, request.tools.as_deref())
+                .with_effort(request.effort),
+        )
         .map_err(|e| BedrockError::Encode(e.to_string()))?;
 
         let resolved = credentials::resolve(self.config.profile.as_deref())?;
