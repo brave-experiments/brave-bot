@@ -13,6 +13,8 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
@@ -488,21 +490,6 @@ fn a_missing_file_fails_the_turn() {
 }
 
 /// Serve a sequence of replies, one per request, so a multi-step loop can be driven.
-/// The request bodies of the first `n` rounds, or a failure saying how many there really were.
-///
-/// `recv` blocks forever when a turn made fewer rounds than the test expected, which turns a
-/// wrong assertion into a hung suite. This says what happened instead.
-fn rounds(received: &mpsc::Receiver<String>, n: usize) -> Vec<String> {
-    let mut bodies = Vec::with_capacity(n);
-    for round in 0..n {
-        match received.recv_timeout(std::time::Duration::from_secs(20)) {
-            Ok(body) => bodies.push(body),
-            Err(_) => panic!("expected {n} rounds, the turn sent {round}"),
-        }
-    }
-    bodies
-}
-
 fn serve_sequence(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
     serve_sequence_losing_the_first(0, replies)
 }
@@ -568,6 +555,158 @@ fn serve_sequence_losing_the_first(
     });
 
     (format!("http://127.0.0.1:{port}"), receiver)
+}
+
+/// A model that answers on what it was asked rather than on the order it was asked in.
+///
+/// Delegates run alongside the turn that started them, so their requests interleave and the
+/// order two of them reach a socket is a race. A sequence of replies would be a test that passes
+/// on the machine it was written on.
+///
+/// Each rule is a marker to look for in the request body and the replies to give the run that
+/// sent it, in order. The first rule whose marker appears and still has a reply left answers, so
+/// a turn's own marker goes before the tasks it hands out: a turn replays the arguments it called
+/// with, and so holds every task it asked for as well as its own prompt.
+fn serve_by_marker(rules: Vec<(&'static str, Vec<String>)>) -> (String, mpsc::Receiver<String>) {
+    let (endpoint, received, _) = serve_by_marker_meeting(rules, &[]);
+    (endpoint, received)
+}
+
+/// As [`serve_by_marker`], holding every request that matches one of `meet` until all of them
+/// have arrived.
+///
+/// This is how a test says "at the same time" and means it. Runs that really do overlap all
+/// reach the rendezvous and go on; runs that take turns cannot, because the first to arrive
+/// would be waiting for a request the second has not been started to make. The flag says whether
+/// they met, and the wait is bounded so that a run which takes turns fails an assertion instead
+/// of never ending.
+fn serve_by_marker_meeting(
+    rules: Vec<(&'static str, Vec<String>)>,
+    meet: &'static [&'static str],
+) -> (String, mpsc::Receiver<String>, Arc<AtomicBool>) {
+    use std::collections::{BTreeSet, VecDeque};
+    use std::sync::{Condvar, Mutex};
+
+    /// What each run has left to be told, by the marker that says which run it is.
+    type Waiting = Arc<Mutex<Vec<(&'static str, VecDeque<String>)>>>;
+
+    let met = Arc::new(AtomicBool::new(meet.is_empty()));
+    let arrived: Arc<(Mutex<BTreeSet<&'static str>>, Condvar)> =
+        Arc::new((Mutex::new(BTreeSet::new()), Condvar::new()));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (sender, receiver) = mpsc::channel();
+    let waiting: Waiting = Arc::new(Mutex::new(
+        rules
+            .into_iter()
+            .map(|(marker, replies)| (marker, replies.into_iter().collect()))
+            .collect(),
+    ));
+
+    let reached = Arc::clone(&met);
+    thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let waiting = Arc::clone(&waiting);
+            let sender = sender.clone();
+            let arrived = Arc::clone(&arrived);
+            let met = Arc::clone(&reached);
+            // One thread per connection, because two runs really are asking at once and a server
+            // that answered them one at a time would hide the thing under test.
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if header == "\r\n" || header == "\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.trim().eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let _ = sender.send(body.clone());
+
+                // Which run this is, settled before anything waits. A turn replays the
+                // arguments it called with, so its own requests hold every task it handed out:
+                // the rule that answers is what says whose request this is, never the text alone.
+                let answering = {
+                    let mut held = waiting.lock().expect("not poisoned");
+                    held.iter_mut()
+                        .find(|(marker, replies)| body.contains(marker) && !replies.is_empty())
+                        .map(|(marker, replies)| (*marker, replies.pop_front()))
+                };
+                let Some((marker, Some(reply))) = answering else {
+                    drop(stream);
+                    return;
+                };
+
+                // Held until every run the test named is waiting here at the same moment. A
+                // marker is taken out again on the way past, so what the flag records is runs
+                // that overlapped and never runs that each arrived once the other had given up.
+                if meet.contains(&marker) {
+                    let (here, ready) = &*arrived;
+                    let mut here = here.lock().expect("not poisoned");
+                    here.insert(marker);
+                    if here.len() == meet.len() {
+                        met.store(true, Ordering::SeqCst);
+                    }
+                    ready.notify_all();
+
+                    // Waiting on the flag rather than on the count, because the count falls again
+                    // as each one leaves: the first to see everybody would otherwise let the
+                    // others out and go on waiting for a room it had just emptied.
+                    let bound = std::time::Duration::from_secs(10);
+                    let began = std::time::Instant::now();
+                    while !met.load(Ordering::SeqCst) && began.elapsed() < bound {
+                        let (held, _) = ready
+                            .wait_timeout(here, bound.saturating_sub(began.elapsed()))
+                            .expect("not poisoned");
+                        here = held;
+                        if here.len() == meet.len() {
+                            met.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    here.remove(&marker);
+                    ready.notify_all();
+                }
+
+                let frames = as_sse(&reply);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{frames}",
+                    frames.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            });
+        }
+    });
+
+    (format!("http://127.0.0.1:{port}"), receiver, met)
+}
+
+/// Every request the model was sent, however many runs sent them, once no more are coming.
+///
+/// Collected by waiting for the turn to be over rather than for a count: with delegates in
+/// flight there is no count known in advance, since a round the turn spends being told what came
+/// back is a round that exists only if something came back in time.
+fn every_request(received: &mpsc::Receiver<String>) -> Vec<String> {
+    let mut bodies = Vec::new();
+    while let Ok(body) = received.try_recv() {
+        bodies.push(body);
+    }
+    bodies
 }
 
 /// A round where the model says something on its way to calling a tool, which is the shape
@@ -8561,17 +8700,24 @@ fn what_a_delegate_read_never_reaches_the_planner_that_asked() {
     .unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, received) = serve_sequence(vec![
-        // The planner delegates.
-        tool_request(
-            "spawn_agent",
-            r#"{"kind":"reader","task":"read build.log and say what the first line is"}"#,
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "FIND-OUT-WHAT-THE-LOG-SAYS",
+            vec![
+                // The planner delegates, then has nothing to do until the report arrives.
+                tool_request("spawn_agent", r#"{"kind":"reader","task":"READ-THE-LOG"}"#),
+                reply_with("waiting on the delegate"),
+                reply_with("the log starts with a peculiar line"),
+            ],
         ),
-        // The delegate's own rounds: it reads, then answers.
-        tool_request("read_file", r#"{"path":"build.log"}"#),
-        reply_with("the first line reads PECULIAR-LOG-BODY"),
-        // The planner answers on what it was told.
-        reply_with("the log starts with a peculiar line"),
+        (
+            "READ-THE-LOG",
+            vec![
+                // The delegate's own rounds: it reads, then answers.
+                tool_request("read_file", r#"{"path":"build.log"}"#),
+                reply_with("the first line reads PECULIAR-LOG-BODY"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -8583,28 +8729,37 @@ fn what_a_delegate_read_never_reaches_the_planner_that_asked() {
         &config,
         &egress,
         &workspace,
-        &Task::new("find out what the log says"),
+        &Task::new("FIND-OUT-WHAT-THE-LOG-SAYS"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
         trust,
     )
     .expect("turn runs");
 
-    let bodies = rounds(&received, 4);
+    let asked = every_request(&received);
+    let (delegates, planners): (Vec<&String>, Vec<&String>) = asked
+        .iter()
+        .partition(|body| !body.contains("FIND-OUT-WHAT-THE-LOG-SAYS"));
 
     // The delegate really did read it, or the test below would pass for the wrong reason.
     assert!(
-        bodies[2].contains("PECULIAR-LOG-BODY"),
+        delegates
+            .iter()
+            .any(|body| body.contains("PECULIAR-LOG-BODY")),
         "the delegate never saw the file it was sent to read"
     );
 
-    // And the planner's last round has the report without the log.
+    // And the planner was told what it said, without the log behind it.
     assert!(
-        bodies[3].contains("the first line reads"),
+        planners
+            .iter()
+            .any(|body| body.contains("the first line reads")),
         "the report did not reach the planner"
     );
     assert!(
-        !bodies[3].contains("line two of the log"),
+        !planners
+            .iter()
+            .any(|body| body.contains("line two of the log")),
         "what the delegate read followed its report into the planner's context"
     );
 }
@@ -8616,13 +8771,19 @@ fn a_delegates_report_reaches_the_planner_that_asked_for_it() {
     let scratch = Scratch::new("delegate-report");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "spawn_agent",
-            r#"{"kind":"reader","task":"say something short"}"#,
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "DELEGATE-SOMETHING",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"SAY-SOMETHING-SHORT"}"#,
+                ),
+                reply_with("nothing to add while it works"),
+                reply_with("relayed"),
+            ],
         ),
-        reply_with("REPORTED BACK"),
-        reply_with("relayed"),
+        ("SAY-SOMETHING-SHORT", vec![reply_with("REPORTED BACK")]),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -8632,19 +8793,22 @@ fn a_delegates_report_reaches_the_planner_that_asked_for_it() {
         &config,
         &egress,
         &workspace,
-        &Task::new("delegate something"),
+        &Task::new("DELEGATE-SOMETHING"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
 
-    let bodies = rounds(&received, 3);
+    // Whichever round it arrived in: the turn is not blocked while a delegate works, so which
+    // request carries the report depends on how long the delegate took.
+    let asked = every_request(&received);
+    let told = asked
+        .iter()
+        .filter(|body| body.contains("DELEGATE-SOMETHING"))
+        .find(|body| body.contains("REPORTED BACK"))
+        .expect("the report was never put in front of the planner");
     assert!(
-        bodies[2].contains("REPORTED BACK"),
-        "the report was not put in front of the planner"
-    );
-    assert!(
-        !bodies[2].contains("could not be shown to you"),
+        !told.contains("could not be shown to you"),
         "a report from a clean context was quarantined from the planner"
     );
     assert_eq!(outcome.reply_for_display(), "relayed");
@@ -8730,14 +8894,25 @@ fn a_delegates_work_is_bracketed_by_the_announcements_the_interface_reads() {
     std::fs::write(scratch.path.join("a.txt"), "one line").expect("written");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
-        tool_request(
-            "spawn_agent",
-            r#"{"kind":"reader","task":"say something short"}"#,
+    let (endpoint, _received) = serve_by_marker(vec![
+        (
+            "DELEGATE-SOMETHING",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"SAY-SOMETHING-SHORT"}"#,
+                ),
+                reply_with("waiting"),
+                reply_with("relayed"),
+            ],
         ),
-        tool_request("read_file", r#"{"path":"a.txt"}"#),
-        reply_with("REPORTED BACK"),
-        reply_with("relayed"),
+        (
+            "SAY-SOMETHING-SHORT",
+            vec![
+                tool_request("read_file", r#"{"path":"a.txt"}"#),
+                reply_with("REPORTED BACK"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -8748,7 +8923,7 @@ fn a_delegates_work_is_bracketed_by_the_announcements_the_interface_reads() {
         &config,
         &egress,
         &workspace,
-        &Task::new("delegate something"),
+        &Task::new("DELEGATE-SOMETHING"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
@@ -8812,14 +8987,36 @@ fn each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_numb
     std::fs::write(scratch.path.join("b.txt"), "the second file").expect("written");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
-        tool_request("spawn_agent", r#"{"kind":"reader","task":"read a.txt"}"#),
-        tool_request("read_file", r#"{"path":"a.txt"}"#),
-        reply_with("the first file says something"),
-        tool_request("spawn_agent", r#"{"kind":"reader","task":"read b.txt"}"#),
-        tool_request("read_file", r#"{"path":"b.txt"}"#),
-        reply_with("the second file says something"),
-        reply_with("both of them reported back"),
+    let (endpoint, _received) = serve_by_marker(vec![
+        (
+            "ASK-TWO-OF-THEM",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"READ-THE-FIRST"}"#,
+                ),
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"READ-THE-SECOND"}"#,
+                ),
+                reply_with("waiting for both"),
+                reply_with("both of them reported back"),
+            ],
+        ),
+        (
+            "READ-THE-FIRST",
+            vec![
+                tool_request("read_file", r#"{"path":"a.txt"}"#),
+                reply_with("the first file says something"),
+            ],
+        ),
+        (
+            "READ-THE-SECOND",
+            vec![
+                tool_request("read_file", r#"{"path":"b.txt"}"#),
+                reply_with("the second file says something"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -8830,7 +9027,7 @@ fn each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_numb
         &config,
         &egress,
         &workspace,
-        &Task::new("ask two of them"),
+        &Task::new("ASK-TWO-OF-THEM"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut reporter,
         &mut sink,
@@ -8868,8 +9065,9 @@ fn each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_numb
     );
 
     // The two reads are the point: each is reported as the work of the delegate that made it,
-    // and the two lines are otherwise indistinguishable.
-    let reads: Vec<_> = reporter
+    // and the two lines are otherwise indistinguishable. Which arrives first is a race, so what
+    // is asserted is that both happened and each was attributed, never the order.
+    let reads: std::collections::BTreeSet<_> = reporter
         .seen
         .iter()
         .filter(|(said, _)| said.starts_with("started Read"))
@@ -8877,7 +9075,7 @@ fn each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_numb
         .collect();
     assert_eq!(
         reads,
-        vec![Some(first), Some(second)],
+        [Some(first), Some(second)].into_iter().collect(),
         "a delegate's own read was reported as somebody else's work: {:?}",
         reporter.seen
     );
@@ -8890,6 +9088,133 @@ fn each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_numb
     );
 }
 
+/// The whole point of starting one and not waiting for it. A turn that asked three questions
+/// should be waiting on the slowest, not on the sum: delegating one long job at a time is the
+/// behaviour that made a person watch a build finish before the search it does not depend on
+/// could begin.
+///
+/// The model here holds each delegate's first request until the other one has arrived, so this
+/// cannot pass unless both are working at once: a turn that ran them one after another would
+/// have the first waiting for a request nobody had been started to make.
+#[test]
+fn two_delegates_work_at_the_same_time() {
+    let scratch = Scratch::new("delegates-at-once");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received, met) = serve_by_marker_meeting(
+        vec![
+            (
+                "ASK-BOTH-AT-ONCE",
+                vec![
+                    tool_request("spawn_agent", r#"{"kind":"reader","task":"THE-SLOW-ONE"}"#),
+                    tool_request("spawn_agent", r#"{"kind":"reader","task":"THE-OTHER-ONE"}"#),
+                    reply_with("waiting for both of them"),
+                    reply_with("both answered"),
+                ],
+            ),
+            ("THE-SLOW-ONE", vec![reply_with("the slow one is done")]),
+            ("THE-OTHER-ONE", vec![reply_with("the other one is done")]),
+        ],
+        &["THE-SLOW-ONE", "THE-OTHER-ONE"],
+    );
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ASK-BOTH-AT-ONCE"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        met.load(Ordering::SeqCst),
+        "the two delegates never had a request in flight at the same time: {:?}",
+        reporter.lines()
+    );
+
+    // And both were collected, or the turn answered over work it had asked for.
+    assert!(
+        reporter
+            .position("delegate d1 finished failed=false")
+            .is_some()
+            && reporter
+                .position("delegate d2 finished failed=false")
+                .is_some(),
+        "a delegate the turn started was never collected: {:?}",
+        reporter.lines()
+    );
+}
+
+/// A turn does not end while something it started is still working. The person is told the turn
+/// is over, and a delegate still running is still reading their files and still able to ask them
+/// to approve a write, which is a turn that ended in name only.
+#[test]
+fn a_turn_does_not_answer_while_a_delegate_is_still_working() {
+    let scratch = Scratch::new("delegate-outlives");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // The planner answers immediately, before the delegate can have finished.
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "ANSWER-STRAIGHT-AWAY",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"TAKE-YOUR-TIME"}"#,
+                ),
+                reply_with("I am done, whatever it says"),
+                reply_with("it came back and I read it"),
+            ],
+        ),
+        (
+            "TAKE-YOUR-TIME",
+            vec![reply_with("THE-DELEGATE-FINISHED-ANYWAY")],
+        ),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    let outcome = turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ANSWER-STRAIGHT-AWAY"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    // The first answer was not the turn's: the report arrived, and the planner was asked again.
+    assert!(
+        reporter
+            .position("delegate d1 finished failed=false")
+            .is_some(),
+        "the turn ended without collecting the delegate it started: {:?}",
+        reporter.lines()
+    );
+    assert!(
+        every_request(&received)
+            .iter()
+            .any(|body| body.contains("THE-DELEGATE-FINISHED-ANYWAY")),
+        "what the delegate said never reached the planner"
+    );
+    assert_eq!(outcome.reply_for_display(), "it came back and I read it");
+}
+
 /// A delegate is a planner, so a file nobody vouched for is quarantined from it exactly as it
 /// would be from the turn that spawned it. This is the clause that separates a delegate from a
 /// processor: it holds tools, so it must not hold untrusted content.
@@ -8899,14 +9224,25 @@ fn what_a_delegate_could_not_read_is_quarantined_from_it_too() {
     std::fs::write(scratch.path.join("notes.txt"), "UNVOUCHED-BODY\n").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "spawn_agent",
-            r#"{"kind":"reader","task":"read notes.txt"}"#,
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "LOOK-AT-THE-NOTES",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"READ-THE-NOTES"}"#,
+                ),
+                reply_with("waiting"),
+                reply_with("noted"),
+            ],
         ),
-        tool_request("read_file", r#"{"path":"notes.txt"}"#),
-        reply_with("it is quarantined from me too"),
-        reply_with("noted"),
+        (
+            "READ-THE-NOTES",
+            vec![
+                tool_request("read_file", r#"{"path":"notes.txt"}"#),
+                reply_with("it is quarantined from me too"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -8917,19 +9253,25 @@ fn what_a_delegate_could_not_read_is_quarantined_from_it_too() {
         &config,
         &egress,
         &workspace,
-        &Task::new("look at the notes"),
+        &Task::new("LOOK-AT-THE-NOTES"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
 
-    let bodies = rounds(&received, 4);
+    let asked = every_request(&received);
+    let delegates: Vec<&String> = asked
+        .iter()
+        .filter(|body| !body.contains("LOOK-AT-THE-NOTES"))
+        .collect();
     assert!(
-        !bodies[2].contains("UNVOUCHED-BODY"),
+        !delegates.iter().any(|body| body.contains("UNVOUCHED-BODY")),
         "a delegate was shown a file nobody vouched for"
     );
     assert!(
-        bodies[2].contains("could not be shown to you"),
+        delegates
+            .iter()
+            .any(|body| body.contains("could not be shown to you")),
         "the delegate was not handed a reference in its place"
     );
 }
@@ -8941,15 +9283,26 @@ fn a_call_to_spawn_agent_from_inside_a_delegate_does_nothing() {
     let scratch = Scratch::new("delegate-depth");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, received) = serve_sequence(vec![
-        tool_request("spawn_agent", r#"{"kind":"worker","task":"do the work"}"#),
-        // The delegate asks for one of its own.
-        tool_request(
-            "spawn_agent",
-            r#"{"kind":"worker","task":"do it for me instead"}"#,
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "DELEGATE-THE-WORK",
+            vec![
+                tool_request("spawn_agent", r#"{"kind":"worker","task":"DO-THE-WORK"}"#),
+                reply_with("waiting"),
+                reply_with("done"),
+            ],
         ),
-        reply_with("I could not delegate"),
-        reply_with("done"),
+        (
+            "DO-THE-WORK",
+            vec![
+                // The delegate asks for one of its own.
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"worker","task":"do it for me instead"}"#,
+                ),
+                reply_with("I could not delegate"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -8959,27 +9312,36 @@ fn a_call_to_spawn_agent_from_inside_a_delegate_does_nothing() {
         &config,
         &egress,
         &workspace,
-        &Task::new("delegate the work"),
+        &Task::new("DELEGATE-THE-WORK"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )
     .expect("turn runs");
 
-    let bodies = rounds(&received, 4);
+    let asked = every_request(&received);
+    let delegates: Vec<&String> = asked
+        .iter()
+        .filter(|body| !body.contains("DELEGATE-THE-WORK"))
+        .collect();
+    // A second level would be a run holding that task and not the one this delegate was given:
+    // a delegate's conversation begins with its own task and holds no other.
     assert!(
-        received.try_recv().is_err(),
+        !asked
+            .iter()
+            .any(|body| body.contains("do it for me instead") && !body.contains("DO-THE-WORK")),
         "a second level of delegation ran"
     );
 
-    // The delegate's request offered no such tool, and the call it made anyway was refused.
+    // The delegate's own first request, before it had called anything: the tool list is what is
+    // under test, and every request after this one replays the call it made and the refusal.
+    let offered = delegates.first().expect("the delegate asked for nothing");
     assert!(
-        !bodies[1].contains("spawn_agent"),
+        !offered.contains("spawn_agent"),
         "a delegate was offered a way to delegate"
     );
     assert!(
-        bodies[2].contains("no such tool"),
-        "a delegate's call to spawn_agent was not refused: {}",
-        bodies[2]
+        delegates.iter().any(|body| body.contains("no such tool")),
+        "a delegate's call to spawn_agent was not refused: {delegates:?}"
     );
 }
 
@@ -8990,14 +9352,25 @@ fn a_delegates_write_is_approved_on_its_own() {
     let scratch = Scratch::new("delegate-write");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
-        tool_request("spawn_agent", r#"{"kind":"worker","task":"write out.txt"}"#),
-        tool_request(
-            "write_file",
-            r#"{"path":"out.txt","contents":"from the delegate"}"#,
+    let (endpoint, _received) = serve_by_marker(vec![
+        (
+            "HAVE-A-DELEGATE-WRITE-IT",
+            vec![
+                tool_request("spawn_agent", r#"{"kind":"worker","task":"WRITE-OUT-TXT"}"#),
+                reply_with("waiting"),
+                reply_with("the delegate wrote it"),
+            ],
         ),
-        reply_with("wrote it"),
-        reply_with("the delegate wrote it"),
+        (
+            "WRITE-OUT-TXT",
+            vec![
+                tool_request(
+                    "write_file",
+                    r#"{"path":"out.txt","contents":"from the delegate"}"#,
+                ),
+                reply_with("wrote it"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -9008,7 +9381,7 @@ fn a_delegates_write_is_approved_on_its_own() {
         &config,
         &egress,
         &workspace,
-        &Task::new("have a delegate write it"),
+        &Task::new("HAVE-A-DELEGATE-WRITE-IT"),
         &mut confirmer,
         &mut sink,
         bravebot_core::trust::TrustStore::new(),
@@ -9038,14 +9411,25 @@ fn a_delegates_write_is_refused_when_the_person_refuses() {
     let scratch = Scratch::new("delegate-write-refused");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
-        tool_request("spawn_agent", r#"{"kind":"worker","task":"write out.txt"}"#),
-        tool_request(
-            "write_file",
-            r#"{"path":"out.txt","contents":"from the delegate"}"#,
+    let (endpoint, _received) = serve_by_marker(vec![
+        (
+            "HAVE-A-DELEGATE-WRITE-IT",
+            vec![
+                tool_request("spawn_agent", r#"{"kind":"worker","task":"WRITE-OUT-TXT"}"#),
+                reply_with("waiting"),
+                reply_with("the write was refused"),
+            ],
         ),
-        reply_with("it was refused"),
-        reply_with("the write was refused"),
+        (
+            "WRITE-OUT-TXT",
+            vec![
+                tool_request(
+                    "write_file",
+                    r#"{"path":"out.txt","contents":"from the delegate"}"#,
+                ),
+                reply_with("it was refused"),
+            ],
+        ),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -9056,7 +9440,7 @@ fn a_delegates_write_is_refused_when_the_person_refuses() {
         &config,
         &egress,
         &workspace,
-        &Task::new("have a delegate write it"),
+        &Task::new("HAVE-A-DELEGATE-WRITE-IT"),
         &mut confirmer,
         &mut sink,
         bravebot_core::trust::TrustStore::new(),
@@ -9078,13 +9462,19 @@ fn one_trail_records_the_delegate_and_the_turn_that_spawned_it() {
     let scratch = Scratch::new("delegate-trail");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
-        tool_request(
-            "spawn_agent",
-            r#"{"kind":"checker","task":"say something"}"#,
+    let (endpoint, _received) = serve_by_marker(vec![
+        (
+            "DELEGATE-SOMETHING",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"checker","task":"SAY-SOMETHING"}"#,
+                ),
+                reply_with("waiting"),
+                reply_with("relayed"),
+            ],
         ),
-        reply_with("said"),
-        reply_with("relayed"),
+        ("SAY-SOMETHING", vec![reply_with("said")]),
     ]);
     let config = config_for(&endpoint);
     let egress = bravebot_net::Egress::new();
@@ -9094,7 +9484,7 @@ fn one_trail_records_the_delegate_and_the_turn_that_spawned_it() {
         &config,
         &egress,
         &workspace,
-        &Task::new("delegate something"),
+        &Task::new("DELEGATE-SOMETHING"),
         &mut bravebot_agent::confirm::ApproveWrites,
         &mut sink,
     )

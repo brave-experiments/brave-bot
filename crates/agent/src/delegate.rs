@@ -23,8 +23,9 @@
 use bravebot_aichat::protocol::Usage;
 use bravebot_core::delegate::{DelegateSpec, Kind};
 use bravebot_core::event::Sink;
-use bravebot_core::policy::Policy;
+use bravebot_core::policy::{Policy, Vouched};
 use bravebot_core::value::Labelled;
+use std::fmt;
 use std::time::Duration;
 
 use crate::confirm::Confirmer;
@@ -125,38 +126,88 @@ pub struct Delegated {
     pub inference: Duration,
 }
 
+/// Everything about a delegate that was settled before it existed.
+///
+/// Taken from the parent's policy on the turn's own thread, because that is the only thing that
+/// can say what the parent already holds. Once this exists the delegate needs nothing further
+/// from the run that spawned it, which is what lets it run alongside that run rather than inside
+/// it.
+pub struct Seeded {
+    /// What the kernel built: the kind, the narrowed capabilities, the bound and the task.
+    pub spec: DelegateSpec,
+    /// The standing decisions it starts from, kept so what comes back can be compared against it.
+    ///
+    /// Only the answers a person gave inside the delegate are taken back, and this is what
+    /// "inside" is measured from.
+    pub vouched: Vouched,
+    /// Rules written in advance about what to ask about, which do not stop applying because the
+    /// asking moved.
+    pub permissions: bravebot_core::permissions::Permissions,
+}
+
+/// Names what it holds and never the task.
+///
+/// The same rule the audit trail follows: a task is a paragraph a planner wrote, and a type that
+/// printed it would put it in every debugging line that mentioned one. The trust map is left out
+/// on the same reasoning, being a list of a person's paths.
+impl fmt::Debug for Seeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Seeded")
+            .field("kind", &self.spec.kind())
+            .field("rounds", &self.spec.rounds())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What one delegate left behind.
+pub struct Finished {
+    /// Its report and what it cost.
+    pub delegated: Delegated,
+    /// The standing decisions as they stood when it stopped, for the parent to take back.
+    pub vouched: Vouched,
+}
+
+/// Settle everything a delegate needs from the run that spawned it.
+///
+/// Separated from running it because these three come off the parent's policy and the run does
+/// not: a delegate holds no reference to its parent once it starts, so nothing it does has to
+/// wait for the parent and nothing the parent does has to wait for it.
+pub fn seed<S: Sink>(policy: &Policy<'_, S>, spec: DelegateSpec) -> Seeded {
+    Seeded {
+        spec,
+        vouched: policy.vouched(),
+        permissions: policy.permissions().clone(),
+    }
+}
+
 /// Run one delegate to completion.
 ///
-/// The parent's policy is borrowed for the whole of it, for two reasons that happen to coincide.
-/// It owns the audit trail, and one trail has to record both runs. And it is the only thing that
-/// can say what the parent already holds, which is what a delegate's own grants are narrowed
-/// against and what its trust map starts from.
+/// Takes nothing belonging to the run that spawned it. The trail, the reporter and the confirmer
+/// are lent rather than owned, because there is one of each however many runs are going: one
+/// trail records them all, one screen shows them all, and one person answers for them all.
+///
+/// Takes the three by trait object rather than by type parameter. A delegate is a turn, and a
+/// turn lends these three to the delegates it starts, so a type parameter here would describe a
+/// tower of lenders one level deeper for every level of nesting: a type the compiler builds for
+/// ever and a program that cannot be compiled. A delegate cannot delegate, so the tower is one
+/// level tall whatever the types say, and saying so here is what makes that true of the types.
 #[allow(clippy::too_many_arguments)]
-pub fn run<S: Sink, R: Reporter>(
-    policy: &mut Policy<'_, S>,
+pub fn run(
+    seeded: &Seeded,
     config: &bravebot_config::Config,
     egress: &bravebot_net::Egress,
     workspace: &crate::workspace::Workspace,
     home: Option<&std::path::Path>,
     model: Option<&str>,
     cancel: &bravebot_core::cancel::Cancel,
-    confirmer: &mut dyn Confirmer,
-    reporter: &mut R,
-    spec: &DelegateSpec,
-) -> Result<Delegated, TurnError> {
-    // Cloned before the sink is lent out, because that borrow lasts as long as the delegate's own
-    // policy does. Both are the person's standing decisions and a delegate inherits them: rules
-    // written in advance about what to ask about do not stop applying because the asking moved.
-    //
-    // Kept as well as lent, because what comes back is compared against it: only the answers a
-    // person gave inside the delegate are taken back, and this is what "inside" is measured from.
-    let seeded = policy.vouched();
-    let permissions = policy.permissions().clone();
-
-    let task = Task::delegated(spec.clone())
+    confirmer: &mut (dyn Confirmer + Send),
+    reporter: &mut (dyn Reporter + Send),
+    sink: &mut (dyn Sink + Send),
+) -> Result<Finished, TurnError> {
+    let task = Task::delegated(seeded.spec.clone())
         .with_home(home.map(std::path::Path::to_path_buf))
         .with_model(model.map(str::to_string))
-        .with_permissions(permissions);
+        .with_permissions(seeded.permissions.clone());
 
     // Its own, and it dies here. A reference minted inside a delegate names nothing once it has
     // gone, which is what makes "nothing but the report crosses back" a fact about the data rather
@@ -171,32 +222,29 @@ pub fn run<S: Sink, R: Reporter>(
         &mut conversation,
         confirmer,
         reporter,
-        policy.sink(),
-        seeded.trust.clone(),
-        seeded.programs.clone(),
+        sink,
+        seeded.vouched.trust.clone(),
+        seeded.vouched.programs.clone(),
         cancel,
     )?;
-    // Taken back before anything else, so a person who vouched for the build inside a delegate is
-    // not asked again by the next one.
-    policy.adopt_from_delegate(
-        &seeded,
-        &bravebot_core::policy::Vouched {
+
+    Ok(Finished {
+        delegated: Delegated {
+            report: outcome.answer,
+            kind: seeded.spec.kind(),
+            rounds: outcome.steps,
+            usage: Usage {
+                // What the rounds cost, split the way the turn counted it: everything it spent,
+                // less what the model wrote, is what the requests carried.
+                prompt_tokens: outcome.tokens.saturating_sub(outcome.output_tokens),
+                completion_tokens: outcome.output_tokens,
+            },
+            inference: Duration::from_millis(outcome.timing.inference_ms),
+        },
+        vouched: Vouched {
             trust: outcome.trust,
             programs: outcome.programs,
         },
-    );
-
-    Ok(Delegated {
-        report: outcome.answer,
-        kind: spec.kind(),
-        rounds: outcome.steps,
-        usage: Usage {
-            // What the rounds cost, split the way the turn counted it: everything it spent, less
-            // what the model wrote, is what the requests carried.
-            prompt_tokens: outcome.tokens.saturating_sub(outcome.output_tokens),
-            completion_tokens: outcome.output_tokens,
-        },
-        inference: Duration::from_millis(outcome.timing.inference_ms),
     })
 }
 
