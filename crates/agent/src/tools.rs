@@ -682,6 +682,12 @@ pub struct Tools<'a> {
     /// than one, because the depth is what bounds the whole tree and a bound that rests on the
     /// tool list alone rests on the model reading it.
     pub delegated: bool,
+    /// How many delegates this turn has spawned, which is what numbers the next one.
+    ///
+    /// Held by the turn rather than counted here, because a delegate is numbered once for the
+    /// whole turn and a call is one round of it. The number is the driver's own and nothing a
+    /// model wrote reaches it, which is what makes it usable for saying whose reports are whose.
+    pub spawned: &'a mut u32,
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -2628,6 +2634,28 @@ fn spawn_agent<S: Sink, C: Confirmer, R: Reporter>(
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
+    // Numbered by the driver, in the order this turn spawned them. Everything reported about this
+    // delegate carries the number, which is the only thing saying whose a line is: the alternative
+    // is reading the line, which is prose a model wrote.
+    //
+    // The task goes with it, released for a screen the way the target of any other call is. A
+    // person watching several delegates has nothing else to tell them apart by.
+    *tools.spawned += 1;
+    let id = crate::report::DelegateId::nth(*tools.spawned);
+    let asked = {
+        let proof = policy.authorise_display_release("what a delegate was asked to do");
+        task.declassify(&proof)
+    };
+    reporter.delegate_started(crate::report::Delegation {
+        id,
+        kind: spec.kind().as_str(),
+        task: asked,
+    });
+
+    // Everything the delegate reports between here and the end of its run is its own work. The
+    // announcement above belongs to the turn, which is what asked for it.
+    reporter.reporting_for(Some(id));
+
     let asked_at = std::time::Instant::now();
     let done = crate::delegate::run(
         policy,
@@ -2652,6 +2680,8 @@ fn spawn_agent<S: Sink, C: Confirmer, R: Reporter>(
                 done.kind,
                 tally(done.rounds, "round", "rounds")
             );
+            reporter.reporting_for(None);
+            reporter.delegate_finished(id, note.clone(), false);
             // Its inference, not the wall clock: what the delegate spent waiting on the model
             // belongs in the turn's inference figure, and the rest of its seconds are the tool
             // time this call really took.
@@ -2664,7 +2694,10 @@ fn spawn_agent<S: Sink, C: Confirmer, R: Reporter>(
         // from a diff on its own, so there is nothing here to unwind and nothing to report but
         // what went wrong.
         Err(error) => {
-            problem(format!("error: the delegate could not finish: {error}")).waiting(waited)
+            let note = format!("error: the delegate could not finish: {error}");
+            reporter.reporting_for(None);
+            reporter.delegate_finished(id, note.clone(), true);
+            problem(note).waiting(waited)
         }
     }
 }

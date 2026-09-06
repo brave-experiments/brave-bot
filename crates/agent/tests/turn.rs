@@ -8650,6 +8650,246 @@ fn a_delegates_report_reaches_the_planner_that_asked_for_it() {
     assert_eq!(outcome.reply_for_display(), "relayed");
 }
 
+/// Records what it was told, and whose work the driver said each report was.
+///
+/// Both halves are the property: a report says what happened and never which run it happened in,
+/// so an interface working that out from the line would be deciding it from prose a model wrote.
+/// The driver says whose it is, and this keeps what it said alongside each line.
+#[derive(Default)]
+struct Watched {
+    seen: Vec<(String, Option<bravebot_agent::report::DelegateId>)>,
+    from: Option<bravebot_agent::report::DelegateId>,
+}
+
+impl Watched {
+    /// The lines alone, for an assertion about order.
+    fn lines(&self) -> Vec<&str> {
+        self.seen.iter().map(|(said, _)| said.as_str()).collect()
+    }
+
+    /// Where a line was reported, by what it starts with.
+    fn position(&self, starting: &str) -> Option<usize> {
+        self.seen
+            .iter()
+            .position(|(said, _)| said.starts_with(starting))
+    }
+
+    /// Whose work the line starting with this was reported as.
+    fn whose(&self, starting: &str) -> Option<bravebot_agent::report::DelegateId> {
+        self.seen
+            .iter()
+            .find(|(said, _)| said.starts_with(starting))
+            .and_then(|(_, from)| *from)
+    }
+}
+
+impl bravebot_agent::report::Reporter for Watched {
+    fn todos(&mut self, _rows: Vec<bravebot_core::todo::Row>) {}
+
+    fn reporting_for(&mut self, delegate: Option<bravebot_agent::report::DelegateId>) {
+        self.from = delegate;
+    }
+
+    fn tool_started(&mut self, activity: bravebot_agent::report::Activity) {
+        self.seen
+            .push((format!("started {}", activity.verb), self.from));
+    }
+
+    fn tool_finished(&mut self, activity: bravebot_agent::report::Activity) {
+        self.seen
+            .push((format!("finished {}", activity.verb), self.from));
+    }
+
+    fn delegate_started(&mut self, delegation: bravebot_agent::report::Delegation) {
+        self.seen.push((
+            format!("delegate {} started {}", delegation.id, delegation.kind),
+            self.from,
+        ));
+    }
+
+    fn delegate_finished(
+        &mut self,
+        delegate: bravebot_agent::report::DelegateId,
+        _note: String,
+        failed: bool,
+    ) {
+        self.seen.push((
+            format!("delegate {delegate} finished failed={failed}"),
+            self.from,
+        ));
+    }
+}
+
+/// The interface has no other way to tell whose work a line is. A tool line says what happened
+/// and not which run it happened in, so an interface working that out from the line would be
+/// deciding it from prose a model wrote. The boundary is announced instead, and everything
+/// between the two announcements is the delegate's.
+#[test]
+fn a_delegates_work_is_bracketed_by_the_announcements_the_interface_reads() {
+    let scratch = Scratch::new("delegate-announced");
+    std::fs::write(scratch.path.join("a.txt"), "one line").expect("written");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "spawn_agent",
+            r#"{"kind":"reader","task":"say something short"}"#,
+        ),
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("REPORTED BACK"),
+        reply_with("relayed"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("delegate something"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let opened = reporter
+        .position("delegate d1 started reader")
+        .expect("the delegate was never announced");
+    let closed = reporter
+        .position("delegate d1 finished failed=false")
+        .expect("the end of the delegate was never announced");
+    assert!(opened < closed, "announced in the wrong order");
+
+    // The read is the delegate's, and it has to be inside the pair or an interface would draw it
+    // as the turn's own work.
+    let read = reporter
+        .position("started Read")
+        .expect("the delegate's read was never reported");
+    assert!(
+        opened < read && read < closed,
+        "the delegate's own call was reported outside the pair: {:?}",
+        reporter.lines()
+    );
+
+    // Said outright, and not left to be worked out from where the line landed in the sequence.
+    // Delegates run alongside each other, so a position in a stream of reports says nothing.
+    assert_eq!(
+        reporter.whose("started Read"),
+        Some(bravebot_agent::report::DelegateId::nth(1)),
+        "the delegate's own call was not reported as its work: {:?}",
+        reporter.seen
+    );
+
+    // The call that spawned it is the turn's, so it opens before the delegate does and closes
+    // after it: an interface puts that line in the transcript the person was already reading.
+    let spawned = reporter
+        .position("started Delegate")
+        .expect("the call was never reported");
+    assert!(
+        spawned < opened,
+        "the delegate opened before the call that spawned it: {:?}",
+        reporter.lines()
+    );
+    assert_eq!(
+        reporter.whose("started Delegate"),
+        None,
+        "the call that spawned the delegate was reported as the delegate's own work"
+    );
+}
+
+/// One turn can spawn several, and everything reported about one has to say which. Nothing else
+/// can: two delegates of the same kind produce lines that read identically, and the order the
+/// lines arrive in is the order the work happened rather than the order it was asked for.
+#[test]
+fn each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_number() {
+    let scratch = Scratch::new("delegate-numbered");
+    std::fs::write(scratch.path.join("a.txt"), "the first file").expect("written");
+    std::fs::write(scratch.path.join("b.txt"), "the second file").expect("written");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("spawn_agent", r#"{"kind":"reader","task":"read a.txt"}"#),
+        tool_request("read_file", r#"{"path":"a.txt"}"#),
+        reply_with("the first file says something"),
+        tool_request("spawn_agent", r#"{"kind":"reader","task":"read b.txt"}"#),
+        tool_request("read_file", r#"{"path":"b.txt"}"#),
+        reply_with("the second file says something"),
+        reply_with("both of them reported back"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ask two of them"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let first = bravebot_agent::report::DelegateId::nth(1);
+    let second = bravebot_agent::report::DelegateId::nth(2);
+
+    assert!(
+        reporter.position("delegate d1 started reader").is_some(),
+        "the first delegate was not announced under its own number: {:?}",
+        reporter.lines()
+    );
+    assert!(
+        reporter.position("delegate d2 started reader").is_some(),
+        "the second delegate was not announced under its own number: {:?}",
+        reporter.lines()
+    );
+    assert!(
+        reporter
+            .position("delegate d1 finished failed=false")
+            .is_some(),
+        "the first delegate did not finish under its own number: {:?}",
+        reporter.lines()
+    );
+    assert!(
+        reporter
+            .position("delegate d2 finished failed=false")
+            .is_some(),
+        "the second delegate did not finish under its own number: {:?}",
+        reporter.lines()
+    );
+
+    // The two reads are the point: each is reported as the work of the delegate that made it,
+    // and the two lines are otherwise indistinguishable.
+    let reads: Vec<_> = reporter
+        .seen
+        .iter()
+        .filter(|(said, _)| said.starts_with("started Read"))
+        .map(|(_, from)| *from)
+        .collect();
+    assert_eq!(
+        reads,
+        vec![Some(first), Some(second)],
+        "a delegate's own read was reported as somebody else's work: {:?}",
+        reporter.seen
+    );
+
+    // And the turn's own line for each call belongs to the turn, whichever delegate it started.
+    assert_eq!(
+        reporter.whose("started Delegate"),
+        None,
+        "the call that spawned a delegate was reported as the delegate's own work"
+    );
+}
+
 /// A delegate is a planner, so a file nobody vouched for is quarantined from it exactly as it
 /// would be from the turn that spawned it. This is the clause that separates a delegate from a
 /// processor: it holds tools, so it must not hold untrusted content.
