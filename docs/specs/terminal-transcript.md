@@ -319,3 +319,22 @@ a gateway has.
 `verified-by: bravebot_tui::model_prompt::the_model_in_use_is_marked`
 `verified-by: bravebot_tui::model_prompt::a_premium_model_says_so`
 `verified-by: bravebot_tui::model_prompt::the_list_shows_names_a_person_reads`
+
+<a id="VIEW-16"></a>
+### VIEW-16: a user theme may give one colour for each terminal background
+
+An ink in a theme file is either one value or a pair, `{"dark": …, "light": …}`, and a pair
+resolves to the arm matching the background sensed at startup. Neither arm is a special kind of
+value, so a pair composes with `defs` and with `none` exactly as a lone value does. A pair missing
+an arm is not an ink, and the file holding it is not a theme. A file that gives at least one pair
+is marked as depending on the terminal, which is what the row under the picker's list is read from.
+
+**Why.** A scheme published for a light terminal and a dark one is one theme a person names, not
+two, and shipping it as two files leaves them to work out which their terminal wants. Refusing a
+half-written pair rather than filling in the missing arm keeps a typo from painting half a palette,
+where the wrong half is the one its author never sees.
+
+`verified-by: bravebot_tui::theme::a_colour_given_for_each_background_takes_the_arm_the_terminal_asked_for`
+`verified-by: bravebot_tui::theme::an_arm_of_a_pair_resolves_through_defs_and_none`
+`verified-by: bravebot_tui::theme::a_pair_missing_an_arm_is_not_a_theme`
+`verified-by: bravebot_tui::theme::a_theme_says_whether_any_of_its_inks_came_from_the_sensed_background`

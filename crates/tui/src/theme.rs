@@ -85,6 +85,9 @@ pub struct Palette {
 pub struct Theme {
     pub name: String,
     pub palette: Palette,
+    /// Whether these inks were picked for the background sensed at startup, which is the one
+    /// thing about a theme that a person cannot read off its name.
+    pub adapts: bool,
 }
 
 impl Theme {
@@ -92,7 +95,13 @@ impl Theme {
         Self {
             name: name.to_string(),
             palette,
+            adapts: false,
         }
+    }
+
+    fn adapting(mut self) -> Self {
+        self.adapts = true;
+        self
     }
 }
 
@@ -145,10 +154,7 @@ pub fn apply(theme: &Theme) {
 
 /// Put `brave` back, with primary matched to the background last sensed.
 pub fn apply_brave() {
-    apply(&Theme::builtin(
-        BRAVE,
-        brave_palette(LIGHT.load(Ordering::Relaxed)),
-    ));
+    apply(&Theme::builtin(BRAVE, brave_palette(LIGHT.load(Ordering::Relaxed))).adapting());
 }
 
 fn with_palette<R>(f: impl FnOnce(&Palette) -> R) -> R {
@@ -310,7 +316,7 @@ pub fn find(name: &str) -> Option<Theme> {
 pub fn builtins() -> Vec<Theme> {
     let light = LIGHT.load(Ordering::Relaxed);
     let mut themes = vec![
-        Theme::builtin(BRAVE, brave_palette(light)),
+        Theme::builtin(BRAVE, brave_palette(light)).adapting(),
         named(
             "catppuccin-mocha",
             (0x1e, 0x1e, 0x2e),
@@ -655,25 +661,52 @@ pub fn load_user_themes_from(dir: &Path) -> Vec<Theme> {
 struct UserThemeFile {
     #[serde(default)]
     defs: std::collections::BTreeMap<String, String>,
-    background: Option<String>,
-    text: Option<String>,
-    muted: Option<String>,
-    ok: Option<String>,
-    fail: Option<String>,
-    running: Option<String>,
-    accent: Option<String>,
-    note: Option<String>,
-    primary: Option<String>,
+    background: Option<ColourValue>,
+    text: Option<ColourValue>,
+    muted: Option<ColourValue>,
+    ok: Option<ColourValue>,
+    fail: Option<ColourValue>,
+    running: Option<ColourValue>,
+    accent: Option<ColourValue>,
+    note: Option<ColourValue>,
+    primary: Option<ColourValue>,
+}
+
+/// One ink in a theme file: a single value, or one value for each terminal background.
+///
+/// Neither arm of a pair is special. Both are ordinary values, so a pair composes with `defs` and
+/// with `none` the way a lone value does.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ColourValue {
+    Both { dark: String, light: String },
+    One(String),
+}
+
+impl ColourValue {
+    fn for_background(&self, light_background: bool) -> &str {
+        match self {
+            Self::One(value) => value,
+            Self::Both { dark, light } => {
+                if light_background {
+                    light
+                } else {
+                    dark
+                }
+            }
+        }
+    }
 }
 
 /// Parse one user theme JSON. Missing keys inherit from `brave`. A broken file yields `None`.
 pub fn parse_user_theme(name: &str, contents: &str) -> Option<Theme> {
     let file: UserThemeFile = serde_json::from_str(contents).ok()?;
-    let base = brave_palette(LIGHT.load(Ordering::Relaxed));
-    let resolve = |value: Option<&String>, fallback: Color| -> Option<Color> {
+    let light = LIGHT.load(Ordering::Relaxed);
+    let base = brave_palette(light);
+    let resolve = |value: Option<&ColourValue>, fallback: Color| -> Option<Color> {
         match value {
             None => Some(fallback),
-            Some(raw) => resolve_colour(raw, &file.defs),
+            Some(raw) => resolve_colour(raw.for_background(light), &file.defs),
         }
     };
     let background = resolve(file.background.as_ref(), base.background)?;
@@ -686,8 +719,22 @@ pub fn parse_user_theme(name: &str, contents: &str) -> Option<Theme> {
     let note = resolve(file.note.as_ref(), base.note)?;
     let primary = resolve(file.primary.as_ref(), base.primary)?;
     let paints_background = !matches!(background, Color::Reset);
+    let adapts = [
+        &file.background,
+        &file.text,
+        &file.muted,
+        &file.ok,
+        &file.fail,
+        &file.running,
+        &file.accent,
+        &file.note,
+        &file.primary,
+    ]
+    .iter()
+    .any(|ink| matches!(ink, Some(ColourValue::Both { .. })));
     Some(Theme {
         name: name.to_string(),
+        adapts,
         palette: Palette {
             background,
             text,
@@ -1026,6 +1073,86 @@ mod tests {
         .expect("valid");
         assert_eq!(theme.palette.background, Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(theme.palette.text, Color::Rgb(0xaa, 0xbb, 0xcc));
+    }
+
+    /// The sensed background is one flag for the whole process, so a test that moves it has to put
+    /// it back or it decides what the next test resolves against.
+    struct Background(bool);
+
+    impl Background {
+        fn sensed_as_light(light: bool) -> Self {
+            Self(LIGHT.swap(light, Ordering::Relaxed))
+        }
+    }
+
+    impl Drop for Background {
+        fn drop(&mut self) {
+            LIGHT.store(self.0, Ordering::Relaxed);
+        }
+    }
+
+    /// A scheme published for both terminals is one theme, and which arm reaches the screen is the
+    /// whole point of writing a pair. Both polarities are checked because a test that only ever
+    /// runs on one of them passes just as happily against an implementation that ignores the flag.
+    #[test]
+    fn a_colour_given_for_each_background_takes_the_arm_the_terminal_asked_for() {
+        let _held = exclusive();
+        let file = "{\"ok\": {\"dark\": \"#00ff00\", \"light\": \"#006600\"}}";
+
+        {
+            let _background = Background::sensed_as_light(false);
+            let theme = parse_user_theme("mine", file).expect("valid");
+            assert_eq!(theme.palette.ok, Color::Rgb(0x00, 0xff, 0x00));
+        }
+        {
+            let _background = Background::sensed_as_light(true);
+            let theme = parse_user_theme("mine", file).expect("valid");
+            assert_eq!(theme.palette.ok, Color::Rgb(0x00, 0x66, 0x00));
+        }
+    }
+
+    /// Neither arm is a special kind of value, so everything a lone value may be, an arm may be.
+    #[test]
+    fn an_arm_of_a_pair_resolves_through_defs_and_none() {
+        let _held = exclusive();
+        let _background = Background::sensed_as_light(true);
+        let theme = parse_user_theme(
+            "mine",
+            concat!(
+                "{",
+                "\"defs\": { \"pale\": \"#fbf1c7\" },",
+                "\"background\": { \"dark\": \"none\", \"light\": \"pale\" },",
+                "\"ok\": { \"dark\": \"#b8bb26\", \"light\": \"pale\" }",
+                "}"
+            ),
+        )
+        .expect("valid");
+        assert_eq!(theme.palette.background, Color::Rgb(0xfb, 0xf1, 0xc7));
+        assert_eq!(theme.palette.ok, Color::Rgb(0xfb, 0xf1, 0xc7));
+    }
+
+    /// Guessing the missing arm would paint half a palette from a typo, and the half that is wrong
+    /// is the half the author never sees.
+    #[test]
+    fn a_pair_missing_an_arm_is_not_a_theme() {
+        assert!(parse_user_theme("x", "{\"ok\": {\"dark\": \"#00ff00\"}}").is_none());
+        assert!(parse_user_theme("x", "{\"ok\": {\"light\": \"#006600\"}}").is_none());
+    }
+
+    /// What the picker says under the list is read off this, so a file that adapts has to claim it
+    /// and a file that does not must not.
+    #[test]
+    fn a_theme_says_whether_any_of_its_inks_came_from_the_sensed_background() {
+        let _held = exclusive();
+        let paired = parse_user_theme(
+            "paired",
+            "{\"primary\": {\"dark\": \"#000000\", \"light\": \"#ffffff\"}}",
+        )
+        .expect("valid");
+        assert!(paired.adapts);
+
+        let fixed = parse_user_theme("fixed", "{\"primary\": \"#000000\"}").expect("valid");
+        assert!(!fixed.adapts);
     }
 
     #[test]

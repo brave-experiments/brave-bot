@@ -44,6 +44,7 @@ impl Picker {
             .unwrap_or_else(|| Theme {
                 name: theme::BRAVE.to_string(),
                 palette: theme::brave_palette(false),
+                adapts: true,
             });
         let selected = themes
             .iter()
