@@ -8814,6 +8814,62 @@ fn a_delegates_report_reaches_the_planner_that_asked_for_it() {
     assert_eq!(outcome.reply_for_display(), "relayed");
 }
 
+/// Everything a delegate read and ran ends with it, so its report is the only thing that says
+/// what the run was for. Told nothing but the round count, a person is left with a number for
+/// work done in a directory they own: a delegate asked to pick a file said which one here.
+#[test]
+fn what_a_delegate_reported_reaches_the_person_watching() {
+    let scratch = Scratch::new("delegate-reported");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_by_marker(vec![
+        (
+            "DELEGATE-SOMETHING",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"SAY-SOMETHING-SHORT"}"#,
+                ),
+                reply_with("nothing to add while it works"),
+                reply_with("relayed"),
+            ],
+        ),
+        (
+            "SAY-SOMETHING-SHORT",
+            vec![reply_with("I PICKED build.log")],
+        ),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("DELEGATE-SOMETHING"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let (_, reported) = reporter
+        .delegates_reported
+        .first()
+        .expect("no delegate was reported as finishing");
+    assert_eq!(
+        reported.clone(),
+        Some(bravebot_agent::report::Reported::Said(
+            "I PICKED build.log".to_string()
+        )),
+        "the words the delegate answered with never reached the interface"
+    );
+}
+
 /// Records what it was told, and whose work the driver said each report was.
 ///
 /// Both halves are the property: a report says what happened and never which run it happened in,
@@ -8876,6 +8932,7 @@ impl bravebot_agent::report::Reporter for Watched {
         delegate: bravebot_agent::report::DelegateId,
         _note: String,
         failed: bool,
+        _reported: Option<bravebot_agent::report::Reported>,
     ) {
         self.seen.push((
             format!("delegate {delegate} finished failed={failed}"),

@@ -10,7 +10,7 @@
 //! place the cursor needs locating.
 
 use bravebot_agent::diff::Change;
-use bravebot_agent::report::{Activity, Landing, Shown};
+use bravebot_agent::report::{Activity, Landing, Reported, Shown};
 use bravebot_i18n::t;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -256,16 +256,21 @@ fn delegate_lines(delegate: &Delegate, width: usize) -> Vec<Line<'static>> {
     ])];
 
     match &delegate.note {
-        // Finished, so the sentence it ended on is the block. Its own lines are behind it, and
-        // what anybody acts on is what it concluded.
-        Some(note) => lines.push(Line::from(Span::styled(
-            format!("  {DETAIL_MARKER} {}", one_line(note)),
-            if delegate.failed {
-                Style::default().fg(theme::fail())
-            } else {
-                dim()
-            },
-        ))),
+        // Finished, so the sentence it ended on and what it reported are the block. Its own lines
+        // are behind it, and what anybody acts on is what it concluded.
+        Some(note) => {
+            lines.push(Line::from(Span::styled(
+                format!("  {DETAIL_MARKER} {}", one_line(note)),
+                if delegate.failed {
+                    Style::default().fg(theme::fail())
+                } else {
+                    dim()
+                },
+            )));
+            if let Some(reported) = &delegate.reported {
+                lines.extend(reported_lines(reported, "    ", width));
+            }
+        }
         // Still working, so what it is doing now, indented under it. Indented rather than drawn
         // flat, because several delegates and the turn all report at once and the indent is what
         // says which of them a row belongs to.
@@ -293,6 +298,31 @@ fn delegate_lines(delegate: &Delegate, width: usize) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+/// What a delegate handed back, under the sentence saying how its run ended.
+///
+/// The only thing on the screen that says what a run was for. Everything a delegate read and ran
+/// ends with it, so a report drawn nowhere leaves a person with a round count for work done in a
+/// directory they own: a delegate asked to pick a file said which one here and nowhere else.
+///
+/// Wrapped here rather than left to the paragraph that draws it, so the rows a long report
+/// continues onto keep the indent that says which block they belong to.
+fn reported_lines(reported: &Reported, indent: &str, width: usize) -> Vec<Line<'static>> {
+    match reported {
+        // Marked, because the planner was handed a reference and these are the bytes behind it.
+        // The same block any quarantined result is drawn in, for the same reason: the person owns
+        // the directory, and a screen is not a context.
+        Reported::Kept(shown) => quarantined_lines(shown, width),
+        // Plain, because the planner read exactly this. Dressing it as quarantined would say the
+        // opposite of what is true.
+        Reported::Said(text) => {
+            let margin = Span::raw(indent.to_string());
+            text.lines()
+                .flat_map(|line| marked_rows(&margin, &[Span::raw(line.to_string())], width.max(1)))
+                .collect()
+        }
+    }
 }
 
 /// Move a line two columns right, so it reads as belonging to the block above it.
@@ -1230,6 +1260,12 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
                         theme::ok()
                     }),
                 )));
+                // What it actually answered, under the sentence saying how it ended. A view that
+                // closed on the round count leaves somebody who read every call it made still
+                // not knowing what it concluded from them.
+                if let Some(reported) = &delegate.reported {
+                    lines.extend(reported_lines(reported, "  ", width as usize));
+                }
             }
             // Approved and started, with nothing to show for it yet. An empty screen would read
             // as a mode that failed to open.
@@ -2302,7 +2338,7 @@ mod tests {
             assert!(screen.contains("checker delegate"), "{screen}");
             assert!(screen.contains("working"), "{screen}");
 
-            session.delegate_finished(id, "the build failed at step 3".to_string(), true);
+            session.delegate_finished(id, "the build failed at step 3".to_string(), true, None);
             let screen = rendered(&session);
             assert!(
                 screen.contains("did not finish"),
@@ -2317,13 +2353,88 @@ mod tests {
             let mut session = Session::new("kernel-enforced");
             let id = spawn(&mut session, "reader", "find the parser");
             session.start_activity(Activity::running("Read", "state.rs"));
-            session.delegate_finished(id, "THE-PARSER-IS-IN-LEX".to_string(), false);
+            session.delegate_finished(id, "THE-PARSER-IS-IN-LEX".to_string(), false, None);
             session.watch();
 
             let screen = rendered(&session);
             assert!(
                 screen.contains("THE-PARSER-IS-IN-LEX"),
                 "the view did not say how the delegate ended: {screen}"
+            );
+        }
+
+        /// The whole of what a delegate did ends with it, so what it answered is the only thing
+        /// that says what the run was for. A view that closed on the round count leaves somebody
+        /// who read every call it made still not knowing what it concluded from them.
+        #[test]
+        fn a_delegates_view_ends_on_what_it_reported() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "reader", "pick a file at random");
+            session.start_activity(Activity::running("List", "."));
+            session.delegate_finished(
+                id,
+                "answered after 1 round".to_string(),
+                false,
+                Some(Reported::Said("I PICKED build.log".to_string())),
+            );
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("I PICKED build.log"),
+                "the view did not say what the delegate answered: {screen}"
+            );
+        }
+
+        /// A report whose delegate met something untrusted is drawn in the block every quarantined
+        /// result is drawn in. The person owns the directory and may read it; what it must not do
+        /// is arrive looking like something the planner was given.
+        #[test]
+        fn a_report_the_planner_may_not_read_is_marked_where_it_is_drawn() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "reader", "read the log");
+            session.delegate_finished(
+                id,
+                "answered after 1 round".to_string(),
+                false,
+                Some(Reported::Kept(Shown {
+                    origin: "a reader delegate".to_string(),
+                    reach: bravebot_agent::report::Reach::NotThePlanner,
+                    label: "untrusted".to_string(),
+                    preview: vec!["PECULIAR-LOG-BODY".to_string()],
+                    lines: 1,
+                })),
+            );
+
+            let screen = rendered(&session);
+            let marked = screen
+                .lines()
+                .find(|row| row.contains("PECULIAR-LOG-BODY"))
+                .expect("the report was not drawn at all");
+            assert!(
+                marked.contains(QUARANTINE_BAR),
+                "a report the planner may not read was drawn without its margin: {marked}"
+            );
+        }
+
+        /// A delegate that could not finish answered nothing, so there is nothing to draw under
+        /// the line saying so. A block that invented one would be putting words in its mouth.
+        #[test]
+        fn a_delegate_that_could_not_finish_reports_nothing() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "checker", "run the build");
+            session.delegate_finished(
+                id,
+                "error: the delegate could not finish: the model refused".to_string(),
+                true,
+                None,
+            );
+
+            let screen = rendered(&session);
+            assert!(screen.contains("could not finish"), "{screen}");
+            assert!(
+                !screen.contains(QUARANTINE_BAR),
+                "a delegate that reported nothing was drawn with a block anyway: {screen}"
             );
         }
 
@@ -2457,6 +2568,7 @@ mod tests {
                 id,
                 "a reader delegate answered after 2 rounds".to_string(),
                 false,
+                None,
             );
 
             let screen = rendered(&session);
@@ -2467,6 +2579,31 @@ mod tests {
             assert!(
                 !screen.contains("PECULIAR-FILE-NAME"),
                 "a finished delegate is still drawing the work behind it: {screen}"
+            );
+        }
+
+        /// The block is where somebody who never opens the mode reads what came of a delegate,
+        /// and the round count says nothing about what it found.
+        #[test]
+        fn a_finished_delegate_says_what_it_reported() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "reader", "pick a file at random");
+            session.start_activity(Activity::running("List", "."));
+            session.delegate_finished(
+                id,
+                "a reader delegate answered after 1 round".to_string(),
+                false,
+                Some(Reported::Said("I PICKED build.log".to_string())),
+            );
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("answered after 1 round"),
+                "the block does not say how it ended: {screen}"
+            );
+            assert!(
+                screen.contains("I PICKED build.log"),
+                "the block does not say what it answered: {screen}"
             );
         }
 
@@ -3854,7 +3991,7 @@ mod tests {
             kind: "reader",
             task: "find the parser".to_string(),
         });
-        session.delegate_finished(id, "answered".to_string(), false);
+        session.delegate_finished(id, "answered".to_string(), false, None);
 
         let hint = hint_row_at(&session, 120, 24);
         assert!(

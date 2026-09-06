@@ -2996,9 +2996,12 @@ fn run_turn_animated(
             crate::remote_confirm::ToMain::DelegateStarted(delegation) => {
                 session.delegate_started(delegation)
             }
-            crate::remote_confirm::ToMain::DelegateFinished { id, note, failed } => {
-                session.delegate_finished(id, note, failed)
-            }
+            crate::remote_confirm::ToMain::DelegateFinished {
+                id,
+                note,
+                failed,
+                reported,
+            } => session.delegate_finished(id, note, failed, reported),
         });
 
         // The worker dropped its senders, so the turn is over.

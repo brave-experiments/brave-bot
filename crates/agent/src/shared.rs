@@ -23,7 +23,7 @@
 use crate::confirm::{
     Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
-use crate::report::{Activity, DelegateId, Delegation, Landing, Phase, Reporter, Shown};
+use crate::report::{Activity, DelegateId, Delegation, Landing, Phase, Reported, Reporter, Shown};
 use bravebot_core::ask::{Answer, Asking};
 use bravebot_core::event::{Event, Sink};
 use bravebot_core::todo::Row;
@@ -140,10 +140,16 @@ impl<T: Reporter + ?Sized> Reporter for Borrowed<'_, '_, T> {
 
     /// Not through the macro: whose report this is was settled when the handle was made, and a
     /// delegate finishing is the turn's news rather than the delegate's own.
-    fn delegate_finished(&mut self, delegate: DelegateId, note: String, failed: bool) {
+    fn delegate_finished(
+        &mut self,
+        delegate: DelegateId,
+        note: String,
+        failed: bool,
+        reported: Option<Reported>,
+    ) {
         let mut held = self.lent.hold();
         held.reporting_for(None);
-        held.delegate_finished(delegate, note, failed);
+        held.delegate_finished(delegate, note, failed, reported);
     }
 
     /// Passed on rather than remembered, so a handle for a delegate cannot be talked into
