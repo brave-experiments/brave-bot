@@ -636,7 +636,10 @@ impl Handle {
 
     /// The directory to write into, made on first use.
     fn directory(&self) -> Option<PathBuf> {
-        let directory = project_directory(&self.project)?;
+        // Asked before the directory is resolved, not after: creating it is itself a write, and an
+        // incognito session that left an empty directory behind would have recorded which projects
+        // were worked on and when, which is most of what the record was for.
+        let directory = writable_project_directory(&self.project)?;
         std::fs::create_dir_all(&directory).ok()?;
         Some(directory)
     }
@@ -759,9 +762,25 @@ pub fn audit_of(project: &Path, id: &str) -> BTreeMap<usize, Vec<crate::audit::T
 }
 
 /// Where a project's sessions live.
+///
+/// The reading answer, which is what the list and the resume picker want: an incognito session can
+/// still show and reopen the sessions that came before it. What it will not do is add to them.
 pub fn project_directory(project: &Path) -> Option<PathBuf> {
     Some(
         crate::store::directory()?
+            .join(SESSIONS)
+            .join(key_for(project)),
+    )
+}
+
+/// Where a project's sessions live when one may be written, or `None` when none may be.
+///
+/// `None` in an incognito session, and `None` on a machine with no home, which the writers already
+/// treated as "there is nowhere to record this" long before there was a mode that meant it on
+/// purpose.
+fn writable_project_directory(project: &Path) -> Option<PathBuf> {
+    Some(
+        bravebot_agent::home::writable()?
             .join(SESSIONS)
             .join(key_for(project)),
     )

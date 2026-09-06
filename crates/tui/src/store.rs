@@ -10,6 +10,10 @@
 //! corrupt file: none of that is worth refusing to start over, because the session works without
 //! any of it, falling back to the configured default.
 //!
+//! An incognito session is the same shape deliberately rather than by accident: [`writable`]
+//! answers `None`, and every write below takes the branch it already had for a machine with no
+//! home. Reads are untouched, so the session still opens with the model and theme the user chose.
+//!
 //! # What comes back is not trusted
 //!
 //! A history file can be edited, and on a shared machine it can be edited by someone else. So a
@@ -80,6 +84,16 @@ const FIELD: char = '\t';
 /// from the same directory, and two definitions of where it is would eventually disagree.
 pub fn directory() -> Option<PathBuf> {
     bravebot_agent::home::directory()
+}
+
+/// The global state directory when it may be written to, or `None` when it may not.
+///
+/// Every function below that writes resolves the directory through this rather than through
+/// [`directory`], so an incognito session finds no directory to write into and takes the path each
+/// of them already had for a machine with no home. Reading is unchanged: a private session still
+/// recalls the model and theme the user chose, it simply adds nothing to them.
+fn writable() -> Option<PathBuf> {
+    bravebot_agent::home::writable()
 }
 
 /// Read stored prompts, oldest first.
@@ -170,7 +184,7 @@ pub fn append_history(entry: &Entry) {
     if entry.prompt.trim().is_empty() || entry.prompt.len() > MAX_ENTRY_BYTES {
         return;
     }
-    let Some(dir) = directory() else {
+    let Some(dir) = writable() else {
         return;
     };
     if std::fs::create_dir_all(&dir).is_err() {
@@ -190,7 +204,7 @@ pub fn append_history(entry: &Entry) {
 /// Used to drop a cancelled prompt and to enforce the cap. Written to a temporary file and
 /// renamed so an interrupted write cannot leave a half-truncated history.
 pub fn save_history(entries: &[Entry]) {
-    let Some(dir) = directory() else {
+    let Some(dir) = writable() else {
         return;
     };
     if std::fs::create_dir_all(&dir).is_err() {
@@ -238,7 +252,7 @@ pub fn parse_model(contents: &str) -> Option<String> {
 /// rather than a half-written name. Best-effort like everything else here: a choice that could not
 /// be saved still applies to the session that made it.
 pub fn save_model(model: &str) {
-    let Some(dir) = directory() else {
+    let Some(dir) = writable() else {
         return;
     };
     if std::fs::create_dir_all(&dir).is_err() {
@@ -277,7 +291,7 @@ pub fn parse_theme(contents: &str) -> Option<String> {
 /// Written to a temporary file and renamed, so an interrupted write leaves the previous choice
 /// rather than a half-written name. Best-effort like everything else here.
 pub fn save_theme(theme: &str) {
-    let Some(dir) = directory() else {
+    let Some(dir) = writable() else {
         return;
     };
     if std::fs::create_dir_all(&dir).is_err() {
@@ -314,7 +328,7 @@ pub fn parse_effort(contents: &str) -> Option<Effort> {
 /// Written to a temporary file and renamed, so an interrupted write leaves the previous choice
 /// rather than a half-written word. Best-effort like everything else here.
 pub fn save_effort(effort: Option<Effort>) {
-    let Some(dir) = directory() else {
+    let Some(dir) = writable() else {
         return;
     };
     if std::fs::create_dir_all(&dir).is_err() {

@@ -18,6 +18,9 @@ What a resume does to standing permissions is [prompting.md](prompting.md); what
 is [trace.md](trace.md). Everything else the command line does is [cli.md](cli.md), which governs
 the same file for its own topic.
 
+Everything here describes an ordinary session. A session started with `--incognito` keeps none of
+it, and reads all of it: [incognito.md](incognito.md) governs which half is which.
+
 ## Clauses
 
 <a id="SESSION-1"></a>

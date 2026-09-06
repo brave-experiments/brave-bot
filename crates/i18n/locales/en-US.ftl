@@ -48,6 +48,7 @@ cli-option-file = Include a workspace file as context (repeatable)
 cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
+cli-option-incognito = Write nothing to ~/.bravebot: no history, no session record, no preference
 cli-option-help = Show this message
 cli-option-version = Show the version
 
@@ -146,6 +147,7 @@ leo-set-and-rebuild = set { $variable } and rebuild
 leo-unknown-channel = unknown channel: { $channel }
 leo-expected-channel = expected one of: stable, beta, nightly, development
 leo-forgotten = forgot the imported subscription
+leo-not-while-incognito = an import stores credentials on disk, which an incognito session will not do
 leo-looking = looking for a Leo subscription in Brave { $channel }
 leo-found = found a { $environment } subscription: { $order }
 leo-registering = registering this install as a new device

@@ -44,6 +44,12 @@ We do not use your data and we do not store it. Prompts and used file contents a
 endpoint to produce a reply and are discarded once it has been produced. Nothing is retained and
 nothing is used for training. Local settings are stored in `~/.bravebot` on your own machine.
 
+`bravebot --incognito` runs a session that adds nothing to `~/.bravebot`: no prompt history, no
+session record, no audit trail, and no change to the model or theme you have chosen. It still reads
+all of that, so the session is the one you configured rather than a fresh install. It edits your
+project as usual, since that is the work rather than a trace of it. See
+[docs/specs/incognito.md](docs/specs/incognito.md) for what it covers and what it does not.
+
 ## Development
 
 `cargo build` and `make check`, which runs fmt, clippy and the tests. See

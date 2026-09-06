@@ -19,6 +19,7 @@ pub mod command;
 pub mod delegate;
 pub mod event;
 pub mod fence;
+pub mod incognito;
 pub mod label;
 pub mod manifest;
 pub mod permissions;

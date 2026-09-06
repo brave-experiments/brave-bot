@@ -21,7 +21,13 @@ fn main() -> ExitCode {
     // on. Nothing else in the tree consults the environment about a language.
     bravebot_i18n::init_from_environment();
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Engaged here rather than deeper in because it must be true before the first thing that could
+    // write is reached, and this is the last moment that is certain to be before all of them.
+    if take_incognito(&mut args) {
+        bravebot_core::incognito::engage();
+    }
 
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
@@ -119,11 +125,27 @@ fn print_help() {
         ("--mode <mode>", t!(cli_option_mode)),
         ("-p, --print", t!(cli_option_print)),
         ("--trace", t!(cli_option_trace)),
+        ("--incognito", t!(cli_option_incognito)),
         ("-h, --help", t!(cli_option_help)),
         ("-V, --version", t!(cli_option_version)),
     ] {
         println!("  {flags:<OPTION$}{description}");
     }
+}
+
+/// Take `--incognito` out of the arguments, reporting whether it was there.
+///
+/// Removed before anything dispatches on what leads the list, so the mode composes with every
+/// other way of starting rather than being a fourth flag that may lead: `--incognito -p "task"`,
+/// `--incognito --resume` and `--incognito` on its own all mean what they look like, and the
+/// dispatch below goes on matching against a list the mode is no longer in.
+///
+/// Repeats are one flag rather than an error. `--incognito --incognito` asks for a mode that is
+/// already on, and refusing it would be a rule about typing rather than about privacy.
+fn take_incognito(args: &mut Vec<String>) -> bool {
+    let asked = args.len();
+    args.retain(|arg| arg != "--incognito");
+    args.len() != asked
 }
 
 /// What a one-shot invocation asked for, before anything runs.
@@ -771,6 +793,16 @@ fn import_leo_creds(args: &[String]) -> ExitCode {
         };
     }
 
+    // Refused rather than silently skipped, and refused before the device is registered so a
+    // batch is not minted that nothing will ever be able to spend. An import is a write by
+    // definition: a credential that did not outlive the session would not be an import. It is the
+    // one command an incognito session cannot carry out rather than merely decline to record.
+    // Forgetting above is allowed: removing a stored secret leaves less behind, not more.
+    if bravebot_core::incognito::engaged() {
+        eprintln!("{}", t!(leo_not_while_incognito));
+        return ExitCode::FAILURE;
+    }
+
     // Warned about early: the import would otherwise succeed and then never be used, since a
     // credential is only ever sent to the premium host.
     match Config::from_env() {
@@ -1397,6 +1429,54 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    /// The mode composes rather than leads: what is left after taking it out is the invocation the
+    /// person would have typed without it, so every dispatch below sees what it always saw.
+    #[test]
+    fn the_incognito_flag_is_taken_out_wherever_it_appears() {
+        for typed in [
+            &["--incognito", "-p", "do a thing"][..],
+            &["-p", "--incognito", "do a thing"][..],
+            &["-p", "do a thing", "--incognito"][..],
+        ] {
+            let mut arguments = args(typed);
+            assert!(
+                take_incognito(&mut arguments),
+                "{typed:?} did not engage it"
+            );
+            assert_eq!(
+                arguments,
+                args(&["-p", "do a thing"]),
+                "left over: {typed:?}"
+            );
+        }
+    }
+
+    /// Asking twice for a mode that is already on is not an error to report.
+    #[test]
+    fn asking_for_incognito_twice_is_asking_once() {
+        let mut arguments = args(&["--incognito", "--incognito", "do a thing"]);
+        assert!(take_incognito(&mut arguments));
+        assert_eq!(arguments, args(&["do a thing"]));
+    }
+
+    /// The flag is the whole invocation often enough to be worth pinning: what is left is nothing,
+    /// which the dispatch reads as the interactive session, and that is the intent.
+    #[test]
+    fn incognito_alone_leaves_the_interactive_session() {
+        let mut arguments = args(&["--incognito"]);
+        assert!(take_incognito(&mut arguments));
+        assert!(arguments.is_empty());
+    }
+
+    /// An ordinary invocation is untouched, and stays not incognito. A mode that turned itself on
+    /// for something that merely mentioned it would be worse than one that never worked.
+    #[test]
+    fn an_invocation_without_the_flag_is_left_alone() {
+        let mut arguments = args(&["-p", "write about incognito mode"]);
+        assert!(!take_incognito(&mut arguments));
+        assert_eq!(arguments, args(&["-p", "write about incognito mode"]));
     }
 
     /// Turn is what an unqualified run has always been, so an omitted `--mode` has to stay that.
