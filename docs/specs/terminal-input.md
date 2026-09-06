@@ -408,16 +408,23 @@ advertising something that no longer works. It folds into as many columns as the
 row runs past the edge: a row that wrapped would put the list a row over the height reserved for it
 and push the hint line off the screen.
 
-The hint line carries what the session is doing (the trail, the confinement, how full the context
-is) and then `? for shortcuts`. The one key it names is the one that turns the trail on, and it
-names that only **once a turn has left a trail to look at**: a trail is recorded when the turn it
-belongs to ends, so before then the line would be offering a press that changes nothing on screen.
+The hint line carries what the session is doing (the trail, how full the context is, the key that
+opens the delegates where the session has spawned any) and then `? for shortcuts`. It lists no
+other binding of its own, and it does not report the confinement. The trail key is named only
+**once a turn has left a trail to look at**: a trail is recorded when the turn it belongs to ends,
+so before then the line would be offering a press that changes nothing on screen.
 
 **Why.** The bindings and the state were on one line together, and the line was wider than the
 terminal, so the end of it was cut. Everything a person could look up was taking room from the two
 figures they had no other way to see. A binding cut off is one somebody learns once; a context
 reading cut off is gone. Moving the bindings behind a key they can press when they want them is what
 lets the line fit a terminal eighty wide whole.
+
+The confinement is settled by the platform before the session opens and cannot change while it
+runs, so a line reporting it on every frame spends room on a constant. The mark states it once at
+startup and `/status` answers for it whenever somebody asks. The delegate key earns the room
+instead, because it is the one thing here whose answer changes and which nothing else on a
+finished screen says.
 
 `verified-by: bravebot_tui::app::a_question_mark_on_an_empty_line_toggles_the_list_without_being_typed`
 `verified-by: bravebot_tui::app::a_question_mark_inside_a_sentence_is_punctuation`
@@ -429,7 +436,9 @@ lets the line fit a terminal eighty wide whole.
 `verified-by: bravebot_tui::render::the_shortcuts_are_not_something_to_complete`
 `verified-by: bravebot_tui::render::the_shortcuts_use_fewer_rows_where_the_width_allows`
 `verified-by: bravebot_tui::render::no_shortcut_row_runs_past_the_edge`
-`verified-by: bravebot_tui::render::the_hint_line_says_how_to_find_the_bindings_and_reports_confinement`
+`verified-by: bravebot_tui::render::the_hint_line_says_how_to_find_the_bindings`
+`verified-by: bravebot_tui::render::the_hint_line_does_not_report_the_confinement`
+`verified-by: bravebot_tui::render::the_hint_line_names_the_delegate_key_once_one_has_run`
 `verified-by: bravebot_tui::render::the_hint_names_the_trail_key_only_once_there_is_a_trail`
 `verified-by: bravebot_tui::render::the_hint_line_fits_a_narrow_terminal_whole`
 `verified-by: bravebot_tui::render::the_hint_and_the_list_name_the_same_key`

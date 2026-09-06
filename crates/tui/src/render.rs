@@ -2154,8 +2154,8 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // that press is that the key does not work.
     let trail = match (session.has_trail(), session.show_trail) {
         (false, _) => "",
-        (true, true) => "ctrl-t hide trail  ·  ",
-        (true, false) => "ctrl-t show trail  ·  ",
+        (true, true) => "ctrl-t hide trail",
+        (true, false) => "ctrl-t show trail",
     };
 
     // In shell mode the usual bindings are beside the point: the line goes to a shell, so what a
@@ -2177,8 +2177,18 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // Only once a request has been measured. A gauge reading zero before anything has been sent
     // would be a claim about a context nobody has counted.
     let context = match session.fullness() {
-        Some(percent) => format!("  ·  context {percent}%"),
+        Some(percent) => format!("context {percent}%"),
         None => String::new(),
+    };
+
+    // The way into the delegates, for as long as the session has any. The row that reports what
+    // the turn is doing names the key too, but that row goes when the turn ends, and a delegate
+    // is most worth opening afterwards: the block it left behind is one sentence about work
+    // somebody may want to read. The count is there because a key with nothing behind it does
+    // nothing at all, and this line is read at a glance.
+    let delegates = match session.delegates().len() {
+        0 => String::new(),
+        count => t!(watching_hint, count = count).to_string(),
     };
 
     // Not a list of bindings any more. Every one of them, with what it does, is a `?` away, which
@@ -2188,12 +2198,17 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // The state comes first because the line is cut by a terminal narrower than it, and the end is
     // what goes. A binding cut off is one somebody learns once; a figure cut off is the only thing
     // here they have no other way to see.
+    //
+    // Joined rather than run together, so a session with no trail, nothing measured and no
+    // delegates does not open its line on a separator with nothing in front of it.
+    let said: Vec<String> = [trail.to_string(), context, delegates]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .chain(std::iter::once(SHORTCUTS_HINT.to_string()))
+        .collect();
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!(
-                "  {trail}confinement {}{context}  ·  {SHORTCUTS_HINT}",
-                session.confinement
-            ),
+            format!("  {}", said.join("  ·  ")),
             dim(),
         ))),
         area,
@@ -3848,16 +3863,52 @@ mod tests {
         );
     }
 
-    /// The way to the bindings sits after the confinement, so it is the first thing a narrow
-    /// terminal cuts off. Asserted at a width an ordinary terminal actually has, and against that
-    /// row alone: the heading names the confinement too, so matching it anywhere on the screen says
-    /// nothing about whether the hint line still carries it. Widening this to make it pass would be
-    /// hiding the truncation, and so would asserting against the whole screen again.
+    /// The way to the bindings sits at the end of the line, so it is the first thing a narrow
+    /// terminal cuts off. Asserted at a width an ordinary terminal actually has, against that row
+    /// alone. Widening this to make it pass would be hiding the truncation, and so would asserting
+    /// against the whole screen.
     #[test]
-    fn the_hint_line_says_how_to_find_the_bindings_and_reports_confinement() {
+    fn the_hint_line_says_how_to_find_the_bindings() {
         let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
         assert!(hint.contains(SHORTCUTS_HINT), "{hint}");
-        assert!(hint.contains("confinement kernel-enforced"), "{hint}");
+    }
+
+    /// The confinement is settled by the platform before the session opens and cannot change
+    /// while it runs, so a permanent readout of it is a row of the screen spent on a constant.
+    /// The mark says it once at startup and `/status` answers for it on request.
+    #[test]
+    fn the_hint_line_does_not_report_the_confinement() {
+        let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
+        assert!(
+            !hint.contains("confinement"),
+            "the hint line is still reporting the confinement: {hint}"
+        );
+    }
+
+    /// The row that names this key belongs to a turn in flight, and a delegate is most worth
+    /// opening once the turn is over: what it left behind is one sentence about work nobody has
+    /// read.
+    #[test]
+    fn the_hint_line_names_the_delegate_key_once_one_has_run() {
+        let mut session = Session::new("kernel-enforced");
+        assert!(
+            !hint_row_at(&session, 120, 24).contains("ctrl-l"),
+            "a session with no delegate offered the key anyway"
+        );
+
+        let id = bravebot_agent::report::DelegateId::nth(1);
+        session.delegate_started(bravebot_agent::report::Delegation {
+            id,
+            kind: "reader",
+            task: "find the parser".to_string(),
+        });
+        session.delegate_finished(id, "answered".to_string(), false);
+
+        let hint = hint_row_at(&session, 120, 24);
+        assert!(
+            hint.contains("ctrl-l") && hint.contains("1 delegate"),
+            "the hint line does not say a delegate can be opened: {hint}"
+        );
     }
 
     /// The point of moving the bindings off the hint line: it has to fit where it used to be cut,
