@@ -564,10 +564,104 @@ fn history_search_key(session: &mut Session, key: KeyEvent) -> Action {
     }
 }
 
+/// Interpret a key press while a delegate is being watched.
+///
+/// Every key is answered here and nothing falls through. What a person types while watching would
+/// otherwise go into a box they cannot see, to be sent to a turn they are not looking at.
+///
+/// Two levels, and the key that leaves is read against the nearer one: from a delegate it goes
+/// back to the list, and from the list it closes. Ctrl-L and Ctrl-C leave the mode outright from
+/// either, because a person who wants out of a mode wants out of the mode.
+fn watching_key(session: &mut Session, key: KeyEvent) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let listing = session.listing_delegates();
+
+    match key.code {
+        // Out of the mode entirely, from wherever they are. Ctrl-C does nothing else here: the
+        // view is the nearest thing there is to stop, and somebody who went to look at what a
+        // delegate was doing is not asking for the turn to end when they come back out.
+        KeyCode::Char('l') | KeyCode::Char('c') if ctrl => {
+            session.stop_watching();
+            Action::Redraw
+        }
+
+        // Back one level, or out where there is no level to go back to.
+        KeyCode::Char('q') | KeyCode::Esc => {
+            if listing || !session.list_delegates() {
+                session.stop_watching();
+            }
+            Action::Redraw
+        }
+
+        // Into the delegate the list is on.
+        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') if listing => {
+            session.open_watched();
+            Action::Redraw
+        }
+
+        // Through the list, in the order they were spawned. The same keys move the highlight in
+        // the list and the delegate in the view, since both are asking for the next one.
+        KeyCode::Down | KeyCode::Char('j') if listing => {
+            session.watch_next();
+            Action::Redraw
+        }
+        KeyCode::Up | KeyCode::Char('k') if listing => {
+            session.watch_previous();
+            Action::Redraw
+        }
+
+        // Between delegates without going back to the list, for somebody comparing two runs.
+        KeyCode::Char('n') | KeyCode::Right | KeyCode::Tab => {
+            session.watch_next();
+            Action::Redraw
+        }
+        KeyCode::Char('p') | KeyCode::Left | KeyCode::BackTab => {
+            session.watch_previous();
+            Action::Redraw
+        }
+
+        // Back through what a delegate has done, in the keys the scroller answers, since a person
+        // arriving here has already learned those.
+        KeyCode::Up | KeyCode::Char('k') => {
+            session.scroll_up(1);
+            Action::Redraw
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            session.scroll_down(1);
+            Action::Redraw
+        }
+        KeyCode::Char('u') if ctrl => {
+            session.scroll_up(session.half_screen());
+            Action::Redraw
+        }
+        KeyCode::Char('d') if ctrl => {
+            session.scroll_down(session.half_screen());
+            Action::Redraw
+        }
+        KeyCode::PageUp | KeyCode::Char('b') => {
+            session.scroll_up(session.whole_screen());
+            Action::Redraw
+        }
+        KeyCode::PageDown | KeyCode::Char(' ') => {
+            session.scroll_down(session.whole_screen());
+            Action::Redraw
+        }
+
+        // Nothing else does anything, and nothing else reaches the box either.
+        _ => Action::None,
+    }
+}
+
 /// Interpret a key press against the session.
 ///
 /// Separated from the loop so it can be tested without a terminal.
 pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
+    // Before everything, including the keys that edit the line: while a delegate is being watched
+    // there is no line being edited, and every key belongs to the mode.
+    if session.watching().is_some() {
+        return watching_key(session, key);
+    }
+
     // Before everything, including the keys that edit the line: while the scroller is open there
     // is no line being edited, and the keys belong to it.
     if session.scrolling() {
@@ -816,6 +910,19 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
             session.toggle_trail();
             Action::Redraw
         }
+        // What a delegate is doing, which is drawn nowhere else in full. In the shared ladder
+        // because it sends nothing, and wanted mid-turn above all: a delegate exists only while a
+        // turn runs.
+        //
+        // Nothing at all where this session has spawned none. A key that does nothing is better
+        // than a screen with nothing on it, and the shortcut list is where its meaning lives.
+        KeyCode::Char('l') if ctrl => {
+            if session.watch() {
+                Action::Redraw
+            } else {
+                Action::None
+            }
+        }
         // Tab completes, which is what it does everywhere else. Only while a command is being
         // typed: with nothing offered it inserts nothing, rather than a stray character.
         KeyCode::Tab if session.is_completing() => {
@@ -929,6 +1036,12 @@ pub fn handle_paste_while_working(session: &mut Session, text: &str) {
 /// therefore watched their words go nowhere, with nothing on the screen to say why, which is
 /// indistinguishable from an interface that has stopped responding.
 pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action {
+    // Watching sends nothing either, and mid-turn is the whole of when there is a delegate to
+    // watch: one does not outlive the turn that spawned it.
+    if session.watching().is_some() {
+        return watching_key(session, key);
+    }
+
     // The same list as at rest, for the reason the ladder below is the same list: nothing the
     // scroller does sends anything, and sending is the whole of what a running turn refuses.
     if session.scrolling() {
@@ -3578,6 +3691,168 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    mod watching {
+        use super::*;
+        use bravebot_agent::report::{DelegateId, Delegation};
+
+        /// A delegate beginning, numbered the way the driver numbers them.
+        fn spawn(session: &mut Session, kind: &'static str, task: &str) -> DelegateId {
+            let id = DelegateId::nth(session.delegates().len() as u32 + 1);
+            session.delegate_started(Delegation {
+                id,
+                kind,
+                task: task.to_string(),
+            });
+            session.reporting_for(Some(id));
+            id
+        }
+
+        /// A turn in flight is the whole of when there is a delegate to watch, so the key has to
+        /// answer then above all.
+        #[test]
+        fn ctrl_l_watches_the_delegate_that_is_working() {
+            let mut session = Session::new("kernel-enforced");
+            session.status = Status::Working;
+            spawn(&mut session, "checker", "run the build");
+
+            handle_key_while_working(&mut session, ctrl('l'));
+
+            assert!(
+                session.watching_a_delegate(),
+                "the key did not open the view"
+            );
+        }
+
+        /// A key that does nothing is better than a mode that opens on an empty screen, which
+        /// puts a person somewhere with nothing to read and something to get out of.
+        #[test]
+        fn ctrl_l_does_nothing_where_no_delegate_has_run() {
+            let mut session = Session::new("kernel-enforced");
+
+            let action = handle_key(&mut session, ctrl('l'));
+
+            assert!(
+                matches!(action, Action::None),
+                "the key answered with a mode"
+            );
+            assert!(session.watching().is_none());
+        }
+
+        /// The way out is read against the nearest level. Somebody who opened a delegate from the
+        /// list is going back to the list, and only then out.
+        #[test]
+        fn q_goes_back_to_the_list_before_it_closes() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            handle_key(&mut session, ctrl('l'));
+            session.open_watched();
+
+            handle_key(&mut session, key(KeyCode::Char('q')));
+            assert!(
+                session.listing_delegates(),
+                "q left the mode from a delegate"
+            );
+
+            handle_key(&mut session, key(KeyCode::Char('q')));
+            assert!(session.watching().is_none(), "q did not close the list");
+        }
+
+        /// With one delegate there is no list behind it, and a key that went back to an empty
+        /// index would be a worse answer than closing.
+        #[test]
+        fn q_closes_outright_where_there_is_no_list_to_go_back_to() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            handle_key(&mut session, ctrl('l'));
+
+            handle_key(&mut session, key(KeyCode::Char('q')));
+
+            assert!(
+                session.watching().is_none(),
+                "the view had nowhere to go and stayed"
+            );
+        }
+
+        /// A person stops the nearest thing. Somebody who went to look at what a delegate was
+        /// doing is not asking for the turn to end when they come back out.
+        #[test]
+        fn the_view_answers_the_stop_keys_before_the_turn_does() {
+            let mut session = Session::new("kernel-enforced");
+            session.status = Status::Working;
+            spawn(&mut session, "checker", "run the build");
+            handle_key_while_working(&mut session, ctrl('l'));
+
+            let action = handle_key_while_working(&mut session, ctrl('c'));
+
+            assert!(
+                !matches!(action, Action::Cancel),
+                "closing the view cancelled the turn behind it"
+            );
+            assert!(session.watching().is_none(), "the view did not close");
+            assert_eq!(session.status, Status::Working, "the turn was stopped");
+        }
+
+        /// Nothing falls through to a box the person cannot see. Typed there, the words would be
+        /// waiting in a line nobody knows they are writing.
+        #[test]
+        fn a_typed_character_does_not_reach_the_box_while_a_delegate_is_watched() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            handle_key(&mut session, ctrl('l'));
+
+            handle_key(&mut session, key(KeyCode::Char('x')));
+            handle_key(&mut session, key(KeyCode::Char('z')));
+
+            assert!(session.input().is_empty(), "what was typed reached the box");
+        }
+
+        /// Comparing two runs is what having several is for, and going back through the list to
+        /// do it is three keys where one will do.
+        #[test]
+        fn n_and_p_move_between_delegates() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            handle_key(&mut session, ctrl('l'));
+            session.open_watched();
+
+            handle_key(&mut session, key(KeyCode::Char('p')));
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("reader")
+            );
+
+            handle_key(&mut session, key(KeyCode::Char('n')));
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("checker")
+            );
+        }
+
+        /// The list is a list of one thing to do: open the row it is on.
+        #[test]
+        fn enter_opens_the_delegate_the_list_is_on() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            handle_key(&mut session, ctrl('l'));
+            handle_key(&mut session, key(KeyCode::Up));
+
+            handle_key(&mut session, key(KeyCode::Enter));
+
+            assert!(
+                session.watching_a_delegate(),
+                "enter did not open a delegate"
+            );
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("reader"),
+                "enter opened a delegate other than the one the list was on"
+            );
+        }
     }
 
     mod scroller {

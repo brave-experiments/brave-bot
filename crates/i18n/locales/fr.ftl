@@ -639,3 +639,26 @@ reach-no-model = dans le contexte d'aucun modèle : rien ne peut être envoyé l
 
 # How many calls a delegate has made, where its block shows only the last few.
 delegate-more-calls = { $count } appels jusqu'ici
+
+## Regarder ce que fait un delegue
+
+# Le pied de page de la vue d'un delegue. Le genre et le numero sont les mots du pilote, jamais
+# ceux du modele.
+watching-footer = delegue { $kind } { $number }
+watching-working = au travail
+watching-answered = a repondu
+watching-failed = n'a pas termine
+watching-position = { $at } sur { $total }
+watching-keys = q ferme  ·  n / p un autre delegue
+watching-keys-one = q ferme
+watching-keys-back = q revient  ·  n / p un autre delegue
+watching-nothing-yet = rien pour l'instant
+# La liste de tous les delegues lances par ce tour.
+watching-list-title = delegues
+watching-list-keys = haut / bas deplace  ·  entree ouvre  ·  q ferme
+watching-calls = { $count ->
+    [one] { $count } appel
+   *[other] { $count } appels
+    }
+# Dit sur la ligne qui rapporte ce que fait le tour, pour que la touche se trouve sans la liste.
+watching-invitation = ctrl-l regarde

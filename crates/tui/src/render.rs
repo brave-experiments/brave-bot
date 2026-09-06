@@ -270,7 +270,8 @@ fn delegate_lines(delegate: &Delegate, width: usize) -> Vec<Line<'static>> {
         // flat, because several delegates and the turn all report at once and the indent is what
         // says which of them a row belongs to.
         None => {
-            for entry in &delegate.lines {
+            let latest = delegate.latest();
+            for entry in latest {
                 if let Some(activity) = &entry.activity {
                     for line in activity_lines(activity, entry.landing, width.saturating_sub(2)) {
                         lines.push(indented(line));
@@ -279,7 +280,7 @@ fn delegate_lines(delegate: &Delegate, width: usize) -> Vec<Line<'static>> {
             }
             // Said only where there were more than are drawn, since "3 calls" over three rows is
             // a row spent saying what the reader can already see.
-            if delegate.calls > delegate.lines.len() {
+            if delegate.calls > latest.len() {
                 lines.push(Line::from(Span::styled(
                     format!(
                         "  {DETAIL_MARKER} {}",
@@ -506,6 +507,12 @@ pub fn draw(frame: &mut Frame, session: &Session) -> Laid {
         return draw_scroller(frame, session);
     }
 
+    // A delegate's own work, on the same footing: while it is open no key reaches the box, so the
+    // box is not drawn and what it cost goes to the lines somebody opened the mode to read.
+    if session.watching().is_some() {
+        return draw_watching(frame, session);
+    }
+
     // The same shape for the same reason: while the history is being searched the box takes no
     // keys, and the rows it would have had go to the list of prompts standing in for it. The
     // transcript stays, because a prompt is recognised by what it was asked about.
@@ -564,6 +571,241 @@ pub fn draw(frame: &mut Frame, session: &Session) -> Laid {
     }
 
     laid
+}
+
+/// Draw the delegate view: the list of them, or the one somebody opened.
+///
+/// Two screens rather than one with a panel, because they answer different questions. The list
+/// answers which delegate, and is read once; the delegate answers what it is doing, and is read
+/// for as long as it runs.
+fn draw_watching(frame: &mut Frame, session: &Session) -> Laid {
+    if session.listing_delegates() {
+        return draw_delegate_list(frame, session);
+    }
+
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // which delegate, and what it was asked
+            Constraint::Min(1),    // its own lines
+            Constraint::Length(1), // footer
+        ])
+        .split(frame.area());
+
+    draw_delegate_head(frame, areas[0], session);
+    let laid = draw_transcript(frame, areas[1], session);
+    draw_watching_footer(frame, areas[2], session);
+
+    if let Some(selection) = &session.selection {
+        crate::select::highlight(frame.buffer_mut(), selection);
+    }
+
+    laid
+}
+
+/// Which delegate this is, and what it was asked to do.
+///
+/// Above its lines rather than in them, so it stays put while somebody reads back through a
+/// delegate that has made hundreds of calls. The question a reader has at every row is which run
+/// they are looking at, and a header that scrolled away would answer it only at the top.
+fn draw_delegate_head(frame: &mut Frame, area: Rect, session: &Session) {
+    let Some(delegate) = session.watched() else {
+        return;
+    };
+
+    let head = if delegate.is_running() {
+        Style::default().fg(theme::running())
+    } else if delegate.failed {
+        Style::default().fg(theme::fail())
+    } else {
+        Style::default().fg(theme::ok())
+    };
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(format!("{TURN_MARKER} "), head),
+                Span::styled(
+                    t!(
+                        watching_footer,
+                        kind = delegate.kind,
+                        number = delegate.id.to_string()
+                    ),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            // What the planner asked for, released for a screen exactly as the target of any
+            // other call is, and read by nothing.
+            Line::from(Span::styled(
+                format!("  {}", one_line(&delegate.task)),
+                dim(),
+            )),
+        ]),
+        area,
+    );
+}
+
+/// The footer of one delegate's view: which one, how it is going, and the way out.
+///
+/// Nothing a model wrote is quoted here. The footer is the one row the interface speaks in its
+/// own voice, and what the delegate was asked is above it where content belongs.
+fn draw_watching_footer(frame: &mut Frame, area: Rect, session: &Session) {
+    let Some(delegate) = session.watched() else {
+        return;
+    };
+    let Some(watching) = session.watching() else {
+        return;
+    };
+
+    let (standing, colour) = if delegate.is_running() {
+        (t!(watching_working), theme::running())
+    } else if delegate.failed {
+        (t!(watching_failed), theme::fail())
+    } else {
+        (t!(watching_answered), theme::ok())
+    };
+
+    let mut spans = vec![
+        Span::styled(
+            format!(
+                "  {}",
+                t!(
+                    watching_footer,
+                    kind = delegate.kind,
+                    number = delegate.id.to_string()
+                )
+            ),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(format!("  ·  {standing}"), Style::default().fg(colour)),
+    ];
+
+    // Where it sits among the others, and the keys for moving, only where there are others. One
+    // delegate has no position to be in and nowhere to move to.
+    let total = session.delegates().len();
+    if total > 1 {
+        spans.push(Span::styled(
+            format!(
+                "  ·  {}",
+                t!(watching_position, at = watching.at + 1, total = total)
+            ),
+            dim(),
+        ));
+        spans.push(Span::styled(
+            format!("  ·  {}", t!(watching_keys_back)),
+            dim(),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!("  ·  {}", t!(watching_keys_one)),
+            dim(),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Draw the list of delegates: one row each, and the highlight on the one that would open.
+///
+/// Every delegate the session has spawned, in the order they were spawned, whether it is working
+/// or finished. A list that dropped the finished ones would lose exactly the runs somebody comes
+/// looking for after the fact.
+fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // the delegates
+            Constraint::Length(1), // footer
+        ])
+        .split(frame.area());
+
+    // No title over it. The footer names the mode, the way the scroller's does, and the same word
+    // twice on one screen is a row spent saying what the row below already says.
+    let at = session.watching().map(|watching| watching.at);
+    let width = areas[0].width as usize;
+    let rows: Vec<Line> = session
+        .delegates()
+        .iter()
+        .enumerate()
+        .map(|(index, delegate)| delegate_row(delegate, at == Some(index), width))
+        .collect();
+
+    let laid = Laid {
+        width: areas[0].width,
+        height: areas[0].height,
+        rows: rows.len() as u16,
+        ..Laid::default()
+    };
+    frame.render_widget(Paragraph::new(rows), areas[0]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("  {}", t!(watching_list_title)),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(format!("  ·  {}", t!(watching_list_keys)), dim()),
+        ])),
+        areas[1],
+    );
+
+    if let Some(selection) = &session.selection {
+        crate::select::highlight(frame.buffer_mut(), selection);
+    }
+
+    laid
+}
+
+/// One delegate on the list: how it is going, what it is, what it was asked, and how much it has
+/// done.
+///
+/// The task is on the row because two delegates of the same kind are otherwise identical, and
+/// which one somebody wants is the whole question the list is answering.
+fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'static> {
+    /// Wide enough for the longest kind and a two-digit number, so every task starts in one
+    /// column and the rows read as a table rather than as a ragged list.
+    const NAME_COLUMN: usize = 14;
+
+    let (mark, colour) = if delegate.is_running() {
+        ("●", theme::running())
+    } else if delegate.failed {
+        ("✗", theme::fail())
+    } else {
+        ("✓", theme::ok())
+    };
+
+    let lead = if highlighted { "▸ " } else { "  " };
+    let name = format!("{} {}", delegate.kind, delegate.id);
+    let calls = t!(watching_calls, count = delegate.calls);
+
+    // The task takes whatever the row has left, so a narrow terminal loses the end of a sentence
+    // rather than the count saying how much the run has done. Padded as well as cut, so the
+    // counts line up down the right edge and read as a column.
+    let spent = lead.chars().count() + 2 + NAME_COLUMN + calls.chars().count() + 4;
+    let room = width.saturating_sub(spent);
+    let task = one_line(&delegate.task);
+    let task = if task.chars().count() > room {
+        task.chars()
+            .take(room.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    } else {
+        let padding = room.saturating_sub(task.chars().count());
+        task + &" ".repeat(padding)
+    };
+
+    let style = if highlighted {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    Line::from(vec![
+        Span::styled(format!("{lead}{mark} "), Style::default().fg(colour)),
+        Span::styled(format!("{name:<NAME_COLUMN$}"), style),
+        Span::styled(format!("{task}  "), dim()),
+        Span::styled(calls, dim()),
+    ])
 }
 
 /// Draw the history search: the transcript, and the list of prompts where the box was.
@@ -845,10 +1087,12 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
     // already holds what starting up reported, and that belongs under the mark rather than in
     // place of it, which is why this is not a test for an empty transcript. It was one, and the
     // mark was never drawn at all, since the trust answer is noted before the first frame.
-    let opening = session
-        .transcript
-        .iter()
-        .all(|entry| entry.speaker == Speaker::System);
+    // Never over a delegate: the mark invites a prompt, and a delegate takes none. A delegate
+    // that has not yet made a call would otherwise satisfy this vacuously and be drawn as an
+    // empty session.
+    let viewed = session.viewed();
+    let opening = !session.watching_a_delegate()
+        && viewed.iter().all(|entry| entry.speaker == Speaker::System);
     if opening {
         lines.extend(logo::lines(
             &session.confinement,
@@ -859,7 +1103,7 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
         lines.push(Line::raw(""));
     }
 
-    for entry in &session.transcript {
+    for entry in viewed {
         match entry.speaker {
             // The user's own words, echoed the way they were typed.
             Speaker::User => {
@@ -952,7 +1196,11 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
     // the session rather than from the transcript because it is not an entry yet: when the round
     // ends the same words arrive as one, in this same place and this same shape, and the tail is
     // dropped in the same breath. Nothing on the screen moves at the handover.
-    if !session.streaming.is_empty() {
+    //
+    // The turn's, and never drawn over a delegate: what a delegate writes is dropped rather than
+    // kept, so the only half-written sentence there is belongs to the planner, and it would read
+    // in a delegate's view as that delegate writing it.
+    if !session.streaming.is_empty() && !session.watching_a_delegate() {
         lines.extend(assistant_lines(&session.streaming, width));
         lines.push(Line::raw(""));
     }
@@ -964,6 +1212,35 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
             lines.push(Line::raw(""));
         }
         lines.push(logo::invitation());
+    }
+
+    // What the turn was told, closing the delegate's own view. A view that stopped at the last
+    // call leaves a reader looking at a command, unable to tell an answer from a failure.
+    if session.watching_a_delegate()
+        && let Some(delegate) = session.watched()
+    {
+        match &delegate.note {
+            Some(note) => {
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    format!("{TURN_MARKER} {note}"),
+                    Style::default().fg(if delegate.failed {
+                        theme::fail()
+                    } else {
+                        theme::ok()
+                    }),
+                )));
+            }
+            // Approved and started, with nothing to show for it yet. An empty screen would read
+            // as a mode that failed to open.
+            None if delegate.lines.is_empty() => {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", t!(watching_nothing_yet)),
+                    dim(),
+                )));
+            }
+            None => {}
+        }
     }
 
     (lines, prompts)
@@ -1313,18 +1590,34 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
         ])
     } else if working {
         match session.indicator() {
-            Some(indicator) => Line::from(vec![
-                Span::styled(
-                    format!("  {} ", indicator.glyph),
-                    Style::default().fg(theme::accent()),
-                ),
-                Span::styled(
-                    format!("{}… ", indicator.verb),
-                    Style::default().fg(theme::ok()),
-                ),
-                // Dim: the counters answer a question without competing for attention.
-                Span::styled(indicator.detail(), dim()),
-            ]),
+            Some(indicator) => {
+                let mut spans = vec![
+                    Span::styled(
+                        format!("  {} ", indicator.glyph),
+                        Style::default().fg(theme::accent()),
+                    ),
+                    Span::styled(
+                        format!("{}… ", indicator.verb),
+                        Style::default().fg(theme::ok()),
+                    ),
+                    // Dim: the counters answer a question without competing for attention.
+                    Span::styled(indicator.detail(), dim()),
+                ];
+                // While a delegate is working, the key that opens it. The turn's transcript shows
+                // one block per delegate and three of its rows, so somebody who does not already
+                // know the key has no way to find out there is more of it to see.
+                if session
+                    .delegates()
+                    .iter()
+                    .any(|delegate| delegate.is_running())
+                {
+                    spans.push(Span::styled(
+                        format!("  ·  {}", t!(watching_invitation)),
+                        dim(),
+                    ));
+                }
+                Line::from(spans)
+            }
             None => Line::from(Span::styled("  waiting for the model…", dim())),
         }
     } else if let Some(finished) = session.finished {
@@ -1710,7 +2003,7 @@ const SHORTCUTS_HINT: &str = "? for shortcuts";
 /// The meanings are kept short deliberately. The longest of them sets the column, so a word saved
 /// here is what lets two columns fit a terminal eighty wide, and that halves the rows the list takes
 /// out of the transcript.
-const SHORTCUTS: [(&str, &str); 18] = [
+const SHORTCUTS: [(&str, &str); 19] = [
     ("!", "run a shell command"),
     ("/", "commands"),
     ("@", "name a file"),
@@ -1724,6 +2017,7 @@ const SHORTCUTS: [(&str, &str); 18] = [
     ("ctrl-c", "stop, clear, then exit"),
     ("ctrl-d", "exit"),
     ("ctrl-g", "write prompt in $EDITOR"),
+    ("ctrl-l", "watch a delegate work"),
     ("ctrl-r", "search earlier prompts"),
     ("ctrl-s", "stash, or bring it back"),
     ("ctrl-t", "show what a turn did"),
@@ -1952,6 +2246,7 @@ mod tests {
 
     mod delegates {
         use super::*;
+        use crate::state::Entry;
         use bravebot_agent::report::{DelegateId, Delegation};
 
         /// A delegate beginning, numbered the way the driver numbers them.
@@ -1964,6 +2259,163 @@ mod tests {
             });
             session.reporting_for(Some(id));
             id
+        }
+
+        /// The whole of what the mode is for. The turn's own lines are three rows of a block, and
+        /// what a delegate actually did is only here.
+        #[test]
+        fn a_delegates_view_draws_its_own_lines_and_not_the_turns() {
+            let mut session = Session::new("kernel-enforced");
+            session.reporting_for(None);
+            session.transcript.push(Entry::user("A-TURN-OF-ITS-OWN"));
+            spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "PECULIAR-FILE-NAME"));
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("PECULIAR-FILE-NAME"),
+                "the delegate's own work was not drawn: {screen}"
+            );
+            assert!(
+                !screen.contains("A-TURN-OF-ITS-OWN"),
+                "the turn's lines were drawn in the delegate's view: {screen}"
+            );
+        }
+
+        /// Two questions a person watching has, and the last tool line answers neither: is this
+        /// still going, and which of them am I looking at.
+        #[test]
+        fn the_footer_says_which_delegate_this_is_and_whether_it_is_working() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "checker", "run the build");
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(screen.contains("checker delegate"), "{screen}");
+            assert!(screen.contains("working"), "{screen}");
+
+            session.delegate_finished(id, "the build failed at step 3".to_string(), true);
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("did not finish"),
+                "a delegate that failed was drawn as one that answered: {screen}"
+            );
+        }
+
+        /// A transcript that stopped at the last command leaves a reader looking at it, unable to
+        /// tell an answer from a failure.
+        #[test]
+        fn a_finished_delegates_view_ends_on_what_the_turn_was_told() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "state.rs"));
+            session.delegate_finished(id, "THE-PARSER-IS-IN-LEX".to_string(), false);
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("THE-PARSER-IS-IN-LEX"),
+                "the view did not say how the delegate ended: {screen}"
+            );
+        }
+
+        /// One delegate has no position to be in and nowhere to move to, so a row that offered
+        /// both would be advertising keys that do nothing.
+        #[test]
+        fn one_delegate_is_given_no_position_and_no_key_for_moving() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(!screen.contains("1 of 1"), "{screen}");
+            assert!(
+                !screen.contains("another delegate"),
+                "a lone delegate offered a key for moving between them: {screen}"
+            );
+        }
+
+        /// Which delegate is the question the list exists to answer, and two of the same kind are
+        /// told apart only by what each was asked to do.
+        #[test]
+        fn the_list_names_every_delegate_and_what_each_was_asked() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "FIND-THE-PARSER");
+            spawn(&mut session, "reader", "COUNT-THE-CALLERS");
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(session.listing_delegates());
+            assert!(screen.contains("FIND-THE-PARSER"), "{screen}");
+            assert!(screen.contains("COUNT-THE-CALLERS"), "{screen}");
+        }
+
+        /// The row is built by taking the count off the width and giving a task the rest, which is
+        /// arithmetic that goes wrong at the narrow end: a row too small for the columns must
+        /// still draw, and must keep the count rather than the sentence.
+        #[test]
+        fn a_narrow_row_keeps_the_count_and_loses_the_end_of_the_task() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(
+                &mut session,
+                "reader",
+                "find where the parser is defined and who calls it",
+            );
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+
+            let screen = rendered_at(&session, 44, 10);
+            assert!(
+                screen.contains("call"),
+                "the count was lost to the task: {screen}"
+            );
+            assert!(
+                !screen.contains("who calls it"),
+                "the task was drawn past the edge of the row: {screen}"
+            );
+        }
+
+        /// The mark invites a prompt, and a delegate takes none. A delegate that has not made a
+        /// call yet satisfies "nothing has been said" vacuously, which is how it came to be drawn
+        /// as an empty session.
+        #[test]
+        fn a_delegates_view_does_not_open_on_the_mark() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(
+                !screen.contains("kernel-enforced"),
+                "the opening mark was drawn over a delegate: {screen}"
+            );
+        }
+
+        /// The turn's transcript keeps one block per delegate and three of its rows. Somebody who
+        /// does not know the key has nothing telling them there is more of it to see.
+        #[test]
+        fn the_indicator_says_which_key_watches_a_delegate_at_work() {
+            let mut session = Session::new("kernel-enforced");
+            session.status = Status::Working;
+            session.turns = 1;
+            spawn(&mut session, "checker", "run the build");
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("ctrl-l"),
+                "the row saying what the turn is doing did not name the key: {screen}"
+            );
+        }
+
+        /// The list of keys is where a binding's meaning lives, and a key absent from it is one
+        /// nobody finds.
+        #[test]
+        fn the_shortcut_list_names_the_key_that_watches() {
+            assert!(
+                SHORTCUTS.iter().any(|(key, _)| *key == "ctrl-l"),
+                "the shortcut list does not name the key"
+            );
         }
 
         /// Everything on one screen is the answer to having several: a person sees what each is

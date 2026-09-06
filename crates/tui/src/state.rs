@@ -61,9 +61,8 @@ pub enum Speaker {
 /// One delegate's work, drawn where the call that started it would have been.
 ///
 /// A delegate is a second planner with a run of its own, and several are going at once, so its
-/// lines are kept together rather than interleaved with the turn's. What is kept is the most
-/// recent of them: this is a live view of something working, not a second transcript, and the
-/// whole of what a delegate did ends with the delegate exactly as it always has.
+/// lines are kept together rather than interleaved with the turn's. The block where the call
+/// happened draws the last few of them; the rest are here for the mode that opens over it.
 ///
 /// Nothing here reaches a model. The turn is told the report and nothing else, which is the point
 /// of delegating; these are the same lines going to a screen instead.
@@ -75,9 +74,9 @@ pub struct Delegate {
     pub kind: &'static str,
     /// What it was asked to do, as the planner wrote it.
     pub task: String,
-    /// The last few things it did, oldest first.
+    /// What it has done, oldest first, back as far as is kept.
     pub lines: Vec<Entry>,
-    /// How many it has done in all, which is more than are kept.
+    /// How many it has done in all, which is more than are kept once it has run long enough.
     pub calls: usize,
     /// What the turn was told when it finished. `None` while it is still working, which is what
     /// tells a delegate that is running from one that answered.
@@ -86,12 +85,18 @@ pub struct Delegate {
     pub failed: bool,
 }
 
-/// How many of a delegate's own lines are kept.
+/// How many of a delegate's own lines the block where it started draws.
 ///
-/// Enough to see that something is happening and roughly what, which is what the block is for. A
-/// person wanting the whole of it wants a transcript, and a delegate's transcript is the thing
-/// this design deliberately does not keep.
-const DELEGATE_LINES: usize = 3;
+/// Enough to see that something is happening and roughly what, which is all the block is for.
+/// Somebody wanting more than that opens the delegate itself.
+pub const DELEGATE_SHOWN: usize = 3;
+
+/// How many of a delegate's own lines are kept for the screen.
+///
+/// A bound rather than the whole of it: a delegate that runs long enough produces an unbounded
+/// number of lines, and these are held in memory for a person who may never look. Far enough back
+/// to cover the work somebody opens a delegate to ask about.
+const DELEGATE_KEPT: usize = 400;
 
 impl Delegate {
     /// Whether this one is still working.
@@ -99,11 +104,16 @@ impl Delegate {
         self.note.is_none()
     }
 
+    /// The last few of its lines, which is what the block where it started draws.
+    pub fn latest(&self) -> &[Entry] {
+        &self.lines[self.lines.len().saturating_sub(DELEGATE_SHOWN)..]
+    }
+
     /// Keep one more of its lines, dropping the oldest where there are already enough.
     fn keep(&mut self, entry: Entry) {
         self.calls += 1;
         self.lines.push(entry);
-        if self.lines.len() > DELEGATE_LINES {
+        if self.lines.len() > DELEGATE_KEPT {
             self.lines.remove(0);
         }
     }
@@ -456,6 +466,21 @@ pub fn matched(text: &str, needle: &str) -> Vec<(usize, usize)> {
     found
 }
 
+/// The delegate view, while it is open.
+///
+/// Two levels rather than one, because a turn has one delegate or nine. The list is the way in
+/// where there are several, and one delegate's own lines are what somebody came to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Watching {
+    /// Which delegate this is about, by its place in the order they were spawned.
+    ///
+    /// A position rather than the driver's number, because it is also where the highlight sits in
+    /// the list, and the two must not be able to disagree.
+    pub at: usize,
+    /// Whether the list of them is what is on the screen, rather than the one at `at`.
+    pub listing: bool,
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -500,6 +525,16 @@ pub struct Session {
     /// `None` at rest, which is what every key in the box is answered against: the mode is the
     /// one thing that decides whether a letter is a letter or a movement.
     scroller: Option<Scroller>,
+    /// The delegate view, while it is open.
+    ///
+    /// `None` at rest, on the same footing as the scroller: what decides whether a letter is a
+    /// letter or a movement is the mode, never what happens to be on the screen.
+    watching: Option<Watching>,
+    /// Where the turn's own view was when somebody went to look at a delegate.
+    ///
+    /// Held rather than recomputed, so coming back puts them where they were reading instead of
+    /// at the end of a transcript that has moved on while they were away.
+    held_view: Option<u16>,
     /// The search over the prompt history, while it is open.
     ///
     /// `None` at rest, on the same footing as the scroller: a mode is what decides whether a
@@ -762,6 +797,8 @@ impl Session {
             show_trail: false,
             scroll: 0,
             scroller: None,
+            watching: None,
+            held_view: None,
             history_search: None,
             laid: Laid::default(),
             confinement: confinement.into(),
@@ -1045,6 +1082,10 @@ impl Session {
         // session that knows nothing about it would send a prompt whose context has been thrown
         // away, which is neither what was asked for nor recognisable as a mistake.
         self.looping = None;
+        // The delegates went with the transcript that held them, so the mode standing over one
+        // is standing over nothing.
+        self.watching = None;
+        self.held_view = None;
     }
 
     /// The task list each turn finished with, by turn number, for writing the session down.
@@ -1201,6 +1242,126 @@ impl Session {
             .iter()
             .filter_map(|entry| entry.delegate.as_ref())
             .collect()
+    }
+
+    /// Open the delegate view: on the list where there are several, and on the one where there is
+    /// one.
+    ///
+    /// `false` where this session has spawned none, which leaves the key doing nothing at all. A
+    /// mode that opened on an empty screen would be worse than a key that did not answer.
+    pub fn watch(&mut self) -> bool {
+        let delegates = self.delegates();
+        let Some(last) = delegates.len().checked_sub(1) else {
+            return false;
+        };
+        // The one working, or the most recent where none is. Somebody pressing the key while
+        // something is happening means that one, and there is nothing else it could mean when
+        // nothing is.
+        let at = delegates
+            .iter()
+            .rposition(|delegate| delegate.is_running())
+            .unwrap_or(last);
+        let listing = last > 0;
+        self.held_view = Some(self.scroll);
+        self.scroll = 0;
+        self.watching = Some(Watching { at, listing });
+        true
+    }
+
+    /// Close it, putting the turn's own view back where it was left.
+    ///
+    /// `false` where it was not open, so a key can tell whether it was the one that closed
+    /// something from whether it has still to be answered by the ladder below.
+    pub fn stop_watching(&mut self) -> bool {
+        if self.watching.take().is_none() {
+            return false;
+        }
+        self.scroll = self.held_view.take().unwrap_or(0);
+        true
+    }
+
+    /// The delegate view, while it is open.
+    pub fn watching(&self) -> Option<Watching> {
+        self.watching
+    }
+
+    /// Whether one delegate's own lines are what is on the screen.
+    pub fn watching_a_delegate(&self) -> bool {
+        self.watching.is_some_and(|watching| !watching.listing)
+    }
+
+    /// Whether the list of delegates is what is on the screen.
+    pub fn listing_delegates(&self) -> bool {
+        self.watching.is_some_and(|watching| watching.listing)
+    }
+
+    /// The delegate the view is on, whether it is open or highlighted in the list.
+    pub fn watched(&self) -> Option<&Delegate> {
+        let watching = self.watching?;
+        self.delegates().get(watching.at).copied()
+    }
+
+    /// Open the delegate the list is on.
+    pub fn open_watched(&mut self) {
+        if let Some(watching) = &mut self.watching {
+            watching.listing = false;
+            self.scroll = 0;
+        }
+    }
+
+    /// Go back to the list from one delegate's lines.
+    ///
+    /// `false` where this session has only one delegate: there is no list behind it, and the key
+    /// that would have gone back is the key that closes.
+    pub fn list_delegates(&mut self) -> bool {
+        if self.delegates().len() < 2 {
+            return false;
+        }
+        match &mut self.watching {
+            Some(watching) if !watching.listing => {
+                watching.listing = true;
+                self.scroll = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Move to the next delegate, or to the previous one, in the order they were spawned.
+    ///
+    /// Each stops at its end rather than wrapping: somebody stepping through wants to arrive at
+    /// the last one and know that it is the last.
+    pub fn watch_next(&mut self) {
+        let last = self.delegates().len().saturating_sub(1);
+        if let Some(watching) = &mut self.watching
+            && watching.at < last
+        {
+            watching.at += 1;
+            self.scroll = 0;
+        }
+    }
+
+    pub fn watch_previous(&mut self) {
+        if let Some(watching) = &mut self.watching
+            && watching.at > 0
+        {
+            watching.at -= 1;
+            self.scroll = 0;
+        }
+    }
+
+    /// The entries the screen is drawn from: one delegate's own, or the turn's.
+    ///
+    /// The single place the two views part company, so everything that lays out a transcript does
+    /// it the same way for both and neither can drift from the other.
+    pub fn viewed(&self) -> &[Entry] {
+        match self.watching.filter(|watching| !watching.listing) {
+            Some(watching) => match self.delegates().get(watching.at).copied() {
+                Some(delegate) => &delegate.lines,
+                None => &self.transcript,
+            },
+            None => &self.transcript,
+        }
     }
 
     /// Show a tool call that has begun.
@@ -3343,6 +3504,204 @@ mod tests {
             id
         }
 
+        /// The key is for looking at what is happening now, and the delegate that is working is
+        /// what is happening now. Anything else makes a person hunt for the one they meant.
+        #[test]
+        fn watching_opens_on_the_delegate_that_is_working() {
+            let mut session = Session::new("none");
+            let first = spawn(&mut session, "reader", "find the parser");
+            session.delegate_finished(first, "answered".to_string(), false);
+            spawn(&mut session, "checker", "run the build");
+
+            assert!(
+                session.watch(),
+                "there was a delegate and the key did nothing"
+            );
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("checker"),
+                "the view opened on a delegate that had already finished"
+            );
+        }
+
+        /// A mode that opens on an empty screen is worse than a key that does not answer: the
+        /// person is now somewhere, with nothing to read and something to get out of.
+        #[test]
+        fn there_is_nothing_to_watch_until_a_delegate_has_run() {
+            let mut session = Session::new("none");
+
+            assert!(!session.watch(), "the view opened over no delegates at all");
+            assert!(session.watching().is_none());
+        }
+
+        /// Which delegate is the question a person has when several are going, and a view that
+        /// opened straight into one of them would answer a question they had not asked.
+        #[test]
+        fn several_delegates_are_opened_on_the_list_of_them() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+
+            session.watch();
+            assert!(
+                session.listing_delegates(),
+                "several delegates opened straight into one of them"
+            );
+            assert!(!session.watching_a_delegate());
+        }
+
+        /// One delegate is not a choice, and a list of one is a row somebody has to press through
+        /// to reach the only thing behind it.
+        #[test]
+        fn one_delegate_is_opened_without_a_list_to_pick_from() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+
+            session.watch();
+            assert!(
+                session.watching_a_delegate(),
+                "one delegate was put behind a list of one"
+            );
+        }
+
+        /// Somebody who went to look at a delegate was reading something when they left. Coming
+        /// back to the end of a transcript that moved on while they were away loses their place
+        /// for a reason that has nothing to do with them.
+        #[test]
+        fn coming_back_from_a_delegate_puts_the_turns_view_where_it_was_left() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            session.scroll = 12;
+
+            session.watch();
+            session.scroll_up(3);
+            session.stop_watching();
+
+            assert_eq!(
+                session.scroll, 12,
+                "the turn's view came back somewhere else"
+            );
+        }
+
+        /// Reading back through a delegate must not drag the turn's own view with it, or coming
+        /// back out lands somewhere nobody asked to be.
+        #[test]
+        fn the_turns_view_is_not_dragged_by_reading_through_a_delegate() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            session.watch();
+
+            session.scroll_up(5);
+            assert_ne!(
+                session.scroll, 0,
+                "reading back through a delegate moved nothing"
+            );
+
+            session.stop_watching();
+            assert_eq!(
+                session.scroll, 0,
+                "the turn's view was dragged by the delegate's"
+            );
+        }
+
+        /// Stepping through wants to arrive at the last one and know it is the last. Wrapping
+        /// round to the first says the opposite, and says it silently.
+        #[test]
+        fn moving_between_delegates_stops_at_each_end() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+            session.watch_previous();
+
+            session.watch_previous();
+            assert_eq!(session.watching().map(|watching| watching.at), Some(0));
+
+            session.watch_next();
+            session.watch_next();
+            assert_eq!(
+                session.watching().map(|watching| watching.at),
+                Some(1),
+                "moving past the last delegate wrapped round to the first"
+            );
+        }
+
+        /// What is on the screen changes when a person asks and not otherwise. A delegate that
+        /// answers while somebody is reading it has not asked for anything.
+        #[test]
+        fn a_delegate_that_finishes_is_still_the_one_being_watched() {
+            let mut session = Session::new("none");
+            let id = spawn(&mut session, "reader", "find the parser");
+            session.watch();
+
+            session.delegate_finished(id, "found it in state.rs".to_string(), false);
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("reader"),
+                "a delegate finishing took the screen away from it"
+            );
+        }
+
+        /// The same rule from the other side: a turn that spawns a fourth delegate while somebody
+        /// is reading the second must not move them to the fourth.
+        #[test]
+        fn a_new_delegate_does_not_take_the_screen_from_the_one_being_read() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+            session.open_watched();
+            session.watch_previous();
+
+            spawn(&mut session, "worker", "write it down");
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("reader"),
+                "a delegate starting took the screen from the one being read"
+            );
+        }
+
+        /// The whole of what the mode is for: the lines on the screen are the delegate's own.
+        #[test]
+        fn watching_a_delegate_shows_its_lines_rather_than_the_turns() {
+            let mut session = Session::new("none");
+            session.reporting_for(None);
+            session
+                .transcript
+                .push(Entry::user("what is in the parser"));
+            spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "parser.rs"));
+
+            session.watch();
+            let viewed = session.viewed();
+            assert_eq!(
+                viewed.len(),
+                1,
+                "the turn's own lines were in the delegate's view"
+            );
+            assert_eq!(
+                viewed[0].activity.as_ref().unwrap().target,
+                "parser.rs",
+                "the delegate's own line was not what was viewed"
+            );
+        }
+
+        /// A delegate belongs to the conversation that spawned it, and the mode standing over one
+        /// after the conversation has gone is standing over nothing.
+        #[test]
+        fn clearing_closes_the_view_over_a_delegate() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            session.watch();
+
+            session.clear();
+            assert!(
+                session.watching().is_none(),
+                "the view outlived its delegates"
+            );
+            assert!(session.viewed().is_empty());
+        }
+
         /// The point of delegating is that the reading lands somewhere else, and the interface
         /// has the same problem the planner does: a turn that asked a delegate to run the build
         /// should not have the build log in the middle of it.
@@ -3445,11 +3804,11 @@ mod tests {
             assert_eq!(session.streaming, "the turn is thinking");
         }
 
-        /// The block is a live view of something working, not a second transcript. What it keeps
-        /// is what it is doing now, and it says how much it has done so the count does not
-        /// quietly become the few rows that fit.
+        /// The block where a delegate started is a glance at it rather than the whole of it. It
+        /// draws the newest few and says how much has happened, so three rows under a delegate
+        /// that has made thirty calls do not read as a delegate doing very little.
         #[test]
-        fn a_delegates_block_keeps_the_last_of_its_work_and_counts_the_rest() {
+        fn a_delegates_block_draws_the_last_of_its_work_and_counts_the_rest() {
             let mut session = Session::new("none");
             spawn(&mut session, "checker", "run everything");
             for round in 0..8 {
@@ -3459,13 +3818,13 @@ mod tests {
             let held = session.delegates();
             assert_eq!(held[0].calls, 8, "the block forgot how much it had done");
             assert_eq!(
-                held[0].lines.len(),
-                DELEGATE_LINES,
-                "the block kept more than it draws"
+                held[0].latest().len(),
+                DELEGATE_SHOWN,
+                "the block drew more than it says it draws"
             );
             assert_eq!(
                 held[0]
-                    .lines
+                    .latest()
                     .last()
                     .unwrap()
                     .activity
@@ -3473,7 +3832,48 @@ mod tests {
                     .unwrap()
                     .target,
                 "step 7",
-                "the block kept the oldest lines rather than the newest"
+                "the block drew the oldest lines rather than the newest"
+            );
+        }
+
+        /// What the block draws is a window on what is kept. Keeping only the three drawn is what
+        /// left the mode that opens over a delegate with three rows to show for an hour's work.
+        #[test]
+        fn a_delegate_keeps_the_work_its_block_has_no_room_for() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "checker", "run everything");
+            for round in 0..8 {
+                session.start_activity(Activity::running("Run", format!("step {round}")));
+            }
+
+            assert_eq!(
+                session.delegates()[0].lines.len(),
+                8,
+                "a delegate threw away the work its block had no room for"
+            );
+        }
+
+        /// A delegate can run for as long as a turn does, and this is held in memory for a person
+        /// who may never look at it.
+        #[test]
+        fn a_delegate_stops_keeping_its_oldest_work() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "worker", "the long one");
+            for round in 0..(DELEGATE_KEPT + 50) {
+                session.start_activity(Activity::running("Run", format!("step {round}")));
+            }
+
+            let held = session.delegates();
+            assert_eq!(
+                held[0].calls,
+                DELEGATE_KEPT + 50,
+                "the count was capped too"
+            );
+            assert_eq!(held[0].lines.len(), DELEGATE_KEPT, "nothing was dropped");
+            assert_eq!(
+                held[0].lines[0].activity.as_ref().unwrap().target,
+                "step 50",
+                "the newest were dropped rather than the oldest"
             );
         }
 
