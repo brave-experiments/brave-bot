@@ -199,6 +199,20 @@ pub struct Policy<'sink, S: Sink> {
     context: Integrity,
 }
 
+/// Everything a person has vouched for, taken together.
+///
+/// A delegate is seeded with a copy of this and hands one back, and the two are compared to see
+/// what a person answered while it ran. Kept as one type rather than two arguments because the
+/// pair is always passed together and a caller that got the order wrong would silently swap a
+/// trust map for a command list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Vouched {
+    /// Which paths the person vouched for.
+    pub trust: TrustStore,
+    /// Which commands they have stopped being asked about.
+    pub programs: crate::programs::TrustedPrograms,
+}
+
 /// Shows the turn's shape but not the sink, and never any content.
 impl<S: Sink> fmt::Debug for Policy<'_, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1777,37 +1791,65 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         self.sink
     }
 
+    /// What a person has decided about their own machine, as one record.
+    ///
+    /// Paired because a delegate is seeded with both and hands both back, and because taking
+    /// them back needs to know what each looked like when it was seeded. Neither carries a label
+    /// and neither could: a trust rule is a path a person answered about and a vouched program is
+    /// a command they approved, so both were `(T,pub)` before any run existed.
+    pub fn vouched(&self) -> Vouched {
+        Vouched {
+            trust: self.trust.clone(),
+            programs: self.programs.clone(),
+        }
+    }
+
     /// Take back what a person decided inside a nested run.
     ///
     /// The trust map and the vouched programs, and nothing the delegate itself produced. Both are
-    /// standing decisions a person made about their own machine, and the map belongs to the
-    /// session rather than to whichever run happened to be going when they made it: a delegate
-    /// told once that the build may run must not leave the next one asking again.
+    /// standing decisions a person made about their own machine, and the record of them belongs
+    /// to the session rather than to whichever run happened to be going when they made it: a
+    /// delegate told once that the build may run must not leave the next one asking again.
     ///
-    /// Replacing rather than merging is sound because the two records have the same ancestor and
-    /// only one of them could have moved. A delegate starts from a copy of this run's, and this
-    /// run is blocked for as long as the delegate exists, so there is no version of this map to
-    /// lose.
+    /// What moved inside the delegate is what comes back, which is what `since` is for. A
+    /// delegate hands back the whole record it was seeded with, and the entries differing from
+    /// that copy are the ones a person answered inside it. The rest are written back unchanged
+    /// and settle nothing, because a copy taken at one moment says what was true then: it can be
+    /// behind what the session has since decided, and something behind must not be able to erase.
     ///
     /// **No label crosses here and none could.** A trust rule is a path a person answered about
     /// and a vouched program is a command they approved, so both were `(T,pub)` before either run
     /// existed. Nothing a delegate read, produced or was told is in either record.
-    pub fn adopt_from_delegate(
-        &mut self,
-        trust: TrustStore,
-        programs: crate::programs::TrustedPrograms,
-    ) {
+    pub fn adopt_from_delegate(&mut self, since: &Vouched, ended: &Vouched) {
+        let before: BTreeMap<&str, Integrity> = since.trust.rules().collect();
+        let mut paths = 0;
+        for (path, integrity) in ended.trust.rules() {
+            if before.get(path) == Some(&integrity) {
+                continue;
+            }
+            match integrity {
+                Integrity::Trusted => self.trust.trust(path),
+                Integrity::Untrusted => self.trust.distrust(path),
+            }
+            paths += 1;
+        }
+
+        let mut vouched = 0;
+        for command in ended.programs.iter() {
+            if since.programs.contains(&command.program, &command.args) {
+                continue;
+            }
+            self.programs.trust(command.clone());
+            vouched += 1;
+        }
+
         self.allow(
             "delegate",
             format!(
-                "what a person vouched for inside a delegate is kept: {} trust rules, {} \
-                 commands",
-                trust.rules().count(),
-                programs.len()
+                "what a person vouched for inside a delegate is kept: {paths} trust rules, \
+                 {vouched} commands"
             ),
         );
-        self.trust = trust;
-        self.programs = programs;
     }
 
     /// Assemble a processor's input from the slots its spec names.
@@ -6165,15 +6207,74 @@ mod tests {
             let mut policy = open_policy(&mut sink);
             assert!(!policy.trust().is_trusted("vendor/lib.js"));
 
+            let seeded = policy.vouched();
             // What the delegate's own run came back with: the same map, plus the answer a person
             // gave inside it.
-            let mut inside = policy.trust().clone();
-            inside.trust("vendor/lib.js");
-            policy.adopt_from_delegate(inside, policy.programs().clone());
+            let mut ended = seeded.clone();
+            ended.trust.trust("vendor/lib.js");
+            policy.adopt_from_delegate(&seeded, &ended);
 
             assert!(
                 policy.trust().is_trusted("vendor/lib.js"),
                 "an answer a person gave inside a delegate was thrown away with it"
+            );
+        }
+
+        /// Delegates run alongside each other, so each is seeded before the others have answered
+        /// anything and each hands back a copy that knows nothing of what they answered. Taking
+        /// one back whole would undo the rest, and which answer survived would come down to which
+        /// delegate happened to be collected last.
+        #[test]
+        fn what_each_of_two_delegates_vouched_for_survives_the_other() {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+
+            // Both copies taken from the same run, before either delegate had asked anything.
+            let seeded = policy.vouched();
+            let mut reader = seeded.clone();
+            reader.trust.trust("vendor/reader.js");
+            let mut checker = seeded.clone();
+            checker.trust.trust("vendor/checker.js");
+
+            policy.adopt_from_delegate(&seeded, &reader);
+            policy.adopt_from_delegate(&seeded, &checker);
+
+            assert!(
+                policy.trust().is_trusted("vendor/reader.js"),
+                "the first delegate's answer was undone by the second finishing"
+            );
+            assert!(
+                policy.trust().is_trusted("vendor/checker.js"),
+                "the second delegate's answer did not come back"
+            );
+        }
+
+        /// A copy says what was true when it was taken, so a delegate that answered nothing hands
+        /// back a record that is behind rather than one that disagrees. Writing it back whole
+        /// would delete whatever a person settled while it ran.
+        #[test]
+        fn a_delegate_that_answered_nothing_takes_nothing_away() {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+
+            // Seeded first, so this copy predates the answer below and cannot know about it.
+            let seeded = policy.vouched();
+
+            let mut answered = seeded.clone();
+            answered.trust.distrust("vendor/generated");
+            policy.adopt_from_delegate(&seeded, &answered);
+            assert_eq!(
+                policy.trust().integrity_of("vendor/generated"),
+                Some(Integrity::Untrusted)
+            );
+
+            // The second delegate ends the way it began: it was asked nothing and settled nothing.
+            policy.adopt_from_delegate(&seeded, &seeded);
+
+            assert_eq!(
+                policy.trust().integrity_of("vendor/generated"),
+                Some(Integrity::Untrusted),
+                "a delegate that answered nothing erased what another one had settled"
             );
         }
     }
