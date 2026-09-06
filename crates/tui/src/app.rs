@@ -67,6 +67,9 @@ const MODEL_COMMAND: &str = "/model";
 /// The line that opens the theme picker, or applies a theme named after the word.
 const THEME_COMMAND: &str = "/theme";
 
+/// The line that opens the effort picker, or takes a level named after the word.
+const EFFORT_COMMAND: &str = "/effort";
+
 /// The line that opens another directory, taking the path to open as its argument.
 const ADD_DIR_COMMAND: &str = "/add-dir";
 
@@ -107,7 +110,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 10] {
+pub fn commands() -> [Command; 11] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -123,6 +126,11 @@ pub fn commands() -> [Command; 10] {
             name: THEME_COMMAND,
             argument: "[name]",
             description: t!(command_theme),
+        },
+        Command {
+            name: EFFORT_COMMAND,
+            argument: "[level]",
+            description: t!(command_effort),
         },
         Command {
             name: ADD_DIR_COMMAND,
@@ -215,6 +223,10 @@ pub enum Action {
     ChooseTheme,
     /// Apply a theme by name without opening the picker.
     SetTheme(String),
+    /// Ask how hard to think. Needs the terminal, so the loop runs it.
+    ChooseEffort,
+    /// Take a level by name without opening the picker.
+    SetEffort(String),
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
     AddDirectory(String),
     /// Work somewhere else from now on. Needs the workspace, the trust map and the session
@@ -677,6 +689,17 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
                 Action::ChooseTheme
             } else {
                 Action::SetTheme(name)
+            }
+        }
+        KeyCode::Enter if argument_to(session.input(), EFFORT_COMMAND).is_some() => {
+            let level = argument_to(session.input(), EFFORT_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            if level.is_empty() {
+                Action::ChooseEffort
+            } else {
+                Action::SetEffort(level)
             }
         }
         KeyCode::Enter if session.input().trim() == STATUS_COMMAND => {
@@ -1587,6 +1610,14 @@ fn event_loop(
                 set_theme(&mut session, &name);
                 needs_draw = true;
             }
+            Action::ChooseEffort => {
+                choose_effort(terminal, &mut session);
+                needs_draw = true;
+            }
+            Action::SetEffort(level) => {
+                set_effort(&mut session, &level);
+                needs_draw = true;
+            }
             Action::AddDirectory(directory) => {
                 add_directory(&mut session, &mut workspace, &mut trust, &directory);
             }
@@ -1636,6 +1667,7 @@ fn event_loop(
                     directory: workspace.root(),
                     added_directories: workspace.added_directories(),
                     model: session.model(),
+                    effort: session.effort(),
                     served_model: session.served_model(),
                     premium: session.premium(),
                     theme: &theme,
@@ -2235,6 +2267,38 @@ fn choose_theme(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: 
     }
 }
 
+/// Open the effort picker and keep what the person chose.
+fn choose_effort(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: &mut Session) {
+    if let Some(row) = crate::effort_prompt::choose(terminal, session.effort(), |frame| {
+        render::draw(frame, session);
+    }) {
+        session.choose_effort(row.0);
+        session.note(said_of(row.0));
+    }
+}
+
+/// Take a level by name without opening the picker.
+///
+/// A word this program does not know changes nothing and says so. It must not reach a request
+/// field, and silently ignoring it would leave somebody believing they had asked for something.
+fn set_effort(session: &mut Session, word: &str) {
+    match bravebot_aichat::protocol::Effort::named(word) {
+        Some(level) => {
+            session.choose_effort(Some(level));
+            session.note(said_of(Some(level)));
+        }
+        None => session.note(t!(session_no_such_effort, effort = word)),
+    }
+}
+
+/// What the session says about the level now in force.
+fn said_of(effort: Option<bravebot_aichat::protocol::Effort>) -> String {
+    match effort {
+        Some(level) => t!(session_effort_set, effort = level.as_str()),
+        None => t!(session_effort_unset).to_string(),
+    }
+}
+
 /// Apply a theme by name without opening the picker.
 fn set_theme(session: &mut Session, name: &str) {
     match crate::theme::find(name) {
@@ -2568,6 +2632,7 @@ fn run_turn_animated(
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string))
+        .with_effort(session.effort())
         .with_permissions(permissions.clone())
         .ticking(tick);
     for file in crate::entries::referenced(&sent) {
@@ -4926,6 +4991,114 @@ mod tests {
         assert!(
             session.transcript.is_empty(),
             "the command was sent as a prompt"
+        );
+    }
+
+    /// A command, not a prompt: asking how hard to think must not also ask the planner about it.
+    #[test]
+    fn typing_the_effort_command_opens_the_picker() {
+        let mut session = Session::new("none");
+        for c in EFFORT_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::ChooseEffort
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+        assert_eq!(session.status, Status::Idle, "a turn began");
+    }
+
+    /// Only the bare word. "why is /effort high" is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_effort_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "why is /effort high".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("why is /effort high".to_string())
+        );
+    }
+
+    /// `/efforts` is not `/effort`: the whole word must match.
+    #[test]
+    fn a_longer_word_starting_with_effort_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/efforts".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/efforts".to_string())
+        );
+    }
+
+    /// Naming a level on the line takes it without opening the picker.
+    #[test]
+    fn the_effort_command_carries_its_level() {
+        let mut session = Session::new("none");
+        for c in "/effort xhigh".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::SetEffort("xhigh".to_string())
+        );
+    }
+
+    /// A level the user chose must be the level the turn asks for, or the choice is decoration.
+    #[test]
+    fn a_chosen_level_reaches_the_session() {
+        let mut session = Session::new("none");
+        assert_eq!(session.effort(), None);
+
+        set_effort(&mut session, "max");
+        assert_eq!(
+            session.effort(),
+            Some(bravebot_aichat::protocol::Effort::Max)
+        );
+    }
+
+    /// Asking for no level puts the session back to sending none, so a first pick is not
+    /// permanent.
+    #[test]
+    fn asking_for_no_level_puts_the_session_back_to_sending_none() {
+        let mut session = Session::new("none");
+        set_effort(&mut session, "max");
+
+        session.choose_effort(None);
+        assert_eq!(session.effort(), None);
+    }
+
+    /// A word this program does not know must change nothing and say so: silently ignoring it
+    /// leaves somebody believing they asked for something.
+    #[test]
+    fn a_level_this_program_does_not_know_changes_nothing_and_says_so() {
+        let mut session = Session::new("none");
+        set_effort(&mut session, "high");
+        set_effort(&mut session, "highest");
+
+        assert_eq!(
+            session.effort(),
+            Some(bravebot_aichat::protocol::Effort::High),
+            "an unknown word replaced the level in force"
+        );
+        assert!(
+            session
+                .transcript
+                .iter()
+                .any(|entry| entry.text.contains("highest")),
+            "nothing was said about the word"
         );
     }
 

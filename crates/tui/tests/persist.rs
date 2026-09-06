@@ -260,3 +260,27 @@ fn a_chosen_theme_is_read_back_next_session() {
         assert_eq!(store::load_theme().as_deref(), Some("nord"));
     });
 }
+
+/// The effort choice outlives the session that made it, the same way the model choice does.
+#[test]
+fn a_chosen_effort_is_read_back_next_session() {
+    with_temp_home("effort", || {
+        assert_eq!(store::load_effort(), None, "started with a level");
+        store::save_effort(Some(bravebot_aichat::protocol::Effort::Xhigh));
+        assert_eq!(
+            store::load_effort(),
+            Some(bravebot_aichat::protocol::Effort::Xhigh)
+        );
+    });
+}
+
+/// Asking for no level puts somebody back where they started, so a first pick is not permanent
+/// and the next session sends no level at all.
+#[test]
+fn asking_for_no_effort_is_read_back_as_no_choice() {
+    with_temp_home("effort-cleared", || {
+        store::save_effort(Some(bravebot_aichat::protocol::Effort::Max));
+        store::save_effort(None);
+        assert_eq!(store::load_effort(), None);
+    });
+}

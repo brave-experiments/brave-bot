@@ -184,6 +184,18 @@ model-picker-keys = ↑↓ choose  ·  Enter select  ·  type to search  ·  Esc
 model-picker-search-placeholder = Search
 model-picker-nothing-matches = nothing matches that
 picker-current = current
+
+# Choosing how hard to think. The level names are the words sent and stored, so they are not
+# translated; only what each one is for is.
+effort-picker-title = effort
+effort-picker-keys = ↑↓ choose  ·  Enter select  ·  Esc keep current
+effort-unset = default
+effort-hint-unset = left to whichever service answers
+effort-hint-low = least thinking, for simple work
+effort-hint-medium = less thinking, where that holds up
+effort-hint-high = the usual amount, for work needing care
+effort-hint-xhigh = more thinking, for code and long runs
+effort-hint-max = the most thinking, cost aside
 picker-premium = premium
 # The heading over the models Brave's own endpoint serves. Named rather than left blank, because a
 # list whose other sections name a service reads as though the unlabelled rows came from nowhere.
@@ -331,6 +343,9 @@ status-added-directory = added with /add-dir
 status-model = Model
 status-model-chosen = chosen with /model
 status-model-default = the configured default
+status-effort = Effort
+status-effort-chosen = chosen with /effort
+status-effort-default = whatever the service does on its own
 status-theme = Theme
 status-theme-chosen = chosen with /theme
 status-served = Answered by
@@ -477,6 +492,7 @@ scroller-footer-search = / search
 command-status = Report this session, what it may touch, and what it has spent
 command-model = Choose which model to think with
 command-theme = Choose which theme paints the interface
+command-effort = Choose how hard to think before answering
 command-add-dir = Open another directory, and trust it for this session
 command-cd = Work in another directory from now on, and trust it for this session
 command-rename = Call this conversation something else
@@ -514,6 +530,9 @@ session-context-budget = compacting above { $budget } tokens, as this model adve
 session-models-unavailable = could not list models: { $problem }
 session-theme-set = theme { $theme }
 session-no-such-theme = no theme named { $theme }; try /theme for the list
+session-effort-set = thinking at { $effort }
+session-effort-unset = thinking as the service decides
+session-no-such-effort = no effort level named { $effort }; try /effort for the list
 session-trusting = trusting { $directory }
 session-trusting-as-left = trusting { $directory } (as this session left it)
 session-not-trusting = this directory is not trusted; every write will be shown to you

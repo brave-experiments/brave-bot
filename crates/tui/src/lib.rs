@@ -11,6 +11,7 @@ pub mod clipboard;
 pub mod confirm;
 pub mod dropped;
 pub mod editor;
+pub mod effort_prompt;
 pub mod entries;
 pub mod history;
 pub mod history_search;

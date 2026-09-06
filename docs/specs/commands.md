@@ -66,6 +66,8 @@ stay a question. Prefix matching would have made `/add-dirs are useful` open a d
 `verified-by: bravebot_tui::app::a_prompt_containing_the_model_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_prompt_containing_the_theme_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_longer_word_starting_with_theme_is_a_prompt`
+`verified-by: bravebot_tui::app::a_prompt_containing_the_effort_command_is_still_a_prompt`
+`verified-by: bravebot_tui::app::a_longer_word_starting_with_effort_is_a_prompt`
 `verified-by: bravebot_tui::app::a_prompt_containing_the_rename_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_prompt_containing_the_exit_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::the_bare_add_dir_command_is_still_the_command`
@@ -110,6 +112,8 @@ the network to list models. Neither sends the typed line.
 `verified-by: bravebot_tui::app::typing_the_model_command_opens_the_picker`
 `verified-by: bravebot_tui::app::typing_the_theme_command_opens_the_picker`
 `verified-by: bravebot_tui::app::the_theme_command_carries_its_name`
+`verified-by: bravebot_tui::app::typing_the_effort_command_opens_the_picker`
+`verified-by: bravebot_tui::app::the_effort_command_carries_its_level`
 `verified-by: bravebot_tui::app::typing_the_exit_command_quits`
 `verified-by: bravebot_tui::app::the_loop_command_sends_what_is_left_after_the_interval`
 `verified-by: bravebot_tui::app::the_cd_command_carries_its_directory`

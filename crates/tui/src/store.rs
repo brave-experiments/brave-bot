@@ -22,6 +22,7 @@
 //! that a name the server does not recognise is reset to `automatic` rather than obeyed.
 
 use crate::history::Entry;
+use bravebot_aichat::protocol::Effort;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -33,6 +34,9 @@ const MODEL_FILE: &str = "model";
 
 /// The chosen theme, one line, inside the global state directory.
 const THEME_FILE: &str = "theme";
+
+/// The chosen effort level, one line, inside the global state directory.
+const EFFORT_FILE: &str = "effort";
 
 /// The longest model name worth reading back.
 ///
@@ -286,6 +290,50 @@ pub fn save_theme(theme: &str) {
     }
 }
 
+/// The effort level the user chose, or `None` if they never have.
+///
+/// Global rather than per-directory: how hard to think is a preference about the work, not a
+/// property of a checkout, and answering it once per project is answering it repeatedly.
+pub fn load_effort() -> Option<Effort> {
+    let path = directory()?.join(EFFORT_FILE);
+    parse_effort(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Read the level out of the file's contents.
+///
+/// Separate from the I/O so the rules are testable. A blank file, or one naming something that is
+/// not a level, is no choice at all rather than a choice of nothing: the caller then sends no
+/// level and the service applies its own default. A word this program does not know must never
+/// reach a request field, so nothing here passes an unrecognised one through.
+pub fn parse_effort(contents: &str) -> Option<Effort> {
+    Effort::named(contents.lines().next()?)
+}
+
+/// Record the effort level the user chose, or forget the choice where they asked for none.
+///
+/// Written to a temporary file and renamed, so an interrupted write leaves the previous choice
+/// rather than a half-written word. Best-effort like everything else here.
+pub fn save_effort(effort: Option<Effort>) {
+    let Some(dir) = directory() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    // Removed rather than written empty. A person asking for no level is asking for the state they
+    // were in before they ever chose, and an empty file read back is the same answer either way.
+    let Some(effort) = effort else {
+        let _ = std::fs::remove_file(dir.join(EFFORT_FILE));
+        return;
+    };
+
+    let temporary = dir.join("effort.tmp");
+    if std::fs::write(&temporary, format!("{}\n", effort.as_str())).is_ok() {
+        let _ = std::fs::rename(&temporary, dir.join(EFFORT_FILE));
+    }
+}
+
 /// Encode a prompt as one line.
 ///
 /// A prompt may contain newlines, which would otherwise become several entries on the way back
@@ -491,6 +539,25 @@ and this?
         assert_eq!(parse_model(&huge), None);
         let exact = "x".repeat(MAX_MODEL_BYTES);
         assert_eq!(parse_model(&exact).as_deref(), Some(exact.as_str()));
+    }
+
+    #[test]
+    fn a_stored_effort_is_read_back_without_its_newline() {
+        assert_eq!(parse_effort("xhigh\n"), Some(Effort::Xhigh));
+    }
+
+    /// A word this program does not know must not reach a request field, so an edited or corrupt
+    /// file is no choice rather than a level nobody defined.
+    #[test]
+    fn a_file_naming_no_level_is_not_a_choice() {
+        for contents in ["", "\n", "   \n", "highest\n", "9\n"] {
+            assert_eq!(parse_effort(contents), None, "{contents:?} became a choice");
+        }
+    }
+
+    #[test]
+    fn only_the_first_effort_line_is_read() {
+        assert_eq!(parse_effort("low\nmax\n"), Some(Effort::Low));
     }
 
     #[test]

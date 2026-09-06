@@ -270,6 +270,7 @@ fn run_task(args: &[String]) -> ExitCode {
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
         .with_model(bravebot_tui::store::load_model())
+        .with_effort(bravebot_tui::store::load_effort())
         .with_permissions(permissions);
     for file in files {
         task = task.with_file(file);

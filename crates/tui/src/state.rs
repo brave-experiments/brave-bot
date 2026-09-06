@@ -6,6 +6,7 @@
 
 use crate::audit::TrailLine;
 use bravebot_agent::report::{Activity, Landing, Phase, Shown};
+use bravebot_aichat::protocol::Effort;
 use bravebot_core::event::Event;
 use bravebot_i18n::t;
 use std::time::{Duration, Instant};
@@ -633,6 +634,12 @@ pub struct Session {
     /// Read from `~/.bravebot` at startup and rewritten when `/model` picks one, so the choice outlives
     /// the session that made it and applies in every directory.
     model: Option<String>,
+    /// How hard to think, or `None` to leave the service its own default.
+    ///
+    /// Read from `~/.bravebot` at startup and rewritten when `/effort` picks one, the same as the
+    /// model: how hard to think is a preference about the work rather than a property of a
+    /// checkout.
+    effort: Option<Effort>,
     /// Which offered command is under the cursor while one is being typed.
     ///
     /// An index into what [`Session::offered`] returns for the current input rather than a copy of
@@ -714,6 +721,7 @@ impl Session {
             said: Vec::new(),
             started: None,
             model: None,
+            effort: None,
             completion: 0,
             workspace: std::path::PathBuf::new(),
             attached: Vec::new(),
@@ -757,6 +765,7 @@ impl Session {
     pub fn with_stored_history(mut self) -> Self {
         self.history = crate::history::History::from_entries(crate::store::load_history());
         self.model = crate::store::load_model();
+        self.effort = crate::store::load_effort();
         self.persist = true;
         self
     }
@@ -776,6 +785,23 @@ impl Session {
             crate::store::save_model(&model);
         }
         self.model = Some(model);
+    }
+
+    /// How hard to think, or `None` to leave the service its own default.
+    pub fn effort(&self) -> Option<Effort> {
+        self.effort
+    }
+
+    /// Record the level the user picked, keeping it for later sessions.
+    ///
+    /// `None` is a choice too: it puts the session back to sending no level at all, which is what
+    /// somebody who has never picked one is already doing. Written through to disk only for a
+    /// session that persists, the same rule the model follows and for the same reason.
+    pub fn choose_effort(&mut self, effort: Option<Effort>) {
+        if self.persist {
+            crate::store::save_effort(effort);
+        }
+        self.effort = effort;
     }
 
     /// How long the turn in flight has been running, or zero when idle.

@@ -304,6 +304,27 @@ indistinguishable from a session that was lost, and the way to reach an older on
 `verified-by: bravebot_tui::sessions::a_list_with_nothing_continuable_in_it_offers_nothing`
 `verified-by: bravebot_tui::sessions::the_session_continued_is_the_one_written_here`
 
+<a id="SESSION-15"></a>
+### SESSION-15: the effort level is stored globally, like the model
+
+How hard the model is asked to think is written under `~/.bravebot` and read back at the next
+start. It is not a property of a checkout: the same choice applies in every directory, and a blank
+file, or one naming a level this program does not define, is no choice at all, leaving the request
+to carry none. Asking for no level removes the record rather than writing an empty one, so somebody
+who unsets it is back where they were before they ever chose.
+
+**Why.** Asking again in every project for the same preference is answering it repeatedly, and
+nothing about how hard to think depends on which files are open. Refusing to store a word this
+program does not define is what keeps an edited file from putting an unrecognised level into a
+request field.
+
+`verified-by: bravebot_tui::persist::a_chosen_effort_is_read_back_next_session`
+`verified-by: bravebot_tui::persist::asking_for_no_effort_is_read_back_as_no_choice`
+`verified-by: bravebot_tui::store::a_stored_effort_is_read_back_without_its_newline`
+`verified-by: bravebot_tui::store::a_file_naming_no_level_is_not_a_choice`
+`verified-by: bravebot_tui::store::only_the_first_effort_line_is_read`
+
+
 ## Known costs
 
 - **Two working directories can share a session store.** The directory name is derived by mapping

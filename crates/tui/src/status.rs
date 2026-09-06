@@ -66,6 +66,9 @@ pub struct Facts<'a> {
     pub directory: &'a Path,
     pub added_directories: &'a [std::path::PathBuf],
     pub model: Option<&'a str>,
+    /// How hard the model is asked to think, or `None` where nothing is asked and the service
+    /// applies its own default.
+    pub effort: Option<bravebot_aichat::protocol::Effort>,
     /// What the server reported using on the last turn, or `None` before one has run.
     ///
     /// Observed rather than configured, which is the whole point: the endpoint answers a model name
@@ -155,6 +158,15 @@ pub fn report(facts: &Facts<'_>) -> Report {
     }) {
         lines.push(Line::new(t!(status_served), served).with_note(t!(status_served_instead)));
     }
+
+    // Beside the model, because the two together are what a turn costs: the same question asked of
+    // the same model bills differently at either end of this range.
+    lines.push(match facts.effort {
+        Some(level) => {
+            Line::new(t!(status_effort), level.as_str()).with_note(t!(status_effort_chosen))
+        }
+        None => Line::new(t!(status_effort), t!(effort_unset)).with_note(t!(status_effort_default)),
+    });
 
     lines.push(Line::new(t!(status_theme), facts.theme).with_note(t!(status_theme_chosen)));
 
@@ -386,6 +398,7 @@ mod tests {
             directory: Path::new("/tmp/project"),
             added_directories: &[],
             model: None,
+            effort: None,
             // Nothing observed, which is what a session looks like before its first turn. Tests
             // about the tier and the served model set these themselves.
             served_model: None,
@@ -681,6 +694,27 @@ mod tests {
         let shown = rendered(&report(&chosen));
         assert!(shown.contains("claude-3-sonnet"), "{shown}");
         assert!(shown.contains("chosen with /model"), "{shown}");
+    }
+
+    /// The level is half of what a turn costs, and a session cannot say what it is spending if the
+    /// panel reports the model without it.
+    #[test]
+    fn the_effort_says_whether_it_was_chosen() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+
+        let shown = rendered(&report(&facts(&config, &trust)));
+        assert!(shown.contains("Effort"), "{shown}");
+        assert!(
+            shown.contains("whatever the service does on its own"),
+            "{shown}"
+        );
+
+        let mut chosen = facts(&config, &trust);
+        chosen.effort = Some(bravebot_aichat::protocol::Effort::Xhigh);
+        let shown = rendered(&report(&chosen));
+        assert!(shown.contains("xhigh"), "{shown}");
+        assert!(shown.contains("chosen with /effort"), "{shown}");
     }
 
     /// The markings a write recorded are the part nothing else reports: a poisoned file is otherwise
