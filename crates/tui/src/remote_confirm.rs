@@ -22,7 +22,9 @@
 use bravebot_agent::confirm::{
     Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
-use bravebot_agent::report::{Activity, DelegateId, Delegation, Landing, Phase, Reporter, Shown};
+use bravebot_agent::report::{
+    Activity, DelegateId, Delegation, Landing, Phase, Reported, Reporter, Shown,
+};
 use bravebot_core::ask::{Answer, Asking};
 use bravebot_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
@@ -112,11 +114,12 @@ pub enum ToMain {
     Interjected(String),
     /// A delegate has begun. No reply.
     DelegateStarted(Delegation),
-    /// One delegate has finished, with what the turn was told. No reply.
+    /// One delegate has finished, with what the turn was told and what it reported. No reply.
     DelegateFinished {
         id: DelegateId,
         note: String,
         failed: bool,
+        reported: Option<Reported>,
     },
     /// Whose work the reports that follow are: one delegate, or the turn itself. No reply.
     ///
@@ -282,10 +285,19 @@ impl Reporter for RemoteReporter {
         let _ = self.outbound.send(ToMain::DelegateStarted(delegation));
     }
 
-    fn delegate_finished(&mut self, id: DelegateId, note: String, failed: bool) {
-        let _ = self
-            .outbound
-            .send(ToMain::DelegateFinished { id, note, failed });
+    fn delegate_finished(
+        &mut self,
+        id: DelegateId,
+        note: String,
+        failed: bool,
+        reported: Option<Reported>,
+    ) {
+        let _ = self.outbound.send(ToMain::DelegateFinished {
+            id,
+            note,
+            failed,
+            reported,
+        });
     }
 }
 

@@ -221,6 +221,20 @@ pub struct Shown {
     pub lines: usize,
 }
 
+/// What a delegate handed back, in the shape the person may read it.
+///
+/// Which of the two it is was settled by the gate that decided what the planner got, and not
+/// here. A delegate whose own context stayed trusted hands back words, and the person may read
+/// exactly what the planner reads; one that met something untrusted hands the planner a reference,
+/// and the words are released for a screen and nowhere else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reported {
+    /// The words, as the planner has them.
+    Said(String),
+    /// Kept from the planner, and drawn in the marked block every quarantined thing is drawn in.
+    Kept(Shown),
+}
+
 /// Where a tool's result went, which is the thing a person cannot otherwise tell.
 ///
 /// "Read(index.html)" says nothing about whether the model can now read that file, and the
@@ -400,11 +414,22 @@ pub trait Reporter {
     /// A delegate has begun.
     fn delegate_started(&mut self, _delegation: Delegation) {}
 
-    /// One delegate has finished, with the words the turn is told about it.
+    /// One delegate has finished, with the words the turn is told about it and what it reported.
     ///
     /// Named rather than paired by position: several run at once, so the one that finishes first
     /// is not the one that started first.
-    fn delegate_finished(&mut self, _delegate: DelegateId, _note: String, _failed: bool) {}
+    ///
+    /// The note is the driver's own sentence, and the report is the delegate's. They are separate
+    /// because they answer different questions: how the run ended, and what it found. A delegate
+    /// that could not finish reported nothing, so it carries no report.
+    fn delegate_finished(
+        &mut self,
+        _delegate: DelegateId,
+        _note: String,
+        _failed: bool,
+        _reported: Option<Reported>,
+    ) {
+    }
 }
 
 /// Discards every report.
@@ -448,6 +473,8 @@ pub struct RecordingReporter {
     pub delegated: Vec<Delegation>,
     /// How each delegate ended, in the order they finished.
     pub delegates_finished: Vec<(DelegateId, String, bool)>,
+    /// What each delegate reported, in the order they finished.
+    pub delegates_reported: Vec<(DelegateId, Option<Reported>)>,
     /// Whose work the reports that follow belong to.
     pub attributed_to: Option<DelegateId>,
 }
@@ -505,8 +532,15 @@ impl Reporter for RecordingReporter {
         self.delegated.push(delegation);
     }
 
-    fn delegate_finished(&mut self, delegate: DelegateId, note: String, failed: bool) {
+    fn delegate_finished(
+        &mut self,
+        delegate: DelegateId,
+        note: String,
+        failed: bool,
+        reported: Option<Reported>,
+    ) {
         self.delegates_finished.push((delegate, note, failed));
+        self.delegates_reported.push((delegate, reported));
     }
 }
 

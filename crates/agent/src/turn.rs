@@ -1089,7 +1089,7 @@ fn collect_delegates<S: Sink, R: Reporter>(
             )),
         };
 
-        let (note, body, failed) = match finished {
+        let (note, body, failed, reported) = match finished {
             Ok(finished) => {
                 // Before anything else, so a person who vouched for the build inside this one is
                 // not asked again by a delegate spawned after it.
@@ -1112,26 +1112,47 @@ fn collect_delegates<S: Sink, R: Reporter>(
                         conversation.quarantine(),
                     )
                     .map_err(|d| TurnError::Precommit(d.to_string()))?;
-                let body = match &presented {
-                    Presentation::Visible(text) => format!(
-                        "{TOOL_BUDGET_SPENT} The {kind} delegate {id} has finished. It \
-                         reported:\n\n{text}"
+                // The person is shown what the delegate concluded, either way. The whole of
+                // what a delegate did ends with it, so a report drawn nowhere leaves somebody
+                // with a round count for work done in a directory they own. Where the planner
+                // was given the words, the person may read the same words; where it was given a
+                // reference, they get the preview every quarantined result is drawn with, which
+                // is the same arrangement as a read the planner may not see.
+                let (body, reported) = match &presented {
+                    Presentation::Visible(text) => (
+                        format!(
+                            "{TOOL_BUDGET_SPENT} The {kind} delegate {id} has finished. It \
+                             reported:\n\n{text}"
+                        ),
+                        crate::report::Reported::Said(text.clone()),
                     ),
-                    Presentation::Quarantined(reference) => format!(
-                        "{TOOL_BUDGET_SPENT} The {kind} delegate {id} has finished. {}",
-                        reference.describe()
-                    ),
+                    Presentation::Quarantined(reference) => {
+                        let shown = preview_for(policy, "delegate", &finished.delegated.report);
+                        (
+                            format!(
+                                "{TOOL_BUDGET_SPENT} The {kind} delegate {id} has finished. {}",
+                                reference.describe()
+                            ),
+                            crate::report::Reported::Kept(crate::report::Shown {
+                                origin: format!("a {kind} delegate"),
+                                reach: crate::report::Reach::NotThePlanner,
+                                label: reference.label.to_string(),
+                                lines: shown.lines,
+                                preview: shown.preview,
+                            }),
+                        )
+                    }
                 };
-                (note, body, false)
+                (note, body, false, Some(reported))
             }
             Err(error) => {
                 let note = format!("error: the delegate could not finish: {error}");
                 let body = format!("{TOOL_BUDGET_SPENT} The delegate {id} did not finish: {error}");
-                (note, body, true)
+                (note, body, true, None)
             }
         };
 
-        reporter.delegate_finished(id, note, failed);
+        reporter.delegate_finished(id, note, failed, reported);
         conversation.push(Message::user(body));
         conversation.observed(policy.context_integrity());
         collected += 1;

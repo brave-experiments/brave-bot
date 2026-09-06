@@ -5,7 +5,7 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use crate::audit::TrailLine;
-use bravebot_agent::report::{Activity, Landing, Phase, Shown};
+use bravebot_agent::report::{Activity, Landing, Phase, Reported, Shown};
 use bravebot_aichat::protocol::Effort;
 use bravebot_core::event::Event;
 use bravebot_i18n::t;
@@ -81,6 +81,13 @@ pub struct Delegate {
     /// What the turn was told when it finished. `None` while it is still working, which is what
     /// tells a delegate that is running from one that answered.
     pub note: Option<String>,
+    /// What it handed back, where it handed back anything. A delegate that could not finish
+    /// reported nothing.
+    ///
+    /// Held apart from the note because the two answer different questions: the note is the
+    /// driver's sentence about how the run ended, and this is the delegate's own about what it
+    /// found. Which shape it takes was settled by the gate that decided what the planner got.
+    pub reported: Option<Reported>,
     /// Whether it ended by failing, so the line saying so can be coloured as such.
     pub failed: bool,
 }
@@ -1222,21 +1229,23 @@ impl Session {
             lines: Vec::new(),
             calls: 0,
             note: None,
+            reported: None,
             failed: false,
         });
         self.transcript.push(entry);
     }
 
-    /// One delegate has finished, with what the turn was told about it.
+    /// One delegate has finished, with what the turn was told about it and what it reported.
     ///
-    /// Its block collapses to that sentence: what it did is behind it and what it concluded is
-    /// the whole of what anybody acts on. Named rather than taken to be whichever was working,
+    /// Its block collapses to those two: what it did is behind it, and what it concluded is the
+    /// whole of what anybody acts on. Named rather than taken to be whichever was working,
     /// because the one that finishes is not the one that started last.
     pub fn delegate_finished(
         &mut self,
         id: bravebot_agent::report::DelegateId,
         note: String,
         failed: bool,
+        reported: Option<Reported>,
     ) {
         if self.attributed_to == Some(id) {
             self.attributed_to = None;
@@ -1245,6 +1254,7 @@ impl Session {
             && let Some(delegate) = self.transcript[at].delegate.as_mut()
         {
             delegate.note = Some(note);
+            delegate.reported = reported;
             delegate.failed = failed;
         }
     }
@@ -3532,7 +3542,7 @@ mod tests {
         fn watching_opens_on_the_delegate_that_is_working() {
             let mut session = Session::new("none");
             let first = spawn(&mut session, "reader", "find the parser");
-            session.delegate_finished(first, "answered".to_string(), false);
+            session.delegate_finished(first, "answered".to_string(), false, None);
             spawn(&mut session, "checker", "run the build");
 
             assert!(
@@ -3656,7 +3666,7 @@ mod tests {
             let id = spawn(&mut session, "reader", "find the parser");
             session.watch();
 
-            session.delegate_finished(id, "found it in state.rs".to_string(), false);
+            session.delegate_finished(id, "found it in state.rs".to_string(), false, None);
             assert_eq!(
                 session.watched().map(|delegate| delegate.kind),
                 Some("reader"),
@@ -3781,6 +3791,7 @@ mod tests {
                 id,
                 "a reader delegate answered after 2 rounds".to_string(),
                 false,
+                None,
             );
 
             let held = session.delegates();
@@ -3798,7 +3809,7 @@ mod tests {
             let mut session = Session::new("none");
             let id = spawn(&mut session, "reader", "find the parser");
             session.reporting_for(None);
-            session.delegate_finished(id, "answered".to_string(), false);
+            session.delegate_finished(id, "answered".to_string(), false, None);
             session.start_activity(Activity::running("Read", "afterwards.rs"));
 
             assert!(

@@ -91,15 +91,24 @@ delegate runs as long as a turn does, and this is held in memory for a person wh
 <a id="WATCH-5"></a>
 ### WATCH-5: a delegate that has finished collapses to what the turn was told
 
-Its block ends on that sentence and stops drawing the work behind it. The work is still there to
-be opened.
+Its block ends on the driver's sentence about how the run ended and the report the delegate
+answered with, and stops drawing the work behind it. The work is still there to be opened. A
+delegate that could not finish answered nothing, so its block carries the sentence alone.
 
 **Why.** What anybody acts on is the conclusion, and a block that stops without saying how it
 ended leaves a reader looking at a last tool call, unable to tell an answer from a failure.
 Several blocks left open at their last command also spend rows on work that is over.
 
+The sentence alone is not the conclusion. Everything a delegate read and ran ends with it, so the
+report is the only thing on the screen that says what the run was for: a delegate asked to pick a
+file says which one there and nowhere else, and a round count in its place leaves a person with a
+number for work done in a directory they own.
+
 `verified-by: bravebot_tui::state::what_a_delegate_ended_with_closes_its_block`
 `verified-by: bravebot_tui::render::a_finished_delegate_collapses_to_what_the_turn_was_told`
+`verified-by: bravebot_tui::render::a_finished_delegate_says_what_it_reported`
+`verified-by: bravebot_tui::render::a_delegate_that_could_not_finish_reports_nothing`
+`verified-by: bravebot_agent::turn::what_a_delegate_reported_reaches_the_person_watching`
 
 <a id="WATCH-6"></a>
 ### WATCH-6: a reply a delegate is writing is drawn nowhere
@@ -141,7 +150,7 @@ get out of.
 ### WATCH-8: a delegate's view opens on what it was asked and closes on what it answered
 
 What is drawn is the delegate's work and none of the turn's. What it was asked to do stands above
-its lines, and the sentence the turn was told closes them.
+its lines, and the sentence the turn was told closes them, with the report under it.
 
 `n` and `p` move between delegates without going back to the list, and stop at each end rather
 than wrapping. Coming out puts the turn's own view back where it was left.
@@ -157,6 +166,7 @@ at the last one and know that it is the last.
 `verified-by: bravebot_tui::state::the_turns_view_is_not_dragged_by_reading_through_a_delegate`
 `verified-by: bravebot_tui::render::a_delegates_view_draws_its_own_lines_and_not_the_turns`
 `verified-by: bravebot_tui::render::a_finished_delegates_view_ends_on_what_the_turn_was_told`
+`verified-by: bravebot_tui::render::a_delegates_view_ends_on_what_it_reported`
 `verified-by: bravebot_tui::render::a_delegates_view_does_not_open_on_the_mark`
 `verified-by: bravebot_tui::app::n_and_p_move_between_delegates`
 
@@ -237,6 +247,20 @@ record read back into a later turn is such a route, which is why nothing here is
 `verified-by: bravebot_tui::state::clearing_closes_the_view_over_a_delegate`
 `verified-by: by-construction (a session's record is built from the conversation, which holds the turn's messages; a delegate's lines are held only by the interface and nothing writes them)`
 
+<a id="WATCH-13"></a>
+### WATCH-13: a report the planner may not read is drawn in the marked block
+
+Where a delegate's own context met something untrusted, the planner is handed a reference and the
+person is shown a preview of the words, in the same margin-marked block every quarantined result
+is drawn in. Where the planner was given the words, the person is shown the same words, unmarked.
+
+**Why.** Which of the two a report is was settled by the gate that decided what the planner got,
+and the drawing says which happened rather than deciding it. Marking a report the planner read
+would claim a confinement that is not there; drawing an unread one plain would hide one that is.
+
+`verified-by: bravebot_tui::render::a_report_the_planner_may_not_read_is_marked_where_it_is_drawn`
+`verified-by: bravebot_agent::turn::what_a_delegate_reported_reaches_the_person_watching`
+
 ## Known costs
 
 - **A delegate that runs long enough loses its oldest work.** Several hundred calls in, the start
@@ -247,6 +271,11 @@ record read back into a later turn is such a route, which is why nothing here is
 - **A delegate cannot be seen after the session that started it.** The record holds the
   conversation, and a delegate's exchange is deliberately not in it, so resuming brings back the
   report and none of the work behind it.
+
+- **A long report takes the rows it needs.** The block draws the whole of what a delegate
+  answered, so a delegate that reports several paragraphs takes several paragraphs of the turn's
+  own sequence. Capping it would cut the conclusion, which is the one part of a delegate nobody
+  can get back any other way.
 
 - **The view says what a delegate is doing and not how it is going.** One row changes several
   times a second while a delegate works, and nothing on the screen says whether those calls are

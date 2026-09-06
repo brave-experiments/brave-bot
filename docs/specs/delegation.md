@@ -157,6 +157,7 @@ Nothing is relabelled, and nothing is trusted on a delegate's say-so. The label 
 own context earned.
 
 `verified-by: bravebot_agent::turn::a_delegates_report_reaches_the_planner_that_asked_for_it`
+`verified-by: bravebot_agent::turn::what_a_delegate_reported_reaches_the_person_watching`
 
 <a id="DELEGATE-9"></a>
 ### DELEGATE-9: nothing but the report crosses back
