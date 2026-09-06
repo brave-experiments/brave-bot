@@ -210,7 +210,7 @@ fn draw(frame: &mut Frame, picker: &Picker) {
     // Drawn empty rather than skipped when the cursor is on a theme with nothing to add, so the
     // list does not shift under the cursor as it moves. Indented like the key line rather than like
     // a name, so a sentence under the list does not read as another theme to pick.
-    let hint = picker.chosen().and_then(|theme| theme::hint(&theme.name));
+    let hint = picker.chosen().and_then(theme::hint);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             hint.map(|hint| format!(" {hint}")).unwrap_or_default(),
@@ -390,6 +390,14 @@ mod tests {
     #[test]
     fn the_terminal_following_theme_says_so_under_the_list() {
         let output = rendered(&Picker::new(offered(), theme::BRAVE));
+        assert!(output.contains("follows your terminal"), "{output}");
+    }
+
+    /// The row stopped being about one theme once a family could follow the terminal too, and a
+    /// person on the `gruvbox` row has the same question the `brave` row answers.
+    #[test]
+    fn a_family_that_follows_the_terminal_says_so_under_the_list() {
+        let output = rendered(&Picker::new(theme::listed("gruvbox"), "gruvbox"));
         assert!(output.contains("follows your terminal"), "{output}");
     }
 

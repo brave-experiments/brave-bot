@@ -57,11 +57,11 @@ fn canonical(name: &str) -> &str {
 
 /// What a theme does that its name does not say, drawn under the list in `/theme`.
 ///
-/// Only `brave` has one, because it is the only theme whose inks depend on the terminal: the named
-/// slots are left to it, and brand primary is picked for the background sensed at startup. Every
-/// other theme is the same table of shades wherever it is opened, which its name already implies.
-pub fn hint(name: &str) -> Option<&'static str> {
-    (canonical(name) == BRAVE).then_some(t!(theme_follows_terminal))
+/// Whether the inks came from the background sensed at startup is the one property no name on the
+/// list carries: `brave` names who it is from, and a family names a scheme without saying it has
+/// two halves. Everything else about a theme is the same table of shades wherever it is opened.
+pub fn hint(theme: &Theme) -> Option<&'static str> {
+    theme.adapts.then_some(t!(theme_follows_terminal))
 }
 
 /// Every semantic ink the interface draws itself in.
