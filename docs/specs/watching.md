@@ -132,11 +132,21 @@ working, or the most recent where none is.
 
 Where the session has spawned none the key does nothing at all.
 
+The list is a panel over the session, sized to the delegates it holds and never to the screen, and
+the transcript stays drawn behind it. A delegate's own lines take the screen. Where there are more
+delegates than the panel is tall, the rows drawn are the ones around the highlight.
+
 **Why.** Which delegate is the question a person has when several are going, and a mode that
 opened straight into one of them answers a question they did not ask. A list of one is a row to
 press through to reach the only thing behind it. A mode that opens on an empty screen is worse
 than a key that does not answer: it puts somebody somewhere, with nothing to read and something to
 get out of.
+
+The two are different shapes because they are read differently. The list is a question with a
+handful of answers, read once, and the transcript behind it is what somebody picking one is
+reading: taking the screen for it makes choosing between two delegates cost the whole of what led
+up to them. A delegate's own lines are a transcript, scrolled and read for as long as the run
+lasts, and a panel is the wrong container for that.
 
 `verified-by: bravebot_tui::app::ctrl_l_watches_the_delegate_that_is_working`
 `verified-by: bravebot_tui::app::ctrl_l_does_nothing_where_no_delegate_has_run`
@@ -145,6 +155,8 @@ get out of.
 `verified-by: bravebot_tui::state::there_is_nothing_to_watch_until_a_delegate_has_run`
 `verified-by: bravebot_tui::state::several_delegates_are_opened_on_the_list_of_them`
 `verified-by: bravebot_tui::state::one_delegate_is_opened_without_a_list_to_pick_from`
+`verified-by: bravebot_tui::render::the_list_stands_over_the_session_rather_than_replacing_it`
+`verified-by: bravebot_tui::render::a_list_taller_than_the_panel_keeps_the_highlighted_row_on_it`
 
 <a id="WATCH-8"></a>
 ### WATCH-8: a delegate's view opens on what it was asked and closes on what it answered
@@ -173,7 +185,8 @@ at the last one and know that it is the last.
 <a id="WATCH-9"></a>
 ### WATCH-9: the view takes every key, and the way out is read against the nearest level
 
-Nothing falls through to the input box, and the box is not drawn. `q` and Escape go back to the
+Nothing falls through to the input box, and the box is not drawn, behind the list's panel or
+anywhere else. `q` and Escape go back to the
 list from a delegate, and close the mode from the list or where there is no list behind it.
 Ctrl-L and Ctrl-C close it from either level and do nothing else: the turn in flight goes on, and
 the press that reaches it is the next one.
@@ -212,6 +225,9 @@ answered or did not finish, and names the way out. Nothing a model wrote is quot
 delegate was asked stands above the lines, where the conventions for drawing content apply. The
 position and the keys for moving between delegates appear only where there is more than one.
 
+The list carries its own title and its own key row, and fills the row that would open edge to
+edge rather than marking it.
+
 While a delegate is working, the row saying what the turn is doing names the key. Once the session
 has spawned any, the hint line names it and says how many there are. The key is in the shortcut
 list.
@@ -225,6 +241,7 @@ because a key with nothing behind it does nothing, and that line is read at a gl
 `verified-by: bravebot_tui::render::the_footer_says_which_delegate_this_is_and_whether_it_is_working`
 `verified-by: bravebot_tui::render::one_delegate_is_given_no_position_and_no_key_for_moving`
 `verified-by: bravebot_tui::render::the_list_names_every_delegate_and_what_each_was_asked`
+`verified-by: bravebot_tui::render::the_row_that_would_open_is_filled_edge_to_edge`
 `verified-by: bravebot_tui::render::a_narrow_row_keeps_the_count_and_loses_the_end_of_the_task`
 `verified-by: bravebot_tui::render::the_indicator_says_which_key_watches_a_delegate_at_work`
 `verified-by: bravebot_tui::render::the_hint_line_names_the_delegate_key_once_one_has_run`

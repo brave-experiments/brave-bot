@@ -16,7 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthChar;
 
 use crate::audit::TrailLine;
@@ -735,48 +735,70 @@ fn draw_watching_footer(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Draw the list of delegates: one row each, and the highlight on the one that would open.
+/// Draw the list of delegates: a panel over the session, and the highlight on the one that would
+/// open.
 ///
 /// Every delegate the session has spawned, in the order they were spawned, whether it is working
 /// or finished. A list that dropped the finished ones would lose exactly the runs somebody comes
 /// looking for after the fact.
+///
+/// A panel rather than the screen, because the list is a question with a handful of answers and
+/// the transcript behind it is what a person picking one is reading. The box is still not drawn
+/// and no key reaches it: what stands behind the panel is the session, not something to type at.
 fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
-    let areas = Layout::default()
+    let laid = draw_transcript(frame, frame.area(), session);
+
+    let delegates = session.delegates();
+    let at = session.watching().map_or(0, |watching| watching.at);
+    let area = delegate_panel(frame.area(), delegates.len());
+    frame.render_widget(Clear, area);
+
+    // The theme's own colours rather than the terminal's, the way every other panel here is
+    // painted. `Clear` only empties the cells, so without this the panel is drawn on whatever the
+    // terminal's default background is and a theme chosen for readability stops applying.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::brand_primary()))
+        .title(Span::styled(
+            format!(" {} ", t!(watching_list_title)),
+            Style::default()
+                .fg(theme::brand_primary())
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(theme::background()).fg(theme::text()));
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+
+    let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // the delegates
-            Constraint::Length(1), // footer
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // keys
         ])
-        .split(frame.area());
+        .split(inside);
 
-    // No title over it. The footer names the mode, the way the scroller's does, and the same word
-    // twice on one screen is a row spent saying what the row below already says.
-    let at = session.watching().map(|watching| watching.at);
-    let width = areas[0].width as usize;
-    let rows: Vec<Line> = session
-        .delegates()
+    // The window follows the highlight, so a session that has spawned more delegates than the
+    // panel is tall still opens on the one the cursor is on.
+    let visible = (layout[0].height as usize).max(1);
+    let first = window_start(delegates.len(), at, visible);
+    let width = layout[0].width as usize;
+    let rows: Vec<Line> = delegates
         .iter()
         .enumerate()
-        .map(|(index, delegate)| delegate_row(delegate, at == Some(index), width))
+        .skip(first)
+        .take(visible)
+        .map(|(index, delegate)| delegate_row(delegate, at == index, width))
         .collect();
-
-    let laid = Laid {
-        width: areas[0].width,
-        height: areas[0].height,
-        rows: rows.len() as u16,
-        ..Laid::default()
-    };
-    frame.render_widget(Paragraph::new(rows), areas[0]);
+    frame.render_widget(Paragraph::new(rows), layout[0]);
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("  {}", t!(watching_list_title)),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(format!("  ·  {}", t!(watching_list_keys)), dim()),
-        ])),
-        areas[1],
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {}", t!(watching_list_keys)),
+            Style::default().fg(theme::muted()),
+        ))),
+        layout[2],
     );
 
     if let Some(selection) = &session.selection {
@@ -786,16 +808,53 @@ fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
     laid
 }
 
+/// A centred panel sized to the delegates, never larger than the terminal.
+///
+/// Sized to what it holds rather than to the screen: a session with two delegates gets a panel
+/// two rows tall, and the transcript behind it stays readable.
+fn delegate_panel(area: Rect, rows: usize) -> Rect {
+    let available = area.width.saturating_sub(4);
+    let width = available.min(76).max(available.min(32));
+    // Borders, the blank above the key row, and the key row.
+    let outside = area.height.saturating_sub(2).max(1);
+    let height = (rows as u16)
+        .saturating_add(4)
+        .min(outside)
+        .max(outside.min(5));
+
+    Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    }
+}
+
+/// Where a window of `visible` rows starts with the cursor inside it.
+fn window_start(rows: usize, cursor: usize, visible: usize) -> usize {
+    if rows <= visible {
+        return 0;
+    }
+    cursor
+        .saturating_sub(visible.saturating_sub(1))
+        .min(rows - visible)
+}
+
 /// One delegate on the list: how it is going, what it is, what it was asked, and how much it has
 /// done.
 ///
 /// The task is on the row because two delegates of the same kind are otherwise identical, and
 /// which one somebody wants is the whole question the list is answering.
+///
+/// The row that would open is filled edge to edge rather than pointed at. A mark beside a short
+/// name reads as decoration on the text; a bar reads as the row being chosen, which is what it is.
 fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'static> {
     /// Wide enough for the longest kind and a two-digit number, so every task starts in one
     /// column and the rows read as a table rather than as a ragged list.
     const NAME_COLUMN: usize = 14;
 
+    // The glyph carries the standing on the bar as well as off it, so the row under the cursor
+    // does not have to spend a colour the highlight has already taken.
     let (mark, colour) = if delegate.is_running() {
         ("●", theme::running())
     } else if delegate.failed {
@@ -804,14 +863,13 @@ fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'s
         ("✓", theme::ok())
     };
 
-    let lead = if highlighted { "▸ " } else { "  " };
     let name = format!("{} {}", delegate.kind, delegate.id);
     let calls = t!(watching_calls, count = delegate.calls);
 
     // The task takes whatever the row has left, so a narrow terminal loses the end of a sentence
     // rather than the count saying how much the run has done. Padded as well as cut, so the
     // counts line up down the right edge and read as a column.
-    let spent = lead.chars().count() + 2 + NAME_COLUMN + calls.chars().count() + 4;
+    let spent = 4 + NAME_COLUMN + calls.chars().count() + 4;
     let room = width.saturating_sub(spent);
     let task = one_line(&delegate.task);
     let task = if task.chars().count() > room {
@@ -824,18 +882,27 @@ fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'s
         task + &" ".repeat(padding)
     };
 
-    let style = if highlighted {
-        Style::default().add_modifier(Modifier::BOLD)
+    let (mark_style, name_style, detail) = if highlighted {
+        let on_bar = Style::default().fg(theme::on_primary());
+        (on_bar, on_bar.add_modifier(Modifier::BOLD), on_bar)
     } else {
-        Style::default()
+        (
+            Style::default().fg(colour),
+            Style::default().fg(theme::text()),
+            dim(),
+        )
     };
 
-    Line::from(vec![
-        Span::styled(format!("{lead}{mark} "), Style::default().fg(colour)),
-        Span::styled(format!("{name:<NAME_COLUMN$}"), style),
-        Span::styled(format!("{task}  "), dim()),
-        Span::styled(calls, dim()),
-    ])
+    let line = Line::from(vec![
+        Span::styled(format!("  {mark} "), mark_style),
+        Span::styled(format!("{name:<NAME_COLUMN$}"), name_style),
+        Span::styled(format!("{task}  "), detail),
+        Span::styled(calls, detail),
+    ]);
+    match highlighted {
+        true => line.style(Style::default().bg(theme::brand_primary())),
+        false => line,
+    }
 }
 
 /// Draw the history search: the transcript, and the list of prompts where the box was.
@@ -2319,6 +2386,29 @@ mod tests {
         use crate::state::Entry;
         use bravebot_agent::report::{DelegateId, Delegation};
 
+        /// The panel's own rows, read off the screen by position.
+        ///
+        /// So an assertion about the list is not answered by the transcript standing behind it:
+        /// a delegate's block there names the same task the row does.
+        fn listed(session: &Session, width: u16, height: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    draw(frame, session);
+                })
+                .expect("draw succeeds");
+            let buffer = terminal.backend().buffer().clone();
+            (0..height)
+                .map(|row| {
+                    (0..width)
+                        .map(|column| buffer[(column, row)].symbol())
+                        .collect::<String>()
+                })
+                .filter(|row| row.contains('│'))
+                .collect::<Vec<String>>()
+                .join("\n")
+        }
+
         /// A delegate beginning, numbered the way the driver numbers them.
         fn spawn(session: &mut Session, kind: &'static str, task: &str) -> DelegateId {
             let id = DelegateId::nth(session.delegates().len() as u32 + 1);
@@ -2490,10 +2580,99 @@ mod tests {
             spawn(&mut session, "reader", "COUNT-THE-CALLERS");
             session.watch();
 
+            assert!(session.listing_delegates());
+            let rows = listed(&session, 90, 24);
+            assert!(rows.contains("FIND-THE-PARSER"), "{rows}");
+            assert!(rows.contains("COUNT-THE-CALLERS"), "{rows}");
+        }
+
+        /// The list is a question with a handful of answers, and the transcript is what somebody
+        /// picking one is reading. A list that took the screen made choosing between two
+        /// delegates cost the whole of what led up to them.
+        #[test]
+        fn the_list_stands_over_the_session_rather_than_replacing_it() {
+            let mut session = Session::new("kernel-enforced");
+            session.note("PECULIAR-THING-THE-TURN-SAID");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+
             let screen = rendered(&session);
             assert!(session.listing_delegates());
-            assert!(screen.contains("FIND-THE-PARSER"), "{screen}");
-            assert!(screen.contains("COUNT-THE-CALLERS"), "{screen}");
+            assert!(
+                screen.contains("PECULIAR-THING-THE-TURN-SAID"),
+                "the list took the session's own view with it: {screen}"
+            );
+            assert!(
+                screen.contains(&t!(watching_list_title).to_string()),
+                "the panel was not drawn: {screen}"
+            );
+        }
+
+        /// The panel is sized to what it holds, so a session that spawned more delegates than it
+        /// is tall has rows it cannot draw. The one the cursor is on is the one row that must be
+        /// among them, or the highlight is somewhere nobody can see.
+        #[test]
+        fn a_list_taller_than_the_panel_keeps_the_highlighted_row_on_it() {
+            let mut session = Session::new("kernel-enforced");
+            for at in 0..12 {
+                spawn(&mut session, "reader", &format!("TASK-NUMBER-{at}"));
+            }
+            session.watch();
+            for _ in 0..11 {
+                session.watch_next();
+            }
+
+            let rows = listed(&session, 90, 12);
+            assert!(
+                rows.contains("TASK-NUMBER-11"),
+                "the delegate under the cursor was drawn off the panel: {rows}"
+            );
+        }
+
+        /// A mark beside a short name reads as decoration on the text. A filled row reads as the
+        /// row being chosen, which is the whole question the list is asking.
+        #[test]
+        fn the_row_that_would_open_is_filled_edge_to_edge() {
+            let _held = theme::exclusive();
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+            session.watch_previous();
+
+            let mut terminal = Terminal::new(TestBackend::new(90, 24)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    draw(frame, &session);
+                })
+                .expect("draw succeeds");
+            let buffer = terminal.backend().buffer().clone();
+
+            let filled: Vec<u16> = (0..24)
+                .filter(|row| {
+                    (0..90).any(|column| buffer[(column, *row)].bg == theme::brand_primary())
+                })
+                .collect();
+            assert_eq!(
+                filled.len(),
+                1,
+                "exactly one row is the one that would open, and {} were filled",
+                filled.len()
+            );
+
+            // Edge to edge inside the panel, so a short task does not leave the bar stopping
+            // where the words do.
+            let row = filled[0];
+            let bar: Vec<u16> = (0..90)
+                .filter(|column| buffer[(*column, row)].bg == theme::brand_primary())
+                .collect();
+            let width = bar.last().expect("a filled row") - bar[0] + 1;
+            assert_eq!(
+                width as usize,
+                bar.len(),
+                "the fill has holes in it rather than running the width of the row"
+            );
         }
 
         /// The row is built by taking the count off the width and giving a task the rest, which is
@@ -2510,14 +2689,14 @@ mod tests {
             spawn(&mut session, "checker", "run the build");
             session.watch();
 
-            let screen = rendered_at(&session, 44, 10);
+            let rows = listed(&session, 44, 10);
             assert!(
-                screen.contains("call"),
-                "the count was lost to the task: {screen}"
+                rows.contains("call"),
+                "the count was lost to the task: {rows}"
             );
             assert!(
-                !screen.contains("who calls it"),
-                "the task was drawn past the edge of the row: {screen}"
+                !rows.contains("who calls it"),
+                "the task was drawn past the edge of the row: {rows}"
             );
         }
 
