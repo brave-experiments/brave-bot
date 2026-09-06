@@ -9154,6 +9154,54 @@ fn two_delegates_work_at_the_same_time() {
     );
 }
 
+/// A delegate that could not finish is reported as having failed, not as having answered. The
+/// line is the only thing telling a person their question was never answered, and one drawn the
+/// way a report is drawn says the opposite of what happened.
+#[test]
+fn a_delegate_that_could_not_finish_is_reported_as_a_failure() {
+    let scratch = Scratch::new("delegate-fails");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // Nothing answers the delegate, so its own first request fails and its run ends with it.
+    let (endpoint, _received) = serve_by_marker(vec![(
+        "ASK-FOR-THE-IMPOSSIBLE",
+        vec![
+            tool_request(
+                "spawn_agent",
+                r#"{"kind":"reader","task":"NOBODY-ANSWERS-THIS"}"#,
+            ),
+            reply_with("waiting"),
+            // The round the turn is given once it has been told the delegate failed.
+            reply_with("it could not be done"),
+        ],
+    )]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("ASK-FOR-THE-IMPOSSIBLE"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn survives a delegate that did not");
+
+    assert!(
+        reporter
+            .position("delegate d1 finished failed=true")
+            .is_some(),
+        "a delegate that never answered was reported as though it had: {:?}",
+        reporter.lines()
+    );
+}
+
 /// A turn does not end while something it started is still working. The person is told the turn
 /// is over, and a delegate still running is still reading their files and still able to ask them
 /// to approve a write, which is a turn that ended in name only.
