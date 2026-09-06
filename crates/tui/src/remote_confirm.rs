@@ -22,7 +22,7 @@
 use bravebot_agent::confirm::{
     Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
-use bravebot_agent::report::{Activity, Landing, Phase, Reporter, Shown};
+use bravebot_agent::report::{Activity, DelegateId, Delegation, Landing, Phase, Reporter, Shown};
 use bravebot_core::ask::{Answer, Asking};
 use bravebot_core::todo::Row;
 use std::sync::mpsc::{Receiver, Sender};
@@ -110,6 +110,19 @@ pub enum ToMain {
     Landed(Landing),
     /// A prompt the person typed mid-turn has reached the planner. No reply.
     Interjected(String),
+    /// A delegate has begun. No reply.
+    DelegateStarted(Delegation),
+    /// One delegate has finished, with what the turn was told. No reply.
+    DelegateFinished {
+        id: DelegateId,
+        note: String,
+        failed: bool,
+    },
+    /// Whose work the reports that follow are: one delegate, or the turn itself. No reply.
+    ///
+    /// Sent before each report rather than worked out at the other end. Several runs report at
+    /// once, so the order lines arrive in says nothing about whose they are.
+    ReportingFor(Option<DelegateId>),
 }
 
 /// What the main thread sends back, tagged with what it answers.
@@ -259,6 +272,20 @@ impl Reporter for RemoteReporter {
 
     fn interjected(&mut self, said: String) {
         let _ = self.outbound.send(ToMain::Interjected(said));
+    }
+
+    fn reporting_for(&mut self, delegate: Option<DelegateId>) {
+        let _ = self.outbound.send(ToMain::ReportingFor(delegate));
+    }
+
+    fn delegate_started(&mut self, delegation: Delegation) {
+        let _ = self.outbound.send(ToMain::DelegateStarted(delegation));
+    }
+
+    fn delegate_finished(&mut self, id: DelegateId, note: String, failed: bool) {
+        let _ = self
+            .outbound
+            .send(ToMain::DelegateFinished { id, note, failed });
     }
 }
 
@@ -592,6 +619,9 @@ mod tests {
                     ToMain::Quarantined(_) => seen.push("quarantined"),
                     ToMain::Landed(_) => seen.push("landed"),
                     ToMain::Interjected(_) => seen.push("interjected"),
+                    ToMain::DelegateStarted(_) => seen.push("delegate started"),
+                    ToMain::DelegateFinished { .. } => seen.push("delegate finished"),
+                    ToMain::ReportingFor(_) => seen.push("reporting for"),
                     ToMain::Write(_) => {
                         seen.push("write");
                         answer_tx

@@ -636,3 +636,6 @@ landed-reserved = lu par rien : seul son nom est connu
 reach-not-the-planner =
     pas dans le contexte du planificateur ; un processeur peut être envoyé le lire
 reach-no-model = dans le contexte d'aucun modèle : rien ne peut être envoyé lire ceci
+
+# How many calls a delegate has made, where its block shows only the last few.
+delegate-more-calls = { $count } appels jusqu'ici

@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::audit::TrailLine;
 use crate::logo;
 use crate::markdown;
-use crate::state::{Laid, Session, Speaker, Status};
+use crate::state::{Delegate, Laid, Session, Speaker, Status};
 use crate::table;
 use crate::theme;
 use crate::wrap;
@@ -228,6 +228,87 @@ fn split_at_width(text: &str, width: usize) -> (String, String) {
 ///
 /// The shape mirrors a turn's own: a marker, then the detail indented beneath it, so a call
 /// and its result read as one thing rather than two unrelated lines.
+/// One delegate, with the last of its own work under it.
+///
+/// The block is a live view of something working rather than a second transcript. While it runs
+/// it shows what it is doing now, and when it finishes it collapses to the sentence the turn was
+/// told: what it read and what it ran ended with it, which is the whole point of delegating.
+///
+/// The task is drawn because it is the only thing telling two delegates of the same kind apart.
+/// It is what the planner wrote, released for a screen exactly as the target of any call is, and
+/// nothing here reads it.
+fn delegate_lines(delegate: &Delegate, width: usize) -> Vec<Line<'static>> {
+    let head = if delegate.is_running() {
+        Style::default().fg(theme::running())
+    } else if delegate.failed {
+        Style::default().fg(theme::fail())
+    } else {
+        Style::default().fg(theme::ok())
+    };
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{TURN_MARKER} "), head),
+        Span::styled(
+            format!("{} delegate", delegate.kind),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {}", one_line(&delegate.task)), dim()),
+    ])];
+
+    match &delegate.note {
+        // Finished, so the sentence it ended on is the block. Its own lines are behind it, and
+        // what anybody acts on is what it concluded.
+        Some(note) => lines.push(Line::from(Span::styled(
+            format!("  {DETAIL_MARKER} {}", one_line(note)),
+            if delegate.failed {
+                Style::default().fg(theme::fail())
+            } else {
+                dim()
+            },
+        ))),
+        // Still working, so what it is doing now, indented under it. Indented rather than drawn
+        // flat, because several delegates and the turn all report at once and the indent is what
+        // says which of them a row belongs to.
+        None => {
+            for entry in &delegate.lines {
+                if let Some(activity) = &entry.activity {
+                    for line in activity_lines(activity, entry.landing, width.saturating_sub(2)) {
+                        lines.push(indented(line));
+                    }
+                }
+            }
+            // Said only where there were more than are drawn, since "3 calls" over three rows is
+            // a row spent saying what the reader can already see.
+            if delegate.calls > delegate.lines.len() {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {DETAIL_MARKER} {}",
+                        t!(delegate_more_calls, count = delegate.calls)
+                    ),
+                    dim(),
+                )));
+            }
+        }
+    }
+
+    lines
+}
+
+/// Move a line two columns right, so it reads as belonging to the block above it.
+fn indented(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
+/// The first line of something, for a place with one row to spend on it.
+///
+/// A task is a paragraph and a report is several sentences, and either drawn whole would push the
+/// rest of the screen out of the way.
+fn one_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().trim().to_string()
+}
+
 fn activity_lines(
     activity: &Activity,
     landing: Option<Landing>,
@@ -822,6 +903,13 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
             Speaker::Output => {
                 for text in entry.text.lines() {
                     lines.push(Line::from(Span::raw(format!("  {}", printable(text)))));
+                }
+            }
+            // A delegate the turn started, with its own work under it rather than mixed into
+            // the turn's. Several run at once, so interleaved neither sequence could be read.
+            Speaker::Delegate => {
+                if let Some(delegate) = &entry.delegate {
+                    lines.extend(delegate_lines(delegate, width as usize));
                 }
             }
             // What the turn did, kept in the scrollback next to what it said about it.
@@ -1861,6 +1949,86 @@ mod tests {
     use bravebot_core::label::Label;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    mod delegates {
+        use super::*;
+        use bravebot_agent::report::{DelegateId, Delegation};
+
+        /// A delegate beginning, numbered the way the driver numbers them.
+        fn spawn(session: &mut Session, kind: &'static str, task: &str) -> DelegateId {
+            let id = DelegateId::nth(session.delegates().len() as u32 + 1);
+            session.delegate_started(Delegation {
+                id,
+                kind,
+                task: task.to_string(),
+            });
+            session.reporting_for(Some(id));
+            id
+        }
+
+        /// Everything on one screen is the answer to having several: a person sees what each is
+        /// doing without going anywhere, and the two blocks cannot be confused for each other.
+        #[test]
+        fn every_delegate_is_drawn_with_its_own_work_under_it() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "checker", "run the build");
+            session.start_activity(Activity::running("Run", "cargo test"));
+            spawn(&mut session, "reader", "find the callers");
+            session.start_activity(Activity::running("Read", "state.rs"));
+
+            let screen = rendered(&session);
+            assert!(screen.contains("checker delegate"), "{screen}");
+            assert!(screen.contains("run the build"), "{screen}");
+            assert!(screen.contains("reader delegate"), "{screen}");
+            assert!(screen.contains("find the callers"), "{screen}");
+            assert!(
+                screen.contains("cargo test") && screen.contains("state.rs"),
+                "what the delegates were doing was not drawn: {screen}"
+            );
+        }
+
+        /// Two questions a person watching has: is this still going, and did it get anywhere.
+        /// The last tool line answers neither.
+        #[test]
+        fn a_finished_delegate_collapses_to_what_the_turn_was_told() {
+            let mut session = Session::new("kernel-enforced");
+            let id = spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "PECULIAR-FILE-NAME"));
+            session.delegate_finished(
+                id,
+                "a reader delegate answered after 2 rounds".to_string(),
+                false,
+            );
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("answered after 2 rounds"),
+                "the block does not say how it ended: {screen}"
+            );
+            assert!(
+                !screen.contains("PECULIAR-FILE-NAME"),
+                "a finished delegate is still drawing the work behind it: {screen}"
+            );
+        }
+
+        /// The block shows the last few of many, so a person reading three rows under a delegate
+        /// that has made thirty calls would otherwise be reading it as a delegate doing very
+        /// little.
+        #[test]
+        fn a_delegate_that_has_done_more_than_is_drawn_says_so() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "checker", "run everything");
+            for round in 0..9 {
+                session.start_activity(Activity::running("Run", format!("step {round}")));
+            }
+
+            let screen = rendered(&session);
+            assert!(
+                screen.contains("9 calls"),
+                "the block did not say how much it had done: {screen}"
+            );
+        }
+    }
 
     /// Render into a test backend and return the visible text.
     fn rendered(session: &Session) -> String {

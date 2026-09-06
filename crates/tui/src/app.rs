@@ -2875,6 +2875,17 @@ fn run_turn_animated(
             // them in the order they were sent and this end hands them over in that order, so the
             // oldest is the one that has gone.
             crate::remote_confirm::ToMain::Interjected(_) => session.interjected(),
+            // Whose work the lines that follow are, as the driver said. Nothing here reads a line
+            // to find out: several delegates and the turn report at once.
+            crate::remote_confirm::ToMain::ReportingFor(delegate) => {
+                session.reporting_for(delegate)
+            }
+            crate::remote_confirm::ToMain::DelegateStarted(delegation) => {
+                session.delegate_started(delegation)
+            }
+            crate::remote_confirm::ToMain::DelegateFinished { id, note, failed } => {
+                session.delegate_finished(id, note, failed)
+            }
         });
 
         // The worker dropped its senders, so the turn is over.
