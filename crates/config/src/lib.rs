@@ -262,28 +262,36 @@ impl Config {
     /// lose to it on every binary anybody was given: the key would parse, be reported by `doctor`,
     /// and change nothing outside a source build. An exported variable still outranks it.
     pub fn from_env_and_settings(settings: &Settings) -> Result<Self, ConfigError> {
-        let mut config = Self::from_lookup(|key| match key {
-            env_var::DEFAULT_MODEL => resolve_model(env::var(key).ok(), settings, built_in),
-            _ => resolve(key, env::var(key).ok(), built_in)
-                .or_else(|| settings.get(key).map(str::to_string)),
-        })?;
-        config.providers = settings.providers().to_vec();
-        Ok(config)
+        Self::from_lookup_with_providers(
+            |key| match key {
+                env_var::DEFAULT_MODEL => resolve_model(env::var(key).ok(), settings, built_in),
+                _ => resolve(key, env::var(key).ok(), built_in)
+                    .or_else(|| settings.get(key).map(str::to_string)),
+            },
+            settings.providers().to_vec(),
+        )
     }
 
     /// Read configuration from an arbitrary lookup, so tests need not mutate global
     /// process state.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        Self::from_lookup_with_providers(lookup, Vec::new())
+    }
+
+    /// Providers must be known before validating credentials for the other backends.
+    fn from_lookup_with_providers(
+        lookup: impl Fn(&str) -> Option<String>,
+        providers: Vec<provider::Provider>,
+    ) -> Result<Self, ConfigError> {
         let bedrock = bedrock::Bedrock::from_lookup(&lookup);
 
-        // With Bedrock configured these are not requirements. Insisting on them would mean anyone
-        // pointing the agent at their own AWS account also had to hold Brave service credentials for
-        // a backend they may not be entitled to, and a released binary has them baked in anyway, so
-        // the demand would be satisfied by values nothing goes on to read.
+        // With Bedrock or a gateway configured these are not requirements. A user of another
+        // backend need not hold Brave service credentials as well. Released binaries have them
+        // baked in anyway, so the demand there would be satisfied by values nothing goes on to read.
         //
         // Blank rather than absent is what the rest of this reads to decide whether the Brave roster
         // is offered at all. See [`Config::serves_aichat`].
-        let optional = bedrock.is_some();
+        let optional = bedrock.is_some() || !providers.is_empty();
 
         let required = |name: &'static str| -> Result<String, ConfigError> {
             match lookup(name) {
@@ -298,8 +306,8 @@ impl Config {
         let key_id = required(env_var::KEY_ID)?;
         let endpoint = required(env_var::ENDPOINT)?;
 
-        // A blank endpoint only reaches here when Bedrock is configured, where no aichat URL is
-        // ever built. Checking the scheme of a value nothing will use would refuse a working
+        // A blank endpoint only reaches here when another backend is configured and no aichat URL
+        // is built. Checking the scheme of a value nothing will use would refuse a working
         // configuration over a field it does not have.
         let names_a_scheme = endpoint.starts_with("https://") || endpoint.starts_with("http://");
         if !endpoint.is_empty() && !names_a_scheme {
@@ -368,9 +376,7 @@ impl Config {
 
         Ok(Self {
             bedrock,
-            // A gateway is configured by a block rather than by a variable, so a flat lookup cannot
-            // describe one. Filled in by [`Config::from_env_and_settings`], which has the file.
-            providers: Vec::new(),
+            providers,
             signing_key,
             key_id,
             endpoint: endpoint.trim_end_matches('/').to_string(),
@@ -434,8 +440,8 @@ impl Config {
     /// Whether the Brave backend can be reached at all.
     ///
     /// Every ordinary build can: the credentials are baked in, and a missing one is refused at
-    /// startup. A build from source pointed at Bedrock is the exception, where they are allowed to be
-    /// blank, and offering that roster would list models whose every request fails unsigned.
+    /// startup. A build from source pointed at Bedrock or a gateway is the exception: credentials
+    /// may be blank, and offering that roster would list models whose requests fail unsigned.
     pub fn serves_aichat(&self) -> bool {
         !self.endpoint.is_empty()
             && !self.key_id.is_empty()
@@ -704,13 +710,135 @@ mod tests {
                 "models": {"z-ai/glm-4.6": {"limit": {"context": 1000000, "output": 64000}}}
             }}}"#,
         );
-        let mut config = Config::from_lookup(complete_env).expect("configured");
-        config.providers = settings.providers().to_vec();
+        let mut config =
+            Config::from_lookup_with_providers(complete_env, settings.providers().to_vec())
+                .expect("configured");
 
+        assert!(config.serves_aichat());
+        assert_eq!(config.signing_key.expose(), "test-signing-key");
+        assert_eq!(config.key_id, "test-key-id");
+        assert_eq!(config.endpoint, "https://example.invalid");
         assert_eq!(config.default_model, DEFAULT_MODEL);
         assert_eq!(config.context_budget, DEFAULT_CONTEXT_BUDGET);
         // Taken only once that model is the one in force, which is what picking it does.
         assert!(config.adopt_window(Some(1_000_000)));
+    }
+
+    #[test]
+    fn a_gateway_configures_without_brave_credentials_or_a_model_roster() {
+        let settings = Settings::parse(
+            r#"{
+            "model": "openrouter/z-ai/glm-4.6",
+            "provider": {"openrouter": {"options": {"apiKey": "test-token"}}}
+        }"#,
+        );
+        for blank in [false, true] {
+            let config = Config::from_lookup_with_providers(
+                |key| match key {
+                    env_var::DEFAULT_MODEL => resolve_model(None, &settings, |_| None),
+                    _ if blank => Some(String::new()),
+                    _ => None,
+                },
+                settings.providers().to_vec(),
+            )
+            .expect("the selected gateway needs no Brave credentials");
+            assert!(!config.serves_aichat());
+            assert_eq!(config.default_model, "openrouter/z-ai/glm-4.6");
+            let (provider, model) = config.provider_for(&config.default_model).expect("gateway");
+            assert_eq!(model, "z-ai/glm-4.6");
+            assert_eq!(provider.base_url, "https://openrouter.ai/api/v1");
+            assert_eq!(provider.token(|_| None).as_deref(), Some("test-token"));
+            assert!(provider.models.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_gateway_can_read_its_own_environment_token_without_brave_credentials() {
+        let settings = Settings::parse(
+            r#"{
+            "provider": {"openrouter": {"env": ["OPENROUTER_API_KEY"]}}
+        }"#,
+        );
+        let config = Config::from_lookup_with_providers(|_| None, settings.providers().to_vec())
+            .expect("gateway configured before its token is resolved");
+        let provider = &config.providers[0];
+        assert_eq!(
+            provider
+                .token(|name| match name {
+                    "OPENROUTER_API_KEY" => Some("environment-token".into()),
+                    _ => None,
+                })
+                .as_deref(),
+            Some("environment-token")
+        );
+        // Missing gateway tokens are reported by the gateway client, not as missing Brave keys.
+        assert_eq!(provider.token(|_| None), None);
+        assert!(!config.serves_aichat());
+    }
+
+    #[test]
+    fn an_absent_or_invalid_gateway_does_not_relax_brave_validation() {
+        for text in [
+            "{}",
+            r#"{"provider": {}}"#,
+            r#"{"provider": {"unknown": {}}}"#,
+            r#"{"provider": {"unknown": {"options": {"baseURL": ""}}}}"#,
+        ] {
+            let settings = Settings::parse(text);
+            for blank in [false, true] {
+                let error = Config::from_lookup_with_providers(
+                    |_| blank.then(String::new),
+                    settings.providers().to_vec(),
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error,
+                    if blank {
+                        ConfigError::Empty(env_var::SIGNING_KEY)
+                    } else {
+                        ConfigError::Missing(env_var::SIGNING_KEY)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_gateway_does_not_hide_an_invalid_brave_endpoint() {
+        let settings = Settings::parse(r#"{"provider": {"openrouter": {}}}"#);
+        let error = Config::from_lookup_with_providers(
+            |key| match key {
+                env_var::ENDPOINT => Some("invalid".into()),
+                other => complete_env(other),
+            },
+            settings.providers().to_vec(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::InvalidEndpoint {
+                value: "invalid".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_gateway_keeps_bedrock_available_without_brave_credentials() {
+        let settings = Settings::parse(r#"{"provider": {"openrouter": {}}}"#);
+        let config = Config::from_lookup_with_providers(
+            |key| match key {
+                env_var::USE_BEDROCK => Some("1".into()),
+                env_var::AWS_REGION => Some("us-west-2".into()),
+                env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+                _ => None,
+            },
+            settings.providers().to_vec(),
+        )
+        .expect("both backends configured");
+        assert!(!config.serves_aichat());
+        assert_eq!(config.default_model, "opus-arn");
+        assert!(config.bedrock.as_ref().unwrap().offers("opus-arn"));
+        assert!(config.provider_for("openrouter/z-ai/glm-4.6").is_some());
     }
 
     /// A gateway configured for the tests below, offering one model the block names.

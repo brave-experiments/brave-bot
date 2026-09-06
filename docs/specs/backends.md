@@ -276,6 +276,18 @@ gateway's endpoint and its roster from a registry it fetches, so its blocks leav
 commonest one names a credential and nothing else. Requiring either field here refuses a block it
 accepts as surely as adding a field would.
 
+A configured gateway also works in a development build without Brave service credentials. Those
+credentials remain required when neither a gateway nor Bedrock is configured. A gateway's token is
+resolved when it is used; its absence is a gateway authentication error, not a request for Brave keys.
+The selected model names the gateway, for example `openrouter/z-ai/glm-4.6` in the top-level `model`
+key of `~/.bravebot/settings.json`. Adding a gateway does not replace a configured Brave or Bedrock
+backend or override the chosen model.
+
+`verified-by: bravebot_config::lib::a_gateway_configures_without_brave_credentials_or_a_model_roster`
+`verified-by: bravebot_config::lib::a_gateway_can_read_its_own_environment_token_without_brave_credentials`
+`verified-by: bravebot_config::lib::an_absent_or_invalid_gateway_does_not_relax_brave_validation`
+`verified-by: bravebot_config::lib::a_gateway_keeps_bedrock_available_without_brave_credentials`
+
 `verified-by: bravebot_config::provider::a_provider_block_is_read`
 `verified-by: bravebot_config::provider::a_model_entry_may_be_empty`
 `verified-by: bravebot_config::provider::fields_this_crate_does_not_know_are_read_past`
