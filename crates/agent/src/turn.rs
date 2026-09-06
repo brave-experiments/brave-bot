@@ -1089,7 +1089,7 @@ fn collect_delegates<S: Sink, R: Reporter>(
             )),
         };
 
-        let (note, body) = match finished {
+        let (note, body, failed) = match finished {
             Ok(finished) => {
                 // Before anything else, so a person who vouched for the build inside this one is
                 // not asked again by a delegate spawned after it.
@@ -1122,16 +1122,16 @@ fn collect_delegates<S: Sink, R: Reporter>(
                         reference.describe()
                     ),
                 };
-                (note, body)
+                (note, body, false)
             }
             Err(error) => {
                 let note = format!("error: the delegate could not finish: {error}");
                 let body = format!("{TOOL_BUDGET_SPENT} The delegate {id} did not finish: {error}");
-                (note, body)
+                (note, body, true)
             }
         };
 
-        reporter.delegate_finished(id, note, body.starts_with("error"));
+        reporter.delegate_finished(id, note, failed);
         conversation.push(Message::user(body));
         conversation.observed(policy.context_integrity());
         collected += 1;
