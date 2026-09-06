@@ -526,6 +526,16 @@ certainly does not read.
   model is therefore carried, sent, and dropped, while the interface goes on reporting it as in
   force. Bedrock is unaffected, `output_config.effort` being the field that API defines.
 
+- **A gateway takes the effort level only for the models that advertise it.** OpenRouter's listing
+  reports `reasoning_effort` as a supported parameter on 161 of the 431 models it serves, while 304
+  advertise the gateway's own `reasoning` parameter, so a model can reason and still not read the
+  field this sends. Which is which is stated in the `supported_parameters` of each row, the same
+  field already read to decide whether a model can call tools, so unlike the aichat endpoint above
+  this is answerable before a request goes out rather than only by measuring. Nothing does that yet:
+  the level is sent to every gateway model alike, and one that does not advertise the parameter drops
+  it. Whether the vocabulary matches is a second question this does not settle, `xhigh` and `max`
+  being levels the Anthropic API defines rather than words every gateway's field accepts.
+
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that
   expire during a session, and the tool that holds them is the one the person already signs in
   with. That is a process this code did not write, reading a configuration this code does not
