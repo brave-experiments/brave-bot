@@ -490,20 +490,25 @@ choice of something.
 
 
 <a id="BACKEND-21"></a>
-### BACKEND-21: each service is asked in the spelling it reads
+### BACKEND-21: each service is sent the level in its own protocol's field
 
-The same choice reaches each service in that service's own field. One word ranks the levels; where
-that word goes is the wire protocol's business, and no service is sent the other's shape.
+One word ranks the levels, and where that word goes in the body is the wire protocol's business. No
+service is sent the other's shape.
 
-| Service | Where the level goes |
+| Service | Where the level is sent |
 |---|---|
 | The aichat endpoint Brave runs | `reasoning_effort`, beside the model |
 | An OpenAI-compatible gateway | `reasoning_effort`, beside the model |
 | Claude on AWS Bedrock | `effort`, inside `output_config` |
 
+This says where a level is sent, not what becomes of it. What a service does with the field is that
+service's own behaviour, observable only by measuring it, and one of the three is known to discard it
+altogether. That is recorded under Known costs rather than here, because a clause pinned to a remote
+service's current behaviour is a clause that goes stale without anything in this repository changing.
+
 **Why.** The two protocols state the same idea differently, and the conversion between them already
-happens in one place for every other field. Sending one service the other's shape is a field it does
-not read, which is a request that quietly ignores what somebody chose.
+happens in one place for every other field. Sending one service the other's shape is a field it
+certainly does not read.
 
 `verified-by: bravebot_aichat::protocol::a_level_is_sent_in_the_name_this_protocol_gives_the_field`
 `verified-by: bravebot_bedrock::protocol::a_level_is_sent_inside_the_object_this_api_states`
@@ -511,6 +516,15 @@ not read, which is a request that quietly ignores what somebody chose.
 
 
 ## Known costs
+
+- **The aichat endpoint Brave runs discards the effort level.** Measured against that endpoint: a
+  nonsense value in `reasoning_effort` is answered `200` with usage identical to a request that omits
+  the field, so it is not validated, and on `near-glm-5`, which reports a non-zero reasoning-token
+  count for an ordinary prompt, that count does not move with the level. The premium rows of the
+  roster were not measured, a free-tier credential being substituted to a weaker model before the
+  request lands, so nothing here is established about them. A level chosen against a Brave-served
+  model is therefore carried, sent, and dropped, while the interface goes on reporting it as in
+  force. Bedrock is unaffected, `output_config.effort` being the field that API defines.
 
 - **A credential is resolved by running the AWS CLI.** Reaching Bedrock needs short-lived keys that
   expire during a session, and the tool that holds them is the one the person already signs in
