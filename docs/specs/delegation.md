@@ -6,6 +6,7 @@ governs:
   - crates/core/src/delegate.rs
   - crates/core/src/policy.rs
   - crates/agent/src/delegate.rs
+  - crates/agent/src/report.rs
 guards:
   - symbol: Policy::before_delegate
   - symbol: Policy::adopt_from_delegate
@@ -222,6 +223,24 @@ over the part of the turn nobody watched.
 
 `verified-by: bravebot_agent::turn::one_trail_records_the_delegate_and_the_turn_that_spawned_it`
 `verified-by: bravebot_core::delegate::a_description_names_what_it_holds_but_never_the_task`
+
+<a id="DELEGATE-14"></a>
+### DELEGATE-14: each delegate is numbered, and every report about one says which
+
+The driver numbers them in the order the turn spawned them and says, before each report, whose
+work it describes: one delegate, or the turn itself. Nothing works it out from the report.
+
+A number rather than a position in the sequence. Reports arrive in the order the work happened,
+which is not the order it was asked for, and two delegates of the same kind produce lines that
+read identically.
+
+**Why the driver says it.** A report is prose a model had a hand in. An interface reading one to
+decide which run it belonged to would be taking that decision from model output, which is the
+thing this repository refuses everywhere else. Whose work a line is is a fact the driver already
+holds.
+
+`verified-by: bravebot_agent::turn::each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_number`
+`verified-by: bravebot_agent::turn::a_delegates_work_is_bracketed_by_the_announcements_the_interface_reads`
 
 ## Known costs
 

@@ -1277,6 +1277,10 @@ fn run_inner<S: Sink, C: Confirmer + ?Sized, R: Reporter>(
     let mut may_compact = true;
     // When the planner asked for the next tick, where this turn is one and it asked at all.
     let mut wakeup = None;
+    // How many delegates this turn has spawned, which is what numbers each one. Counted for the
+    // turn rather than for the round: two delegates spawned in different rounds are still two
+    // delegates, and everything reported about either is tagged with its number.
+    let mut spawned = 0u32;
     let completion = loop {
         // Checked before each request rather than mid-flight: a request already on the wire has
         // to finish, but nothing new needs to start.
@@ -1539,6 +1543,7 @@ fn run_inner<S: Sink, C: Confirmer + ?Sized, R: Reporter>(
                     home: task.home.as_deref(),
                     // A delegate is offered no way to delegate, and dispatch refuses one anyway.
                     delegated: task.delegate.is_some(),
+                    spawned: &mut spawned,
                 },
                 &mut asking,
                 reporter,

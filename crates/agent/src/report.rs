@@ -12,6 +12,7 @@
 use crate::diff::Change;
 use bravebot_core::todo::Row;
 use bravebot_i18n::t;
+use std::fmt;
 
 /// One thing the turn did, shaped for the person watching.
 ///
@@ -252,6 +253,55 @@ impl Landing {
     }
 }
 
+/// Which run a report describes.
+///
+/// Minted by the driver, one per delegate, counting from one in the order they were spawned. It
+/// is the driver's own number and nothing a model wrote: several delegates report at once, and an
+/// interface working out whose line it was holding would be taking that decision from prose.
+///
+/// Small and copyable because everything carrying one is on a hot path, and ordered because the
+/// order they were spawned in is the order anything showing them uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DelegateId(u32);
+
+impl DelegateId {
+    /// The `n`th delegate of a turn, counting from one.
+    pub fn nth(n: u32) -> Self {
+        Self(n)
+    }
+
+    /// Its position, counting from one.
+    pub fn position(self) -> u32 {
+        self.0
+    }
+}
+
+/// How a planner names one when it asks about it again.
+///
+/// Short because it is typed back into a tool call, and prefixed because a bare number in an
+/// argument reads as a count of something.
+impl fmt::Display for DelegateId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "d{}", self.0)
+    }
+}
+
+/// One delegate, for the person watching it work.
+///
+/// Everything here reaches a screen and nothing else. The kind is the driver's own word out of
+/// the enumerated set, so it names what the delegate holds; the task is what the planner wrote,
+/// released for a screen exactly as the target of a tool call is. Neither is compared, matched
+/// or routed anywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delegation {
+    /// Which delegate this is, for everything that follows from it.
+    pub id: DelegateId,
+    /// Which kind it is, from [`bravebot_core::delegate::Kind`].
+    pub kind: &'static str,
+    /// What it was asked to do.
+    pub task: String,
+}
+
 pub trait Reporter {
     /// The task list changed. Rows are already shaped for display and released.
     fn todos(&mut self, rows: Vec<Row>);
@@ -335,6 +385,26 @@ pub trait Reporter {
     /// needs to be seen going in, or the answer that changes course reads as the planner changing
     /// its mind unprompted.
     fn interjected(&mut self, _said: String) {}
+
+    /// Whose work the reports that follow describe: one delegate, or the turn itself.
+    ///
+    /// Set by the driver immediately before each report, and the only thing that says where a
+    /// line belongs. Delegates run alongside each other and alongside the turn, so the lines
+    /// arrive interleaved and the order they arrive in says nothing about whose they are.
+    ///
+    /// Announced rather than worked out from the line. A line is prose a model had a hand in, and
+    /// an interface reading one to decide which run it belonged to would be taking that decision
+    /// from model output, which is the thing this repository refuses everywhere else.
+    fn reporting_for(&mut self, _delegate: Option<DelegateId>) {}
+
+    /// A delegate has begun.
+    fn delegate_started(&mut self, _delegation: Delegation) {}
+
+    /// One delegate has finished, with the words the turn is told about it.
+    ///
+    /// Named rather than paired by position: several run at once, so the one that finishes first
+    /// is not the one that started first.
+    fn delegate_finished(&mut self, _delegate: DelegateId, _note: String, _failed: bool) {}
 }
 
 /// Discards every report.
@@ -374,6 +444,12 @@ pub struct RecordingReporter {
     pub landed: Vec<Landing>,
     /// Everything the person said mid-turn, in the order it reached the planner.
     pub interjected: Vec<String>,
+    /// Every delegate announced as starting, in order.
+    pub delegated: Vec<Delegation>,
+    /// How each delegate ended, in the order they finished.
+    pub delegates_finished: Vec<(DelegateId, String, bool)>,
+    /// Whose work the reports that follow belong to.
+    pub attributed_to: Option<DelegateId>,
 }
 
 impl Reporter for RecordingReporter {
@@ -419,6 +495,18 @@ impl Reporter for RecordingReporter {
 
     fn interjected(&mut self, said: String) {
         self.interjected.push(said);
+    }
+
+    fn reporting_for(&mut self, delegate: Option<DelegateId>) {
+        self.attributed_to = delegate;
+    }
+
+    fn delegate_started(&mut self, delegation: Delegation) {
+        self.delegated.push(delegation);
+    }
+
+    fn delegate_finished(&mut self, delegate: DelegateId, note: String, failed: bool) {
+        self.delegates_finished.push((delegate, note, failed));
     }
 }
 
