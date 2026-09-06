@@ -69,6 +69,17 @@ pub enum CredentialError {
     NotInstalled,
     /// The CLI ran and refused, after a login attempt if one was possible.
     Refused { detail: String },
+    /// The settings name a profile the CLI does not have.
+    ///
+    /// Separate from a refusal because no sign-in fixes it: `aws sso login` against a profile that
+    /// is not configured fails for the same reason the export did, so attempting one spends a
+    /// browser on a certainty and replaces the diagnosis with "the sign-in did not complete".
+    NoSuchProfile {
+        profile: String,
+        /// What the CLI does list, so the message can name the alternatives rather than leave
+        /// somebody to go and look.
+        available: Vec<String>,
+    },
     /// The CLI answered with something that was not a set of credentials.
     Undecodable { detail: String },
 }
@@ -83,6 +94,18 @@ impl std::fmt::Display for CredentialError {
             Self::Refused { detail } => write!(
                 f,
                 "AWS credentials could not be resolved: {detail}. Run `aws sso login` and try again"
+            ),
+            Self::NoSuchProfile { profile, available } if available.is_empty() => write!(
+                f,
+                "there is no AWS profile named {profile}, and this machine has none configured at \
+                 all. Run `aws configure sso` to add one, or unset BRAVEBOT_USE_BEDROCK to use the \
+                 Brave backend"
+            ),
+            Self::NoSuchProfile { profile, available } => write!(
+                f,
+                "there is no AWS profile named {profile}. This machine has {}. Name one of those, \
+                 or unset BRAVEBOT_USE_BEDROCK to use the Brave backend",
+                available.join(", ")
             ),
             Self::Undecodable { detail } => write!(f, "unexpected credentials from the AWS CLI: {detail}"),
         }
@@ -109,7 +132,12 @@ pub fn resolve(profile: Option<&str>) -> Result<Credentials, CredentialError> {
             // stale yes, which is what puts the sign-in back in front of the person: the login
             // below reports to nobody.
             known_good().forget(profile);
-            login(profile, |_| {}).map_err(|_| CredentialError::Refused { detail })?;
+            login(profile, |_| {}).map_err(|failure| match failure {
+                // The whole diagnosis, and it must not be replaced by the export's account of the
+                // same thing or by a sign-in that never had a chance.
+                absent @ CredentialError::NoSuchProfile { .. } => absent,
+                _ => CredentialError::Refused { detail },
+            })?;
             export(profile)
         }
         Err(other) => Err(other),
@@ -256,6 +284,51 @@ fn export(profile: Option<&str>) -> Result<Credentials, CredentialError> {
     decode(&output.stdout)
 }
 
+/// The profiles the CLI is configured with, or `None` where it could not say.
+///
+/// A list rather than a reading of the error text an export failed with. The wording of that text
+/// is the CLI's to change and telling a missing profile from an expired session by it would be
+/// guessing; this asks the question directly and gets a name per line.
+///
+/// Run only after something has already failed, so the check before every turn still costs one
+/// export and no more.
+fn profiles() -> Option<Vec<String>> {
+    let output = Command::new(AWS)
+        .args(["configure", "list-profiles"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect(),
+    )
+}
+
+/// The error for a profile the CLI does not list, or `None` where there is nothing to say.
+///
+/// Nothing to say covers three cases, and all of them mean the sign-in should go ahead: no profile
+/// was named, so the default chain applies and no list describes it; the CLI could not be asked,
+/// which is not the same as an answer; and the profile is there, which is the ordinary case of an
+/// expired session.
+///
+/// Separated from the two subprocesses so the rule is testable without either.
+fn absent_from(profile: Option<&str>, known: Option<Vec<String>>) -> Option<CredentialError> {
+    let named = profile?;
+    let known = known?;
+    if known.iter().any(|it| it == named) {
+        return None;
+    }
+    Some(CredentialError::NoSuchProfile {
+        profile: named.to_string(),
+        available: known,
+    })
+}
+
 /// Open a browser and wait for the person to approve the session, reporting what the CLI says.
 ///
 /// `say` is called once per line as it arrives, because those lines are the sign-in: a URL and a
@@ -270,6 +343,10 @@ fn export(profile: Option<&str>) -> Result<Credentials, CredentialError> {
 /// Nothing here is labelled. The lines are a program's own prompt to the person at the keyboard, not
 /// workspace content and not model output, and they reach a screen rather than a planner.
 fn login(profile: Option<&str>, mut say: impl FnMut(String)) -> Result<(), CredentialError> {
+    if let Some(absent) = absent_from(profile, profiles()) {
+        return Err(absent);
+    }
+
     let mut command = Command::new(AWS);
     command.args(["sso", "login"]);
     if let Some(profile) = profile {
@@ -459,6 +536,50 @@ fn first_line(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No sign-in fixes a profile that is not configured: `aws sso login` fails against it for the
+    /// same reason the export did, so attempting one spends a browser on a certainty and replaces
+    /// the diagnosis with "the sign-in did not complete".
+    #[test]
+    fn a_profile_the_cli_does_not_have_is_not_signed_in_to() {
+        let known = Some(vec!["work".to_string(), "personal".to_string()]);
+        let absent = absent_from(Some("claude-code-bedrock-sso"), known).expect("an error");
+
+        assert!(matches!(absent, CredentialError::NoSuchProfile { .. }));
+        let said = absent.to_string();
+        assert!(said.contains("claude-code-bedrock-sso"), "{said}");
+        // The alternatives, so nobody has to go and look them up to act on this.
+        assert!(said.contains("work") && said.contains("personal"), "{said}");
+    }
+
+    /// The ordinary expired-session case, which is what a sign-in is for.
+    #[test]
+    fn a_profile_the_cli_does_have_still_gets_a_sign_in() {
+        let known = Some(vec!["work".to_string()]);
+        assert!(absent_from(Some("work"), known).is_none());
+    }
+
+    /// A CLI that could not be asked has not said the profile is missing, and a guess either way
+    /// would be worse than the sign-in that explains itself.
+    #[test]
+    fn a_listing_that_could_not_be_read_does_not_withhold_a_sign_in() {
+        assert!(absent_from(Some("work"), None).is_none());
+    }
+
+    /// With no profile named the default chain applies, and no list of profiles describes it.
+    #[test]
+    fn naming_no_profile_is_not_naming_a_missing_one() {
+        assert!(absent_from(None, Some(vec!["work".to_string()])).is_none());
+    }
+
+    /// A machine with nothing configured needs different advice: there is no profile to name.
+    #[test]
+    fn a_machine_with_no_profiles_at_all_says_so() {
+        let absent = absent_from(Some("work"), Some(Vec::new())).expect("an error");
+        let said = absent.to_string();
+        assert!(said.contains("none configured"), "{said}");
+        assert!(said.contains("aws configure sso"), "{said}");
+    }
 
     /// A credential can stop working before the expiry it stated. Kept anyway, the check before
     /// every turn goes on answering yes from that stale note, so the sign-in a person can see never

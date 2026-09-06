@@ -555,6 +555,35 @@ mentioned the subject would be deciding against them from silence.
 `verified-by: bravebot_tui::status::a_level_the_model_does_not_read_is_reported_as_unread`
 
 
+<a id="BACKEND-23"></a>
+### BACKEND-23: a profile that is not configured is said so, never signed in to
+
+Before a sign-in is attempted for a named profile, the tool is asked which profiles it has. Where it
+answers and the name is not among them, no sign-in runs and the person is told the name is not
+configured, along with the ones that are. Where no profile was named, or the tool could not be asked,
+the sign-in goes ahead.
+
+The question is asked of the tool as a list, never inferred from the wording of the failure that
+prompted it, and only once something has already failed, so establishing that a session is good still
+costs one call and no more.
+
+**Why.** No sign-in fixes a profile that does not exist: it fails for the same reason the export did,
+which spends a browser on a certainty and then replaces the real diagnosis with "the sign-in did not
+complete". The remedy is also different, and advice to run `aws sso login` is advice that cannot
+work, so a person following it learns nothing. Naming the profiles that do exist is what turns the
+report into something actionable, since the usual cause is a name that was right on another machine.
+
+Reading the failure's wording would answer the same question, and is how this must not be done: the
+wording belongs to a tool that may change it, and being wrong costs either a browser opened for
+nothing or somebody told their configuration is broken when their session merely expired.
+
+`verified-by: bravebot_bedrock::credentials::a_profile_the_cli_does_not_have_is_not_signed_in_to`
+`verified-by: bravebot_bedrock::credentials::a_profile_the_cli_does_have_still_gets_a_sign_in`
+`verified-by: bravebot_bedrock::credentials::a_listing_that_could_not_be_read_does_not_withhold_a_sign_in`
+`verified-by: bravebot_bedrock::credentials::naming_no_profile_is_not_naming_a_missing_one`
+`verified-by: bravebot_bedrock::credentials::a_machine_with_no_profiles_at_all_says_so`
+
+
 ## Known costs
 
 - **The aichat endpoint Brave runs discards the effort level.** Measured against that endpoint: a
