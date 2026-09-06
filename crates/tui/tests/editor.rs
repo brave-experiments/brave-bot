@@ -151,3 +151,67 @@ fn visual_is_the_one_that_runs() {
     std::fs::remove_file(&wanted).ok();
     std::fs::remove_file(&unwanted).ok();
 }
+
+/// Every scratch file this makes, sorted, so two listings can be compared.
+///
+/// The name is generated inside the module under test, so a caller cannot know it in advance and
+/// watches the directory instead.
+fn scratch_files() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("bravebot-prompt-") || name.starts_with("bravebot-transcript-")
+                })
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The prompt does not outlive the edit, down any of the three ways out of one.
+///
+/// Snapshotted inside the closure because that is where the editor lock is held: another test in
+/// this binary part-way through its own edit would otherwise look like a file left behind.
+///
+/// Worth pinning on its own account, and named by INCOG-8, which states this hand-off as the one
+/// thing an incognito session still writes and leans on it being gone by the time the editor
+/// closes.
+#[test]
+fn the_scratch_file_does_not_outlive_the_edit() {
+    with_editor("true", || {
+        let before = scratch_files();
+        let _ = bravebot_tui::editor::edit("something private");
+        assert_eq!(
+            scratch_files(),
+            before,
+            "a prompt the editor did not save was left in the temporary directory"
+        );
+    });
+
+    with_editor("false", || {
+        let before = scratch_files();
+        let _ = bravebot_tui::editor::edit("something private");
+        assert_eq!(
+            scratch_files(),
+            before,
+            "a prompt was left behind when the editor refused"
+        );
+    });
+
+    with_editor("true", || {
+        let before = scratch_files();
+        let _ = bravebot_tui::editor::show("a transcript worth not keeping");
+        assert_eq!(
+            scratch_files(),
+            before,
+            "a transcript was left in the temporary directory"
+        );
+    });
+}
