@@ -1,7 +1,15 @@
 # brave-bot
 
 Brave Bot is a general-purpose agent, meant as a drop-in replacement for Claude Code, Codex and
-opencode. Its defining property is **structural resistance to indirect prompt injection**.
+OpenCode. Brave has always shipped user agents, and this one is the user's agent in both senses:
+
+- Structural resistance to indirect prompt injection: a web page cannot redirect an agent working
+  on your behalf.
+- As few tokens as possible.
+- As fast as it can be.
+- Nothing hidden: what it read and what it decided are on the screen.
+- Developed completely in the open.
+- No lock-in: other providers and models, settings on your own machine.
 
 ## Getting started
 
