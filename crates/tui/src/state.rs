@@ -54,6 +54,59 @@ pub enum Speaker {
     /// Drawn plainly rather than styled: it is a terminal's output and the user is reading it as
     /// one, so markdown would be a misreading and a marker on every line would be noise.
     Output,
+    /// A delegate the turn started, with its own work drawn underneath it.
+    Delegate,
+}
+
+/// One delegate's work, drawn where the call that started it would have been.
+///
+/// A delegate is a second planner with a run of its own, and several are going at once, so its
+/// lines are kept together rather than interleaved with the turn's. What is kept is the most
+/// recent of them: this is a live view of something working, not a second transcript, and the
+/// whole of what a delegate did ends with the delegate exactly as it always has.
+///
+/// Nothing here reaches a model. The turn is told the report and nothing else, which is the point
+/// of delegating; these are the same lines going to a screen instead.
+#[derive(Debug, Clone)]
+pub struct Delegate {
+    /// Which one it is, as the driver numbered it.
+    pub id: bravebot_agent::report::DelegateId,
+    /// Which kind it is, in the driver's own word.
+    pub kind: &'static str,
+    /// What it was asked to do, as the planner wrote it.
+    pub task: String,
+    /// The last few things it did, oldest first.
+    pub lines: Vec<Entry>,
+    /// How many it has done in all, which is more than are kept.
+    pub calls: usize,
+    /// What the turn was told when it finished. `None` while it is still working, which is what
+    /// tells a delegate that is running from one that answered.
+    pub note: Option<String>,
+    /// Whether it ended by failing, so the line saying so can be coloured as such.
+    pub failed: bool,
+}
+
+/// How many of a delegate's own lines are kept.
+///
+/// Enough to see that something is happening and roughly what, which is what the block is for. A
+/// person wanting the whole of it wants a transcript, and a delegate's transcript is the thing
+/// this design deliberately does not keep.
+const DELEGATE_LINES: usize = 3;
+
+impl Delegate {
+    /// Whether this one is still working.
+    pub fn is_running(&self) -> bool {
+        self.note.is_none()
+    }
+
+    /// Keep one more of its lines, dropping the oldest where there are already enough.
+    fn keep(&mut self, entry: Entry) {
+        self.calls += 1;
+        self.lines.push(entry);
+        if self.lines.len() > DELEGATE_LINES {
+            self.lines.remove(0);
+        }
+    }
 }
 
 /// One entry in the transcript.
@@ -88,6 +141,12 @@ pub struct Entry {
     /// model was not allowed to read, and it is marked as such by the renderer rather than by
     /// anything in the bytes, which could say whatever they liked.
     pub shown: Option<Shown>,
+    /// The delegate this entry stands for, for a [`Speaker::Delegate`] entry.
+    ///
+    /// Its own lines live here rather than in the transcript around it. Several delegates work at
+    /// once, so lines interleaved with the turn's could not be read in either direction: whose
+    /// each one was would be a guess from the words, and the words are prose a model wrote.
+    pub delegate: Option<Delegate>,
 }
 
 impl Entry {
@@ -100,6 +159,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: None,
+            delegate: None,
         }
     }
 
@@ -112,6 +172,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: None,
+            delegate: None,
         }
     }
 
@@ -124,6 +185,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: None,
+            delegate: None,
         }
     }
 
@@ -137,6 +199,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: None,
+            delegate: None,
         }
     }
 
@@ -150,6 +213,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: None,
+            delegate: None,
         }
     }
 
@@ -166,6 +230,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: Some(activity),
+            delegate: None,
         }
     }
 
@@ -184,6 +249,7 @@ impl Entry {
             landing: None,
             shown: None,
             activity: None,
+            delegate: None,
         }
     }
 
@@ -587,6 +653,13 @@ pub struct Session {
     /// Held as it arrived. What is drawn from it is [`Session::reply_so_far`], since a model
     /// that has nowhere else to put its working writes it in here.
     streaming: String,
+    /// Whose work the reports arriving now describe, where it is a delegate's.
+    ///
+    /// Set by the driver and never worked out here. Delegates report alongside the turn and
+    /// alongside each other, so where a line arrived in the sequence says nothing about whose it
+    /// is. Nothing outlives a turn here: the driver clears it when a delegate finishes, and a
+    /// delegate cannot outlive the turn that started it.
+    attributed_to: Option<bravebot_agent::report::DelegateId>,
     /// Answers the user has already given this session, keyed by the question.
     ///
     /// A repeated question is answered from here rather than put to them again, since a planner
@@ -721,6 +794,7 @@ impl Session {
             looping: None,
             pending: crate::remote_confirm::Interjections::new(),
             streaming: String::new(),
+            attributed_to: None,
             answers: Vec::new(),
             pasted: Vec::new(),
             sent_pasted: Vec::new(),
@@ -1020,6 +1094,12 @@ impl Session {
         if text.is_empty() {
             return;
         }
+        // A delegate's half-written sentence is not the turn's. Drawn under the turn's own reply
+        // it would read as the planner writing something it never wrote, and there is one model
+        // writing at a time.
+        if self.attributed_to.is_some() {
+            return;
+        }
         self.streaming.push_str(text);
         self.scroll = 0;
     }
@@ -1048,18 +1128,111 @@ impl Session {
         if text.trim().is_empty() {
             return;
         }
+        // A delegate says a great deal on its way to an answer and none of it is the turn's. What
+        // it concluded arrives as the report, which is the sentence its block ends on.
+        if self.attributed_to.is_some() {
+            return;
+        }
         self.transcript.push(Entry::assistant(text, Vec::new()));
+    }
+
+    /// Whose work the reports that follow are, as the driver said.
+    ///
+    /// The one thing that decides where a line lands. Delegates work alongside the turn and
+    /// alongside each other, so the lines arrive interleaved: nothing here reads a line to work
+    /// out whose it was, because a line is prose a model had a hand in.
+    pub fn reporting_for(&mut self, delegate: Option<bravebot_agent::report::DelegateId>) {
+        self.attributed_to = delegate;
+    }
+
+    /// Where a report lands: under the delegate whose work it is, or in the turn's transcript.
+    fn working_lines(&mut self) -> &mut Vec<Entry> {
+        match self.attributed_to.and_then(|id| self.at(id)) {
+            Some(at) => {
+                &mut self.transcript[at]
+                    .delegate
+                    .as_mut()
+                    .expect("a delegate entry holds its delegate")
+                    .lines
+            }
+            None => &mut self.transcript,
+        }
+    }
+
+    /// Where a delegate's block is, by the number the driver gave it.
+    ///
+    /// Searched from the end, because the one being reported on is almost always the one most
+    /// recently started.
+    fn at(&self, id: bravebot_agent::report::DelegateId) -> Option<usize> {
+        self.transcript
+            .iter()
+            .rposition(|entry| entry.delegate.as_ref().is_some_and(|held| held.id == id))
+    }
+
+    /// A delegate has begun, drawn where the call that started it happened.
+    pub fn delegate_started(&mut self, delegation: bravebot_agent::report::Delegation) {
+        self.scroll = 0;
+        let mut entry = Entry::system("");
+        entry.speaker = Speaker::Delegate;
+        entry.delegate = Some(Delegate {
+            id: delegation.id,
+            kind: delegation.kind,
+            task: delegation.task,
+            lines: Vec::new(),
+            calls: 0,
+            note: None,
+            failed: false,
+        });
+        self.transcript.push(entry);
+    }
+
+    /// One delegate has finished, with what the turn was told about it.
+    ///
+    /// Its block collapses to that sentence: what it did is behind it and what it concluded is
+    /// the whole of what anybody acts on. Named rather than taken to be whichever was working,
+    /// because the one that finishes is not the one that started last.
+    pub fn delegate_finished(
+        &mut self,
+        id: bravebot_agent::report::DelegateId,
+        note: String,
+        failed: bool,
+    ) {
+        if self.attributed_to == Some(id) {
+            self.attributed_to = None;
+        }
+        if let Some(at) = self.at(id)
+            && let Some(delegate) = self.transcript[at].delegate.as_mut()
+        {
+            delegate.note = Some(note);
+            delegate.failed = failed;
+        }
+    }
+
+    /// Every delegate this session has started, oldest first.
+    pub fn delegates(&self) -> Vec<&Delegate> {
+        self.transcript
+            .iter()
+            .filter_map(|entry| entry.delegate.as_ref())
+            .collect()
     }
 
     /// Show a tool call that has begun.
     pub fn start_activity(&mut self, activity: Activity) {
         self.running = Some(activity.clone());
-        self.transcript.push(Entry::tool(activity));
+        let entry = Entry::tool(activity);
+        match self.attributed_to.and_then(|id| self.at(id)) {
+            Some(at) => self.transcript[at]
+                .delegate
+                .as_mut()
+                .expect("a delegate entry holds its delegate")
+                .keep(entry),
+            None => self.transcript.push(entry),
+        }
     }
 
     /// Record where the last call's result went.
     pub fn landed(&mut self, landing: Landing) {
-        if let Some(entry) = self.transcript.last_mut()
+        if let Some(entry) = self.working_lines().last_mut()
             && entry.speaker == Speaker::Tool
         {
             entry.landing = Some(landing);
@@ -1074,14 +1247,14 @@ impl Session {
     /// the worst of both.
     pub fn show(&mut self, shown: Shown) {
         self.scroll = 0;
-        match self.transcript.last_mut() {
+        match self.working_lines().last_mut() {
             Some(entry) if entry.speaker == Speaker::Tool && entry.shown.is_none() => {
                 entry.shown = Some(shown);
             }
             _ => {
                 let mut entry = Entry::system("");
                 entry.shown = Some(shown);
-                self.transcript.push(entry);
+                self.working_lines().push(entry);
             }
         }
     }
@@ -1094,11 +1267,20 @@ impl Session {
     /// happened is worse than an unpaired line.
     pub fn finish_activity(&mut self, activity: Activity) {
         self.running = None;
-        match self.transcript.last_mut() {
+        match self.working_lines().last_mut() {
             Some(entry) if entry.speaker == Speaker::Tool && Self::still_running(entry) => {
                 *entry = Entry::tool(activity);
             }
-            _ => self.transcript.push(Entry::tool(activity)),
+            // Straight into the delegate's own count where it has one, since a call that
+            // finished without this side seeing it start is still a call it made.
+            _ => match self.attributed_to.and_then(|id| self.at(id)) {
+                Some(at) => self.transcript[at]
+                    .delegate
+                    .as_mut()
+                    .expect("a delegate entry holds its delegate")
+                    .keep(Entry::tool(activity)),
+                None => self.transcript.push(Entry::tool(activity)),
+            },
         }
     }
 
@@ -3165,6 +3347,169 @@ fn along(line: &str, column: usize) -> usize {
 mod tests {
     use super::*;
     use bravebot_core::ask::Answer;
+
+    mod delegates {
+        use super::*;
+        use bravebot_agent::report::DelegateId;
+
+        /// A delegate beginning, numbered the way the driver numbers them, and everything
+        /// reported next is its work until the driver says otherwise.
+        fn spawn(session: &mut Session, kind: &'static str, task: &str) -> DelegateId {
+            let id = DelegateId::nth(session.delegates().len() as u32 + 1);
+            session.delegate_started(bravebot_agent::report::Delegation {
+                id,
+                kind,
+                task: task.to_string(),
+            });
+            session.reporting_for(Some(id));
+            id
+        }
+
+        /// The point of delegating is that the reading lands somewhere else, and the interface
+        /// has the same problem the planner does: a turn that asked a delegate to run the build
+        /// should not have the build log in the middle of it.
+        #[test]
+        fn a_delegates_work_goes_under_its_own_block_and_not_into_the_turns_lines() {
+            let mut session = Session::new("none");
+            session.start_activity(Activity::running("Delegate", ""));
+            spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "src/parse.rs"));
+
+            let drawn: Vec<&str> = session
+                .transcript
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect();
+            assert!(
+                !drawn.iter().any(|text| text.contains("parse.rs")),
+                "a delegate's own call was drawn as the turn's: {drawn:?}"
+            );
+            assert_eq!(
+                session.delegates()[0].lines.len(),
+                1,
+                "the delegate's call was not kept under it"
+            );
+        }
+
+        /// Two delegates work at once and their reports interleave, so the only thing saying
+        /// whose a line is is what the driver said. Two of the same kind produce lines that read
+        /// identically.
+        #[test]
+        fn each_delegates_work_lands_under_the_delegate_that_did_it() {
+            let mut session = Session::new("none");
+            let first = spawn(&mut session, "reader", "read a.txt");
+            let second = spawn(&mut session, "reader", "read b.txt");
+
+            // Interleaved the way they arrive: the second one's call, then the first one's.
+            session.reporting_for(Some(second));
+            session.start_activity(Activity::running("Read", "b.txt"));
+            session.reporting_for(Some(first));
+            session.start_activity(Activity::running("Read", "a.txt"));
+
+            let held = session.delegates();
+            assert_eq!(held[0].lines[0].activity.as_ref().unwrap().target, "a.txt");
+            assert_eq!(held[1].lines[0].activity.as_ref().unwrap().target, "b.txt");
+        }
+
+        /// A block that stopped without saying how leaves somebody looking at a last tool call,
+        /// unable to tell an answer from a failure.
+        #[test]
+        fn what_a_delegate_ended_with_closes_its_block() {
+            let mut session = Session::new("none");
+            let id = spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "src/parse.rs"));
+            session.delegate_finished(
+                id,
+                "a reader delegate answered after 2 rounds".to_string(),
+                false,
+            );
+
+            let held = session.delegates();
+            assert!(!held[0].is_running());
+            assert_eq!(
+                held[0].note.as_deref(),
+                Some("a reader delegate answered after 2 rounds")
+            );
+        }
+
+        /// The turn's own lines come back once the driver says the delegate is done, or every
+        /// later line would land under a delegate that stopped working some time ago.
+        #[test]
+        fn the_turns_own_lines_come_back_once_a_delegate_has_finished() {
+            let mut session = Session::new("none");
+            let id = spawn(&mut session, "reader", "find the parser");
+            session.reporting_for(None);
+            session.delegate_finished(id, "answered".to_string(), false);
+            session.start_activity(Activity::running("Read", "afterwards.rs"));
+
+            assert!(
+                session.delegates()[0].lines.is_empty(),
+                "a line reported after the delegate finished landed under it"
+            );
+            assert!(
+                session.transcript.iter().any(|entry| entry
+                    .activity
+                    .as_ref()
+                    .is_some_and(|a| a.target == "afterwards.rs")),
+                "the turn's own line did not come back"
+            );
+        }
+
+        /// There is one model writing at a time. Drawn in the turn's own view, a delegate's
+        /// half-written sentence reads as the planner writing something it never wrote.
+        #[test]
+        fn a_reply_a_delegate_is_writing_is_not_drawn_over_the_turn() {
+            let mut session = Session::new("none");
+            session.streaming("the turn is thinking");
+            spawn(&mut session, "reader", "find the parser");
+            session.streaming(" and now the delegate is");
+
+            assert_eq!(session.streaming, "the turn is thinking");
+        }
+
+        /// The block is a live view of something working, not a second transcript. What it keeps
+        /// is what it is doing now, and it says how much it has done so the count does not
+        /// quietly become the few rows that fit.
+        #[test]
+        fn a_delegates_block_keeps_the_last_of_its_work_and_counts_the_rest() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "checker", "run everything");
+            for round in 0..8 {
+                session.start_activity(Activity::running("Run", format!("step {round}")));
+            }
+
+            let held = session.delegates();
+            assert_eq!(held[0].calls, 8, "the block forgot how much it had done");
+            assert_eq!(
+                held[0].lines.len(),
+                DELEGATE_LINES,
+                "the block kept more than it draws"
+            );
+            assert_eq!(
+                held[0]
+                    .lines
+                    .last()
+                    .unwrap()
+                    .activity
+                    .as_ref()
+                    .unwrap()
+                    .target,
+                "step 7",
+                "the block kept the oldest lines rather than the newest"
+            );
+        }
+
+        /// A delegate belongs to the conversation that started it. Nothing crossed back from one
+        /// but the report, and the report went into a turn the new conversation does not have.
+        #[test]
+        fn clearing_forgets_the_delegates() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            session.clear();
+
+            assert!(session.delegates().is_empty());
+        }
+    }
 
     /// The endpoint substitutes rather than refusing, so a session that asked for one model and was
     /// answered by another has to be told: nothing else in the reply says so.
