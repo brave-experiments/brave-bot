@@ -147,8 +147,10 @@ pub fn run<S: Sink, R: Reporter>(
     // Cloned before the sink is lent out, because that borrow lasts as long as the delegate's own
     // policy does. Both are the person's standing decisions and a delegate inherits them: rules
     // written in advance about what to ask about do not stop applying because the asking moved.
-    let trust = policy.trust().clone();
-    let programs = policy.programs().clone();
+    //
+    // Kept as well as lent, because what comes back is compared against it: only the answers a
+    // person gave inside the delegate are taken back, and this is what "inside" is measured from.
+    let seeded = policy.vouched();
     let permissions = policy.permissions().clone();
 
     let task = Task::delegated(spec.clone())
@@ -170,13 +172,19 @@ pub fn run<S: Sink, R: Reporter>(
         confirmer,
         reporter,
         policy.sink(),
-        trust,
-        programs,
+        seeded.trust.clone(),
+        seeded.programs.clone(),
         cancel,
     )?;
     // Taken back before anything else, so a person who vouched for the build inside a delegate is
     // not asked again by the next one.
-    policy.adopt_from_delegate(outcome.trust, outcome.programs);
+    policy.adopt_from_delegate(
+        &seeded,
+        &bravebot_core::policy::Vouched {
+            trust: outcome.trust,
+            programs: outcome.programs,
+        },
+    );
 
     Ok(Delegated {
         report: outcome.answer,

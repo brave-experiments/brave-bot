@@ -186,9 +186,20 @@ decisions about their own machine, and the record of them belongs to the session
 whichever run happened to be going when they made it: a delegate told once that the build may run
 must not leave the next one asking again.
 
+What comes back is what moved. A delegate is seeded with a copy of the record and hands the whole
+of it back, and the entries differing from the copy it started with are the ones a person answered
+inside it. The rest are written back unchanged and settle nothing, so a delegate that was asked
+nothing takes nothing away.
+
+**Why the difference and not the record.** A copy says what was true when it was taken. Writing
+one back whole makes the last delegate collected the author of the entire record, which erases
+whatever was settled after it was seeded, and puts back the rules those answers replaced.
+
 Nothing else about a delegate's policy survives it.
 
 `verified-by: bravebot_core::policy::what_a_person_vouched_for_inside_a_delegate_is_kept`
+`verified-by: bravebot_core::policy::what_each_of_two_delegates_vouched_for_survives_the_other`
+`verified-by: bravebot_core::policy::a_delegate_that_answered_nothing_takes_nothing_away`
 
 <a id="DELEGATE-12"></a>
 ### DELEGATE-12: a delegate puts no question of its own to a person
