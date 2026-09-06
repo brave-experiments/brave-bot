@@ -118,10 +118,10 @@ A request being waited on is walked away from rather than interrupted, since a r
 cannot be interrupted. The socket is left to be closed when the far end finishes or the connection
 times out, which is sound because reading a reply applies nothing and decides nothing.
 
-**Why.** It used to say "cancelling…" and go on streaming the reply to the end, because a stop was
-only noticed between rounds. So the key that was supposed to stop the answer left the answer
-running and put a progress report on the screen about a key press, and the longer the reply the
-longer somebody waited for the thing they had already stopped.
+**Why.** A stop noticed only between rounds would leave the reply streaming to the end while the
+screen said "cancelling…". The key meant to stop the answer would leave the answer running and put
+a progress report on the screen about a key press, and the longer the reply the longer somebody
+waits for the thing they have already stopped.
 
 **Why.** The press somebody makes while an answer is going wrong in front of them is asking for
 the answer to stop, not for the session to end, and answering it by leaving takes the transcript

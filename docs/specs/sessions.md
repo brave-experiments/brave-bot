@@ -29,9 +29,9 @@ picker shows and what a resume needs, and the trail, appended a turn at a time.
 
 A session is named by a version 4 UUID, and the two files are named after it. Random rather than
 counted or clocked, so two sessions cannot collide however many are running, and opaque because the
-name is printed on a screen and pasted into a command: it used to be the time and the process id,
-which is two facts about the machine that are nobody's business by then. Nothing orders sessions by
-it; the list is sorted on what each record says it was last written.
+name is printed on a screen and pasted into a command, and a name built from the time and the
+process id would put two facts about the machine somewhere they are nobody's business. Nothing
+orders sessions by it; the list is sorted on what each record says it was last written.
 
 `verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
 `verified-by: bravebot_tui::sessions::a_session_is_named_by_a_uuid`
@@ -243,8 +243,8 @@ a session that took no time.
 fixes. A turn that took four minutes on the model, one that took four minutes running a test suite,
 and one that took four minutes with a diff on the screen while its user was at lunch are the same
 number. Only the last is not the machine's fault, and it is the one a total can never reveal:
-stalled time was previously invisible, so the harness's own overhead and a person's thinking time
-were indistinguishable from inference.
+without a figure of its own, stalled time is indistinguishable from inference, and so is the
+harness's own overhead.
 
 `verified-by: bravebot_tui::state::each_turn_records_where_its_time_went`
 `verified-by: bravebot_tui::state::an_aside_charges_its_wait_to_the_turn_it_interrupted`

@@ -254,9 +254,9 @@ Nothing is shared between two of them. Each holds its own conversation, its own 
 its own copy of what a person has vouched for, so two delegates cannot see each other's work any
 more than either can see the turn's.
 
-**Why.** A turn that asked three questions should be waiting on the slowest, not on the sum. One
-at a time also made the reading order the asking order: a build that had to finish before the
-search it has nothing to do with could begin.
+**Why.** A turn that asked three questions waits on the slowest and not on the sum. Running them
+one at a time would also make the reading order the asking order, so a build would have to finish
+before a search it has nothing to do with could begin.
 
 `verified-by: bravebot_agent::turn::two_delegates_work_at_the_same_time`
 `verified-by: bravebot_agent::turn::each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_number`
@@ -299,15 +299,13 @@ front of them for a turn they were told had finished.
   second place for every reference to resolve, which is the more expensive mistake.
 
 - **A person approving a write cannot see which delegate asked.** The confirmation shows the path
-  and the diff, as it always does, but the prompt itself does not say which of several runs is
-  asking. This was a small gap while one delegate ran at a time and is a real one now that
-  several do: a person reading only the prompt is approving a change whose reason is one of
-  several tasks they did not read.
+  and the diff, and does not say which of the runs in flight is asking. A person reading only the
+  prompt is approving a change whose reason is one of several tasks they did not read.
 
-- **A turn's timings no longer add up to its wall clock.** What a delegate spends is counted in
-  the turn's tokens, because the turn asked for it and somebody is paying for it. Its seconds are
-  not, because several delegates and the turn spend the same seconds at once, and a figure adding
-  them would report a turn as having taken longer than it did.
+- **A turn's timings do not add up to its wall clock.** What a delegate spends is counted in the
+  turn's tokens, because the turn asked for it and somebody is paying for it. Its seconds are not:
+  several delegates and the turn spend the same seconds at once, so a figure adding them would
+  report a turn as having taken longer than it did.
 
 - **A delegate's task is a guess about what it will need.** It cannot come back for more and it
   cannot ask, so a task missing a detail is a delegate that reports having been unable to finish,
