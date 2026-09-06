@@ -45,13 +45,23 @@ pub const NOTE: Color = Color::Rgb(BRAND.0, BRAND.1, BRAND.2);
 /// The name of the default theme: follow the terminal, mix only the inks that have to be a shade.
 pub const BRAVE: &str = "brave";
 
+/// The theme a stored or typed name means, resolving the names the default has been called before.
+///
+/// `system` was the earlier name for it, and that is what a file an older version wrote still says.
+fn canonical(name: &str) -> &str {
+    match name {
+        "system" => BRAVE,
+        other => other,
+    }
+}
+
 /// What a theme does that its name does not say, drawn under the list in `/theme`.
 ///
 /// Only `brave` has one, because it is the only theme whose inks depend on the terminal: the named
 /// slots are left to it, and brand primary is picked for the background sensed at startup. Every
 /// other theme is the same table of shades wherever it is opened, which its name already implies.
 pub fn hint(name: &str) -> Option<&'static str> {
-    (name == BRAVE || name == "system").then_some(t!(theme_follows_terminal))
+    (canonical(name) == BRAVE).then_some(t!(theme_follows_terminal))
 }
 
 /// Every semantic ink the interface draws itself in.
@@ -265,14 +275,7 @@ pub fn sense(out: &mut impl Write) {
 /// Load the stored theme name, or `brave` when nothing was chosen or the name is unknown.
 pub fn restore_saved() {
     let chosen = crate::store::load_theme().unwrap_or_else(|| BRAVE.to_string());
-    // `system` was the earlier name for this theme; keep reading it so an already-saved choice
-    // does not silently fall back.
-    let chosen = if chosen == "system" {
-        BRAVE
-    } else {
-        chosen.as_str()
-    };
-    if let Some(theme) = find(chosen) {
+    if let Some(theme) = find(&chosen) {
         apply(&theme);
     } else {
         apply_brave();
@@ -297,7 +300,7 @@ pub fn offered() -> Vec<Theme> {
 
 /// Find a theme by name among those on offer.
 pub fn find(name: &str) -> Option<Theme> {
-    let name = if name == "system" { BRAVE } else { name };
+    let name = canonical(name);
     offered().into_iter().find(|theme| theme.name == name)
 }
 
@@ -634,7 +637,7 @@ pub fn load_user_themes_from(dir: &Path) -> Vec<Theme> {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        if stem.is_empty() || stem == BRAVE {
+        if stem.is_empty() || canonical(stem) == BRAVE {
             continue;
         }
         let Ok(contents) = std::fs::read_to_string(&path) else {
@@ -967,6 +970,23 @@ mod tests {
         assert!(matches!(ok(), Color::Rgb(..)));
         assert_ne!(ok(), Color::Green);
         apply_brave();
+    }
+
+    /// A file named for the alias would otherwise load and then be unreachable, since that name
+    /// resolves to the built-in before the list is ever searched.
+    #[test]
+    fn a_user_file_cannot_take_a_name_that_reaches_the_default_theme() {
+        let root = PathBuf::from(env!("OUT_DIR")).join("bravebot-themes-reserved-names");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        for stem in [BRAVE, "system"] {
+            std::fs::write(root.join(format!("{stem}.json")), "{\"ok\": \"#00ff00\"}")
+                .expect("write");
+        }
+
+        assert!(load_user_themes_from(&root).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -209,12 +209,14 @@ A JSON file whose stem is the theme name is loaded from the user's own themes di
 nowhere else. A workspace `.bravebot/themes` is not consulted: that directory is workspace content,
 and a palette file must not become a decision taken from untrusted bytes. An unknown or unreadable
 stored name is `brave`. A broken file is omitted from the list rather than crashing. The earlier
-name `system` still finds `brave`, so a choice saved under that name is not silently lost.
+name `system` still finds `brave`, so a choice saved under that name is not silently lost, and a
+user file may not take either name: it would load and then be unreachable.
 
 `verified-by: bravebot_tui::theme::user_themes_come_from_a_directory_of_json_files`
 `verified-by: bravebot_tui::theme::a_broken_json_file_is_not_a_theme`
 `verified-by: bravebot_tui::theme::none_in_json_inherits_the_terminal_default`
 `verified-by: bravebot_tui::theme::the_old_system_name_still_finds_brave`
+`verified-by: bravebot_tui::theme::a_user_file_cannot_take_a_name_that_reaches_the_default_theme`
 `verified-by: bravebot_tui::store::an_empty_theme_file_is_not_a_choice`
 `verified-by: bravebot_tui::store::an_over_long_theme_name_is_not_a_choice`
 
