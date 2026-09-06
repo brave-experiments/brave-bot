@@ -645,6 +645,12 @@ pub struct Output {
     /// Travels back to whoever started the loop, which is the only thing that knows there is one.
     /// A turn that says it twice is taken at its last word, since that is the one it ended on.
     pub wakeup: Option<crate::turn::Wakeup>,
+    /// A delegate the kernel approved, for the turn to start.
+    ///
+    /// Started by the turn because a delegate outlives the call that asked for one: the call
+    /// answers at once and the delegate goes on working, so what starts it has to be the thing
+    /// still there when it finishes.
+    pub delegate: Option<(crate::report::DelegateId, crate::delegate::Seeded)>,
 }
 
 /// Everything a tool works with that is not the policy.
@@ -747,6 +753,12 @@ struct Produced {
     printed_by: Option<String>,
     /// When the planner asked for the next tick of a self-paced loop.
     wakeup: Option<crate::turn::Wakeup>,
+    /// A delegate the kernel has approved and nobody has started yet.
+    ///
+    /// Started by the turn rather than here, because a delegate outlives the call that asked for
+    /// one: the call answers immediately and the delegate goes on working. The turn is what is
+    /// still there when it finishes.
+    delegate: Option<(crate::report::DelegateId, crate::delegate::Seeded)>,
 }
 
 impl Produced {
@@ -770,7 +782,18 @@ impl Produced {
             inference: std::time::Duration::ZERO,
             printed_by: None,
             wakeup: None,
+            delegate: None,
         }
+    }
+
+    /// A delegate the kernel approved, for the turn to start.
+    fn delegating(
+        mut self,
+        id: crate::report::DelegateId,
+        seeded: crate::delegate::Seeded,
+    ) -> Self {
+        self.delegate = Some((id, seeded));
+        self
     }
 
     /// Say that what this produced is workspace content, not the driver's words about it.
@@ -1088,6 +1111,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 inference: produced.inference,
                 printed_by: produced.printed_by,
                 wakeup: produced.wakeup,
+                delegate: produced.delegate,
             };
         }
     };
@@ -1107,9 +1131,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         // A delegate is never offered this, so a call to it from one is answered the way any
         // other unknown name is rather than quietly starting a second level.
-        "spawn_agent" if !tools.delegated => {
-            spawn_agent(policy, tools, confirmer, reporter, &arguments)
-        }
+        "spawn_agent" if !tools.delegated => spawn_agent(policy, tools, reporter, &arguments),
         "load_skill" => load_skill(policy, tools.skills, &arguments),
         "ask_user" => ask_user(policy, confirmer, &arguments),
         "run" => run(policy, tools, confirmer, &arguments),
@@ -1143,6 +1165,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         inference: produced.inference,
         printed_by: produced.printed_by,
         wakeup: produced.wakeup,
+        delegate: produced.delegate,
     }
 }
 
@@ -1170,6 +1193,7 @@ fn problem(text: impl Into<String>) -> Produced {
         usage: Usage::default(),
         inference: std::time::Duration::ZERO,
         printed_by: None,
+        delegate: None,
     }
 }
 
@@ -2608,10 +2632,9 @@ fn spawn_processor<S: Sink>(
 /// kernel decides whether the planner is shown the words or a reference to them. Nothing here
 /// reads it, and nothing here could: a delegate's answer is model output, and which of the two
 /// shapes it takes is settled by the label its own context gave it.
-fn spawn_agent<S: Sink, C: Confirmer, R: Reporter>(
+fn spawn_agent<S: Sink, R: Reporter>(
     policy: &mut Policy<'_, S>,
     tools: &mut Tools<'_>,
-    confirmer: &mut C,
     reporter: &mut R,
     arguments: &Value,
 ) -> Produced {
@@ -2652,54 +2675,25 @@ fn spawn_agent<S: Sink, C: Confirmer, R: Reporter>(
         task: asked,
     });
 
-    // Everything the delegate reports between here and the end of its run is its own work. The
-    // announcement above belongs to the turn, which is what asked for it.
-    reporter.reporting_for(Some(id));
+    // Everything the kernel settled, taken off the policy here on the turn's own thread. From
+    // this point the delegate needs nothing further from the run that spawned it, which is what
+    // lets the two run at the same time.
+    let seeded = crate::delegate::seed(policy, spec);
 
-    let asked_at = std::time::Instant::now();
-    let done = crate::delegate::run(
-        policy,
-        tools.chat.config,
-        tools.chat.egress,
-        tools.workspace,
-        tools.home,
-        tools.chat.model,
-        tools.cancel,
-        confirmer,
-        reporter,
-        &spec,
-    );
-    // Taken around the run rather than inside it, so a delegate that failed still reports the
-    // time it spent failing: it kept the turn waiting just as long.
-    let waited = asked_at.elapsed();
-
-    match done {
-        Ok(done) => {
-            let note = format!(
-                "a {} delegate answered after {}",
-                done.kind,
-                tally(done.rounds, "round", "rounds")
-            );
-            reporter.reporting_for(None);
-            reporter.delegate_finished(id, note.clone(), false);
-            // Its inference, not the wall clock: what the delegate spent waiting on the model
-            // belongs in the turn's inference figure, and the rest of its seconds are the tool
-            // time this call really took.
-            Produced::new(done.report, format!("a {} delegate", done.kind), note)
-                .costing(done.usage)
-                .waiting(done.inference)
-        }
-        // The seconds are still charged, because the turn waited them. Nothing else survives: a
-        // delegate that failed part-way may have written files, and each of those was approved
-        // from a diff on its own, so there is nothing here to unwind and nothing to report but
-        // what went wrong.
-        Err(error) => {
-            let note = format!("error: the delegate could not finish: {error}");
-            reporter.reporting_for(None);
-            reporter.delegate_finished(id, note.clone(), true);
-            problem(note).waiting(waited)
-        }
-    }
+    // Started rather than finished. The turn hears about the report when there is one, and in the
+    // meantime the planner has its round back: a turn that had to sit still until a delegate
+    // answered could only ever have one working.
+    Produced::new(
+        Labelled::trusted(format!(
+            "the {} delegate {id} has started. Its report will reach you when it is ready, and \
+             you do not have to wait for it: carry on, or spawn another. You will be told what it \
+             said before you are asked to answer.",
+            seeded.spec.kind()
+        )),
+        format!("a {} delegate", seeded.spec.kind()),
+        format!("a {} delegate started", seeded.spec.kind()),
+    )
+    .delegating(id, seeded)
 }
 
 /// Read a skill the planner was listed.

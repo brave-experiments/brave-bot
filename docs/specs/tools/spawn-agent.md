@@ -8,9 +8,9 @@ governs:
 
 ## Scope
 
-The call that starts a delegated agent. `kind` is routing; `task` is content. The result is one
-report. What a delegate is and what it may do is [delegation.md](../delegation.md); this spec is
-the call surface.
+The call that starts a delegated agent. `kind` is routing; `task` is content. The call answers as
+soon as the kernel has approved it, and the report follows later. What a delegate is, what it may
+do and how long it may live is [delegation.md](../delegation.md); this spec is the call surface.
 
 ## Clauses
 
@@ -36,9 +36,23 @@ is a delegate that never learns it.
 `verified-by: bravebot_core::policy::a_run_that_has_met_something_untrusted_cannot_delegate`
 
 <a id="AGENT-3"></a>
-### AGENT-3: the result is the report, and what shape it takes is not the tool's to decide
+### AGENT-3: the result is that a delegate started, and the report arrives on its own later
 
-What comes back is the delegate's answer, still labelled, presented like any other tool result.
+The call answers with the delegate's number as soon as the kernel has approved one, and the
+planner has its round back. What the delegate says arrives as a message of its own, before the
+planner is next asked what to do.
+
+Not as the result of this call. A result answers a call once, and by the time a delegate has
+anything to say the call it came from was answered rounds ago. A call that waited instead would
+mean a turn could only ever have one delegate working, which is the thing being removed.
+
+`verified-by: bravebot_agent::turn::two_delegates_work_at_the_same_time`
+`verified-by: bravebot_agent::turn::a_delegates_report_reaches_the_planner_that_asked_for_it`
+
+<a id="AGENT-4"></a>
+### AGENT-4: what shape the report takes is not the tool's to decide
+
+The delegate's answer is still labelled when it arrives, and presented like any other result.
 The tool reads none of it: whether the planner is shown the words or a reference to them follows
 from the label the delegate's own context earned.
 

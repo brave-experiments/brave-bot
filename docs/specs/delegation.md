@@ -122,8 +122,9 @@ Every kind carries a round limit and the call cannot set one. On the limiting ro
 loses its tools rather than its run, and answers with what it has.
 
 **Not a safety property.** A gate refuses on the last round what it refuses on the first. It
-bounds futility, and it applies here because the person who would otherwise be the bound is
-watching the turn, and the turn is blocked.
+bounds futility, and it applies here because nobody is coming to stop a delegate: the person is
+watching the turn, and a turn that has started several has no more idea than they do which of
+them is making progress.
 
 `verified-by: bravebot_core::delegate::every_kind_carries_a_bound`
 `verified-by: bravebot_core::policy::a_delegates_bound_comes_from_its_kind`
@@ -242,6 +243,52 @@ holds.
 `verified-by: bravebot_agent::turn::each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_number`
 `verified-by: bravebot_agent::turn::a_delegates_work_is_bracketed_by_the_announcements_the_interface_reads`
 
+<a id="DELEGATE-15"></a>
+### DELEGATE-15: delegates run alongside the turn and alongside each other
+
+Starting one does not stop the turn. The call answers as soon as the kernel has approved the
+delegate, the planner has its round back, and the work goes on behind it. A turn may have any
+number going at once, and what one is doing has no bearing on what another may do.
+
+Nothing is shared between two of them. Each holds its own conversation, its own quarantine and
+its own copy of what a person has vouched for, so two delegates cannot see each other's work any
+more than either can see the turn's.
+
+**Why.** A turn that asked three questions should be waiting on the slowest, not on the sum. One
+at a time also made the reading order the asking order: a build that had to finish before the
+search it has nothing to do with could begin.
+
+`verified-by: bravebot_agent::turn::two_delegates_work_at_the_same_time`
+`verified-by: bravebot_agent::turn::each_delegate_a_turn_spawns_is_numbered_and_its_work_reported_under_that_number`
+
+<a id="DELEGATE-16"></a>
+### DELEGATE-16: one person is asked one question at a time, and one trail records them all
+
+However many runs are going, the confirmer, the reporter and the audit trail are each single and
+each is taken for one call at a time. A delegate wanting a write approved while somebody is
+reading another delegate's diff waits for them to finish reading it.
+
+**Why.** The alternative is two questions on one screen, which is a person answering neither
+properly, and two trails, which is a record with a hole in it exactly over the part of the turn
+nobody watched.
+
+`verified-by: bravebot_agent::turn::a_delegates_write_is_approved_on_its_own`
+`verified-by: bravebot_agent::turn::one_trail_records_the_delegate_and_the_turn_that_spawned_it`
+
+<a id="DELEGATE-17"></a>
+### DELEGATE-17: a delegate does not outlive the turn that spawned it
+
+A turn does not answer while something it started is still working. Where the planner answers
+first, the reports are waited for, put in front of it, and it answers again knowing what came
+back. A turn that has run out of tool calls waits too, and answers without being asked again.
+
+**Why.** A person told the turn is over reasonably believes nothing of theirs is being read or
+written any more. A delegate still running is still doing both, and can still put a write in
+front of them for a turn they were told had finished.
+
+`verified-by: bravebot_agent::turn::a_turn_does_not_answer_while_a_delegate_is_still_working`
+`verified-by: bravebot_agent::turn::two_delegates_work_at_the_same_time`
+
 ## Known costs
 
 - **A reference cannot be handed to a delegate.** A parent working in a directory nobody vouched
@@ -252,10 +299,15 @@ holds.
   second place for every reference to resolve, which is the more expensive mistake.
 
 - **A person approving a write cannot see which delegate asked.** The confirmation shows the path
-  and the diff, as it always does, and the delegate's own lines are on the screen above it, but
-  the prompt itself does not say that a delegate rather than the turn is asking. Where a turn
-  spawns delegates one after another, a person reading only the prompt is approving a change
-  whose reason is a task they did not read.
+  and the diff, as it always does, but the prompt itself does not say which of several runs is
+  asking. This was a small gap while one delegate ran at a time and is a real one now that
+  several do: a person reading only the prompt is approving a change whose reason is one of
+  several tasks they did not read.
+
+- **A turn's timings no longer add up to its wall clock.** What a delegate spends is counted in
+  the turn's tokens, because the turn asked for it and somebody is paying for it. Its seconds are
+  not, because several delegates and the turn spend the same seconds at once, and a figure adding
+  them would report a turn as having taken longer than it did.
 
 - **A delegate's task is a guess about what it will need.** It cannot come back for more and it
   cannot ask, so a task missing a detail is a delegate that reports having been unable to finish,
