@@ -327,6 +327,22 @@ request field.
 `verified-by: bravebot_tui::store::a_file_naming_no_level_is_not_a_choice`
 `verified-by: bravebot_tui::store::only_the_first_effort_line_is_read`
 
+<a id="SESSION-16"></a>
+### SESSION-16: session records and directories are private to the user
+
+On Unix platforms, session directories are created with mode 0700, and session files (records,
+temporary files, and audit trails) are written with mode 0600. Existing files and directories
+are tightened on write.
+
+**Why.** Per SESSION-3, session records hold the full conversation history, prompts, model
+responses, file snippets shown to the planner, and accumulated standing permissions. Without
+restricted modes, records land at the default process umask (typically 0644 for files and 0755
+for directories), leaving private code, potential secrets, and granted permissions readable by
+any local account on multi-user machines and shared hosts.
+
+`verified-by: bravebot_tui::sessions::session_records_and_audit_trails_are_written_mode_0600`
+`verified-by: bravebot_tui::sessions::pre_existing_session_files_and_directories_are_tightened_on_write`
+
 
 ## Known costs
 

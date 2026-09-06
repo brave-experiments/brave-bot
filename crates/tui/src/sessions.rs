@@ -25,6 +25,15 @@
 //! the screen. The quarantine is not written at all, and the audit is labels and gate names with
 //! no content in it. See [`bravebot_agent::conversation::Snapshot`].
 //!
+//! # Permissions
+//!
+//! Session files and directories are restricted to the current user. On Unix systems, session
+//! directories are created with mode 0700 and session records, temporary files, and audit trails
+//! are written with mode 0600. A conversation record contains source code from private
+//! repositories, secrets appearing in context, and standing permissions accumulated during
+//! execution; keeping permissions restricted prevents other local accounts on shared machines from
+//! reading them.
+//!
 //! Everything degrades to doing nothing. A missing home, a full disk, a corrupt record: a
 //! session that cannot be written down still runs, and one that cannot be read is left out of
 //! the list rather than taken as a reason to fail.
@@ -521,7 +530,7 @@ impl Handle {
         };
         // Beside and renamed, as `save` does, so an interrupted rename leaves the record it had.
         let temporary = directory.join(format!("{}.tmp", self.id));
-        if std::fs::write(&temporary, body).is_ok() {
+        if write_secure(&temporary, &body).is_ok() {
             let _ = std::fs::rename(&temporary, path);
         }
     }
@@ -596,7 +605,7 @@ impl Handle {
         // Written beside and renamed, so a session killed mid-write leaves the last good record
         // rather than half of a new one.
         let temporary = directory.join(format!("{}.tmp", self.id));
-        if std::fs::write(&temporary, body).is_ok()
+        if write_secure(&temporary, &body).is_ok()
             && std::fs::rename(&temporary, directory.join(format!("{}.json", self.id))).is_ok()
         {
             self.wrote = true;
@@ -627,11 +636,22 @@ impl Handle {
             body.push('\n');
         }
 
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(directory.join(format!("{}.audit.jsonl", self.id)))
-            .and_then(|mut file| file.write_all(body.as_bytes()));
+        let path = directory.join(format!("{}.audit.jsonl", self.id));
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let _ = options.open(&path).and_then(|mut file| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
+            file.write_all(body.as_bytes())
+        });
     }
 
     /// The directory to write into, made on first use.
@@ -640,8 +660,57 @@ impl Handle {
         // incognito session that left an empty directory behind would have recorded which projects
         // were worked on and when, which is most of what the record was for.
         let directory = writable_project_directory(&self.project)?;
-        std::fs::create_dir_all(&directory).ok()?;
+        ensure_dir_secure(&directory).ok()?;
         Some(directory)
+    }
+}
+
+/// Write a session file with mode 0600 on Unix.
+///
+/// Created mode 0600 before content is written, matching credentials and scratch files,
+/// rather than written and then tightened: the other order leaves conversation content
+/// world-readable for the moment in between. An existing file is tightened on write as well.
+fn write_secure(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    file.write_all(content)?;
+    file.flush()
+}
+
+/// Ensure a directory exists with mode 0700 permissions on Unix.
+///
+/// Created mode 0700 so that conversation records under it are only reachable by the user.
+/// Existing directories are tightened to mode 0700 as well.
+fn ensure_dir_secure(directory: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(directory)?;
+        let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
+        if let Some(parent) = directory.parent()
+            && parent.file_name().is_some_and(|n| n == SESSIONS)
+        {
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(directory)
     }
 }
 

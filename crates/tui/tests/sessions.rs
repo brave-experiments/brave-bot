@@ -950,3 +950,184 @@ fn a_session_that_changes_directory_is_recorded_where_it_moved_to() {
         "the new directory's answer was left in the old directory's list"
     );
 }
+
+/// Session records, temporary files, and audit trails must be private to the current user (mode 0600),
+/// and the session directory must not be readable by others (mode 0700).
+#[cfg(unix)]
+#[test]
+fn session_records_and_audit_trails_are_written_mode_0600() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new("secure-permissions");
+    let mut handle = Handle::begin(&scratch.project);
+
+    let conversation = a_conversation();
+    let programs = a_program_list();
+    let todos = a_plan();
+    let spend = BTreeMap::new();
+    let timing = BTreeMap::new();
+    let trust = TrustStore::new();
+
+    handle.save(
+        "private work",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 100,
+            spend: &spend,
+            timing: &timing,
+            model: None,
+            todos: &todos,
+            trust: &trust,
+            programs: &programs,
+            directories: &[],
+            manifest: None,
+        },
+    );
+
+    handle.append_audit(
+        1,
+        &stamped(vec![Event::Observed {
+            capability: Capability::FileRead,
+            label: Label::untrusted_private(),
+        }]),
+    );
+
+    let dir = sessions::project_directory(&scratch.project).expect("project directory");
+    let dir_mode = std::fs::metadata(&dir)
+        .expect("directory metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        dir_mode & 0o077,
+        0,
+        "group or other can access session directory: {:o}",
+        dir_mode
+    );
+
+    let parent = dir.parent().expect("sessions parent");
+    let parent_mode = std::fs::metadata(parent)
+        .expect("parent metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        parent_mode & 0o077,
+        0,
+        "group or other can access parent sessions directory: {:o}",
+        parent_mode
+    );
+
+    let record_path = dir.join(format!("{}.json", handle.id()));
+    let record_mode = std::fs::metadata(&record_path)
+        .expect("record metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        record_mode & 0o077,
+        0,
+        "group or other can read session record: {:o}",
+        record_mode
+    );
+
+    let audit_path = dir.join(format!("{}.audit.jsonl", handle.id()));
+    let audit_mode = std::fs::metadata(&audit_path)
+        .expect("audit metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        audit_mode & 0o077,
+        0,
+        "group or other can read session audit: {:o}",
+        audit_mode
+    );
+}
+
+/// If a session record or audit file already exists with looser permissions,
+/// saving or appending tightens its permissions back to mode 0600.
+#[cfg(unix)]
+#[test]
+fn pre_existing_session_files_and_directories_are_tightened_on_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new("tighten-permissions");
+    let dir = sessions::project_directory(&scratch.project).expect("project directory");
+    std::fs::create_dir_all(&dir).expect("create directory");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod dir");
+
+    let mut handle = Handle::begin(&scratch.project);
+    let record_path = dir.join(format!("{}.json", handle.id()));
+    let audit_path = dir.join(format!("{}.audit.jsonl", handle.id()));
+
+    // Create both files with loose permissions (0644) beforehand.
+    std::fs::write(&record_path, b"{}").expect("write record");
+    std::fs::set_permissions(&record_path, std::fs::Permissions::from_mode(0o644))
+        .expect("chmod record");
+    std::fs::write(&audit_path, b"").expect("write audit");
+    std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o644))
+        .expect("chmod audit");
+
+    let conversation = a_conversation();
+    let programs = a_program_list();
+    let todos = a_plan();
+    let spend = BTreeMap::new();
+    let timing = BTreeMap::new();
+    let trust = TrustStore::new();
+
+    handle.save(
+        "tighten work",
+        Standing {
+            conversation: &conversation.snapshot(),
+            turns: 1,
+            tokens: 100,
+            spend: &spend,
+            timing: &timing,
+            model: None,
+            todos: &todos,
+            trust: &trust,
+            programs: &programs,
+            directories: &[],
+            manifest: None,
+        },
+    );
+
+    handle.append_audit(
+        1,
+        &stamped(vec![Event::Observed {
+            capability: Capability::FileRead,
+            label: Label::untrusted_private(),
+        }]),
+    );
+
+    let dir_mode = std::fs::metadata(&dir)
+        .expect("directory metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        dir_mode & 0o077,
+        0,
+        "directory was not tightened to 0700: {:o}",
+        dir_mode
+    );
+
+    let record_mode = std::fs::metadata(&record_path)
+        .expect("record metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        record_mode & 0o077,
+        0,
+        "record was not tightened to 0600: {:o}",
+        record_mode
+    );
+
+    let audit_mode = std::fs::metadata(&audit_path)
+        .expect("audit metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        audit_mode & 0o077,
+        0,
+        "audit was not tightened to 0600: {:o}",
+        audit_mode
+    );
+}
