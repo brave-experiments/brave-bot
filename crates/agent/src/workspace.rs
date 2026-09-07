@@ -881,6 +881,15 @@ const SNIFF_BYTES: usize = 8_192;
 /// Vendored code is the entry that earns its place by experience: a search for a common word
 /// spent its entire budget inside a Rust crate mirror and reported documentation comments
 /// about the wrong meaning of the word, having never reached the project.
+/// Whether a directory of this name is one a walk steps over.
+///
+/// Shared so that everything walking the tree skips the same names. A pattern expanded for a
+/// command line and a listing shown to a person that disagreed about `node_modules` would be two
+/// different ideas of what the tree contains.
+pub fn is_ignored_directory(name: &str) -> bool {
+    IGNORED_DIRECTORIES.contains(&name)
+}
+
 const IGNORED_DIRECTORIES: &[&str] = &[
     // Version control.
     ".git",
@@ -1388,7 +1397,7 @@ impl Workspace {
                 // Version control, build output and vendored dependencies would dominate a
                 // listing without adding anything a task needs.
                 let name = entry.file_name();
-                if IGNORED_DIRECTORIES.contains(&name.to_string_lossy().as_ref()) {
+                if is_ignored_directory(name.to_string_lossy().as_ref()) {
                     continue;
                 }
                 directories.push(entry.path());

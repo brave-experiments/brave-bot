@@ -201,7 +201,19 @@ Ignored directories are ignored the way the tree walk ignores them, so `**` does
 **Why bounded.** An approval prompt long enough that nobody reads it is a prompt that grants
 everything and asks nothing.
 
-`verified-by: none`
+`verified-by: bravebot_agent::cmdline::a_pattern_becomes_the_files_it_matches`
+`verified-by: bravebot_agent::cmdline::a_pattern_matches_within_one_segment_and_a_tree_across_them`
+`verified-by: bravebot_agent::cmdline::a_pattern_matching_nothing_is_refused_rather_than_passed_through`
+`verified-by: bravebot_agent::cmdline::expansion_is_bounded_and_the_refusal_says_the_count`
+`verified-by: bravebot_agent::cmdline::a_tree_pattern_does_not_descend_into_an_ignored_directory`
+`verified-by: bravebot_agent::cmdline::a_dot_file_is_matched_only_by_a_pattern_that_writes_the_dot`
+`verified-by: bravebot_agent::cmdline::a_class_matches_the_characters_it_names`
+`verified-by: bravebot_agent::cmdline::a_word_with_no_pattern_names_a_file_that_need_not_exist`
+`verified-by: bravebot_agent::cmdline::a_quoted_pattern_is_not_expanded`
+`verified-by: bravebot_agent::cmdline::braces_multiply_a_word`
+`verified-by: bravebot_agent::cmdline::a_range_counts_and_keeps_the_padding_it_was_written_with`
+`verified-by: bravebot_agent::cmdline::a_leading_tilde_becomes_the_home_directory`
+`verified-by: bravebot_agent::cmdline::a_tilde_with_no_home_to_stand_for_is_refused`
 
 <a id="CMDLINE-5"></a>
 ### CMDLINE-5: a redirection target is a write destination and takes the write gates

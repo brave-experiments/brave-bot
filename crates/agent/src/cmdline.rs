@@ -27,6 +27,7 @@
 //! makes every one of them ordinary text, because a quoted `$` is a dollar sign and nothing more.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 /// Where in the line something is, as a byte range.
 ///
@@ -211,6 +212,14 @@ pub enum Reason {
     Unclosed(char),
     /// A `NAME=` whose value is not literal text.
     AssignmentValue,
+    /// A pattern that matched no file.
+    NoMatch,
+    /// A word standing for more arguments than a person can be shown at one prompt.
+    TooMany { found: usize, cap: usize },
+    /// A walk that read more directories than the ceiling allows.
+    TooDeep { cap: usize },
+    /// A `~` where this user has no home directory.
+    NoHome,
     /// Anything the shape of the line gets wrong.
     Syntax(&'static str),
 }
@@ -257,6 +266,18 @@ impl fmt::Display for Reason {
             Self::AssignmentValue => f.write_str(
                 "an assignment's value must be literal text, so that the plan shows what the program will see",
             ),
+            Self::NoMatch => f.write_str(
+                "matched no file. A pattern standing for nothing is not an argument, so there is no plan to show",
+            ),
+            Self::TooMany { found, cap } => write!(
+                f,
+                "stands for {found} arguments, and at most {cap} can be put to a person at one prompt"
+            ),
+            Self::TooDeep { cap } => write!(
+                f,
+                "would read more than {cap} directories to work out what it matches. Name a narrower pattern"
+            ),
+            Self::NoHome => f.write_str("this user has no home directory to stand for"),
             Self::Syntax(detail) => f.write_str(detail),
         }
     }
@@ -1163,6 +1184,478 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// How many arguments one word may stand for.
+///
+/// A prompt long enough that nobody reads it is a prompt that grants everything and asks nothing,
+/// so the bound is what a person can still take in rather than what a machine can produce.
+pub const MAX_ARGUMENTS: usize = 100;
+
+/// How many directories working out one pattern may read.
+///
+/// `**` over a large tree is a walk, and a walk with no ceiling holds the turn open while nothing
+/// is shown. Reaching this is a refusal naming the ceiling, never a partial answer: a plan built
+/// from half a walk is a plan that does not match the line.
+pub const MAX_DIRECTORIES: usize = 4096;
+
+/// What one word stands for.
+///
+/// Braces multiply, `~` becomes a path, and a pattern becomes the files it matches, sorted. A word
+/// with no pattern in it stands for itself and touches no filesystem, so a target that does not
+/// exist yet is still an argument.
+///
+/// `directory` is where the command will run, which is what a relative pattern is relative to.
+pub fn expand(word: &Word, directory: &Path, home: Option<&Path>) -> Result<Vec<String>, Refused> {
+    let refused = |reason| Refused {
+        span: word.span,
+        text: render(&word.pieces),
+        reason,
+    };
+
+    // Counted before anything is built, so the bound limits the work rather than only the answer.
+    let count = alternative_count(&word.pieces);
+    if count > MAX_ARGUMENTS {
+        return Err(refused(Reason::TooMany {
+            found: count,
+            cap: MAX_ARGUMENTS,
+        }));
+    }
+
+    let mut out = Vec::new();
+    for candidate in alternatives(&word.pieces) {
+        let candidate = resolve_home(&candidate, home).ok_or_else(|| refused(Reason::NoHome))?;
+        if !candidate.iter().any(is_pattern) {
+            // Nothing to work out, so nothing is read. `> out.txt` names a file that does not
+            // exist yet, and a pattern-free word must not be judged against what is on disk.
+            out.push(render(&candidate));
+            continue;
+        }
+        let matched = walk(directory, &candidate).map_err(refused)?;
+        if matched.is_empty() {
+            // Never the pattern itself. A shell passes an unmatched pattern through as an
+            // argument, which is the one thing nobody ever means by writing it.
+            return Err(refused(Reason::NoMatch));
+        }
+        out.extend(matched);
+    }
+
+    if out.len() > MAX_ARGUMENTS {
+        return Err(refused(Reason::TooMany {
+            found: out.len(),
+            cap: MAX_ARGUMENTS,
+        }));
+    }
+    Ok(out)
+}
+
+/// Whether a piece stands for something that has to be looked up on disk.
+fn is_pattern(piece: &Piece) -> bool {
+    matches!(
+        piece,
+        Piece::Any | Piece::One | Piece::Tree | Piece::Class(_)
+    )
+}
+
+/// A word's pieces as the pattern they were written as.
+///
+/// The spelling a refusal quotes back, and the text a pattern-free word simply is.
+fn render(pieces: &[Piece]) -> String {
+    let mut out = String::new();
+    for piece in pieces {
+        match piece {
+            Piece::Text(text) => out.push_str(text),
+            Piece::Any => out.push('*'),
+            Piece::One => out.push('?'),
+            Piece::Tree => out.push_str("**"),
+            Piece::Class(body) => {
+                out.push('[');
+                out.push_str(body);
+                out.push(']');
+            }
+            Piece::Alternatives(options) => {
+                out.push('{');
+                for (index, option) in options.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&render(option));
+                }
+                out.push('}');
+            }
+            Piece::Range { from, to, width } => {
+                out.push('{');
+                out.push_str(&pad(*from, *width));
+                out.push_str("..");
+                out.push_str(&pad(*to, *width));
+                out.push('}');
+            }
+            Piece::Home => out.push('~'),
+        }
+    }
+    out
+}
+
+/// `n` as text, zero-padded to `width` where a padded range asked for it.
+fn pad(n: i64, width: usize) -> String {
+    if width == 0 {
+        return n.to_string();
+    }
+    let digits = n.unsigned_abs().to_string();
+    let sign = if n < 0 { 1 } else { 0 };
+    let zeros = width.saturating_sub(digits.len() + sign);
+    format!(
+        "{}{}{}",
+        if n < 0 { "-" } else { "" },
+        "0".repeat(zeros),
+        digits
+    )
+}
+
+/// How many words the braces in `pieces` multiply out to.
+///
+/// Saturating, because the answer to an absurd range is only ever used to refuse it.
+fn alternative_count(pieces: &[Piece]) -> usize {
+    let mut total = 1usize;
+    for piece in pieces {
+        let factor = match piece {
+            Piece::Alternatives(options) => options
+                .iter()
+                .map(|option| alternative_count(option))
+                .fold(0usize, usize::saturating_add),
+            Piece::Range { from, to, .. } => usize::try_from(from.abs_diff(*to))
+                .unwrap_or(usize::MAX)
+                .saturating_add(1),
+            _ => 1,
+        };
+        total = total.saturating_mul(factor);
+    }
+    total
+}
+
+/// The words the braces in `pieces` stand for, in the order a reader would write them.
+fn alternatives(pieces: &[Piece]) -> Vec<Vec<Piece>> {
+    let mut out: Vec<Vec<Piece>> = vec![Vec::new()];
+    for piece in pieces {
+        match piece {
+            Piece::Alternatives(options) => {
+                let mut next = Vec::new();
+                for base in &out {
+                    for option in options {
+                        for tail in alternatives(option) {
+                            let mut one = base.clone();
+                            one.extend(tail);
+                            next.push(one);
+                        }
+                    }
+                }
+                out = next;
+            }
+            Piece::Range { from, to, width } => {
+                // A descending range counts down, which is what somebody writing `{9..1}` asked
+                // for.
+                let numbers: Vec<i64> = if from <= to {
+                    (*from..=*to).collect()
+                } else {
+                    (*to..=*from).rev().collect()
+                };
+                let mut next = Vec::new();
+                for base in &out {
+                    for n in &numbers {
+                        let mut one = base.clone();
+                        one.push(Piece::Text(pad(*n, *width)));
+                        next.push(one);
+                    }
+                }
+                out = next;
+            }
+            other => {
+                for one in &mut out {
+                    one.push(other.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `pieces` with a leading `~` replaced by the home directory it stands for.
+fn resolve_home(pieces: &[Piece], home: Option<&Path>) -> Option<Vec<Piece>> {
+    if !pieces.first().is_some_and(|piece| *piece == Piece::Home) {
+        return Some(pieces.to_vec());
+    }
+    let home = home?.to_string_lossy().into_owned();
+    let mut out = vec![Piece::Text(home)];
+    out.extend(pieces[1..].iter().cloned());
+    Some(out)
+}
+
+/// One `/`-separated part of a pattern.
+enum Part {
+    /// Text, matching one name exactly and needing no directory read.
+    Name(String),
+    /// A pattern, matched against the names in one directory.
+    Pattern(Vec<Piece>),
+    /// `**`, standing for any number of directories.
+    Tree,
+}
+
+/// Split a pattern into the parts a walk takes one at a time.
+///
+/// Empty parts are dropped, so `src/` and `a//b` mean what a reader means by them. Whether the
+/// pattern was absolute is the caller's to notice, since a leading `/` is one of those empties.
+fn parts(pieces: &[Piece]) -> Vec<Part> {
+    let mut out: Vec<Vec<Piece>> = Vec::new();
+    let mut current: Vec<Piece> = Vec::new();
+    for piece in pieces {
+        match piece {
+            Piece::Text(text) => {
+                for (index, segment) in text.split('/').enumerate() {
+                    if index > 0 {
+                        out.push(std::mem::take(&mut current));
+                    }
+                    if !segment.is_empty() {
+                        current.push(Piece::Text(segment.to_string()));
+                    }
+                }
+            }
+            other => current.push(other.clone()),
+        }
+    }
+    out.push(current);
+
+    out.into_iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if part.len() == 1 && part[0] == Piece::Tree {
+                return Part::Tree;
+            }
+            match literal_of(&part) {
+                Some(name) => Part::Name(name),
+                None => Part::Pattern(part),
+            }
+        })
+        .collect()
+}
+
+/// The paths `pieces` matches, sorted.
+///
+/// Iterative rather than recursive, so a `**` over a deep tree cannot exhaust the stack. Symlinks
+/// are stepped over the way the tree walk steps over them, which also settles what a cycle does.
+fn walk(directory: &Path, pieces: &[Piece]) -> Result<Vec<String>, Reason> {
+    let absolute = matches!(pieces.first(), Some(Piece::Text(text)) if text.starts_with('/'));
+    let parts = parts(pieces);
+    let base: PathBuf = if absolute {
+        PathBuf::from("/")
+    } else {
+        directory.to_path_buf()
+    };
+
+    let mut found: Vec<String> = Vec::new();
+    let mut read = 0usize;
+    let mut pending: Vec<(String, usize)> = vec![(String::new(), 0)];
+
+    while let Some((relative, index)) = pending.pop() {
+        if index == parts.len() {
+            found.push(if absolute {
+                format!("/{relative}")
+            } else {
+                relative
+            });
+            continue;
+        }
+        match &parts[index] {
+            // A name is either there or it is not, so nothing is enumerated to find out.
+            Part::Name(name) => {
+                let next = extend(&relative, name);
+                if base.join(&next).symlink_metadata().is_ok() {
+                    pending.push((next, index + 1));
+                }
+            }
+            Part::Tree => {
+                read += 1;
+                if read > MAX_DIRECTORIES {
+                    return Err(Reason::TooDeep {
+                        cap: MAX_DIRECTORIES,
+                    });
+                }
+                // `**` stands for no directories as readily as for several, so the rest of the
+                // pattern is tried here as well as below.
+                pending.push((relative.clone(), index + 1));
+                for (name, is_dir) in entries(&base.join(&relative)) {
+                    if !is_dir
+                        || name.starts_with('.')
+                        || crate::workspace::is_ignored_directory(&name)
+                    {
+                        continue;
+                    }
+                    pending.push((extend(&relative, &name), index));
+                }
+            }
+            Part::Pattern(part) => {
+                read += 1;
+                if read > MAX_DIRECTORIES {
+                    return Err(Reason::TooDeep {
+                        cap: MAX_DIRECTORIES,
+                    });
+                }
+                let last = index + 1 == parts.len();
+                for (name, is_dir) in entries(&base.join(&relative)) {
+                    if !matches_name(part, &name) || (!last && !is_dir) {
+                        continue;
+                    }
+                    pending.push((extend(&relative, &name), index + 1));
+                }
+            }
+        }
+    }
+
+    // Sorted so that the same line compiles to the same plan every time. An endorsement is bound
+    // to the plan, and a plan whose argument order came out of a directory read would not be.
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+/// `relative` with `name` on the end.
+fn extend(relative: &str, name: &str) -> String {
+    if relative.is_empty() {
+        name.to_string()
+    } else {
+        format!("{relative}/{name}")
+    }
+}
+
+/// The names in `directory`, each with whether it is a directory.
+///
+/// A symlink is neither, and is left out: following one would reach outside the tree being
+/// walked, and a link to an ancestor would make the walk endless.
+fn entries(directory: &Path) -> Vec<(String, bool)> {
+    let Ok(reading) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in reading.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        out.push((
+            entry.file_name().to_string_lossy().into_owned(),
+            kind.is_dir(),
+        ));
+    }
+    out
+}
+
+/// Whether one directory entry's name matches one part of a pattern.
+fn matches_name(part: &[Piece], name: &str) -> bool {
+    // A name beginning with a dot is matched only by a pattern that writes the dot, which is the
+    // rule a shell uses and the reason `*` does not sweep up `.git`.
+    if name.starts_with('.')
+        && !matches!(part.first(), Some(Piece::Text(text)) if text.starts_with('.'))
+    {
+        return false;
+    }
+    matches_atoms(&atoms(part), name)
+}
+
+/// One character's worth of a pattern.
+enum Atom<'a> {
+    Char(char),
+    /// `?`
+    One,
+    /// `[…]`
+    Class(&'a str),
+    /// `*`, and `**` where one appears inside a name rather than as a whole part.
+    Star,
+}
+
+fn atoms(part: &[Piece]) -> Vec<Atom<'_>> {
+    let mut out = Vec::new();
+    for piece in part {
+        match piece {
+            Piece::Text(text) => out.extend(text.chars().map(Atom::Char)),
+            Piece::One => out.push(Atom::One),
+            Piece::Any | Piece::Tree => out.push(Atom::Star),
+            Piece::Class(body) => out.push(Atom::Class(body)),
+            // Braces are gone before a pattern is walked, and a `~` is a path by then.
+            Piece::Alternatives(_) | Piece::Range { .. } | Piece::Home => {}
+        }
+    }
+    out
+}
+
+/// Whether `name` matches `atoms`.
+///
+/// One pass forward with a single remembered `*`, so the work is the name's length times the
+/// pattern's and a hostile pattern costs nothing unusual. Patterns arrive through a turn, and a
+/// backtracking matcher would turn one into a way to hold the turn open.
+fn matches_atoms(atoms: &[Atom<'_>], name: &str) -> bool {
+    let name: Vec<char> = name.chars().collect();
+    let mut at = 0;
+    let mut into = 0;
+    let mut star: Option<(usize, usize)> = None;
+
+    while into < name.len() {
+        let matched = match atoms.get(at) {
+            Some(Atom::Star) => {
+                star = Some((at + 1, into));
+                at += 1;
+                continue;
+            }
+            Some(Atom::Char(c)) => *c == name[into],
+            Some(Atom::One) => true,
+            Some(Atom::Class(body)) => class_matches(body, name[into]),
+            None => false,
+        };
+        if matched {
+            at += 1;
+            into += 1;
+            continue;
+        }
+        // Give the remembered `*` one more character and carry on from there.
+        match star {
+            Some((resume, from)) => {
+                at = resume;
+                into = from + 1;
+                star = Some((resume, from + 1));
+            }
+            None => return false,
+        }
+    }
+
+    while matches!(atoms.get(at), Some(Atom::Star)) {
+        at += 1;
+    }
+    at == atoms.len()
+}
+
+/// Whether `c` is in the bracket expression `body`.
+fn class_matches(body: &str, c: char) -> bool {
+    let (negated, body) = match body.strip_prefix(['!', '^']) {
+        Some(rest) => (true, rest),
+        None => (false, body),
+    };
+    let chars: Vec<char> = body.chars().collect();
+    let mut at = 0;
+    let mut hit = false;
+    while at < chars.len() {
+        if at + 2 < chars.len() && chars[at + 1] == '-' {
+            if chars[at] <= c && c <= chars[at + 2] {
+                hit = true;
+            }
+            at += 3;
+        } else {
+            if chars[at] == c {
+                hit = true;
+            }
+            at += 1;
+        }
+    }
+    hit != negated
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1577,5 +2070,187 @@ mod tests {
     #[test]
     fn an_empty_line_is_refused() {
         assert!(matches!(refused("   ").reason, Reason::Syntax(_)));
+    }
+
+    /// A scratch tree to expand patterns against.
+    struct Tree {
+        root: PathBuf,
+    }
+
+    impl Tree {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("bravebot-cmdline-{name}"));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("a scratch directory");
+            Self { root }
+        }
+
+        fn file(&self, relative: &str) -> &Self {
+            let path = self.root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("a scratch directory");
+            }
+            std::fs::write(&path, b"x").expect("a scratch file");
+            self
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn nth_word(line: &str, index: usize) -> Word {
+        command(line).words.swap_remove(index)
+    }
+
+    fn expanded(line: &str, index: usize, at: &Path) -> Vec<String> {
+        expand(&nth_word(line, index), at, None)
+            .unwrap_or_else(|e| panic!("`{line}` should expand, and was refused: {e}"))
+    }
+
+    fn expansion_refused(line: &str, index: usize, at: &Path) -> Refused {
+        expand(&nth_word(line, index), at, None).expect_err("should have been refused")
+    }
+
+    /// The person is shown the file list rather than the pattern, so the pattern has to be gone
+    /// by the time there is a plan. Sorted, because an endorsement is bound to the plan and a
+    /// plan whose order came out of a directory read would not be stable.
+    #[test]
+    fn a_pattern_becomes_the_files_it_matches() {
+        let tree = Tree::new("matches");
+        tree.file("b.rs").file("a.rs").file("c.txt");
+        assert_eq!(expanded("ls *.rs", 1, &tree.root), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn a_pattern_matches_within_one_segment_and_a_tree_across_them() {
+        let tree = Tree::new("segments");
+        tree.file("a.rs").file("sub/d.rs").file("sub/deep/e.rs");
+        assert_eq!(expanded("ls sub/*.rs", 1, &tree.root), ["sub/d.rs"]);
+        assert_eq!(
+            expanded("ls **/*.rs", 1, &tree.root),
+            ["a.rs", "sub/d.rs", "sub/deep/e.rs"]
+        );
+    }
+
+    /// A pattern standing for nothing is not an argument. A shell hands the pattern through as
+    /// text, which is never what anybody writing one meant, and would put a plan in front of a
+    /// person that reads as a list of files and is not one.
+    #[test]
+    fn a_pattern_matching_nothing_is_refused_rather_than_passed_through() {
+        let tree = Tree::new("nothing");
+        tree.file("a.rs");
+        let refusal = expansion_refused("ls *.zzz", 1, &tree.root);
+        assert_eq!(refusal.reason, Reason::NoMatch);
+        assert_eq!(refusal.text, "*.zzz");
+    }
+
+    /// An approval prompt long enough that nobody reads it is a prompt that grants everything and
+    /// asks nothing. The count is in the refusal so the planner knows how much narrower to be.
+    #[test]
+    fn expansion_is_bounded_and_the_refusal_says_the_count() {
+        let tree = Tree::new("bounded");
+        let refusal = expansion_refused("echo {1..500}", 1, &tree.root);
+        assert_eq!(
+            refusal.reason,
+            Reason::TooMany {
+                found: 500,
+                cap: MAX_ARGUMENTS
+            }
+        );
+        assert!(refusal.to_string().contains("500"));
+    }
+
+    /// The same names a listing steps over, so that one idea of what the tree contains serves
+    /// both. Otherwise `**` would sweep a vendored dependency into a plan a person then endorses.
+    #[test]
+    fn a_tree_pattern_does_not_descend_into_an_ignored_directory() {
+        let tree = Tree::new("ignored");
+        tree.file("keep/x.rs")
+            .file("node_modules/y.rs")
+            .file(".git/z.rs")
+            .file("target/w.rs");
+        assert_eq!(expanded("ls **/*.rs", 1, &tree.root), ["keep/x.rs"]);
+    }
+
+    /// A word with no pattern in it is not judged against what is on disk. `> out.txt` names a
+    /// file that does not exist yet, and refusing it would make redirection useless.
+    #[test]
+    fn a_word_with_no_pattern_names_a_file_that_need_not_exist() {
+        let tree = Tree::new("absent");
+        assert_eq!(expanded("echo nope.txt", 1, &tree.root), ["nope.txt"]);
+    }
+
+    #[test]
+    fn braces_multiply_a_word() {
+        let tree = Tree::new("braces");
+        assert_eq!(
+            expanded("echo {a,b}{1,2}", 1, &tree.root),
+            ["a1", "a2", "b1", "b2"]
+        );
+    }
+
+    #[test]
+    fn a_range_counts_and_keeps_the_padding_it_was_written_with() {
+        let tree = Tree::new("range");
+        assert_eq!(expanded("echo {1..3}", 1, &tree.root), ["1", "2", "3"]);
+        assert_eq!(expanded("echo {08..10}", 1, &tree.root), ["08", "09", "10"]);
+        assert_eq!(expanded("echo {3..1}", 1, &tree.root), ["3", "2", "1"]);
+    }
+
+    /// The rule a shell uses, and the reason `*` does not sweep up `.git` even where the walk
+    /// would have descended into it.
+    #[test]
+    fn a_dot_file_is_matched_only_by_a_pattern_that_writes_the_dot() {
+        let tree = Tree::new("dotfiles");
+        tree.file(".hidden").file("visible");
+        assert_eq!(expanded("ls *", 1, &tree.root), ["visible"]);
+        assert_eq!(expanded("ls .*", 1, &tree.root), [".hidden"]);
+    }
+
+    #[test]
+    fn a_class_matches_the_characters_it_names() {
+        let tree = Tree::new("class");
+        tree.file("a1.txt").file("a2.txt").file("ab.txt");
+        assert_eq!(
+            expanded("ls a[0-9].txt", 1, &tree.root),
+            ["a1.txt", "a2.txt"]
+        );
+        assert_eq!(expanded("ls a[!0-9].txt", 1, &tree.root), ["ab.txt"]);
+    }
+
+    /// A `~` stands for a path, so what reaches the plan is the path and not the character. The
+    /// home directory is passed in rather than read here, so the answer does not depend on whose
+    /// machine the test runs on.
+    #[test]
+    fn a_leading_tilde_becomes_the_home_directory() {
+        let word = nth_word("ls ~/src", 1);
+        let expanded = expand(&word, Path::new("/"), Some(Path::new("/home/someone")))
+            .expect("a tilde with a home to stand for");
+        assert_eq!(expanded, ["/home/someone/src"]);
+    }
+
+    /// Without a home there is no path to put in the plan, and inventing one would show a person
+    /// a destination that is not where the bytes would go.
+    #[test]
+    fn a_tilde_with_no_home_to_stand_for_is_refused() {
+        let word = nth_word("ls ~/src", 1);
+        assert_eq!(
+            expand(&word, Path::new("/"), None)
+                .expect_err("no home")
+                .reason,
+            Reason::NoHome
+        );
+    }
+
+    /// Quoting decides this as it decides everything else here: a quoted pattern is the
+    /// characters it is made of, and nothing is read to work out what it stands for.
+    #[test]
+    fn a_quoted_pattern_is_not_expanded() {
+        let tree = Tree::new("quoted");
+        tree.file("a.rs");
+        assert_eq!(expanded("ls '*.rs'", 1, &tree.root), ["*.rs"]);
     }
 }
