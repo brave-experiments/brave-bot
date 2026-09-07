@@ -463,6 +463,16 @@ pub struct Task {
     /// caller's business. Empty by default, which is a session that behaves as it did before a
     /// settings file could say anything.
     pub permissions: Permissions,
+    /// How much this turn asks before it acts.
+    ///
+    /// Carried by the task because the planner has to be told about one of them: plan mode refuses
+    /// writes however the person would have answered, and a planner reading an unexplained refusal
+    /// retries. The others change who answers a question rather than anything about the work, and
+    /// say nothing. See [`crate::PermissionMode::instruction`].
+    ///
+    /// The confirmer enforces it. This is the half the model is told, and the two are set from the
+    /// same value by the caller.
+    pub permission_mode: crate::PermissionMode,
     /// Which tick of a loop this turn is, where a caller is running one.
     ///
     /// `None` for an ordinary turn, and for a prompt the person typed in the middle of a loop.
@@ -522,6 +532,8 @@ impl Task {
             // wrong in the cheaper direction.
             rounds: Some(MAX_TOOL_ROUNDS),
             permissions: Permissions::new(),
+            // Asking, which is what a turn has always done.
+            permission_mode: crate::PermissionMode::default(),
             delegate: None,
         }
     }
@@ -609,6 +621,15 @@ impl Task {
     /// Say which tick of a loop this turn is.
     pub fn ticking(mut self, tick: Option<Tick>) -> Self {
         self.tick = tick;
+        self
+    }
+
+    /// Say how much this turn asks before it acts.
+    ///
+    /// The caller must give the same mode to [`crate::Confining`], which is what enforces it. This
+    /// only decides what the planner is told.
+    pub fn with_permission_mode(mut self, mode: crate::PermissionMode) -> Self {
+        self.permission_mode = mode;
         self
     }
 }
@@ -1281,13 +1302,20 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // A delegate's is its kind's, and the planner cannot write a word of it: what it chose was a
     // name out of an enumerated set, and the set is the driver's. What both prompts share is the
     // middle of them, which is `PLANNING`.
+    //
+    // The mode goes last of all, after the user's own standing instructions, because it is the more
+    // specific thing: a rule about this turn rather than about how work is done here. On both
+    // prompts, since a delegate writing files in plan mode would be the mode failing exactly where
+    // nobody is watching the writes. Only plan mode says anything: see
+    // `PermissionMode::instruction`.
+    let mode = task.permission_mode.instruction().unwrap_or_default();
     let system = match &task.delegate {
         Some(spec) => format!(
-            "{}{}",
+            "{}{}{mode}",
             crate::delegate::prompt_for(spec.kind()),
             preamble.text
         ),
-        None => format!("{OPENING}{PLANNING}{FOR_A_PERSON}{}", preamble.text),
+        None => format!("{OPENING}{PLANNING}{FOR_A_PERSON}{}{mode}", preamble.text),
     };
 
     // Read context files. Paths come from precommitted routing, so a path is trusted by
@@ -1794,6 +1822,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             workspace,
                             task.home.as_deref(),
                             task.model.as_deref(),
+                            task.permission_mode,
                             cancel,
                             &mut confirmer,
                             &mut reporter,

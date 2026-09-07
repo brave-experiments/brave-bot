@@ -312,6 +312,20 @@ fn starts_a_line(key: KeyEvent) -> bool {
     }
 }
 
+/// Whether a key press asks for the next permission mode.
+///
+/// Shift-Tab, which reaches this process as either of two things: a terminal that has been asked to
+/// disambiguate reports Tab with a Shift modifier, and one that has not sends the older `BackTab`.
+/// Both are accepted, since which arrives is the terminal's choice and a binding that worked on one
+/// machine and not the next would read as broken.
+fn cycles_the_mode(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::BackTab => true,
+        KeyCode::Tab => key.modifiers.contains(KeyModifiers::SHIFT),
+        _ => false,
+    }
+}
+
 /// Whether a key press reaches the turn in flight.
 ///
 /// The scroller answers these keys before the turn does, because it is the nearest thing there is
@@ -927,6 +941,18 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
             } else {
                 Action::None
             }
+        }
+        // Before the Tab arm below, since a terminal that has been asked to disambiguate reports
+        // this as Tab with a modifier rather than as its own code, and it would otherwise be taken
+        // for a completion. Both spellings, because which one arrives is the terminal's choice.
+        //
+        // In the shared ladder so it works mid-turn, which is when it is most wanted: a person
+        // watching a turn edit files it should not be is deciding about the next turn, and this is
+        // how they say so. The turn in flight keeps the mode it began with, its confirmer having
+        // been built with it.
+        _ if cycles_the_mode(key) => {
+            session.cycle_permission_mode();
+            Action::Redraw
         }
         // Tab completes, which is what it does everywhere else. Only while a command is being
         // typed: with nothing offered it inserts nothing, rather than a stray character.
@@ -1571,6 +1597,10 @@ fn event_loop(
         .with_stored_history()
         .in_workspace(workspace.root())
         .on_tier(crate::status::configured_tier(config));
+    // The flag both opens the session in bypass and puts that rung on the ladder the key walks.
+    if skip_permissions {
+        session = session.allowing_bypass();
+    }
 
     // The model outlived the session that chose it, so the window that came with it has to be asked
     // for again: it is reported by the listing and nowhere else, and nothing on disk remembers it.
@@ -1808,7 +1838,7 @@ fn event_loop(
                     theme: &theme,
                     config,
                     confinement: &session.confinement,
-                    skip_permissions,
+                    permission_mode: session.permission_mode(),
                     turns: session.turns,
                     tokens: session.tokens,
                     timing: session.timing_total(),
@@ -1890,7 +1920,6 @@ fn event_loop(
                         trust,
                         programs,
                         &permissions,
-                        skip_permissions,
                     )?;
 
                     // Written after each turn rather than at the end, because the end may never
@@ -2762,7 +2791,6 @@ fn run_turn_animated(
     trust: TrustStore,
     programs: TrustedPrograms,
     permissions: &Permissions,
-    skip_permissions: bool,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
     // The prompt is in the transcript by now, and drawn before anything that might take a moment:
     // a check that has to run the AWS CLI holds the frame for as long as the process takes, and
@@ -2804,12 +2832,17 @@ fn run_turn_animated(
     // Which tick of a loop this is, where it is one at all. A prompt the person typed in the
     // middle of a loop is not a tick of it and carries nothing.
     let tick = session.looping().and_then(|running| running.tick());
+    // Read once, here, so the mode the planner is told about and the mode the confirmer enforces are
+    // the same one: the person may press the key while this turn runs, and the two halves reading it
+    // at different moments is how they would come to disagree.
+    let permission_mode = session.permission_mode();
     let mut task = Task::new(&sent)
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string))
         .with_effort(session.effort_in_force())
         .with_permissions(permissions.clone())
+        .with_permission_mode(permission_mode)
         .ticking(tick);
     for file in crate::entries::referenced(&sent) {
         task = task.with_file(file);
@@ -2848,7 +2881,11 @@ fn run_turn_animated(
         // Wrapped rather than replaced, because two of the six questions still have to cross back to
         // the terminal: a question the planner posed asks for information rather than consent, and an
         // interjection is the person typing unprompted.
-        let mut confirmer = bravebot_agent::SkipsPermissions::new(&mut asking, skip_permissions);
+        //
+        // The mode as it was when the prompt was sent. A turn keeps the one it began with: a mode
+        // changed while it runs describes the next turn, and a write already being reviewed must not
+        // have the question withdrawn from under the person answering it.
+        let mut confirmer = bravebot_agent::Confining::new(&mut asking, permission_mode);
         let egress = Egress::new();
         // Owned by the worker for the duration and handed back afterwards, whether the turn
         // succeeded or not. A failed turn is still part of the conversation, and the next one
@@ -7291,6 +7328,101 @@ mod tests {
         handle_key(&mut session, key(KeyCode::Char('a')));
         handle_key(&mut session, key(KeyCode::Backspace));
         assert!(session.input().is_empty());
+    }
+
+    /// The ladder the key walks, from the box. Three rungs where the flag was not given, and back to
+    /// asking: a key that stopped cycling would leave somebody in a mode they could not press their
+    /// way out of.
+    #[test]
+    fn shift_tab_cycles_the_permission_mode() {
+        use bravebot_agent::PermissionMode;
+        let mut session = Session::new("none");
+        assert_eq!(session.permission_mode(), PermissionMode::Ask);
+
+        for expected in [
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::Ask,
+        ] {
+            handle_key(&mut session, shift(KeyCode::Tab));
+            assert_eq!(session.permission_mode(), expected);
+        }
+    }
+
+    /// Which spelling arrives is the terminal's choice: one that has been asked to disambiguate sends
+    /// Tab with a modifier, one that has not sends `BackTab`. A binding that worked on one machine
+    /// and not the next would read as broken.
+    #[test]
+    fn either_spelling_of_shift_tab_cycles_the_mode() {
+        use bravebot_agent::PermissionMode;
+        for press in [shift(KeyCode::Tab), key(KeyCode::BackTab)] {
+            let mut session = Session::new("none");
+            handle_key(&mut session, press);
+            assert_eq!(
+                session.permission_mode(),
+                PermissionMode::AcceptEdits,
+                "{press:?} did not cycle the mode"
+            );
+        }
+    }
+
+    /// The mode key must not type anything, and must not be taken for the completion Tab: a press
+    /// that changed the mode *and* accepted a half-typed command would do two things at once.
+    #[test]
+    fn the_mode_key_leaves_the_line_alone() {
+        let mut session = typed_into("/mod");
+        handle_key(&mut session, shift(KeyCode::Tab));
+        assert_eq!(
+            session.input(),
+            "/mod",
+            "the mode key completed the line or typed into it"
+        );
+    }
+
+    /// Bypass is reachable only where `--dangerously-skip-permissions` was given. Without it the
+    /// rung does not exist, however many times the key is pressed, or the flag would be decorative.
+    #[test]
+    fn the_key_cannot_reach_bypass_without_the_flag() {
+        use bravebot_agent::PermissionMode;
+        let mut session = Session::new("none");
+        for _ in 0..12 {
+            handle_key(&mut session, shift(KeyCode::Tab));
+            assert_ne!(session.permission_mode(), PermissionMode::Bypass);
+        }
+    }
+
+    /// The flag opens the session in bypass and puts that rung on the ladder. Honouring only the
+    /// second would make the flag do nothing a person could see.
+    #[test]
+    fn the_flag_opens_the_session_in_bypass_and_can_be_cycled_out_of() {
+        use bravebot_agent::PermissionMode;
+        let mut session = Session::new("none").allowing_bypass();
+        assert_eq!(session.permission_mode(), PermissionMode::Bypass);
+
+        // Out of it, round the ladder, and back: the key means the same thing wherever it started.
+        for expected in [
+            PermissionMode::Ask,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::Bypass,
+        ] {
+            handle_key(&mut session, shift(KeyCode::Tab));
+            assert_eq!(session.permission_mode(), expected);
+        }
+    }
+
+    /// Most wanted mid-turn, which is when somebody watching a turn edit the wrong files decides the
+    /// next one should stop and ask. The turn in flight keeps the mode its confirmer was built with.
+    #[test]
+    fn the_mode_can_be_changed_while_a_turn_runs() {
+        use bravebot_agent::PermissionMode;
+        let mut session = Session::new("none");
+        handle_key(&mut session, key(KeyCode::Char('a')));
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        handle_key(&mut session, shift(KeyCode::Tab));
+        assert_eq!(session.permission_mode(), PermissionMode::AcceptEdits);
     }
 
     /// Keys that mean nothing here must be ignored rather than mishandled.

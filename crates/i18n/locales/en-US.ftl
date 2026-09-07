@@ -43,6 +43,15 @@ cli-key-leave = Leave
 cli-commands-heading = Interactive commands:
 cli-name-a-file = Include a workspace file as trusted context
 
+## How much a session asks before it acts, drawn under the input box
+#
+# The markers are Claude Code's, and deliberately: somebody who has used one of these knows what
+# ⏵⏵ means at a glance, and inventing our own would make a familiar thing need reading. Asking has
+# no line of its own, being what a session has always done.
+mode-accept-edits = ⏵ accept edits on
+mode-plan = ⏸ plan mode on
+mode-bypass = ⏵⏵ bypass permissions on
+
 cli-options-heading = Options:
 cli-option-file = Include a workspace file as context (repeatable)
 cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
@@ -368,11 +377,11 @@ status-loop-self-paced = paced by each turn
 status-loop-next = next in { $next }
 status-loop-running = running now
 status-loop-unpaced = waiting for the turn to say when
-# Drawn only where the flag was given. Absent is the ordinary state and needs no line: a panel
-# reporting "permissions: enforced" on every session teaches people to skim past the one that says
-# otherwise.
+# Drawn only where a mode other than asking is in force. Asking is the ordinary state and needs no
+# line: a panel reporting "permissions: enforced" on every session teaches people to skim past the
+# one that says otherwise.
 status-permissions = Permissions
-status-permissions-skipped = every check bypassed by --dangerously-skip-permissions
+status-permissions-cycle = shift-tab to change
 status-this-session = This session
 # Where a session's wall clock went. Four figures, because the whole is unactionable: a session
 # that took an hour on the model, an hour on subprocesses, and an hour waiting for its user to
@@ -561,10 +570,11 @@ session-directory-not-changed = could not move to { $directory }: { $problem }
 session-permission-rule-ignored = ignoring a permission rule in settings.json: { $problem }
 # Said once, at the top of a session the flag was given for. A person who did not mean to pass it
 # should find out before the first write rather than after it, and the words name the flag so they
-# can tell what to take off the command line.
+# can tell what to take off the command line. The line under the box says so for as long as it holds;
+# this is what says it before anything has happened.
 session-permissions-skipped =
     --dangerously-skip-permissions: nothing will be asked before a write, a command, or reading a
-    file nobody vouched for
+    file nobody vouched for. shift-tab to change
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }
 # The picker row that said which service answers is gone by the time this is read, and the same

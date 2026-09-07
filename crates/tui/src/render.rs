@@ -2154,7 +2154,7 @@ const SHORTCUTS_HINT: &str = "? for shortcuts";
 /// The meanings are kept short deliberately. The longest of them sets the column, so a word saved
 /// here is what lets two columns fit a terminal eighty wide, and that halves the rows the list takes
 /// out of the transcript.
-const SHORTCUTS: [(&str, &str); 19] = [
+const SHORTCUTS: [(&str, &str); 20] = [
     ("!", "run a shell command"),
     ("/", "commands"),
     ("@", "name a file"),
@@ -2162,6 +2162,7 @@ const SHORTCUTS: [(&str, &str); 19] = [
     ("enter", "send"),
     ("shift-enter", "new line, or ctrl-j"),
     ("tab", "take what is offered"),
+    ("shift-tab", "what to ask before acting"),
     ("esc", "clear the line"),
     ("up / down", "earlier prompts"),
     ("pgup / pgdn", "scroll the transcript"),
@@ -2282,6 +2283,47 @@ fn entry_lines(session: &Session, offered: &[crate::entries::Entry]) -> Vec<Line
         .collect()
 }
 
+/// Which parts of the hint line fit, giving up the expendable ones in the order named.
+///
+/// Returns indices into `parts`, in their original order, so a caller draws what is left where it
+/// already was. An empty part is skipped: the mode is absent most of the time, and a line that
+/// reserved room for it would separate two things with nothing between them.
+///
+/// Dropping whole parts rather than letting the terminal cut the last one, which leaves "? fo" on a
+/// terminal eighty wide. Half a word reads as a rendering bug; a part that is simply not there reads
+/// as a line that had no room, which is the truth.
+///
+/// Widths are counted in characters. Not the width a terminal draws for every script, but much closer
+/// than a count of bytes and it needs nothing to work it out.
+fn fitted(parts: &[String], expendable: &[usize], width: u16) -> Vec<usize> {
+    /// What the parts are joined with, and the indent before the first.
+    const SEPARATOR: usize = 5;
+    const INDENT: usize = 2;
+
+    let mut kept: Vec<usize> = (0..parts.len())
+        .filter(|index| !parts[*index].is_empty())
+        .collect();
+    let measure = |kept: &[usize]| -> usize {
+        let text: usize = kept.iter().map(|index| parts[*index].chars().count()).sum();
+        INDENT + text + SEPARATOR * kept.len().saturating_sub(1)
+    };
+
+    for giving_up in expendable {
+        if measure(&kept) <= width as usize {
+            break;
+        }
+        kept.retain(|index| index != giving_up);
+    }
+
+    // A terminal too narrow for even what is left keeps nothing. Everything expendable is already
+    // gone by here, so what remains would be cut, and half a word is the thing this exists to avoid:
+    // an empty line reads as a terminal with no room, which it is.
+    if measure(&kept) > width as usize {
+        kept.clear();
+    }
+    kept
+}
+
 /// The shortcut line. Keeps the bindings discoverable without a help command.
 fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // Named only once a turn has left a trail to look at. Offering the key before that is a line
@@ -2334,20 +2376,52 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // what goes. A binding cut off is one somebody learns once; a figure cut off is the only thing
     // here they have no other way to see.
     //
-    // Joined rather than run together, so a session with no trail, nothing measured and no
+    // The mode leads all of it, and is the one thing on this line drawn in a colour. It is what
+    // decides whether the next write stops to ask, so of everything here it is the fact somebody
+    // most needs to catch without looking for it.
+    //
+    // Assembled and then trimmed to the width rather than left to the terminal, which cuts wherever
+    // the last column falls and leaves "? fo". Dropping a whole part at a separator is legible; half
+    // a word reads as a rendering bug. See `fitted` for the order they are given up in.
+    //
+    // An empty part is skipped rather than drawn, so a session with no trail, nothing measured and no
     // delegates does not open its line on a separator with nothing in front of it.
-    let said: Vec<String> = [trail.to_string(), context, delegates]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .chain(std::iter::once(SHORTCUTS_HINT.to_string()))
+    let mode = crate::status::named_mode(session.permission_mode());
+    let parts = [
+        mode.unwrap_or_default().to_string(),
+        trail.to_string(),
+        context,
+        delegates,
+        SHORTCUTS_HINT.to_string(),
+    ];
+    // Indices into `parts`, in the order they are given up: the way to the bindings first, then the
+    // trail toggle, both being things somebody learns once. Then the figures. The mode is never
+    // listed, because of everything here it is the one that changes what the next keystroke does.
+    let kept = fitted(&parts, &[4, 1, 2, 3], area.width);
+
+    // Drawn from `kept` like everything else, so a terminal with no room for it drops it whole rather
+    // than showing the front half of it.
+    let mut spans = Vec::new();
+    if kept.contains(&0) {
+        spans.push(Span::styled(
+            format!("  {}", parts[0]),
+            Style::default().fg(theme::accent()),
+        ));
+    }
+    // The rest is one span, so the colour above marks the mode and nothing else.
+    let rest: Vec<&str> = kept
+        .iter()
+        .filter(|index| **index != 0)
+        .map(|index| parts[*index].as_str())
         .collect();
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("  {}", said.join("  ·  ")),
+    if !rest.is_empty() {
+        let separator = if kept.contains(&0) { "  ·  " } else { "  " };
+        spans.push(Span::styled(
+            format!("{separator}{}", rest.join("  ·  ")),
             dim(),
-        ))),
-        area,
-    );
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
     // The line the person was writing has just gone, so the press that took it is the one thing
     // worth explaining: without this, a key they pressed to stop something emptied the box and
@@ -4285,6 +4359,78 @@ mod tests {
             hint.contains("ctrl-l") && hint.contains("1 delegate"),
             "the hint line does not say a delegate can be opened: {hint}"
         );
+    }
+
+    /// The mode in force, under the box, for as long as it holds. It decides whether the next write
+    /// stops to ask, so it is the fact on this line somebody most needs to catch without looking for
+    /// it, and it leads for the reason the bindings went to the end: what a narrow terminal cuts is
+    /// the end.
+    #[test]
+    fn the_hint_line_names_a_mode_that_is_not_asking() {
+        use bravebot_agent::PermissionMode;
+        for mode in [
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::Bypass,
+        ] {
+            let mut session = Session::new("kernel-enforced").allowing_bypass();
+            while session.permission_mode() != mode {
+                session.cycle_permission_mode();
+            }
+            let hint = hint_row_at(&session, 120, 24);
+            let named = crate::status::named_mode(mode).expect("every mode but asking is named");
+            assert!(hint.contains(named), "{mode:?} was not drawn: {hint}");
+        }
+    }
+
+    /// Asking is what a session has always done, so it takes none of this line: a marker standing
+    /// there permanently is one people stop seeing, and being noticed is the marker's whole job.
+    #[test]
+    fn the_hint_line_says_nothing_about_the_ordinary_mode() {
+        let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
+        // The markers, which are what a reader recognises before any words.
+        assert!(!hint.contains('⏵') && !hint.contains('⏸'), "{hint}");
+    }
+
+    /// The mode survives a terminal too narrow for everything, and the way to the bindings is what is
+    /// given up: of the two, one changes what the next keystroke does and the other is a thing
+    /// somebody learns once and can find again with `?`.
+    #[test]
+    fn a_narrow_terminal_gives_up_the_bindings_rather_than_the_mode() {
+        let session = Session::new("kernel").allowing_bypass();
+        assert_eq!(
+            session.permission_mode(),
+            bravebot_agent::PermissionMode::Bypass
+        );
+        // Narrow enough that the two cannot both fit, which is the case worth pinning.
+        let hint = hint_row_at(&session, 30, 24);
+        assert!(hint.contains("⏵⏵ bypass permissions on"), "{hint}");
+        assert!(!hint.contains(SHORTCUTS_HINT), "nothing was given up: {hint}");
+    }
+
+    /// Whole parts, at a separator. Left to the terminal the last one is cut wherever the final
+    /// column falls, which put "? fo" under the box: half a word reads as a rendering bug, where a
+    /// part that is simply absent reads as a line that had no room.
+    #[test]
+    fn what_does_not_fit_is_dropped_whole_rather_than_cut_mid_word() {
+        let session = Session::new("kernel").allowing_bypass();
+        for width in 20..=120 {
+            let hint = hint_row_at(&session, width, 24);
+            let drawn = hint.trim_end();
+            // Every fragment that survives is a whole part or nothing. The narrowest widths cannot
+            // hold even the mode, and dropping it whole is the same rule rather than an exception.
+            for part in drawn.split("  ·  ").map(str::trim) {
+                if part.is_empty() {
+                    continue;
+                }
+                assert!(
+                    part == "⏵⏵ bypass permissions on"
+                        || part == "ctrl-t show trail"
+                        || part == SHORTCUTS_HINT,
+                    "at width {width} a part was cut: {part:?} in {drawn:?}"
+                );
+            }
+        }
     }
 
     /// The point of moving the bindings off the hint line: it has to fit where it used to be cut,

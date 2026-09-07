@@ -53,6 +53,10 @@ cli-key-leave = Partir
 cli-commands-heading = Commandes interactives :
 cli-name-a-file = Inclure un fichier de l'espace de travail comme contexte fiable
 
+mode-accept-edits = ⏵ modifications acceptées
+mode-plan = ⏸ mode plan
+mode-bypass = ⏵⏵ permissions contournées
+
 cli-options-heading = Options :
 cli-option-file = Inclure un fichier de l'espace de travail comme contexte (répétable)
 cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord
@@ -376,7 +380,7 @@ status-loop-next = prochaine dans { $next }
 status-loop-running = en cours
 status-loop-unpaced = en attente que le tour dise quand
 status-permissions = Permissions
-status-permissions-skipped = toutes les vérifications contournées par --dangerously-skip-permissions
+status-permissions-cycle = shift-tab pour changer
 status-this-session = Cette session
 status-time = Temps
 status-time-inference = sur le modèle
@@ -530,7 +534,7 @@ session-directory-not-changed = impossible de passer à { $directory } : { $prob
 session-permission-rule-ignored = règle de permission ignorée dans settings.json : { $problem }
 session-permissions-skipped =
     --dangerously-skip-permissions : rien ne sera demandé avant une écriture, une commande, ou la
-    lecture d'un fichier que personne n'a approuvé
+    lecture d'un fichier que personne n'a approuvé. shift-tab pour changer
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }
 session-using-model-from = utilise { $model } via { $service }

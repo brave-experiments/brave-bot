@@ -85,8 +85,8 @@ pub struct Facts<'a> {
     pub theme: &'a str,
     pub config: &'a Config,
     pub confinement: &'a str,
-    /// Whether `--dangerously-skip-permissions` is in force for this session.
-    pub skip_permissions: bool,
+    /// How much the session is asking before it acts, as the mode key last left it.
+    pub permission_mode: bravebot_agent::PermissionMode,
     pub turns: usize,
     pub tokens: u64,
     /// Where the session's wall clock went, every turn added together.
@@ -103,6 +103,21 @@ pub struct Facts<'a> {
     /// line saying a thing is not happening is a line on every report for the sake of the few
     /// where it is.
     pub looping: Option<&'a crate::loops::Running>,
+}
+
+/// What to call a permission mode, or `None` for the one that needs no name.
+///
+/// One definition, used by `/status` and by the line under the input box, so the two cannot come to
+/// call the same mode different things. `None` for asking, which is what a session has always done:
+/// the modes worth drawing are the ones that changed something.
+pub fn named_mode(mode: bravebot_agent::PermissionMode) -> Option<&'static str> {
+    use bravebot_agent::PermissionMode;
+    match mode {
+        PermissionMode::Ask => None,
+        PermissionMode::AcceptEdits => Some(t!(mode_accept_edits)),
+        PermissionMode::Plan => Some(t!(mode_plan)),
+        PermissionMode::Bypass => Some(t!(mode_bypass)),
+    }
 }
 
 /// Compose the report.
@@ -203,14 +218,11 @@ pub fn report(facts: &Facts<'_>) -> Report {
 
     lines.push(Line::new(t!(status_confinement), facts.confinement));
 
-    // Only where the flag was given. Absent is the ordinary state and a line saying so on every
-    // session would teach people to skim past exactly the one that matters. Beside confinement
-    // because it is the other half of the same question: what is holding this session back.
-    if facts.skip_permissions {
-        lines.push(Line::new(
-            t!(status_permissions),
-            t!(status_permissions_skipped),
-        ));
+    // Only where the mode is not the ordinary one. A line saying "asking" on every session would
+    // teach people to skim past exactly the one that matters. Beside confinement because it is the
+    // other half of the same question: what is holding this session back.
+    if let Some(named) = named_mode(facts.permission_mode) {
+        lines.push(Line::new(t!(status_permissions), named).with_note(t!(status_permissions_cycle)));
     }
 
     // What is going to happen without anybody typing anything, which is the one thing about a
@@ -429,9 +441,9 @@ mod tests {
             theme: "brave",
             config,
             confinement: "kernel-enforced",
-            // Enforced, which is what every session is unless the flag was given. The tests about
+            // Asking, which is what every session does unless somebody changed it. The tests about
             // the line set this themselves.
-            skip_permissions: false,
+            permission_mode: bravebot_agent::PermissionMode::Ask,
             turns: 4,
             tokens: 12_400,
             // Nothing measured, which is what a session looks like before its first turn. Tests
@@ -519,32 +531,39 @@ mod tests {
         assert!(shown.contains("every run is put to you"), "{shown}");
     }
 
-    /// The other standing permission that stops announcing itself, and the broader one: it makes
-    /// every prompt stop rather than one program's. The opening note scrolls away, so this is the
-    /// only place a person can go back to and find out why nothing is being asked.
+    /// The other standing permission that stops announcing itself, and the broader one: it changes
+    /// what happens to every prompt rather than one program's. The line under the box says so while
+    /// it holds, and this is where a person goes back to when they want to know why.
     #[test]
-    fn the_report_says_when_every_permission_check_is_bypassed() {
+    fn the_report_names_a_mode_that_is_not_asking() {
         let config = config_for("http://127.0.0.1:1", None);
         let trust = trusting();
-        let mut facts = facts(&config, &trust);
-        facts.skip_permissions = true;
-
-        let shown = rendered(&report(&facts));
-        // The flag by name, so a reader can tell what to take off the command line.
-        assert!(
-            shown.contains("--dangerously-skip-permissions"),
-            "the report must name the flag: {shown}"
-        );
+        for mode in [
+            bravebot_agent::PermissionMode::AcceptEdits,
+            bravebot_agent::PermissionMode::Plan,
+            bravebot_agent::PermissionMode::Bypass,
+        ] {
+            let mut facts = facts(&config, &trust);
+            facts.permission_mode = mode;
+            let shown = rendered(&report(&facts));
+            let named = named_mode(mode).expect("every mode but asking has a name");
+            assert!(shown.contains(named), "{mode:?} was not reported: {shown}");
+            // And how to change it, since a mode nobody can find the key for is one they restart to
+            // get out of.
+            assert!(shown.contains("shift-tab"), "{mode:?}: {shown}");
+        }
     }
 
-    /// Nothing is said where the flag was not given. A line reporting "enforced" on every session is
-    /// a line people learn to skim, and this report has to keep the one above worth reading.
+    /// Nothing is said where the session is asking. A line reporting the ordinary state on every
+    /// session is a line people learn to skim, and this report has to keep the one above worth
+    /// reading.
     #[test]
-    fn an_ordinary_session_says_nothing_about_bypassed_permissions() {
+    fn an_ordinary_session_says_nothing_about_its_permission_mode() {
         let config = config_for("http://127.0.0.1:1", None);
         let trust = trusting();
         let shown = rendered(&report(&facts(&config, &trust)));
-        assert!(!shown.contains("--dangerously-skip-permissions"), "{shown}");
+        assert!(named_mode(bravebot_agent::PermissionMode::Ask).is_none());
+        assert!(!shown.contains("shift-tab"), "{shown}");
     }
 
     fn rendered(report: &Report) -> String {

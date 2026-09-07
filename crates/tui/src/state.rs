@@ -557,6 +557,16 @@ pub struct Session {
     pub laid: Laid,
     /// Confinement in force, reported so the user knows what they have.
     pub confinement: String,
+    /// How much this session asks before it acts, which one key cycles.
+    ///
+    /// Not persisted, like `shell` and unlike the trust map: a mode is a standing answer somebody
+    /// gave while watching a particular piece of work, and a resumed session is a different sitting.
+    /// Coming back tomorrow into a session that had stopped asking about writes, with nothing on
+    /// screen having been chosen today, is the wrong way for this to be wrong.
+    permission_mode: bravebot_agent::PermissionMode,
+    /// Whether `--dangerously-skip-permissions` was given, which is what puts the fourth rung on the
+    /// ladder above. Fixed for the session: it comes from the command line.
+    bypass_available: bool,
     /// What the configuration says about the tier, drawn beside the confinement on the opening
     /// screen.
     ///
@@ -818,6 +828,10 @@ impl Session {
             history_search: None,
             laid: Laid::default(),
             confinement: confinement.into(),
+            // Asking, which is what a session has always done. `allowing_bypass` moves it, and is
+            // the only thing that can: the flag is the record that somebody accepted the cost.
+            permission_mode: bravebot_agent::PermissionMode::default(),
+            bypass_available: false,
             // The free tier until a caller says otherwise, which is what a build with no premium
             // host has and what a test that does not care about tiers should see.
             tier: t!(status_free_tier).to_string(),
@@ -885,6 +899,30 @@ impl Session {
     pub fn on_tier(mut self, tier: impl Into<String>) -> Self {
         self.tier = tier.into();
         self
+    }
+
+    /// Open the session in bypass, because `--dangerously-skip-permissions` asked for it.
+    ///
+    /// Both at once, and they belong together: the flag puts the fourth rung on the ladder *and*
+    /// starts the session on it. Honouring only the first would make the flag do nothing a person
+    /// could see, and disagree with what the same flag does to a one-shot run.
+    pub fn allowing_bypass(mut self) -> Self {
+        self.bypass_available = true;
+        self.permission_mode = bravebot_agent::PermissionMode::Bypass;
+        self
+    }
+
+    /// How much this session asks before it acts.
+    pub fn permission_mode(&self) -> bravebot_agent::PermissionMode {
+        self.permission_mode
+    }
+
+    /// Move to the next mode, and say nothing: the line under the box is the answer.
+    ///
+    /// A note in the transcript would be a running commentary on a key somebody is pressing to see
+    /// what the modes are, and the one place a mode has to be legible is while it is in force.
+    pub fn cycle_permission_mode(&mut self) {
+        self.permission_mode = self.permission_mode.cycle(self.bypass_available);
     }
 
     /// Load history from disk and keep writing to it.

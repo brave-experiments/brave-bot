@@ -321,11 +321,19 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         );
     }
 
+    // Bypassing where the flag was given, and asking otherwise. There is no mode key here: a
+    // one-shot run has no session to hold a mode and nobody to press anything, so the command line
+    // is the whole of what can say.
+    let permission_mode = match skip_permissions {
+        true => bravebot_agent::PermissionMode::Bypass,
+        false => bravebot_agent::PermissionMode::Ask,
+    };
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
         .with_model(bravebot_tui::store::load_model())
         .with_effort(bravebot_tui::store::load_effort())
-        .with_permissions(permissions);
+        .with_permissions(permissions)
+        .with_permission_mode(permission_mode);
     for file in files {
         task = task.with_file(file);
     }
@@ -340,7 +348,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     // person accepted that when they typed it, and this is the only path where the refusal above
     // is what stands between the flag and an effect.
     let mut unattended = bravebot_agent::Unattended;
-    let mut confirmer = bravebot_agent::SkipsPermissions::new(&mut unattended, skip_permissions);
+    let mut confirmer = bravebot_agent::Confining::new(&mut unattended, permission_mode);
     // On stderr, beside the progress lines, so a pipe of the reply is unaffected. Said even here,
     // where nobody may be reading: a run that wrote to the tree without asking should leave a record
     // of having been told not to ask.

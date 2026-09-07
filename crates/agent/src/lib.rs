@@ -15,6 +15,7 @@ pub mod glob;
 pub mod home;
 pub mod manifest;
 pub mod mode;
+pub mod permission_mode;
 pub mod permissions;
 pub mod preamble;
 pub mod processor;
@@ -31,10 +32,8 @@ pub mod tools;
 pub mod turn;
 pub mod workspace;
 
-pub use confirm::{
-    Confirmer, Decision, Intent, RunDecision, RunRequest, SkipsPermissions, Unattended,
-    WriteRequest,
-};
+pub use confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, Unattended, WriteRequest};
+pub use permission_mode::{Confining, PermissionMode};
 pub use conversation::Conversation;
 pub use delegate::Delegated;
 pub use mode::Mode;

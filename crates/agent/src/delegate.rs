@@ -199,15 +199,22 @@ pub fn run(
     workspace: &crate::workspace::Workspace,
     home: Option<&std::path::Path>,
     model: Option<&str>,
+    // The spawning turn's, since a delegate is that turn's work done elsewhere.
+    permission_mode: crate::PermissionMode,
     cancel: &bravebot_core::cancel::Cancel,
     confirmer: &mut (dyn Confirmer + Send),
     reporter: &mut (dyn Reporter + Send),
     sink: &mut (dyn Sink + Send),
 ) -> Result<Finished, TurnError> {
+    // The mode is the spawning turn's, and inherited rather than chosen: a delegate is that turn's
+    // own work done elsewhere, so a session that is planning must not have writes happening inside
+    // one. Enforcement already comes down this way, the confirmer being the person's own; this is
+    // what tells the delegate's planner why a write would be refused.
     let task = Task::delegated(seeded.spec.clone())
         .with_home(home.map(std::path::Path::to_path_buf))
         .with_model(model.map(str::to_string))
-        .with_permissions(seeded.permissions.clone());
+        .with_permissions(seeded.permissions.clone())
+        .with_permission_mode(permission_mode);
 
     // Its own, and it dies here. A reference minted inside a delegate names nothing once it has
     // gone, which is what makes "nothing but the report crosses back" a fact about the data rather
