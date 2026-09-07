@@ -26,7 +26,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [dropping.md](dropping.md) | `DROP` | 8 | what dragging a file onto the terminal puts into a turn, and on what footing |
 | [shell-mode.md](shell-mode.md) | `SHELL` | 5 | the `!` prompt: a line the user typed, and why the planner can never reach it |
 | [skills.md](skills.md) | `SKILL` | 10 | `AGENTS.md` and skills: what a skill file is and what each source is trusted for |
-| [instructions.md](instructions.md) | `INSTR` | 7 | which instruction files are looked for, where, in what order, and where what they say ends up |
+| [instructions.md](instructions.md) | `INSTR` | 8 | which instruction files are looked for, where, in what order, and where what they say ends up |
 | [cli.md](cli.md) | `CLI` | 8 | running without the interactive interface: one-shot tasks, piped input, and `doctor` |
 | [manifest.md](manifest.md) | `MANIFEST` | 9 | plan the whole run first, then execute it with no model in the control path |
 | [terminal-input.md](terminal-input.md) | `INPUT` | 21 | what the user types into: the box, the keys, and where a terminal's own limits show through |

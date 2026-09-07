@@ -156,3 +156,143 @@ fn a_file_written_after_one_turn_is_read_by_the_next() {
         after.text
     );
 }
+
+/// A project that wrote its conventions down should not have them ignored over the spelling.
+#[test]
+fn the_project_file_may_be_named_claude_md() {
+    for (name, subdirectory) in [("CLAUDE.md", None), ("CLAUDE.md", Some(".claude"))] {
+        let scratch = Scratch::new(&format!("claude-md-{}", subdirectory.unwrap_or("root")));
+        let project = scratch.directory("project");
+        let holder = match subdirectory {
+            Some(sub) => {
+                let path = project.join(sub);
+                std::fs::create_dir_all(&path).unwrap();
+                path
+            }
+            None => project.clone(),
+        };
+        std::fs::write(holder.join(name), "PROJECT-CONVENTION").unwrap();
+        let workspace = Workspace::new(&project).expect("workspace");
+
+        let mut sink = RecordingSink::new();
+        let preamble = {
+            let mut policy = policy(&mut sink, &["."]);
+            preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        };
+
+        assert!(
+            preamble.text.contains("PROJECT-CONVENTION"),
+            "{name} under {subdirectory:?} was not read: {}",
+            preamble.text
+        );
+    }
+}
+
+/// One set of instructions under two names is still one set. Reading both would state
+/// everything twice, and the planner pays for the whole system prompt on every request.
+#[test]
+fn only_the_first_project_file_that_exists_is_read() {
+    let scratch = Scratch::new("first-wins");
+    let project = scratch.directory("project");
+    std::fs::write(project.join("AGENTS.md"), "THE-REAL-ONE").unwrap();
+    std::fs::write(project.join("CLAUDE.md"), "THE-OTHER-ONE").unwrap();
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+    };
+
+    assert!(preamble.text.contains("THE-REAL-ONE"));
+    assert!(
+        !preamble.text.contains("THE-OTHER-ONE"),
+        "both files were read: {}",
+        preamble.text
+    );
+}
+
+/// The shape that cost a real turn a whole round trip: `AGENTS.md` holding one sentence naming
+/// the document the project actually keeps its conventions in.
+#[test]
+fn a_project_file_that_only_names_another_is_followed() {
+    let scratch = Scratch::new("pointer");
+    let project = scratch.directory("project");
+    std::fs::create_dir_all(project.join(".claude")).unwrap();
+    std::fs::write(
+        project.join("AGENTS.md"),
+        "Refer to canonical agent instructions in `.claude/CLAUDE.md`.",
+    )
+    .unwrap();
+    std::fs::write(project.join(".claude/CLAUDE.md"), "THE-REAL-CONVENTIONS").unwrap();
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+    };
+
+    assert!(
+        preamble.text.contains("THE-REAL-CONVENTIONS"),
+        "the pointer was not followed: {}",
+        preamble.text
+    );
+    // The header names where the instructions came from, not where the pointer was.
+    assert!(
+        preamble.text.contains("From .claude/CLAUDE.md:"),
+        "the source was misnamed: {}",
+        preamble.text
+    );
+}
+
+/// The test that keeps the rule above from eating instructions. A real document cites other
+/// files all the time, and swapping the conventions for whatever they mentioned first would be
+/// far worse than the round trip this saves.
+#[test]
+fn a_project_file_that_merely_cites_another_is_read_as_itself() {
+    let scratch = Scratch::new("not-a-pointer");
+    let project = scratch.directory("project");
+    let long = format!(
+        "THE-REAL-CONVENTIONS\n\nSee also docs/style.md.\n\n{}",
+        "Write a test for everything you change. ".repeat(20)
+    );
+    std::fs::write(project.join("AGENTS.md"), &long).unwrap();
+    std::fs::write(project.join("docs-style-decoy.md"), "DECOY").unwrap();
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+    };
+
+    assert!(preamble.text.contains("THE-REAL-CONVENTIONS"));
+    assert!(!preamble.text.contains("DECOY"));
+}
+
+/// A pointer naming something the workspace does not hold changes nothing: the file that was
+/// found is still the instructions, and confinement is what refuses the rest.
+#[test]
+fn a_pointer_that_names_nothing_readable_leaves_the_file_standing() {
+    let scratch = Scratch::new("pointer-dangling");
+    let project = scratch.directory("project");
+    std::fs::write(
+        project.join("AGENTS.md"),
+        "See ../../../etc/passwd.md for the conventions.",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+    };
+
+    assert!(
+        preamble.text.contains("See ../../../etc/passwd.md"),
+        "the file that was actually found did not reach the planner: {}",
+        preamble.text
+    );
+}

@@ -26,20 +26,31 @@ It does not cover what a skill file looks like or what any source is trusted for
 |---|---|
 | `~/.bravebot/AGENTS.md` | every project |
 | `~/.bravebot/skills/<name>/SKILL.md` | every project |
-| `<workspace>/AGENTS.md` | this project |
+| `<workspace>/AGENTS.md`, else `CLAUDE.md`, else `.claude/CLAUDE.md` | this project |
 | `<workspace>/.bravebot/skills/<name>/SKILL.md` | this project |
 
 The two roots are spelled differently on purpose: the user's own directory is already `.bravebot`,
 so its skills sit directly beneath it, while a project keeps its own out of the way in a dotted
 directory rather than at the root where `AGENTS.md` sits.
 
-There is no search of parent directories and no nested `AGENTS.md`. A file at any other path is
-an ordinary file, read only when something asks for it by name.
+The project's instructions are looked for under more than one name, in the order above, and the
+first that exists is the source. Not all of them: a repository holding two of these holds one set
+of instructions under two names, and reading both would state everything twice.
 
-**Why.** A rule that walked upwards would pick up instructions from whatever happened to be above
-a project on this machine, which is a different set of instructions on the next machine.
+**Why more than one name.** More than one is in use, and a project that wrote its conventions down
+should not have them ignored over the spelling. This is still one source, resolved by name.
+
+There is no search of parent directories and no nested instructions file. A file at any other path
+is an ordinary file, read only when something asks for it by name, or when the source names it,
+which is [INSTR-8](#INSTR-8).
+
+**Why no walking upwards.** A rule that walked upwards would pick up instructions from whatever
+happened to be above a project on this machine, which is a different set of instructions on the
+next machine.
 
 `verified-by: bravebot_agent::preamble::the_home_agents_file_is_read_before_the_project_one`
+`verified-by: bravebot_agent::preamble::the_project_file_may_be_named_claude_md`
+`verified-by: bravebot_agent::preamble::only_the_first_project_file_that_exists_is_read`
 `verified-by: bravebot_agent::skills::a_workspace_skill_shadows_a_home_skill_of_the_same_name`
 
 <a id="INSTR-2"></a>
@@ -128,13 +139,45 @@ cannot see, and the fix for that would be to restart, which loses the conversati
 
 `verified-by: bravebot_agent::preamble::a_file_written_after_one_turn_is_read_by_the_next`
 
+<a id="INSTR-8"></a>
+### INSTR-8: an instructions file that only names another one is followed, once
+
+Where the project's instructions are under [`POINTER_BYTES`] and name a markdown file in the
+workspace, that file is read instead and is what reaches the planner. Once only: what it names in
+turn is not followed.
+
+Length is the whole test. A document is not a pointer however many files it cites, so anything
+longer is read as itself and its citations are left alone.
+
+The pointer is resolved by the same `workspace.read` that governs every other path, so confinement
+and the trust map decide whether the named file may be opened. A pointer naming something outside
+the workspace is refused there, and an untrusted directory's instructions never reach this rule at
+all: they are a notice and no text.
+
+**Why.** Repositories that support several agents keep one real document and point the other names
+at it. Handed the pointer, a planner spends a call reading what it was about to be given anyway:
+a whole round trip, which is the expensive part of a turn, to learn nothing. This was measured: a
+project whose `AGENTS.md` read "Refer to canonical agent instructions in `.claude/CLAUDE.md`." cost
+exactly that.
+
+`verified-by: bravebot_agent::preamble::a_project_file_that_only_names_another_is_followed`
+`verified-by: bravebot_agent::preamble::a_project_file_that_merely_cites_another_is_read_as_itself`
+`verified-by: bravebot_agent::preamble::a_pointer_that_names_nothing_readable_leaves_the_file_standing`
+`verified-by: bravebot_agent::preamble::a_one_line_file_naming_another_is_a_pointer`
+`verified-by: bravebot_agent::preamble::a_document_that_merely_mentions_a_file_is_not_a_pointer`
+`verified-by: bravebot_agent::preamble::a_file_pointing_at_itself_is_not_followed`
+`verified-by: bravebot_agent::preamble::punctuation_around_the_name_is_not_part_of_it`
+`verified-by: bravebot_agent::preamble::a_short_file_naming_nothing_is_not_a_pointer`
+
 ## Known costs
 
 Accepted deliberately. Do not "fix" one without changing this spec first.
 
-- **Resolution costs a directory listing and up to two file reads every turn.** Cheap next to the
+- **Resolution costs a directory listing and up to three file reads every turn.** Cheap next to the
   model call it precedes, and the alternative is a cache that has to be invalidated by something,
   which is a second thing to be wrong about how the filesystem looks.
+- **A pointer that points at a pointer is not followed twice.** A chain is a mistake in the project
+  rather than a layout to support, and the second read is where a cycle would become a hang.
 - **A project cannot turn off a global `AGENTS.md`.** The project's file has the last word, but
   the global one is still in front of the planner and can still be followed where the project
   says nothing that contradicts it. Deleting the global file, or narrowing it, is the only way to
