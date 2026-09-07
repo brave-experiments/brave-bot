@@ -162,10 +162,23 @@ At startup the user is asked whether they trust the working directory. Yes write
 the tree. Declining writes nothing, so every write is shown. Leaving at the question starts no
 session.
 
+A session running in the mode that asks about nothing is the one exception: the question is not put,
+and the map is the one a yes would have written. That mode approves vouching for every quarantined
+file the planner reads, so the tree becomes trusted a file at a time whether or not the question is
+asked, and a modal box is the most conspicuous thing there is to put to somebody who asked to be
+asked about nothing. [permission-modes.md](permission-modes.md) is what selects that mode, and no
+other mode may answer this question.
+
+**Why the exception goes no further.** A resumed session takes the map from its own record even
+there, since the question is not being put in that case either and the answer its user gave is the
+more specific record.
+
 `verified-by: bravebot_tui::trust_prompt::trusting_covers_the_whole_workspace`
 `verified-by: bravebot_tui::trust_prompt::declining_trusts_nothing`
 `verified-by: bravebot_tui::trust_prompt::leaving_starts_no_session`
 `verified-by: bravebot_tui::trust_prompt::ctrl_c_leaves_rather_than_answering_the_question`
+`verified-by: bravebot_tui::trust_prompt::bypassing_trusts_the_workspace_instead_of_asking`
+`verified-by: bravebot_tui::trust_prompt::every_other_mode_leaves_the_question_to_the_person`
 
 ## The ways a rule is written
 

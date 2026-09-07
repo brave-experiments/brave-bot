@@ -550,6 +550,8 @@ session-no-such-effort = aucun niveau d'effort nommé { $effort } ; essayez /eff
 session-effort-not-read = ce modèle ne lit aucun niveau d'effort ; les requêtes n'en portent pas
 session-trusting = { $directory } approuvé
 session-trusting-as-left = { $directory } approuvé (comme cette session l'avait laissé)
+session-trusting-unasked =
+    { $directory } approuvé (--dangerously-skip-permissions, la question ne vous a pas été posée)
 session-not-trusting =
     ce répertoire n'est pas approuvé ; chaque écriture vous sera montrée
 session-vouched-for = { $path } approuvé pour cette session

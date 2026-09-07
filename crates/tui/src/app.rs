@@ -2515,9 +2515,19 @@ fn set_theme(session: &mut Session, name: &str) {
     }
 }
 
+/// Where a session's opening trust map came from, which is what it says about it.
+enum Whence {
+    /// The person answered the startup question just now.
+    Asked,
+    /// The record of the session being picked up, so the answer is that session's user's own.
+    Resumed,
+    /// Nobody was asked, because the mode in force answers this question too.
+    Unasked,
+}
+
 /// The trust map the session starts with, or nothing if the user asked to leave.
 ///
-/// A fresh session always asks, whatever any session in this directory answered before. The
+/// A fresh session asks, whatever any session in this directory answered before. The
 /// question grants standing permission, and a launch that skipped it because someone said yes
 /// last week would be granting that permission on behalf of a user who was never asked, which is
 /// trust assumed from silence rather than granted.
@@ -2527,17 +2537,22 @@ fn set_theme(session: &mut Session, name: &str) {
 /// its own user gave. It carries the rules that session's writes recorded too, which is what stops
 /// a resumed turn reading back a file an earlier turn poisoned. A record from before the map was
 /// kept has none, and is asked about.
+///
+/// A session bypassing every permission is not asked either, and takes the map a yes would have
+/// written. Resuming still wins over that: the question is not being put in either case, so there
+/// is nothing for the mode to answer, and the map its own user gave is the more specific record.
 fn opening_trust(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
     root: &std::path::Path,
     inherited: Option<TrustStore>,
 ) -> Option<TrustStore> {
-    // Said only when resuming. On a fresh start the user has just answered the question and does
-    // not need telling where the answer came from.
-    let (trust, inherited) = match inherited {
-        Some(trust) => (trust, true),
-        None => (crate::trust_prompt::ask(terminal, root)?, false),
+    let (trust, whence) = match inherited {
+        Some(trust) => (trust, Whence::Resumed),
+        None => match crate::trust_prompt::answered_by(session.permission_mode()) {
+            Some(trust) => (trust, Whence::Unasked),
+            None => (crate::trust_prompt::ask(terminal, root)?, Whence::Asked),
+        },
     };
 
     if !trust.is_trusted(".") {
@@ -2545,10 +2560,12 @@ fn opening_trust(
         return Some(trust);
     }
     let where_it_is = root.display();
-    session.note(if inherited {
-        t!(session_trusting_as_left, directory = where_it_is)
-    } else {
-        t!(session_trusting, directory = where_it_is)
+    // Named, because two of the three are a grant nobody made just now, and this line is the only
+    // place that says where it came from.
+    session.note(match whence {
+        Whence::Asked => t!(session_trusting, directory = where_it_is),
+        Whence::Resumed => t!(session_trusting_as_left, directory = where_it_is),
+        Whence::Unasked => t!(session_trusting_unasked, directory = where_it_is),
     });
     Some(trust)
 }

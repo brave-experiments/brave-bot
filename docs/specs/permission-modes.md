@@ -81,12 +81,17 @@ made from less than the person can see themselves.
 `verified-by: bravebot_agent::turn::plan_mode_writes_nothing_even_where_writes_are_approved`
 
 <a id="MODE-4"></a>
-### MODE-4: bypassing answers all four questions, including the one that lifts quarantine
+### MODE-4: bypassing answers every permission question, including the ones that decide trust
 
 A write, a run, a command's output and vouching for a file nobody vouched for are all approved
-without being put to anybody. The last is the one that costs the most: vouching is what lets a
-file's contents be shown to the planner rather than held behind a reference, so in this mode every
-file the planner asks to read is shown to it.
+without being put to anybody, and the question a session opens with about trusting the working
+directory is not put either: the workspace is trusted, which is what answering it yes would have
+recorded ([trust-map.md](trust-map.md) is what that record means).
+
+The two about trust are the ones that cost the most. Vouching is what lets a file's contents be
+shown to the planner rather than held behind a reference, so in this mode every file the planner
+asks to read is shown to it, and the startup question grants that over the whole tree at once
+rather than a file at a time.
 
 A run approved this way vouches for no program. The list of commands a person said to stop asking
 about is written into the session record and outlives the mode, and a record claiming somebody
@@ -97,6 +102,8 @@ prompts, which in practice means a container with no network and nothing in it w
 the wrong mode everywhere else, and it is named `--dangerously-skip-permissions` for that reason.
 
 `verified-by: bravebot_agent::permission_mode::bypassing_answers_every_permission_question`
+`verified-by: bravebot_tui::trust_prompt::bypassing_trusts_the_workspace_instead_of_asking`
+`verified-by: bravebot_tui::trust_prompt::every_other_mode_leaves_the_question_to_the_person`
 
 ## Choosing one
 

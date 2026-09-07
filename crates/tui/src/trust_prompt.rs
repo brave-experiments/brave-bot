@@ -8,7 +8,11 @@
 //! Nothing is trusted by default. An unreadable terminal, an unexpected key, or a lost event
 //! stream all resolve to declining, because the failure mode of guessing wrong here is that a
 //! session silently writes to files nobody vouched for.
+//!
+//! The one session that is not asked is the one bypassing every permission, which answers this
+//! question along with the rest. [`answered_by`] is where that is decided.
 
+use bravebot_agent::PermissionMode;
 use bravebot_core::trust::TrustStore;
 use bravebot_i18n::t;
 use ratatui::Terminal;
@@ -54,17 +58,38 @@ pub fn ask<B: Backend>(terminal: &mut Terminal<B>, directory: &Path) -> Option<T
     trust_for(answer)
 }
 
+/// The map for a session whose mode has already answered, or `None` where a person must answer.
+///
+/// Bypassing answers this question along with every other one, and answers it yes. That mode
+/// already approves vouching for each quarantined file the planner asks to read, so putting the
+/// question would be asking for a grant the session is about to make anyway, one file at a time,
+/// and a modal box before the first prompt is the most conspicuous thing there is to put to a
+/// person who asked to be asked about nothing.
+///
+/// Separated from the loop so it can be tested without a terminal.
+pub fn answered_by(mode: PermissionMode) -> Option<TrustStore> {
+    match mode {
+        PermissionMode::Bypass => Some(trusting_the_workspace()),
+        PermissionMode::Ask | PermissionMode::AcceptEdits | PermissionMode::Plan => None,
+    }
+}
+
 /// The map an answer starts the session with, or `None` for leaving.
 fn trust_for(answer: Answer) -> Option<TrustStore> {
     match answer {
         Answer::Leave => None,
-        Answer::Trust => {
-            let mut trust = TrustStore::new();
-            trust.trust(".");
-            Some(trust)
-        }
+        Answer::Trust => Some(trusting_the_workspace()),
         Answer::Decline => Some(TrustStore::new()),
     }
+}
+
+/// The rule trusting the workspace records: the root, which covers everything beneath it.
+///
+/// One place, so the map reached without the question is the map a yes would have written.
+fn trusting_the_workspace() -> TrustStore {
+    let mut trust = TrustStore::new();
+    trust.trust(".");
+    trust
 }
 
 /// Block until the user answers.
@@ -220,6 +245,31 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    /// The flag says nothing is put to the person, and a modal box before the first prompt is the
+    /// most conspicuous thing there is to put. The map is the one a yes would have written, which
+    /// is what the mode is about to grant anyway: it approves vouching for every quarantined file
+    /// the planner reads, so the workspace ends up trusted a file at a time regardless.
+    #[test]
+    fn bypassing_trusts_the_workspace_instead_of_asking() {
+        let trust = answered_by(PermissionMode::Bypass).expect("bypassing answers the question");
+
+        assert!(trust.is_trusted("."));
+        assert!(trust.is_trusted("src/main.rs"), "the rule covers the tree");
+    }
+
+    /// Every other mode answers fewer questions than this one, so none of them may answer the one
+    /// that grants standing permission over a whole tree.
+    #[test]
+    fn every_other_mode_leaves_the_question_to_the_person() {
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+        ] {
+            assert!(answered_by(mode).is_none(), "{mode:?} answered it");
+        }
     }
 
     #[test]

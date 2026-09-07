@@ -593,6 +593,11 @@ session-no-such-effort = no effort level named { $effort }; try /effort for the 
 session-effort-not-read = this model reads no effort level, so requests carry none
 session-trusting = trusting { $directory }
 session-trusting-as-left = trusting { $directory } (as this session left it)
+# Said where the question was never put, because the mode in force answers it. Naming the flag is
+# the point: this is the one grant a person did not make by pressing a key, so the line has to say
+# what made it.
+session-trusting-unasked =
+    trusting { $directory } (--dangerously-skip-permissions, so you were not asked)
 session-not-trusting = this directory is not trusted; every write will be shown to you
 session-vouched-for = trusting { $path } for this session
 session-answered-already = answered already: { $question }
