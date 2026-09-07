@@ -1710,7 +1710,7 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
     } else if working {
         match session.indicator() {
             Some(indicator) => {
-                let mut spans = vec![
+                Line::from(vec![
                     Span::styled(
                         format!("  {} ", indicator.glyph),
                         Style::default().fg(theme::accent()),
@@ -1721,21 +1721,7 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session) {
                     ),
                     // Dim: the counters answer a question without competing for attention.
                     Span::styled(indicator.detail(), dim()),
-                ];
-                // While a delegate is working, the key that opens it. The turn's transcript shows
-                // one block per delegate and three of its rows, so somebody who does not already
-                // know the key has no way to find out there is more of it to see.
-                if session
-                    .delegates()
-                    .iter()
-                    .any(|delegate| delegate.is_running())
-                {
-                    spans.push(Span::styled(
-                        format!("  ·  {}", t!(watching_invitation)),
-                        dim(),
-                    ));
-                }
-                Line::from(spans)
+                ])
             }
             None => Line::from(Span::styled("  waiting for the model…", dim())),
         }
@@ -2716,19 +2702,24 @@ mod tests {
             );
         }
 
-        /// The turn's transcript keeps one block per delegate and three of its rows. Somebody who
-        /// does not know the key has nothing telling them there is more of it to see.
+        /// One key named twice on one screen reads as two things to press. The hint line is where
+        /// it is said, so the row reporting what the turn is doing says what the turn is doing.
         #[test]
-        fn the_indicator_says_which_key_watches_a_delegate_at_work() {
+        fn the_row_that_says_what_the_turn_is_doing_leaves_the_key_to_the_hint_line() {
             let mut session = Session::new("kernel-enforced");
             session.status = Status::Working;
             session.turns = 1;
             spawn(&mut session, "checker", "run the build");
 
-            let screen = rendered(&session);
+            assert_eq!(
+                rendered(&session).matches("ctrl-l").count(),
+                1,
+                "the key is named more than once while a delegate is working"
+            );
+            // And the one naming it is the hint line, which outlasts the turn.
             assert!(
-                screen.contains("ctrl-l"),
-                "the row saying what the turn is doing did not name the key: {screen}"
+                hint_row_at(&session, 90, 24).contains("ctrl-l"),
+                "the hint line stopped naming the key while a delegate was working"
             );
         }
 
