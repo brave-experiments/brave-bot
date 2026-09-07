@@ -12,6 +12,7 @@ governs:
   - crates/core/src/policy.rs
   - crates/tui/src/confirm.rs
 guards:
+  - symbol: CommandLine::compile
   - symbol: Policy::before_run
   - symbol: Policy::read_output
 ---
@@ -430,7 +431,9 @@ message naming the alternative: `git rebase -i`, `git add -i`, an editor, a page
 The list is a convenience rather than a guarantee. Something interactive that is not on it hits the
 deadline and returns what it printed, which is the same outcome by a slower road.
 
-`verified-by: none`
+`verified-by: bravebot_agent::cmdline::a_program_that_wants_a_terminal_is_refused_before_it_starts`
+`verified-by: bravebot_agent::cmdline::the_same_program_without_the_interactive_part_is_not_refused`
+`verified-by: bravebot_agent::exec::a_stage_that_reads_stdin_is_given_nothing_rather_than_the_terminal`
 
 <a id="CMDLINE-16"></a>
 ### CMDLINE-16: the tool's own description tells the planner to filter at the source

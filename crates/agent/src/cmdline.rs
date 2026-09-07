@@ -220,6 +220,14 @@ pub enum Reason {
     TooDeep { cap: usize },
     /// A `~` where this user has no home directory.
     NoHome,
+    /// A program word standing for more or less than one thing.
+    NotOneProgram,
+    /// A program name nothing on `$PATH` matches.
+    NotFound,
+    /// A redirection target that is not exactly one file.
+    NotOnePath,
+    /// An invocation that would want a terminal, with what to do instead.
+    Interactive(&'static str),
     /// Anything the shape of the line gets wrong.
     Syntax(&'static str),
 }
@@ -278,6 +286,16 @@ impl fmt::Display for Reason {
                 "would read more than {cap} directories to work out what it matches. Name a narrower pattern"
             ),
             Self::NoHome => f.write_str("this user has no home directory to stand for"),
+            Self::NotOneProgram => {
+                f.write_str("a step's program has to be one thing, so that the plan can name it")
+            }
+            Self::NotFound => f.write_str(
+                "is not a program that could be found. `$PATH` decides what a bare name means, and nothing on it matches",
+            ),
+            Self::NotOnePath => f.write_str(
+                "a redirection has to name exactly one file. A destination worked out from what is on disk is a destination that moves when the tree does",
+            ),
+            Self::Interactive(alternative) => f.write_str(alternative),
             Self::Syntax(detail) => f.write_str(detail),
         }
     }
@@ -1656,6 +1674,321 @@ fn class_matches(body: &str, c: char) -> bool {
     hit != negated
 }
 
+/// A command line, compiled.
+///
+/// This is the routing field a raw string did not have: what will run, with which binary and
+/// which literal arguments, every file it may write, every file it may read, and where it runs. A
+/// person endorses this rather than the text they were sent, because after compilation this is
+/// what decides where an effect lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandLine {
+    /// The line as the planner spelled it, kept as context for a reader and binding nothing.
+    pub line: String,
+    /// The directory every step runs in.
+    pub directory: PathBuf,
+    /// What runs, and how the parts are joined.
+    pub steps: Steps,
+    /// Every file the plan may write, in the order the line names them.
+    pub writes: Vec<PathBuf>,
+    /// Every file the plan reads by naming it as a destination for a stream.
+    pub reads: Vec<PathBuf>,
+}
+
+/// What a plan runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Steps {
+    /// Steps feeding one another, and a single step where the line had no pipe.
+    Pipeline(Vec<Step>),
+    /// Two of these joined by `&&`, `||` or `;`.
+    Join {
+        left: Box<Steps>,
+        joiner: Joiner,
+        right: Box<Steps>,
+    },
+    /// `( … )`, which groups and starts nothing of its own.
+    Group(Box<Steps>),
+}
+
+impl Steps {
+    /// Every step that could run, in the order the line writes them.
+    ///
+    /// Every one of them, including those a branch may not reach. A step that does not run is not
+    /// an effect, but it was still endorsed, and that is the conservative direction.
+    pub fn steps(&self) -> Vec<&Step> {
+        let mut out = Vec::new();
+        self.collect(&mut out);
+        out
+    }
+
+    fn collect<'a>(&'a self, out: &mut Vec<&'a Step>) {
+        match self {
+            Self::Pipeline(steps) => out.extend(steps.iter()),
+            Self::Join { left, right, .. } => {
+                left.collect(out);
+                right.collect(out);
+            }
+            Self::Group(inner) => inner.collect(out),
+        }
+    }
+}
+
+/// One program in a plan, resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    /// The name the line used, which is what a reader recognises.
+    pub program: String,
+    /// The file that name resolved to, absolute.
+    ///
+    /// Resolved once, here, before anybody is asked. Looking the name up again after the approval
+    /// would leave a window in which `$PATH` changed and something else ran.
+    pub resolved: PathBuf,
+    /// The argument vector, literal and final.
+    pub args: Vec<String>,
+    /// `NAME=value` written in front of this step's program.
+    pub environment: Vec<(String, String)>,
+    /// Where this step's streams go.
+    pub routes: Vec<Route>,
+}
+
+/// Where one of a step's streams goes.
+///
+/// The paths are absolute and are not tidied: what is recorded is what will be opened, and
+/// rewriting a `..` away would make the two differ wherever a symlink is involved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    Stdout {
+        path: PathBuf,
+        append: bool,
+    },
+    Stdin {
+        path: PathBuf,
+    },
+    Stderr {
+        path: PathBuf,
+        append: bool,
+    },
+    Both {
+        path: PathBuf,
+    },
+    /// Standard error joins standard output, touching no file.
+    StderrToStdout,
+}
+
+impl CommandLine {
+    /// Compile `line` into the plan that would run it in `directory`.
+    ///
+    /// Every branch is compiled, whether or not it would be reached, so that a person answering
+    /// one question has been shown everything the line could do. Anything the compiler cannot
+    /// fully resolve is a refusal, and a refusal yields no plan.
+    pub fn compile(line: &str, directory: &Path, home: Option<&Path>) -> Result<Self, Refused> {
+        let node = parse(line)?;
+        let mut plan = Self {
+            line: line.trim_end().to_string(),
+            directory: directory.to_path_buf(),
+            steps: Steps::Pipeline(Vec::new()),
+            writes: Vec::new(),
+            reads: Vec::new(),
+        };
+        plan.steps = plan.node(&node, home)?;
+        Ok(plan)
+    }
+
+    fn node(&mut self, node: &Node, home: Option<&Path>) -> Result<Steps, Refused> {
+        match node {
+            Node::Command(command) => Ok(Steps::Pipeline(vec![self.step(command, home)?])),
+            Node::Pipeline(commands) => {
+                let mut steps = Vec::with_capacity(commands.len());
+                for command in commands {
+                    steps.push(self.step(command, home)?);
+                }
+                Ok(Steps::Pipeline(steps))
+            }
+            Node::Join {
+                left,
+                joiner,
+                right,
+            } => {
+                let left = self.node(left, home)?;
+                let right = self.node(right, home)?;
+                Ok(Steps::Join {
+                    left: Box::new(left),
+                    joiner: *joiner,
+                    right: Box::new(right),
+                })
+            }
+            Node::Group(inner) => Ok(Steps::Group(Box::new(self.node(inner, home)?))),
+        }
+    }
+
+    fn step(&mut self, command: &Command, home: Option<&Path>) -> Result<Step, Refused> {
+        let directory = self.directory.clone();
+        let word = command.program();
+        let expanded = expand(word, &directory, home)?;
+        let [program] = expanded.as_slice() else {
+            return Err(Refused {
+                span: word.span,
+                text: render(&word.pieces),
+                reason: Reason::NotOneProgram,
+            });
+        };
+
+        // Before the name is looked up, so that the answer does not depend on whether the editor
+        // in question happens to be installed on this machine.
+        if let Some(alternative) = wants_a_terminal(program, command) {
+            return Err(Refused {
+                span: command.span,
+                text: program.clone(),
+                reason: Reason::Interactive(alternative),
+            });
+        }
+
+        let resolved = crate::programs::resolve(program, &directory).ok_or_else(|| Refused {
+            span: word.span,
+            text: program.clone(),
+            reason: Reason::NotFound,
+        })?;
+
+        let mut args = Vec::new();
+        for word in &command.words[1..] {
+            args.extend(expand(word, &directory, home)?);
+        }
+
+        let mut routes = Vec::new();
+        for redirection in &command.redirections {
+            routes.push(self.route(redirection, home)?);
+        }
+
+        Ok(Step {
+            program: program.clone(),
+            resolved,
+            args,
+            environment: command
+                .assignments
+                .iter()
+                .map(|assignment| (assignment.name.clone(), assignment.value.clone()))
+                .collect(),
+            routes,
+        })
+    }
+
+    /// One redirection, with its target recorded in the write set or the read set.
+    fn route(&mut self, redirection: &Redirection, home: Option<&Path>) -> Result<Route, Refused> {
+        let writing = |target: &Word, plan: &mut Self| -> Result<PathBuf, Refused> {
+            let path = plan.target(target, home)?;
+            plan.writes.push(path.clone());
+            Ok(path)
+        };
+        Ok(match redirection {
+            Redirection::Stdout { target, append } => Route::Stdout {
+                path: writing(target, self)?,
+                append: *append,
+            },
+            Redirection::Stderr { target, append } => Route::Stderr {
+                path: writing(target, self)?,
+                append: *append,
+            },
+            Redirection::Both { target } => Route::Both {
+                path: writing(target, self)?,
+            },
+            Redirection::Stdin { target } => {
+                let path = self.target(target, home)?;
+                self.reads.push(path.clone());
+                Route::Stdin { path }
+            }
+            // A descriptor renamed touches no file, so there is nothing to put in either set and
+            // nothing for a person to endorse beyond the step itself.
+            Redirection::StderrToStdout => Route::StderrToStdout,
+        })
+    }
+
+    /// The one file a redirection names.
+    ///
+    /// A pattern is refused even where it happens to match a single file today. The plan has to
+    /// say where the bytes go, and a destination worked out from what is on disk is a destination
+    /// that changes when the tree does.
+    fn target(&self, word: &Word, home: Option<&Path>) -> Result<PathBuf, Refused> {
+        let refused = || Refused {
+            span: word.span,
+            text: render(&word.pieces),
+            reason: Reason::NotOnePath,
+        };
+        if word.pieces.iter().any(is_pattern) {
+            return Err(refused());
+        }
+        let expanded = expand(word, &self.directory, home)?;
+        let [one] = expanded.as_slice() else {
+            return Err(refused());
+        };
+        let path = Path::new(one);
+        Ok(if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.directory.join(path)
+        })
+    }
+}
+
+/// What to do instead, for an invocation that would want a terminal.
+///
+/// A convenience rather than a guarantee. Something interactive that is not named here reaches
+/// the deadline and comes back with what it printed, which is the same outcome by a slower road,
+/// so this list is allowed to be short and is not a safety property.
+fn wants_a_terminal(program: &str, command: &Command) -> Option<&'static str> {
+    let name = Path::new(program)
+        .file_name()?
+        .to_string_lossy()
+        .into_owned();
+    let args: Vec<String> = command.words[1..]
+        .iter()
+        .filter_map(|word| word.literal())
+        .collect();
+    match name.as_str() {
+        "vi" | "vim" | "nvim" | "emacs" | "nano" | "pico" | "ed" | "micro" | "helix" | "hx"
+        | "kak" => Some(
+            "an editor needs a terminal. Use `edit_file`, or a program that takes what it needs on the command line",
+        ),
+        "less" | "more" | "most" => Some(
+            "a pager needs a terminal. Narrow the output in the line instead, with `head`, `tail` or `sed -n`",
+        ),
+        "top" | "htop" | "btop" => {
+            Some("this draws over a terminal. Ask for one reading instead, such as `ps`")
+        }
+        "git" => git_wants_a_terminal(&args),
+        _ => None,
+    }
+}
+
+fn git_wants_a_terminal(args: &[String]) -> Option<&'static str> {
+    let subcommand = args.iter().find(|arg| !arg.starts_with('-'))?;
+    let has = |flags: &[&str]| args.iter().any(|arg| flags.contains(&arg.as_str()));
+    match subcommand.as_str() {
+        "rebase" if has(&["-i", "--interactive"]) => Some(
+            "`git rebase -i` opens an editor. Name the rewrite outright, with `--onto` or an explicit sequence",
+        ),
+        "add" if has(&["-i", "--interactive", "-p", "--patch"]) => {
+            Some("`git add -i` and `git add -p` need a terminal. Name the paths to stage instead")
+        }
+        "commit" if !carries_a_message(args) => {
+            Some("`git commit` with no message opens an editor. Pass `-m`")
+        }
+        _ => None,
+    }
+}
+
+/// Whether a `git commit` was given its message rather than left to ask for one.
+fn carries_a_message(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--no-edit"
+            || arg.starts_with("--message")
+            || arg.starts_with("--file")
+            || arg.starts_with("--reuse-message")
+            // A bundled short flag carries its letters, so `-am` is a message as surely as `-m`.
+            || (arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg.contains(['m', 'F', 'C']))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2252,5 +2585,180 @@ mod tests {
         let tree = Tree::new("quoted");
         tree.file("a.rs");
         assert_eq!(expanded("ls '*.rs'", 1, &tree.root), ["*.rs"]);
+    }
+
+    fn compiled(line: &str, at: &Path) -> CommandLine {
+        CommandLine::compile(line, at, None)
+            .unwrap_or_else(|e| panic!("`{line}` should compile, and was refused: {e}"))
+    }
+
+    fn compile_refused(line: &str, at: &Path) -> Refused {
+        CommandLine::compile(line, at, None).expect_err("should have been refused")
+    }
+
+    /// The plan is the routing field a raw string did not have, so a step has to carry the file
+    /// that will run rather than the name that was written. Resolving once, here, is what keeps
+    /// what a person endorsed and what executes the same value.
+    #[test]
+    fn a_step_carries_the_file_its_name_resolved_to() {
+        let tree = Tree::new("resolved");
+        let plan = compiled("cat", &tree.root);
+        let steps = plan.steps.steps();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].program, "cat");
+        assert!(steps[0].resolved.is_absolute());
+        assert!(steps[0].resolved.ends_with("cat"));
+    }
+
+    /// A branch that may run is an effect a person is answering for, so all of them are compiled
+    /// and none is left to be worked out part-way through a line.
+    #[test]
+    fn every_branch_that_could_run_is_in_the_plan() {
+        let tree = Tree::new("branches");
+        let plan = compiled("cat a && head b || wc c", &tree.root);
+        let programs: Vec<&str> = plan
+            .steps
+            .steps()
+            .iter()
+            .map(|step| step.program.as_str())
+            .collect();
+        assert_eq!(programs, ["cat", "head", "wc"]);
+    }
+
+    #[test]
+    fn a_group_and_a_pipeline_both_keep_their_steps() {
+        let tree = Tree::new("shapes");
+        let plan = compiled("(cat a ; head b) && wc c | cat", &tree.root);
+        assert_eq!(plan.steps.steps().len(), 4);
+        assert!(matches!(plan.steps, Steps::Join { .. }));
+    }
+
+    /// By the time an argument is in a plan the only thing that ever split the line has already
+    /// run, so there is nothing left that could split it again.
+    #[test]
+    fn an_argument_is_final_by_the_time_it_is_a_step() {
+        let tree = Tree::new("final");
+        let plan = compiled("cat '; rm -rf /'", &tree.root);
+        assert_eq!(plan.steps.steps()[0].args, ["; rm -rf /"]);
+        assert!(plan.writes.is_empty());
+    }
+
+    /// A redirection is where bytes land, so it belongs in the set of files a person is being
+    /// asked to let this line write.
+    #[test]
+    fn a_redirection_joins_the_write_set() {
+        let tree = Tree::new("writes");
+        let plan = compiled("cat > out.txt", &tree.root);
+        assert_eq!(plan.writes, [tree.root.join("out.txt")]);
+        assert!(plan.reads.is_empty());
+    }
+
+    #[test]
+    fn an_append_writes_and_an_input_reads() {
+        let tree = Tree::new("streams");
+        tree.file("in.txt");
+        let plan = compiled("cat < in.txt >> out.txt 2> err.txt", &tree.root);
+        assert_eq!(
+            plan.writes,
+            [tree.root.join("out.txt"), tree.root.join("err.txt")]
+        );
+        assert_eq!(plan.reads, [tree.root.join("in.txt")]);
+    }
+
+    /// Renaming a descriptor touches no file. Recording it as a write would put a file called `1`
+    /// in front of a person and ask them to endorse it.
+    #[test]
+    fn joining_the_streams_writes_no_file() {
+        let tree = Tree::new("join");
+        let plan = compiled("cat 2>&1", &tree.root);
+        assert!(plan.writes.is_empty());
+        assert_eq!(plan.steps.steps()[0].routes, [Route::StderrToStdout]);
+    }
+
+    /// A destination worked out from what is on disk is a destination that moves when the tree
+    /// does, so the plan would stop saying where the bytes go.
+    #[test]
+    fn a_redirection_target_that_is_not_one_path_is_refused() {
+        let tree = Tree::new("target");
+        tree.file("only.txt");
+        assert_eq!(
+            compile_refused("cat > *.txt", &tree.root).reason,
+            Reason::NotOnePath
+        );
+        assert_eq!(
+            compile_refused("cat > {a,b}.txt", &tree.root).reason,
+            Reason::NotOnePath
+        );
+    }
+
+    #[test]
+    fn a_program_that_cannot_be_found_is_refused() {
+        let tree = Tree::new("missing");
+        assert_eq!(
+            compile_refused("bravebot-no-such-program-anywhere x", &tree.root).reason,
+            Reason::NotFound
+        );
+    }
+
+    /// A program that would sit waiting for a terminal holds the turn open until the deadline and
+    /// prints nothing useful. Refusing it up front costs a message and saves the wait.
+    #[test]
+    fn a_program_that_wants_a_terminal_is_refused_before_it_starts() {
+        let tree = Tree::new("interactive");
+        for line in [
+            "vim notes.txt",
+            "less notes.txt",
+            "git rebase -i HEAD~3",
+            "git add -p",
+            "git commit",
+        ] {
+            assert!(
+                matches!(
+                    compile_refused(line, &tree.root).reason,
+                    Reason::Interactive(_)
+                ),
+                "`{line}` was not refused as interactive"
+            );
+        }
+    }
+
+    /// The list is a convenience, not a ban on the program: the same program doing something that
+    /// needs no terminal is an ordinary request.
+    #[test]
+    fn the_same_program_without_the_interactive_part_is_not_refused() {
+        let tree = Tree::new("noninteractive");
+        for line in ["git rebase --continue", "git add .", "git commit -m done"] {
+            let refusal = CommandLine::compile(line, &tree.root, None);
+            let interactive = matches!(
+                refusal.as_ref().err().map(|e| &e.reason),
+                Some(Reason::Interactive(_))
+            );
+            assert!(!interactive, "`{line}` was refused as interactive");
+        }
+    }
+
+    /// An environment written in front of a step belongs to that step, so a plan shows what each
+    /// program will see rather than something accumulated across the line.
+    #[test]
+    fn an_assignment_belongs_to_the_step_it_was_written_in_front_of() {
+        let tree = Tree::new("environment");
+        let plan = compiled("cat a | RUST_LOG=debug head -1", &tree.root);
+        let steps = plan.steps.steps();
+        assert!(steps[0].environment.is_empty());
+        assert_eq!(
+            steps[1].environment,
+            [("RUST_LOG".to_string(), "debug".to_string())]
+        );
+    }
+
+    /// The line is kept for a reader, and it is context rather than the thing endorsed: two
+    /// spellings that compile alike are the same plan.
+    #[test]
+    fn the_line_is_kept_beside_the_plan_it_compiled_to() {
+        let tree = Tree::new("spelling");
+        let one = compiled("cat  'a b'", &tree.root);
+        let other = compiled("cat \"a b\"", &tree.root);
+        assert_eq!(one.steps, other.steps);
+        assert_ne!(one.line, other.line);
     }
 }
