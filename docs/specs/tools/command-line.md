@@ -5,6 +5,7 @@ status: proposed
 governs:
   - crates/agent/src/cmdline.rs
   - crates/agent/src/exec.rs
+  - crates/agent/src/tools.rs
   - crates/agent/src/programs.rs
   - crates/core/src/command.rs
   - crates/core/src/pure.rs
@@ -102,7 +103,13 @@ An argument that survives compilation is final. `; rm -rf /` inside quotes is on
 arrives as one argument, because the only thing that ever split the line was the compiler, and it
 already ran.
 
-`verified-by: none`
+`verified-by: bravebot_agent::tools::run_takes_one_command_line_and_nothing_else`
+`verified-by: bravebot_agent::turn::a_line_with_a_pipe_is_compiled_into_its_steps`
+`verified-by: bravebot_agent::exec::a_command_line_runs_as_the_plan_it_compiled_to`
+`verified-by: bravebot_agent::exec::a_command_line_chains_its_steps`
+`verified-by: bravebot_agent::exec::a_metacharacter_inside_quotes_reaches_the_program_as_one_argument`
+`verified-by: bravebot_agent::exec::a_redirection_inside_quotes_writes_no_file`
+`verified-by: bravebot_agent::cmdline::a_step_carries_the_file_its_name_resolved_to`
 
 <a id="CMDLINE-2"></a>
 ### CMDLINE-2: the grammar is closed, and a refusal is never a fallback
@@ -255,7 +262,13 @@ state the first half left behind.
 A stage that does not run because a branch was not taken is not an effect and needs no separate
 answer. It was still endorsed, and that is the conservative direction.
 
-`verified-by: none`
+`verified-by: bravebot_agent::cmdline::every_branch_that_could_run_is_in_the_plan`
+`verified-by: bravebot_core::command::a_plan_lists_every_step_that_could_run`
+`verified-by: bravebot_core::policy::an_endorsement_does_not_authorise_a_differently_joined_plan`
+`verified-by: bravebot_agent::exec::the_right_side_of_and_runs_only_when_the_left_succeeded`
+`verified-by: bravebot_agent::exec::the_right_side_of_or_runs_only_when_the_left_failed`
+`verified-by: bravebot_agent::exec::a_semicolon_runs_both_sides_whatever_the_first_did`
+`verified-by: bravebot_agent::exec::a_group_sequences_the_steps_it_holds`
 
 <a id="CMDLINE-7"></a>
 ### CMDLINE-7: permission rules match compiled stages, one at a time
@@ -464,10 +477,12 @@ What the description should say instead is the true thing: use whichever returns
 that filters usually returns less.
 
 **Why a clause about wording.** A tool's description is the only instruction the planner reliably
-reads, and the previous one measurably steered a session into the expensive path. Wording that
-changes behaviour is behaviour.
+reads, and an instruction to reach for the structured tools instead measurably steers a session
+into the expensive path. Wording that changes behaviour is behaviour.
 
-`verified-by: none`
+`verified-by: bravebot_agent::tools::the_run_description_tells_the_planner_to_filter_at_the_source`
+`verified-by: bravebot_agent::tools::the_run_description_does_not_send_the_planner_to_the_other_tools_instead`
+`verified-by: bravebot_agent::tools::only_run_takes_a_command_line`
 
 ## Amendments to existing specs
 

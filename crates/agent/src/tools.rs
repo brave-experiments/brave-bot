@@ -415,54 +415,38 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
         ),
         Tool::function(
             "run",
-            "Run a program. Give a pipeline of stages, each a program name and a list of \
-             arguments; each stage's output feeds the next. There is no shell, so there are no \
-             pipes, no redirection, no && and no $(...): a character like ; or | inside an \
-             argument is part of that argument and nothing splits it. Compose stages instead of \
-             reaching for a pipe. The user approves the exact arguments before anything runs, so \
-             say what you are running and why first. Output usually comes back as a reference \
-             rather than as text, like a file you may not read: pass it to read_output to ask the \
-             user to show it to you, hand it to spawn_processor, or write it to a file with \
-             write_file. Once the user has vouched for a command, that exact command runs without \
-             asking and its output comes back as text you can read, which is what makes running a \
-             build or a test suite worth doing repeatedly. Do use it to compile and test what you \
-             changed. Do not use it to read something read_file or search would have told you.",
+            "Run a command line. Write it the way you would type it: `grep -rn thing src/ | \
+             head -30`. Pipes, &&, ||, ;, ( ), quoting, redirection (>, >>, <, 2>, 2>&1, &>), \
+             globs and {a,b} all work. There is no shell: the line is compiled here into the \
+             programs and arguments it names, and anything that cannot be worked out from the \
+             line itself is refused rather than guessed at. $(...), backticks, $VAR and ${...} \
+             are refused for that reason: write the value out. Quoting settles all of them, so \
+             '$HOME' is six characters and reaches the program as one argument. The user \
+             approves the compiled plan before anything runs, so say what you are running and \
+             why first. \
+             \
+             Narrowing the result inside the line is the cheapest thing you can do, and usually \
+             the difference between a few lines and a few thousand tokens: pipe to `head -n`, \
+             ask grep for `-l` to get names only or `-c` for a count, take a line range with \
+             `sed -n 40,80p` rather than reading a whole file. Use whichever tool returns less, \
+             and a command that filters usually returns less. \
+             \
+             Output comes back as text you can read where the user has vouched for every \
+             command in the line; otherwise it comes back as a reference, like a file you may \
+             not read: pass it to read_output to ask the user to show it to you, hand it to \
+             spawn_processor, or write it to a file with write_file. Do use it to compile and \
+             test what you changed.",
             json!({
                 "type": "object",
                 "properties": {
-                    "pipeline": {
-                        "type": "array",
-                        "description": "The stages, in order. One entry runs one program; two \
-                                        entries run the first and feed its output to the second.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "program": {
-                                    "type": "string",
-                                    "description": "The program to run, e.g. \"git\". A name is \
-                                                    looked up on PATH; a path is taken relative \
-                                                    to the workspace. Never a command line, and \
-                                                    never a shell."
-                                },
-                                "args": {
-                                    "type": "array",
-                                    "description": "What comes AFTER the program, one argument \
-                                                    per entry. Do not repeat the program name \
-                                                    here: this is not an argv vector and there is \
-                                                    no argv[0]. For `git log --oneline -50` the \
-                                                    program is \"git\" and args are [\"log\", \
-                                                    \"--oneline\", \"-50\"]. Split them the \
-                                                    way a shell would have, since nothing here \
-                                                    splits a string for you: never [\"log \
-                                                    --oneline -50\"] as one entry.",
-                                    "items": {"type": "string"}
-                                }
-                            },
-                            "required": ["program"]
-                        }
+                    "command": {
+                        "type": "string",
+                        "description": "One command line. Programs are looked up on PATH, or \
+                                        taken as paths relative to the workspace. A newline is not \
+                                        accepted, since this is one line and not a script."
                     }
                 },
-                "required": ["pipeline"]
+                "required": ["command"]
             }),
         ),
         Tool::function(
@@ -2353,116 +2337,52 @@ fn run<S: Sink, C: Confirmer>(
     confirmer: &mut C,
     arguments: &Value,
 ) -> Produced {
-    let Some(entries) = arguments.get("pipeline").and_then(Value::as_array) else {
+    let Some(line) = argument(arguments, "command") else {
         return problem(
-            "error: 'pipeline' is required and must be an array of stages, e.g. \
-             [{\"program\": \"git\", \"args\": [\"log\", \"--oneline\"]}]",
+            "error: 'command' is required and must be a string holding one command line, \
+             e.g. \"git log --oneline -50\"",
         );
     };
-    if entries.is_empty() {
-        return problem("error: 'pipeline' needs at least one stage");
-    }
 
-    // Assembled from the planner's own words, which are untrusted. Every field is wrapped as it is
-    // taken and released through one witness, so the audit trail records that a command line was
-    // released rather than leaving it to happen implicitly. A person reading argv is the
-    // legitimate destination for it: their reading it is what an approval is.
+    // Assembled from the planner's own words, which are untrusted. Released through one witness,
+    // so the trail records that a command line was released rather than leaving it to happen
+    // implicitly. A person reading it is the legitimate destination: their reading it is what an
+    // approval is.
     let proof = policy.authorise_display_release("a proposed command line");
-    let mut stages = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let Some(named) = entry.get("program").and_then(Value::as_str) else {
-            return problem(
-                "error: every stage needs a 'program', which must be a string naming one program",
-            );
-        };
-        let program = Labelled::new(
-            named.to_string(),
-            bravebot_core::label::Label::untrusted_public(),
-        )
-        .declassify(&proof);
+    let line = line.declassify(&proof);
 
-        let mut args = Vec::new();
-        match entry.get("args") {
-            None => {}
-            Some(Value::Array(given)) => {
-                for arg in given {
-                    let Some(text) = arg.as_str() else {
-                        return problem("error: every entry in a stage's 'args' must be a string");
-                    };
-                    args.push(
-                        Labelled::new(
-                            text.to_string(),
-                            bravebot_core::label::Label::untrusted_public(),
-                        )
-                        .declassify(&proof),
-                    );
-                }
-            }
-            Some(_) => {
-                return problem("error: a stage's 'args' must be an array of strings");
-            }
+    let directory = tools.workspace.root().to_path_buf();
+    let plan = match crate::cmdline::compile(&line, &directory, tools.home) {
+        Ok(plan) => plan,
+        // The refusal names the span that caused it, so the planner can rewrite that part rather
+        // than guessing at the whole line. There is no degraded mode to fall back to.
+        Err(refused) => return problem(format!("error: {refused}")),
+    };
+
+    // A redirection names a file the run opens itself, so the confinement every other write goes
+    // through is applied here to the path.
+    for path in &plan.writes {
+        if let Err(escape) = tools.workspace.confines(path) {
+            return problem(format!("refused: {escape}"));
         }
-        stages.push(bravebot_core::Stage::new(program, args));
     }
-    let pipeline = bravebot_core::Pipeline::new(stages);
 
-    // Before the programs are even looked for. A rule refusing a command is a statement that it
-    // does not run, and there is nothing to resolve, show or approve once it has been made.
-    if let Err(denial) = policy.before_run_rules(&pipeline) {
+    // Before the person is asked. A rule refusing something is a statement that it does not run,
+    // and there is nothing to show or approve once it has been made.
+    if let Err(denial) = policy.before_plan_rules(&plan) {
         return problem(format!(
             "refused: {denial}. Do not retry, and do not look for another program that would \
              do the same thing: say in your reply what you needed it for."
         ));
     }
 
-    // Resolved once, before anyone is asked. What the person is shown, what the trusted list
-    // records, and what executes are then the same value, so `$PATH` changing afterwards cannot
-    // put a different binary behind an approval.
-    let directory = tools.workspace.root().to_path_buf();
-    let mut resolved = Vec::with_capacity(pipeline.len());
-    for stage in &pipeline.stages {
-        match crate::programs::resolve(&stage.program, &directory) {
-            Some(path) => resolved.push(path),
-            // Whether a name is a program is decided by looking for it, never by its shape. A
-            // guess from the shape refused every path with a space in it, which on macOS is most
-            // of /Applications: a planner naming the Brave binary correctly was told four times
-            // that it had written a command line, and concluded that spaces were unsupported.
-            //
-            // Whitespace only picks the wording once the lookup has already failed, which is the
-            // one point where a command line and a mistyped path are worth telling apart.
-            None if stage.program.contains(char::is_whitespace) => {
-                return problem(format!(
-                    "error: '{}' was not found, and it contains a space. If that was a command \
-                     line, put the program in 'program' and each argument in its own entry of \
-                     'args'; there is no shell here to split it. If it is genuinely a path with a \
-                     space in it, check the spelling: a path with spaces is fine.",
-                    stage.program
-                ));
-            }
-            None => {
-                return problem(format!(
-                    "error: '{}' was not found. It may not be installed, or may not be on PATH.",
-                    stage.program
-                ));
-            }
-        }
-    }
-    let shown: Vec<String> = resolved
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect();
-
-    if policy.run_needs_approval(&pipeline, &shown) {
-        let request = crate::confirm::RunRequest::from_pipeline(
-            &pipeline,
-            &shown,
-            &directory.display().to_string(),
-        );
+    if policy.plan_needs_approval(&plan) {
+        let request = crate::confirm::RunRequest { plan: plan.clone() };
         let answer = confirmer.confirm_run(&request);
         if !answer.approved() {
             return problem(
                 "refused: the user did not approve running this. Do not retry the same \
-                 pipeline; ask what they would prefer."
+                 line; ask what they would prefer."
                     .to_string(),
             );
         }
@@ -2475,16 +2395,16 @@ fn run<S: Sink, C: Confirmer>(
         }
     }
 
-    // The approval is what makes this argv trustworthy, and it is bound to this exact pipeline.
-    policy.endorse_run(&pipeline);
+    // The approval is what makes this plan trustworthy, and it is bound to this exact plan.
+    policy.endorse_plan(&plan);
 
-    let label = match policy.before_run(&pipeline, &shown) {
+    let label = match policy.before_plan(&plan) {
         Ok(label) => label,
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
-    let displayed = pipeline.display();
-    match crate::exec::run(&pipeline, &resolved, &directory, tools.cancel) {
+    let displayed = plan.display();
+    match crate::exec::run_plan(&plan, tools.cancel, crate::exec::LIMIT) {
         Ok(ran) => {
             // stdout and stderr together, because a program that failed usually explains itself
             // on stderr and a result that dropped the explanation would be the least useful thing
@@ -2498,25 +2418,35 @@ fn run<S: Sink, C: Confirmer>(
                 text.push_str(&ran.stderr);
             }
 
+            // Capped only where the planner may read it. Output it may not read becomes a
+            // reference, so nothing of it enters the conversation and there is nothing to bound;
+            // capping it would throw away the middle of something still worth handing to a
+            // processor or writing to a file.
+            let (text, capped) = if label.is_trusted() {
+                bounded(&text)
+            } else {
+                (text, false)
+            };
+
             // Said in the driver's own words, from the exit codes and the clock, which are
             // structure rather than content: nothing here reads a byte of what the program
             // printed. The stopped case is named first because it explains the missing codes
-            // that would otherwise be reported as stages killed for no stated reason.
+            // that would otherwise be reported as steps killed for no stated reason.
             let outcome = if let Some(after) = ran.stopped {
                 format!(
                     "still running after {} seconds, so it was stopped; \
                      what it printed first is here",
                     after.as_secs()
                 )
-            } else if ran.succeeded() {
+            } else if ran.ended_well {
                 "succeeded".to_string()
             } else {
                 let failed: Vec<String> = ran
                     .failures()
                     .iter()
                     .map(|(at, code)| match code {
-                        Some(code) => format!("stage {at} exited {code}"),
-                        None => format!("stage {at} was killed"),
+                        Some(code) => format!("step {at} exited {code}"),
+                        None => format!("step {at} was killed"),
                     })
                     .collect();
                 failed.join(", ")
@@ -2529,9 +2459,10 @@ fn run<S: Sink, C: Confirmer>(
                 format!("what `{displayed}` printed"),
                 note,
             )
-            .of_content();
+            .of_content()
+            .capped(capped);
             // Marks the block the person is shown as content nobody vouched for, which is what a
-            // program's output is: it may include bytes an earlier stage read out of a file an
+            // program's output is: it may include bytes an earlier step read out of a file an
             // attacker wrote.
             produced.untrusted = !label.is_trusted();
             // What the slot will be told it came from, so the user can be asked to read it later
@@ -2539,10 +2470,54 @@ fn run<S: Sink, C: Confirmer>(
             produced.printed_by = Some(displayed.clone());
             produced
         }
-        // A run that produced nothing still says what happened. The argv is safe to repeat back:
+        // A run that produced nothing still says what happened. The plan is safe to repeat back:
         // a person endorsed it, so it is not something an attacker chose.
         Err(error) => problem(format!("error: `{displayed}` did not run: {error}")),
     }
+}
+
+/// How much of a command's output may enter the conversation.
+///
+/// A context-budget decision and not a safety one: a single tool result must never be able to
+/// spend a large fraction of a conversation, however useful what it printed was.
+const OUTPUT_CAP: usize = 16 * 1024;
+
+/// `text` cut to [`OUTPUT_CAP`], keeping the head and the tail, and whether anything went.
+///
+/// Head and tail rather than head alone, because a build log's verdict is at the end and its first
+/// error is near the beginning: keeping only the front of one answers neither question a reader
+/// has. What went is said in between, in the driver's own words, so a planner knows it is looking
+/// at a sample rather than at a short result.
+fn bounded(text: &str) -> (String, bool) {
+    if text.len() <= OUTPUT_CAP {
+        return (text.to_string(), false);
+    }
+    let half = OUTPUT_CAP / 2;
+    // Cut on a character boundary, or a multi-byte character straddling the cut would panic the
+    // turn on output nobody chose.
+    let head_end = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .take_while(|at| *at <= half)
+        .last()
+        .unwrap_or(0);
+    let tail_start = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .find(|at| *at >= text.len() - half)
+        .unwrap_or(text.len());
+
+    let dropped_bytes = tail_start - head_end;
+    let dropped_lines = text[head_end..tail_start].lines().count();
+    (
+        format!(
+            "{}\n\n(the middle of this output was dropped: {dropped_bytes} bytes, \
+             about {dropped_lines} lines. Narrow the command if you need what was in it.)\n\n{}",
+            &text[..head_end],
+            &text[tail_start..]
+        ),
+        true,
+    )
 }
 
 /// the inputs before the processor runs.
@@ -3555,10 +3530,11 @@ mod tests {
         }
     }
 
-    /// `run` takes a pipeline of argv stages and nothing else. A single string field would be a
-    /// command line by another name, and everything the design rests on would go with it.
+    /// `run` takes one command line and nothing else. The line is compiled here rather than
+    /// handed anywhere, so what matters about the surface is that there is exactly one field for
+    /// it: a second way to say what to run would be a second thing to keep honest.
     #[test]
-    fn run_takes_argv_and_never_a_command_line() {
+    fn run_takes_one_command_line_and_nothing_else() {
         let tool = available(false)
             .into_iter()
             .find(|t| t.function.name == "run")
@@ -3568,22 +3544,55 @@ mod tests {
             .expect("run has parameters");
         assert_eq!(
             properties.keys().collect::<Vec<_>>(),
-            vec!["pipeline"],
-            "run gained a field that is not the pipeline"
+            vec!["command"],
+            "run gained a field beside the command line"
         );
+        assert_eq!(properties["command"]["type"], "string");
+    }
 
-        let stage = &properties["pipeline"]["items"]["properties"];
-        assert!(stage.get("program").is_some(), "a stage names its program");
-        assert_eq!(
-            stage["args"]["type"], "array",
-            "arguments must be a list, never a string for something to split"
-        );
-        for absent in ["command", "cmd", "shell", "script", "argv_string"] {
+    /// A tool's description is the only instruction the planner reliably reads, so wording that
+    /// changes behaviour is behaviour. This one has to say that narrowing inside the line is the
+    /// cheapest thing available, and give the shapes rather than gesture at them.
+    #[test]
+    fn the_run_description_tells_the_planner_to_filter_at_the_source() {
+        let described = run_description();
+        for shape in ["head -n", "-l", "-c", "sed -n"] {
             assert!(
-                stage.get(absent).is_none(),
-                "a stage gained a '{absent}' field, which would be a command line"
+                described.contains(shape),
+                "the description does not give `{shape}` as a way to narrow: {described}"
             );
         }
+        assert!(
+            described.contains("returns less"),
+            "the description does not say to prefer whichever returns less: {described}"
+        );
+    }
+
+    /// The instruction that measurably steered a session into the expensive path. A capped
+    /// structured search returns thousands of tokens of truncated matches where `grep -rl` returns
+    /// a dozen lines, and a planner obeying that sentence pays the difference every round.
+    #[test]
+    fn the_run_description_does_not_send_the_planner_to_the_other_tools_instead() {
+        let described = run_description().to_lowercase();
+        for steer in [
+            "do not use it to read something read_file",
+            "prefer read_file",
+            "prefer search",
+        ] {
+            assert!(
+                !described.contains(steer),
+                "the description steers away from a command line: {described}"
+            );
+        }
+    }
+
+    fn run_description() -> String {
+        available(false)
+            .into_iter()
+            .find(|t| t.function.name == "run")
+            .expect("run is offered")
+            .function
+            .description
     }
 
     /// Blind output is the default, not the rule, and describing it as the rule is what made
@@ -3618,9 +3627,8 @@ mod tests {
     /// whole justification for that is that the planner has none: a field like this appearing
     /// anywhere in the tool list would end the distinction quietly.
     #[test]
-    fn no_tool_anywhere_takes_a_command_line() {
-        // Names a shell string is plausibly called. Not "args", which is the argv list, and not
-        // "command" on its own for a stage, which the pipeline test already pins.
+    fn only_run_takes_a_command_line() {
+        // Names a shell string is plausibly called, none of which is the compiled surface.
         const FORBIDDEN: [&str; 6] = [
             "shell",
             "script",
@@ -3638,14 +3646,13 @@ mod tests {
             for field in properties.keys() {
                 assert!(
                     !FORBIDDEN.contains(&field.as_str()),
-                    "{name} gained a '{field}' field, which is a command line by another name"
+                    "{name} gained a '{field}' field, which is a shell line by another name"
                 );
-                // A string called "command" is the shape that matters: as a list it is argv, and as
-                // an object it is something structured a person could read a field of.
+                // One tool takes a line, and it is the one whose whole job is compiling one.
                 if field == "command" {
-                    assert_ne!(
-                        properties[field]["type"], "string",
-                        "{name}.command is a string, so it is a shell line the planner composed"
+                    assert_eq!(
+                        name, "run",
+                        "{name} gained a 'command' field; only run compiles a line"
                     );
                 }
             }
@@ -3687,29 +3694,6 @@ mod tests {
                 .contains("does not stop you asking afterwards"),
             "ask_user still implies reading forfeits the question: {}",
             tool.function.description
-        );
-    }
-
-    /// `args` is what follows the program, not an argv vector. A planner reading it as argv puts
-    /// the program name in twice, and `open open -a ...` ran instead of `open -a ...`: the
-    /// browser never started, the error was quarantined, and the turn reported success.
-    #[test]
-    fn run_says_the_arguments_exclude_the_program_name() {
-        let tool = available(false)
-            .into_iter()
-            .find(|t| t.function.name == "run")
-            .expect("run is offered");
-        let described = tool.function.parameters["properties"]["pipeline"]["items"]["properties"]
-            ["args"]["description"]
-            .as_str()
-            .expect("args is described");
-        assert!(
-            described.contains("Do not repeat the program name"),
-            "args does not rule out argv[0]: {described}"
-        );
-        assert!(
-            described.contains("no argv[0]"),
-            "args does not name the convention it is not: {described}"
         );
     }
 

@@ -31,18 +31,17 @@ about shell strings and an argv vector is not one.
 ## Clauses
 
 <a id="RUN-1"></a>
-### RUN-1: `run` takes a pipeline of argv stages, and never a command string
+### RUN-1: `run` takes one command line, and the execution path takes argv
 
 ```
-run { pipeline: [
-  { program: "git", args: ["log", "--oneline", "-50"] },
-  { program: "sed", args: ["-n", "1,10p"] }
-]}
+run { command: "git log --oneline -50 | sed -n 1,10p" }
 ```
 
-`; rm -rf /` in an argument is one argument and stays one, because nothing ever splits it. Pipes,
-redirection, `&&`, globbing and `$(...)` are unavailable **to the planner**: each is a destination
-nobody saw. Narrowing output is a stage, not a pipe character.
+The line is compiled into an ordered plan of stages, each a resolved binary and a literal argument
+vector, and the plan is what executes. `; rm -rf /` inside quotes is one argument and stays one,
+because the only thing that ever split the line was the compiler and it already ran. What the
+grammar accepts, what it refuses, and why a compiled plan is not an interpreted string are
+[command-line.md](command-line.md).
 
 **The planner's execution path stays argv-only** and must never build a command line. It and shell
 mode are separate modules, so a change to one cannot quietly become a shell for the other.
@@ -54,12 +53,16 @@ mode are separate modules, so a change to one cannot quietly become a shell for 
 `verified-by: bravebot_core::policy::an_empty_pipeline_is_refused`
 
 <a id="RUN-2"></a>
-### RUN-2: argv is routing and must be endorsed by a person
+### RUN-2: the plan is routing and must be endorsed by a person
 
-Program and arguments must be `(T,pub)`. Untrusted text never becomes an argument. The
-endorsement is bound to that exact argv, so it cannot be reused for a different one.
+Programs, arguments and the files a plan writes must be `(T,pub)`. Untrusted text never becomes
+one. The endorsement is bound to that exact plan, so it cannot be reused for a different one: not
+for the same steps joined differently, not for the same steps writing somewhere else, and not for
+the same steps in another directory.
 
 `verified-by: bravebot_core::policy::a_run_without_an_endorsement_is_refused`
+`verified-by: bravebot_core::policy::a_plan_without_an_endorsement_is_refused`
+`verified-by: bravebot_core::policy::an_endorsement_does_not_authorise_a_plan_that_writes_elsewhere`
 `verified-by: bravebot_agent::exec::a_stage_runs_the_binary_it_was_resolved_to`
 `verified-by: bravebot_agent::exec::a_pipeline_with_missing_resolutions_does_not_run`
 

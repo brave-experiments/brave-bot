@@ -7210,7 +7210,7 @@ fn a_refused_run_executes_nothing() {
 
     a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"touch","args":["evidence.txt"]}]}"#,
+        r#"{"command":"touch evidence.txt"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
@@ -7232,7 +7232,7 @@ fn an_approved_run_executes_and_the_user_saw_what_it_was() {
 
     a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"touch","args":["made.txt"]}]}"#,
+        r#"{"command":"touch made.txt"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
@@ -7262,10 +7262,7 @@ fn an_unattended_turn_runs_no_program() {
     let scratch = Scratch::new("run-unattended");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, _received) = serve_sequence(vec![
-        tool_request(
-            "run",
-            r#"{"pipeline":[{"program":"touch","args":["unattended.txt"]}]}"#,
-        ),
+        tool_request("run", r#"{"command":"touch unattended.txt"}"#),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -7302,7 +7299,7 @@ fn vouching_for_a_program_carries_out_of_the_turn() {
 
     let outcome = a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"touch","args":["vouched.txt"]}]}"#,
+        r#"{"command":"touch vouched.txt"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
@@ -7332,7 +7329,7 @@ fn approving_once_leaves_the_session_vouching_for_nothing() {
 
     let outcome = a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"touch","args":["once.txt"]}]}"#,
+        r#"{"command":"touch once.txt"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
@@ -7356,7 +7353,7 @@ fn a_vouched_program_runs_without_asking() {
 
     a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"touch","args":["quiet.txt"]}]}"#,
+        r#"{"command":"touch quiet.txt"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::from_iter([
             bravebot_core::programs::Command::new(
@@ -7388,10 +7385,7 @@ fn what_a_program_printed_does_not_reach_the_planner() {
     std::fs::write(scratch.path.join("secret.txt"), "SENTINEL-XYZZY\n").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "run",
-            r#"{"pipeline":[{"program":"cat","args":["secret.txt"]}]}"#,
-        ),
+        tool_request("run", r#"{"command":"cat secret.txt"}"#),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -7426,26 +7420,29 @@ fn what_a_program_printed_does_not_reach_the_planner() {
     );
 }
 
-/// A command line in the program field does not resolve, and the refusal says what to do about
-/// it. Caught by the lookup failing, never by the shape of the string.
+/// A line with a pipe in it compiles into the steps it names, and the person is asked about the
+/// plan rather than about the text. Filtering at the source is the whole point of the notation.
 #[test]
-fn a_command_line_in_the_program_field_is_refused_with_an_explanation() {
+fn a_line_with_a_pipe_is_compiled_into_its_steps() {
     let scratch = Scratch::new("run-cmdline");
     let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
     let seen = confirmer.seen.clone();
 
     a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"git log --oneline"}]}"#,
+        r#"{"command":"echo one | head -1"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn completes");
 
-    assert!(
-        seen.lock().unwrap().is_empty(),
-        "a command line got as far as asking the user"
-    );
+    let asked = seen.lock().unwrap();
+    let request = asked.first().expect("the user was asked");
+    let steps = request.plan.steps();
+    assert_eq!(steps.len(), 2, "the pipe did not become two steps");
+    assert_eq!(steps[0].as_written(), "echo one");
+    assert_eq!(steps[1].as_written(), "head -1");
+    assert_eq!(request.plan.line, "echo one | head -1");
 }
 
 /// A path with a space in it is an ordinary path. Most of `/Applications` has one, and refusing
@@ -7475,7 +7472,7 @@ echo started
 
     a_run_turn(
         &scratch,
-        r#"{"pipeline":[{"program":"./Some App.app/Some Program","args":["--flag"]}]}"#,
+        r#"{"command":"'./Some App.app/Some Program' --flag"}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
@@ -7507,10 +7504,7 @@ fn a_vouched_commands_output_reaches_the_planner() {
     let cat = bravebot_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
 
     let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "run",
-            r#"{"pipeline":[{"program":"cat","args":["secret.txt"]}]}"#,
-        ),
+        tool_request("run", r#"{"command":"cat secret.txt"}"#),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -7556,10 +7550,7 @@ fn vouching_for_one_command_does_not_trust_another_of_the_same_program() {
     let cat = bravebot_agent::programs::resolve("cat", &scratch.path).expect("cat is installed");
 
     let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "run",
-            r#"{"pipeline":[{"program":"cat","args":["other.txt"]}]}"#,
-        ),
+        tool_request("run", r#"{"command":"cat other.txt"}"#),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -7670,10 +7661,7 @@ fn output_a_person_reads_and_approves_reaches_the_planner() {
     std::fs::write(scratch.path.join("where.txt"), "SENTINEL-XYZZY\n").unwrap();
 
     let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "run",
-            r#"{"pipeline":[{"program":"cat","args":["where.txt"]}]}"#,
-        ),
+        tool_request("run", r#"{"command":"cat where.txt"}"#),
         tool_request("read_output", r#"{"ref":"ref:1"}"#),
         reply_with("done"),
     ]);
@@ -7728,10 +7716,7 @@ fn output_a_person_refuses_stays_out_of_the_planner() {
     std::fs::write(scratch.path.join("where.txt"), "SENTINEL-XYZZY\n").unwrap();
 
     let (endpoint, received) = serve_sequence(vec![
-        tool_request(
-            "run",
-            r#"{"pipeline":[{"program":"cat","args":["where.txt"]}]}"#,
-        ),
+        tool_request("run", r#"{"command":"cat where.txt"}"#),
         tool_request("read_output", r#"{"ref":"ref:1"}"#),
         reply_with("done"),
     ]);
