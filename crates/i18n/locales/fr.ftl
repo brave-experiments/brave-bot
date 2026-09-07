@@ -660,9 +660,7 @@ watching-calls = { $count ->
     [one] { $count } appel
    *[other] { $count } appels
     }
-# Dit sur la ligne qui rapporte ce que fait le tour, pour que la touche se trouve sans la liste.
-watching-invitation = ctrl-l regarde
-# Dit sur la ligne du bas une fois qu'un delegue a tourne, quand la ligne du dessus est partie
+# Dit sur la ligne du bas une fois qu'un delegue a tourne, la seule qui survit au tour
 # avec le tour qui l'a dessinee. Le compte y est car une touche sans rien derriere ne vaut pas
 # la peine.
 watching-hint = { $count ->

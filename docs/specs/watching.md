@@ -228,22 +228,25 @@ position and the keys for moving between delegates appear only where there is mo
 The list carries its own title and its own key row, and fills the row that would open edge to
 edge rather than marking it.
 
-While a delegate is working, the row saying what the turn is doing names the key. Once the session
-has spawned any, the hint line names it and says how many there are. The key is in the shortcut
-list.
+Once the session has spawned any delegate, the hint line names the key and says how many there
+are. The key is in the shortcut list. No other row names it, including the one that reports what
+the turn is doing.
 
 **Why.** The turn's transcript shows one block and three rows of it, so somebody who does not
-already know the key has no way to find out there is anything more to see. The row that reports
-what the turn is doing goes when the turn ends, and a delegate is most worth opening afterwards:
-what it leaves behind is a sentence about work nobody has read. The count is on the hint line
-because a key with nothing behind it does nothing, and that line is read at a glance.
+already know the key has no way to find out there is anything more to see. The hint line is where
+that is said because it outlasts the turn, and a delegate is most worth opening afterwards: what
+it leaves behind is a sentence about work nobody has read. The count is there because a key with
+nothing behind it does nothing, and that line is read at a glance.
+
+**Why only there.** One key named twice on one screen, once beside the spinner and once at the
+foot, reads as two things to press. The line that is always drawn is the one to put it on.
 
 `verified-by: bravebot_tui::render::the_footer_says_which_delegate_this_is_and_whether_it_is_working`
 `verified-by: bravebot_tui::render::one_delegate_is_given_no_position_and_no_key_for_moving`
 `verified-by: bravebot_tui::render::the_list_names_every_delegate_and_what_each_was_asked`
 `verified-by: bravebot_tui::render::the_row_that_would_open_is_filled_edge_to_edge`
 `verified-by: bravebot_tui::render::a_narrow_row_keeps_the_count_and_loses_the_end_of_the_task`
-`verified-by: bravebot_tui::render::the_indicator_says_which_key_watches_a_delegate_at_work`
+`verified-by: bravebot_tui::render::the_row_that_says_what_the_turn_is_doing_leaves_the_key_to_the_hint_line`
 `verified-by: bravebot_tui::render::the_hint_line_names_the_delegate_key_once_one_has_run`
 `verified-by: bravebot_tui::render::the_shortcut_list_names_the_key_that_watches`
 
