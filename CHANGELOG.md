@@ -1,3 +1,22 @@
+## [0.3.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.3.0)
+
+ - Added ctrl-l, which opens the list of delegates a session has run, so you can watch one working or read what it did afterwards.
+ - Added a block under each delegate holding the last few things it did and the report it ends with, so work a delegate was sent off to do is readable where it was started.
+ - Added `/effort`, which picks how hard a model thinks from low, medium, high, xhigh and max, keeps the choice beside the model and the theme, and sends no level to a model whose listing says it does not read one. ([#109](https://github.com/brave-experiments/brave-bot/issues/109))
+ - Added `bravebot --incognito`, a session that writes nothing to `~/.bravebot`: no prompt history, no session record, no title, and no audit trail.
+ - Added a pair of colours to a theme file, `{"dark": ..., "light": ...}`, resolving to the arm matching the terminal background sensed at startup.
+ - Changed delegates to run alongside the turn and each other, so a turn waits for the slowest piece of work rather than the sum of it, and one call can start up to eight of them.
+ - Changed `catppuccin`, `gruvbox` and `solarized` to one row each in the theme picker, painted from the half matching the terminal background, with the six fixed halves still reachable through `/theme`.
+ - Changed where the confinement is reported, from a row on every frame to the mark printed at startup and `/status` on request.
+ - Fixed an answer given to a prompt inside a delegate overwriting the session's whole record of what you had vouched for, which put back rules that later answers had replaced.
+ - Fixed a delegate that could not finish being reported as having answered.
+ - Fixed a build with no Brave credentials refusing to load its configuration when only a gateway was configured, though the gateway uses its own key. ([#106](https://github.com/brave-experiments/brave-bot/issues/106))
+ - Fixed a model that writes its reasoning in `<think>` tags having that working drawn above every reply, kept in the session record and drawn again on every resume.
+ - Fixed a Bedrock session that stopped working before its stated expiry going on being treated as good, which left every turn falling through to a sign-in opened where nobody could see it.
+ - Fixed Bedrock attempting a sign-in for an AWS profile that is not configured, which is now reported as missing along with the profiles that exist.
+ - Fixed ctrl-t being offered from the first frame, before any turn had left a trail for it to show.
+ - Fixed an aside being drawn in bright black, which most terminal colour schemes leave too dim to read.
+
 ## [0.2.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.2.0)
 
  - Added support for an OpenAI-compatible gateway, named by a `provider` block in `~/.bravebot/settings.json` in opencode's shape, whose models are offered beside the Brave and Bedrock ones.
