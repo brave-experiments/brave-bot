@@ -120,8 +120,10 @@ Restricting any one stage restricts the pipeline. Granting it needs every stage 
 no rule covers is a program nobody has answered for, and what it prints is what the next stage
 reads.
 
-An argument is never re-split, so a denied program cannot be smuggled inside one. There is no shell
-to do the splitting, which is what makes this hold rather than a matter of parsing carefully.
+An argument is never re-split, so a denied program cannot be smuggled inside one. The splitting is
+done once, here, and nothing re-splits afterwards: a stage's argv is final by the time a rule is
+matched against it, whether the stage arrived as an argument list or was compiled from a command
+line. No shell ever sees either.
 
 `verified-by: bravebot_core::permissions::a_pipeline_is_allowed_only_when_every_stage_is`
 `verified-by: bravebot_core::permissions::restricting_one_stage_restricts_the_whole_pipeline`

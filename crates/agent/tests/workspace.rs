@@ -2549,3 +2549,68 @@ fn a_capped_search_prefers_a_directorys_own_files() {
         found.matches
     );
 }
+
+/// A redirection names a file the run opens itself, so the confinement every other write goes
+/// through has to be applied to the path. A file that does not exist yet is the ordinary case:
+/// `> out.txt` is what creates it.
+#[test]
+fn a_destination_inside_the_workspace_is_confined_even_before_it_exists() {
+    let scratch = Scratch::new("confines-inside");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    assert!(workspace.confines(&scratch.path.join("out.txt")).is_ok());
+    assert!(
+        workspace
+            .confines(&scratch.path.join("deep/under/out.txt"))
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_destination_outside_the_workspace_is_refused() {
+    let scratch = Scratch::new("confines-outside");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    assert!(matches!(
+        workspace.confines(std::path::Path::new("/tmp/elsewhere.txt")),
+        Err(WorkspaceError::Escapes { .. })
+    ));
+    assert!(matches!(
+        workspace.confines(&scratch.path.join("../escaped.txt")),
+        Err(WorkspaceError::Escapes { .. })
+    ));
+}
+
+/// The link is resolved before the comparison rather than after, or a directory inside the
+/// workspace pointing out of it would be a way to write anywhere.
+#[cfg(unix)]
+#[test]
+fn a_destination_reached_through_a_symlink_out_of_the_workspace_is_refused() {
+    let scratch = Scratch::new("confines-symlink");
+    let outside = std::env::temp_dir().join("bravebot-workspace-confines-target");
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).expect("target directory");
+    std::os::unix::fs::symlink(&outside, scratch.path.join("link")).expect("symlink");
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    assert!(matches!(
+        workspace.confines(&scratch.path.join("link/out.txt")),
+        Err(WorkspaceError::Escapes { .. })
+    ));
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// A directory the user added by name is somewhere they said this session may work, so a
+/// destination inside one is confined as the primary root is.
+#[test]
+fn a_destination_inside_a_directory_the_user_added_is_confined() {
+    let scratch = Scratch::new("confines-added");
+    let other = std::env::temp_dir().join("bravebot-workspace-confines-added-other");
+    let _ = std::fs::remove_dir_all(&other);
+    std::fs::create_dir_all(&other).expect("other directory");
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    workspace
+        .add_directory(&other.display().to_string())
+        .expect("added");
+    assert!(workspace.confines(&other.join("out.txt")).is_ok());
+    let _ = std::fs::remove_dir_all(&other);
+}

@@ -263,7 +263,12 @@ argument is never re-split, so a denied program cannot be smuggled inside one.
 A rule may also name a write destination, and a redirection target is matched as a path the same way
 `write_file`'s destination is.
 
-`verified-by: none`
+`verified-by: bravebot_core::policy::a_denied_step_refuses_the_whole_line`
+`verified-by: bravebot_core::policy::a_rule_denying_a_path_denies_a_redirection_to_it`
+`verified-by: bravebot_core::policy::a_rule_denying_a_path_denies_reading_it_into_a_line`
+`verified-by: bravebot_core::policy::a_denied_program_cannot_be_smuggled_inside_an_argument`
+`verified-by: bravebot_core::permissions::a_pipeline_is_allowed_only_when_every_stage_is`
+`verified-by: bravebot_core::permissions::restricting_one_stage_restricts_the_whole_pipeline`
 
 <a id="CMDLINE-8"></a>
 ### CMDLINE-8: a plan may prove its output's label from what it read

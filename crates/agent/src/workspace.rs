@@ -163,6 +163,40 @@ impl Workspace {
         &self.root
     }
 
+    /// Whether an absolute path is one this workspace may touch.
+    ///
+    /// For a destination something else opens, which is what a redirection in a command line is:
+    /// the plan names the file and the run opens it directly, so the confinement every other write
+    /// goes through has to be applied to the path rather than to a call through here.
+    ///
+    /// The file need not exist yet, so the nearest ancestor that does is what is canonicalised.
+    /// That is also what catches a symlink pointing out of the tree, since the link is resolved
+    /// before the comparison rather than after.
+    pub fn confines(&self, path: &Path) -> Result<(), WorkspaceError> {
+        let escapes = || WorkspaceError::Escapes {
+            path: path.display().to_string(),
+        };
+        let mut existing = path;
+        let mut trailing = PathBuf::new();
+        while !existing.exists() {
+            let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                return Err(escapes());
+            };
+            trailing = Path::new(name).join(&trailing);
+            existing = parent;
+        }
+        let canonical = existing
+            .canonicalize()
+            .map_err(|_| escapes())?
+            .join(trailing);
+        if canonical.starts_with(&self.root)
+            || self.added.iter().any(|dir| canonical.starts_with(dir))
+        {
+            return Ok(());
+        }
+        Err(escapes())
+    }
+
     /// Also allow paths inside `directory`, which must exist.
     ///
     /// Returns the canonical path, which is what the caller records trust against and shows the
