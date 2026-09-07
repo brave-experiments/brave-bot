@@ -223,9 +223,10 @@ the next press takes a bracket, which is the thing that no longer happens.
 ### INPUT-9: the box behaves the same whether or not a turn is running
 
 Typing, editing, pasting, dropping a file, putting a line away, walking back through earlier
-prompts, scrolling the transcript, asking what a turn has done and asking what the keys are all do
-while a turn is in flight exactly what they do at rest. What a running turn refuses is **sending**,
-and the keys allowed to mean something else are named here and nowhere else:
+prompts, scrolling the transcript, asking what a turn has done, choosing how much the session asks
+before it acts, and asking what the keys are all do while a turn is in flight exactly what they do at
+rest. What a running turn refuses is **sending**, and the keys allowed to mean something else are
+named here and nowhere else:
 
 | Key | Why it may differ |
 |---|---|
@@ -408,11 +409,23 @@ advertising something that no longer works. It folds into as many columns as the
 row runs past the edge: a row that wrapped would put the list a row over the height reserved for it
 and push the hint line off the screen.
 
-The hint line carries what the session is doing (the trail, how full the context is, the key that
-opens the delegates where the session has spawned any) and then `? for shortcuts`. It lists no
-other binding of its own, and it does not report the confinement. The trail key is named only
-**once a turn has left a trail to look at**: a trail is recorded when the turn it belongs to ends,
-so before then the line would be offering a press that changes nothing on screen.
+The hint line carries what the session is doing (the mode in force where it is not asking, the
+trail, how full the context is, the key that opens the delegates where the session has spawned any)
+and then `? for shortcuts`. It lists no other binding of its own, and it does not report the
+confinement. The trail key is named only **once a turn has left a trail to look at**: a trail is
+recorded when the turn it belongs to ends, so before then the line would be offering a press that
+changes nothing on screen.
+
+The mode leads the line and is the only part of it drawn in a colour, and asking takes no room at
+all: what is drawn is a mode somebody chose, named in [permission-modes.md](permission-modes.md). A
+marker standing there on every session is one people stop reading, and being read is the whole of
+what this one is for.
+
+**What does not fit is dropped whole, at a separator.** The parts are given up in order — the way to
+the bindings, then the trail key, then the figures — and the mode is the last to go. Left to the
+terminal, the line is cut wherever the final column falls, which puts half a word under the box:
+that reads as a rendering fault, where a part that is simply absent reads as a line with no room,
+which is the truth.
 
 **Why.** The bindings and the state were on one line together, and the line was wider than the
 terminal, so the end of it was cut. Everything a person could look up was taking room from the two
@@ -425,6 +438,10 @@ runs, so a line reporting it on every frame spends room on a constant. The mark 
 startup and `/status` answers for it whenever somebody asks. The delegate key earns the room
 instead, because it is the one thing here whose answer changes and which nothing else on a
 finished screen says.
+
+The mode outranks all of it because it is the one thing here that changes what the next keystroke
+does. A person who cannot see that writes are going through unasked is the case this line exists to
+prevent, and a mode read off `/status` after the write is a mode read too late.
 
 `verified-by: bravebot_tui::app::a_question_mark_on_an_empty_line_toggles_the_list_without_being_typed`
 `verified-by: bravebot_tui::app::a_question_mark_inside_a_sentence_is_punctuation`
@@ -442,6 +459,10 @@ finished screen says.
 `verified-by: bravebot_tui::render::the_hint_names_the_trail_key_only_once_there_is_a_trail`
 `verified-by: bravebot_tui::render::the_hint_line_fits_a_narrow_terminal_whole`
 `verified-by: bravebot_tui::render::the_hint_and_the_list_name_the_same_key`
+`verified-by: bravebot_tui::render::the_hint_line_names_a_mode_that_is_not_asking`
+`verified-by: bravebot_tui::render::the_hint_line_says_nothing_about_the_ordinary_mode`
+`verified-by: bravebot_tui::render::a_narrow_terminal_gives_up_the_bindings_rather_than_the_mode`
+`verified-by: bravebot_tui::render::what_does_not_fit_is_dropped_whole_rather_than_cut_mid_word`
 `verified-by: bravebot_tui::shell_mode::the_shortcuts_offer_shell_mode`
 
 <a id="INPUT-14"></a>
@@ -702,3 +723,33 @@ interface that has stopped responding rather than as a search that is too narrow
 `verified-by: bravebot_tui::history_search::a_list_taller_than_the_panel_says_there_is_more_above`
 `verified-by: bravebot_tui::history_search::a_search_matching_nothing_says_so`
 `verified-by: bravebot_tui::history_search::the_scope_is_named_on_the_panel`
+
+<a id="INPUT-21"></a>
+### INPUT-21: Shift-Tab chooses how much the session asks before it acts
+
+The key walks the modes in order and comes back round to the first, so no mode is one a person
+cannot press their way out of. Which modes there are, and what each answers, is
+[permission-modes.md](permission-modes.md); the mode in force is drawn on the hint line (INPUT-13).
+
+Both spellings of the chord are answered. A terminal asked to disambiguate reports Shift-Tab as Tab
+with a modifier, and one that has not sends the older `BackTab`, and which arrives is the terminal's
+choice rather than the user's.
+
+The key is read before Tab, so it never completes a half-typed line, and it types nothing: like `!`
+and `?` it is a mode rather than a character. It works while a turn runs, which is when it is wanted
+most, and the turn in flight keeps the mode it began with.
+
+**Why.** A person watching a turn edit files it should not be editing is deciding about the next
+turn, and this is how they say so without stopping the one in front of them. A binding answering one
+spelling works on one machine and does nothing on the next, which reads as a broken key rather than
+as a terminal difference.
+
+Shift-Tab because it is the chord Claude Code uses for this, and somebody who has used one of these
+reaches for it before reading anything.
+
+`verified-by: bravebot_tui::app::shift_tab_cycles_the_permission_mode`
+`verified-by: bravebot_tui::app::either_spelling_of_shift_tab_cycles_the_mode`
+`verified-by: bravebot_tui::app::the_mode_key_leaves_the_line_alone`
+`verified-by: bravebot_tui::app::the_mode_can_be_changed_while_a_turn_runs`
+`verified-by: bravebot_agent::permission_mode::the_key_cycles_three_modes_without_the_flag`
+`verified-by: bravebot_agent::permission_mode::a_session_started_in_bypass_can_cycle_out_of_it`

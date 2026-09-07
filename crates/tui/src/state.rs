@@ -5370,6 +5370,34 @@ mod tests {
         s.choose_model("claude-3-sonnet");
         assert_eq!(s.model(), Some("claude-3-sonnet"));
     }
+
+    /// Asking is what a session opens in, which is what every session did before a mode could be
+    /// chosen: the mode nobody picked cannot be one that stops putting writes to a person.
+    #[test]
+    fn a_session_starts_by_asking_about_everything() {
+        assert_eq!(
+            session().permission_mode(),
+            bravebot_agent::PermissionMode::Ask
+        );
+    }
+
+    /// A mode belongs to the sitting somebody chose it in, so cycling one is not a change to the
+    /// session's saved state. What a resume restores is the record, and the mode is not part of it.
+    #[test]
+    fn cycling_the_mode_changes_nothing_a_resume_would_read() {
+        let mut session = session();
+        session.cycle_permission_mode();
+        assert_ne!(
+            session.permission_mode(),
+            bravebot_agent::PermissionMode::Ask,
+            "the mode did not move, so this test proves nothing"
+        );
+        // Everything a session hands the record, unmoved by the press above.
+        assert_eq!(session.turns, 0);
+        assert_eq!(session.tokens, 0);
+        assert!(session.todos.is_empty());
+        assert_eq!(session.model(), None);
+    }
     /// The indicator only exists while a turn is in flight.
     #[test]
     fn the_indicator_appears_only_while_working() {

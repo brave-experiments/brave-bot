@@ -22,11 +22,19 @@ A one-shot run has nobody to ask, and most of what makes it different follows fr
 Effects are refused rather than applied unseen, and the planner's own questions are declined
 rather than answered on the user's behalf.
 
+`--dangerously-skip-permissions` is the one way a run nobody is watching may write, and it is the
+person's own instruction rather than a default: what it selects, and what it costs, is
+[permission-modes.md](permission-modes.md). The planner's questions are declined in that mode too,
+because they are not permissions.
+
 **Why.** The alternative to a person is not a default, it is a guess made in their name. The
-planner is told a reply came from a person, so inventing one would be worse than not asking.
+planner is told a reply came from a person, so inventing one would be worse than not asking. A flag
+somebody typed is not a guess, which is what makes it the only thing that may lift the first half of
+this and nothing that may lift the second.
 
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
 `verified-by: bravebot_agent::turn::a_refused_write_does_not_happen`
+`verified-by: bravebot_cli::main::permissions_are_enforced_unless_the_flag_is_given`
 
 <a id="CLI-2"></a>
 ### CLI-2: stdin is read only when it is not a terminal
@@ -106,7 +114,10 @@ is the case this is most often run to explain.
 `turn` observes and decides step by step, which is what an unqualified `bravebot "task"` has
 always been. `manifest` plans the whole run first, then executes it. An unknown name is refused
 rather than guessed. Both modes are unattended, with an empty trust map: where nobody can be
-asked, nothing is approved.
+asked, nothing is approved unless the flag in CLI-1 says otherwise.
+
+This is a different axis from the mode in [permission-modes.md](permission-modes.md), and the two
+compose. `--mode` decides when control flow is settled; the other decides who answers a prompt.
 
 A failed plan is printed on stderr even without `--trace`, because otherwise a one-line complaint
 is all that remains of a document nobody can see. The plan never shares stdout with the reply.

@@ -158,6 +158,11 @@ A one-shot run refuses effects rather than applying them unseen, and declines ev
 rather than inventing an answer. A closed channel refuses a run and answers no
 question.
 
+A person may answer these five in advance, for a session or for a run, by choosing a mode:
+[permission-modes.md](permission-modes.md) is what each mode answers and what asking for one costs.
+That is somebody's own standing answer rather than a default, and no mode answers a question the
+planner posed, since that asks for information rather than consent.
+
 `verified-by: bravebot_tui::remote_confirm::a_closed_channel_refuses_a_run`
 `verified-by: bravebot_tui::remote_confirm::a_closed_channel_answers_no_question`
 `verified-by: bravebot_tui::remote_confirm::a_dropped_answer_channel_answers_no_question`

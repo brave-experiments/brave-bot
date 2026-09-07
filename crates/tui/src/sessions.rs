@@ -1202,6 +1202,32 @@ mod tests {
         assert!(!map.is_trusted("src/fetched.json"));
     }
 
+    /// A resumed session asks about writes, whatever the session that wrote the record was doing when
+    /// it ended. The trust map and the vouched commands come back because the person resuming is the
+    /// person who granted them; a mode is a standing answer somebody gave while watching one piece of
+    /// work, and a session that quietly opened tomorrow with writes going through unasked would be
+    /// acting on a decision nobody made today.
+    ///
+    /// Written against a record carrying a mode, which is what a hand edit or a newer build would
+    /// produce: the field is ignored rather than read, so the answer is the same either way.
+    #[test]
+    fn a_resumed_session_asks_about_writes_whatever_the_record_says() {
+        let with_a_mode = serde_json::json!({
+            "id": "1-2",
+            "directory": "/tmp/x",
+            "title": "a session",
+            "started": 1,
+            "updated": 1,
+            "permission_mode": "bypass",
+            "conversation": {"messages": [], "context": "trusted"},
+        });
+        let record: Record = serde_json::from_value(with_a_mode).expect("the record loads");
+        // Nothing on a record answers the question, so nothing can restore an answer to it. The
+        // trust map and the programs are the two grants that do come back, and they are separate.
+        assert!(record.trust_map().is_none());
+        assert!(record.trusted_programs().is_empty());
+    }
+
     /// The picker offers the top entry, so a reversed comparator would silently hand someone
     /// the session they last touched a month ago. Nothing else in the suite pins the direction.
     #[test]

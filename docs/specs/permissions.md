@@ -26,6 +26,10 @@ which is [labels.md](labels.md), and never what is reachable, which is
 [trust-map.md](trust-map.md). `defaultMode` is read and acted on by nothing: this spec covers the
 three lists and `additionalDirectories`.
 
+Who answers a prompt a rule permitted to exist is [permission-modes.md](permission-modes.md). The
+two are separate: a rule decides whether there is a question, and a mode answers one. A `deny` rule
+therefore holds in every mode, including the mode that asks about nothing.
+
 ## What a rule is
 
 <a id="PERM-1"></a>
@@ -147,13 +151,15 @@ one it can afford to miss.
 
 A deny rule also holds against a workspace the user vouched for, which is what makes one worth
 writing: saying yes at startup trusts the whole tree, and a rule is how one file is kept out of that
-answer without declining the rest of it.
+answer without declining the rest of it. It holds against a mode that answers every prompt for the
+same reason: the refusal comes before there is a prompt, so there is nothing for a mode to answer.
 
 `verified-by: bravebot_core::policy::a_denied_program_does_not_run_at_all`
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_read_and_its_contents_do_not_reach_the_planner`
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_written_even_where_writes_are_approved`
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_read_by_a_processor_either`
 `verified-by: bravebot_agent::turn::a_deny_rule_holds_against_a_trusted_workspace`
+`verified-by: bravebot_agent::turn::a_deny_rule_holds_where_every_permission_check_is_bypassed`
 
 <a id="PERM-8"></a>
 ### PERM-8: an allow rule answers a prompt and grants nothing else
@@ -249,4 +255,5 @@ altered a session nobody had configured would be a change to every session.
   expecting it to fence every subprocess would be believing something that is not true.
 - **`defaultMode` is read and does nothing.** The key is parsed so the file is not rejected for
   carrying it, and no mode is selected from it. A person who wrote `acceptEdits` gets the prompts
-  they would have got without it.
+  they would have got without it. The modes exist, and the command line and the mode key are what
+  choose one: [permission-modes.md](permission-modes.md).

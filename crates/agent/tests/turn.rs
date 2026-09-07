@@ -1575,6 +1575,90 @@ fn a_denied_file_is_not_written_even_where_writes_are_approved() {
     );
 }
 
+/// A deny rule holds in the mode that asks about nothing at all. The flag stops the asking, and a
+/// deny rule is not an answer to a question: it refuses before there is anything to prompt about, so
+/// a rule somebody wrote to keep a file out of reach is not undone by a command-line flag.
+///
+/// The mode is given to both halves, as a caller must: the confirmer approves whatever it is asked,
+/// and the planner is told the same thing. Neither is what stops this write.
+#[test]
+fn a_deny_rule_holds_where_every_permission_check_is_bypassed() {
+    let scratch = Scratch::new("permissions-write-denied-bypass");
+    std::fs::write(scratch.path.join(".env"), "original").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":".env","contents":"replaced"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("replace .env")
+        .with_permissions(rules(&["Read(./.env)"], &[], &[]))
+        .with_permission_mode(bravebot_agent::PermissionMode::Bypass);
+    // Refusing on its own, wrapped in the mode that answers every question yes: the rule is the only
+    // thing left that can stop this write.
+    let mut unattended = bravebot_agent::Unattended;
+    let mut confirmer =
+        bravebot_agent::Confining::new(&mut unattended, bravebot_agent::PermissionMode::Bypass);
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join(".env")).unwrap(),
+        "original",
+        "bypassing the permission checks undid a deny rule"
+    );
+}
+
+/// Plan mode refuses a write however the person would have answered, so the file is not touched even
+/// where the confirmer approves everything. This is what makes the mode a statement about the turn
+/// rather than a person who keeps saying no.
+#[test]
+fn plan_mode_writes_nothing_even_where_writes_are_approved() {
+    let scratch = Scratch::new("permissions-plan-mode");
+    std::fs::write(scratch.path.join("notes.md"), "original").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"notes.md","contents":"replaced"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task =
+        Task::new("rewrite the notes").with_permission_mode(bravebot_agent::PermissionMode::Plan);
+    let mut approving = bravebot_agent::confirm::ApproveWrites;
+    let mut confirmer =
+        bravebot_agent::Confining::new(&mut approving, bravebot_agent::PermissionMode::Plan);
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
+        "original",
+        "plan mode wrote to the workspace"
+    );
+}
+
 /// The other half: an allow rule stops the prompt, so a write that would have been refused for
 /// want of anyone to ask goes through.
 ///
@@ -8854,6 +8938,65 @@ fn a_delegates_report_reaches_the_planner_that_asked_for_it() {
         "a report from a clean context was quarantined from the planner"
     );
     assert_eq!(outcome.reply_for_display(), "relayed");
+}
+
+/// A delegate is the spawning turn's own work done elsewhere, so the mode goes with it. A session
+/// that is planning must not write through a delegate, and the delegate's planner has to be told why
+/// its writes would be refused: told nothing, it reads a refusal it cannot account for and retries.
+///
+/// Asserted on the request the delegate's own prompt produced, since that is the only place the
+/// instruction can be observed reaching it.
+#[test]
+fn a_delegate_inherits_the_mode_of_the_turn_that_spawned_it() {
+    let scratch = Scratch::new("delegate-inherits-mode");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "DELEGATE-SOMETHING",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"SAY-SOMETHING-SHORT"}"#,
+                ),
+                reply_with("nothing to add while it works"),
+                reply_with("relayed"),
+            ],
+        ),
+        ("SAY-SOMETHING-SHORT", vec![reply_with("REPORTED BACK")]),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task =
+        Task::new("DELEGATE-SOMETHING").with_permission_mode(bravebot_agent::PermissionMode::Plan);
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    // The delegate's own requests, and only those. The spawning turn's carry the delegate's task
+    // too, inside the `spawn_agent` arguments, so a filter on that marker alone matches the parent
+    // and would pass on the parent's own copy of the instruction.
+    let asked = every_request(&received);
+    let delegates: Vec<&String> = asked
+        .iter()
+        .filter(|body| body.contains("SAY-SOMETHING-SHORT") && !body.contains("DELEGATE-SOMETHING"))
+        .collect();
+    assert!(
+        !delegates.is_empty(),
+        "the delegate never reached the endpoint, so this test proves nothing"
+    );
+    assert!(
+        delegates.iter().all(|body| body.contains("Plan mode")),
+        "a delegate was not told the mode the turn that spawned it is in"
+    );
 }
 
 /// Everything a delegate read and ran ends with it, so its report is the only thing that says
