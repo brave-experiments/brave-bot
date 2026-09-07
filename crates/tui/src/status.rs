@@ -222,7 +222,8 @@ pub fn report(facts: &Facts<'_>) -> Report {
     // teach people to skim past exactly the one that matters. Beside confinement because it is the
     // other half of the same question: what is holding this session back.
     if let Some(named) = named_mode(facts.permission_mode) {
-        lines.push(Line::new(t!(status_permissions), named).with_note(t!(status_permissions_cycle)));
+        lines
+            .push(Line::new(t!(status_permissions), named).with_note(t!(status_permissions_cycle)));
     }
 
     // What is going to happen without anybody typing anything, which is the one thing about a

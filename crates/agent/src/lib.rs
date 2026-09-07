@@ -33,10 +33,10 @@ pub mod turn;
 pub mod workspace;
 
 pub use confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, Unattended, WriteRequest};
-pub use permission_mode::{Confining, PermissionMode};
 pub use conversation::Conversation;
 pub use delegate::Delegated;
 pub use mode::Mode;
+pub use permission_mode::{Confining, PermissionMode};
 pub use processor::ProcessorError;
 pub use report::{Activity, IgnoreReports, Reporter};
 pub use subscription::{Discovery, ImportedSubscription};

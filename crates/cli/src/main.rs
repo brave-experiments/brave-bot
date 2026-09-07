@@ -353,7 +353,10 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     // where nobody may be reading: a run that wrote to the tree without asking should leave a record
     // of having been told not to ask.
     if skip_permissions {
-        eprintln!("{}", t!(cli_notice, notice = t!(session_permissions_skipped)));
+        eprintln!(
+            "{}",
+            t!(cli_notice, notice = t!(session_permissions_skipped))
+        );
     }
 
     // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes

@@ -178,10 +178,7 @@ impl<C: Confirmer> Confirmer for Confining<'_, C> {
 
     /// Always the inner confirmer's. A question the planner posed is not a permission, and an answer
     /// invented here would be reported to the model as the user's own words.
-    fn ask_user(
-        &mut self,
-        asking: &bravebot_core::ask::Asking,
-    ) -> Vec<bravebot_core::ask::Answer> {
+    fn ask_user(&mut self, asking: &bravebot_core::ask::Asking) -> Vec<bravebot_core::ask::Answer> {
         self.inner.ask_user(asking)
     }
 

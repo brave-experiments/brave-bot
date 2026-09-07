@@ -4405,7 +4405,10 @@ mod tests {
         // Narrow enough that the two cannot both fit, which is the case worth pinning.
         let hint = hint_row_at(&session, 30, 24);
         assert!(hint.contains("⏵⏵ bypass permissions on"), "{hint}");
-        assert!(!hint.contains(SHORTCUTS_HINT), "nothing was given up: {hint}");
+        assert!(
+            !hint.contains(SHORTCUTS_HINT),
+            "nothing was given up: {hint}"
+        );
     }
 
     /// Whole parts, at a separator. Left to the terminal the last one is cut wherever the final
