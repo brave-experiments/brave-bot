@@ -59,6 +59,9 @@ cli-option-mode = turn (par défaut) décide étape par étape ; manifest planif
 cli-option-print = Non interactif. Lit l'entrée redirigée comme contexte en quarantaine
 cli-option-trace = Afficher le journal d'audit
 cli-option-incognito = Ne rien écrire dans ~/.bravebot : ni historique, ni session, ni préférence
+cli-option-dangerously-skip-permissions =
+    Contourner toutes les vérifications de permission. Recommandé uniquement pour des bacs à sable
+    sans accès à Internet
 cli-option-help = Afficher ce message
 cli-option-version = Afficher la version
 
@@ -372,6 +375,8 @@ status-loop-self-paced = cadencée par chaque tour
 status-loop-next = prochaine dans { $next }
 status-loop-running = en cours
 status-loop-unpaced = en attente que le tour dise quand
+status-permissions = Permissions
+status-permissions-skipped = toutes les vérifications contournées par --dangerously-skip-permissions
 status-this-session = Cette session
 status-time = Temps
 status-time-inference = sur le modèle
@@ -523,6 +528,9 @@ session-directory-changed = travail désormais dans { $directory }, et approuvé
 session-directory-closed = { $directory } fermé ; rouvrez-le avec /add-dir { $directory }
 session-directory-not-changed = impossible de passer à { $directory } : { $problem }
 session-permission-rule-ignored = règle de permission ignorée dans settings.json : { $problem }
+session-permissions-skipped =
+    --dangerously-skip-permissions : rien ne sera demandé avant une écriture, une commande, ou la
+    lecture d'un fichier que personne n'a approuvé
 session-directory-not-added = impossible d'ajouter { $directory } : { $problem }
 session-using-model = utilise { $model }
 session-using-model-from = utilise { $model } via { $service }

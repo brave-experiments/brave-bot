@@ -49,6 +49,8 @@ cli-option-mode = turn (default) decides step by step; manifest plans the whole 
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
 cli-option-incognito = Write nothing to ~/.bravebot: no history, no session record, no preference
+cli-option-dangerously-skip-permissions =
+    Bypass all permission checks. Recommended only for sandboxes with no internet access
 cli-option-help = Show this message
 cli-option-version = Show the version
 
@@ -366,6 +368,11 @@ status-loop-self-paced = paced by each turn
 status-loop-next = next in { $next }
 status-loop-running = running now
 status-loop-unpaced = waiting for the turn to say when
+# Drawn only where the flag was given. Absent is the ordinary state and needs no line: a panel
+# reporting "permissions: enforced" on every session teaches people to skim past the one that says
+# otherwise.
+status-permissions = Permissions
+status-permissions-skipped = every check bypassed by --dangerously-skip-permissions
 status-this-session = This session
 # Where a session's wall clock went. Four figures, because the whole is unactionable: a session
 # that took an hour on the model, an hour on subprocesses, and an hour waiting for its user to
@@ -552,6 +559,12 @@ session-directory-changed = now working in { $directory }, and trusting it for t
 session-directory-closed = closed { $directory }; open it again with /add-dir { $directory }
 session-directory-not-changed = could not move to { $directory }: { $problem }
 session-permission-rule-ignored = ignoring a permission rule in settings.json: { $problem }
+# Said once, at the top of a session the flag was given for. A person who did not mean to pass it
+# should find out before the first write rather than after it, and the words name the flag so they
+# can tell what to take off the command line.
+session-permissions-skipped =
+    --dangerously-skip-permissions: nothing will be asked before a write, a command, or reading a
+    file nobody vouched for
 session-directory-not-added = could not add { $directory }: { $problem }
 session-using-model = using { $model }
 # The picker row that said which service answers is gone by the time this is read, and the same

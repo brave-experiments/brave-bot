@@ -31,7 +31,10 @@ pub mod tools;
 pub mod turn;
 pub mod workspace;
 
-pub use confirm::{Confirmer, Decision, Intent, RunDecision, RunRequest, Unattended, WriteRequest};
+pub use confirm::{
+    Confirmer, Decision, Intent, RunDecision, RunRequest, SkipsPermissions, Unattended,
+    WriteRequest,
+};
 pub use conversation::Conversation;
 pub use delegate::Delegated;
 pub use mode::Mode;

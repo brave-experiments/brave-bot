@@ -29,6 +29,12 @@ fn main() -> ExitCode {
         bravebot_core::incognito::engage();
     }
 
+    // Taken out before anything dispatches on the first argument, because this one belongs to every
+    // way of starting: a session, a resumed session, and a one-shot run all put the same four
+    // questions to the same trait. Reading it per subcommand would be four chances to read it in
+    // three of them, and the flag would then be silently ignored wherever it was forgotten.
+    let skip_permissions = take_skip_permissions(&mut args);
+
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
             // The same words a session record writes down, so the two can be compared without
@@ -41,18 +47,20 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // With no arguments the interactive session is the natural default.
-        None => interactive(bravebot_tui::app::Start::Fresh),
+        None => interactive(bravebot_tui::app::Start::Fresh, skip_permissions),
         // Picking up where a session left off, chosen from a list or named outright.
         Some("--resume" | "-r") => match args.get(1) {
-            Some(id) => resume_named(id),
-            None => interactive(bravebot_tui::app::Start::Choose),
+            Some(id) => resume_named(id, skip_permissions),
+            None => interactive(bravebot_tui::app::Start::Choose, skip_permissions),
         },
         // The same, for the session somebody was in a moment ago, which is the one they mean
         // often enough that asking them to find its id is asking for nothing.
-        Some("--continue" | "-c") => continue_here(),
+        Some("--continue" | "-c") => continue_here(skip_permissions),
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
-        Some("-p" | "--print" | "--mode" | "--file" | "--trace") => run_task(&args),
+        Some("-p" | "--print" | "--mode" | "--file" | "--trace") => {
+            run_task(&args, skip_permissions)
+        }
         Some("doctor") => doctor(),
         Some("import-leo-creds") => import_leo_creds(&args[1..]),
         Some(flag) if flag.starts_with('-') => {
@@ -61,17 +69,37 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         // Anything else is treated as the task prompt.
-        Some(_) => run_task(&args),
+        Some(_) => run_task(&args, skip_permissions),
     }
+}
+
+/// Take `--dangerously-skip-permissions` out of the arguments, reporting whether it was there.
+///
+/// Removed before dispatch for the reason `--incognito` is, and it composes with it: the flag belongs
+/// to every way of starting rather than to a task, since a session, a resumed session and a one-shot
+/// run all put the same questions to the same trait. Read per subcommand it would be three chances to
+/// read it in two of them.
+///
+/// See [`bravebot_agent::PermissionMode`] for what giving it up costs. Deny rules from the settings
+/// file are not part of it: they refuse before there is anything to prompt about, so the flag means
+/// "stop asking me" rather than "forget what I wrote down".
+///
+/// Repeats are one flag rather than an error, as with `--incognito`.
+fn take_skip_permissions(args: &mut Vec<String>) -> bool {
+    let asked = args.len();
+    args.retain(|arg| arg != "--dangerously-skip-permissions");
+    args.len() != asked
 }
 
 fn print_help() {
     /// Wide enough for the longest invocation below, so a translated description starts in the
     /// same column as every other one rather than wherever hand-counted spaces left it.
     const FORM: usize = 39;
-    /// The same, for the key column and the option column, which are narrower.
+    /// The same, for the key column and the option column.
     const KEY: usize = 22;
-    const OPTION: usize = 17;
+    /// Wide enough for `--dangerously-skip-permissions` and a gap. A narrower column would leave
+    /// that one flag touching its own description, since the padding below cannot go negative.
+    const OPTION: usize = 32;
 
     println!("{}", t!(cli_tagline, version = VERSION));
     println!();
@@ -126,6 +154,10 @@ fn print_help() {
         ("-p, --print", t!(cli_option_print)),
         ("--trace", t!(cli_option_trace)),
         ("--incognito", t!(cli_option_incognito)),
+        (
+            "--dangerously-skip-permissions",
+            t!(cli_option_dangerously_skip_permissions),
+        ),
         ("-h, --help", t!(cli_option_help)),
         ("-V, --version", t!(cli_option_version)),
     ] {
@@ -211,7 +243,7 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     })
 }
 
-fn run_task(args: &[String]) -> ExitCode {
+fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     let invocation = match parse_invocation(args) {
         Ok(invocation) => invocation,
         Err(err) => {
@@ -303,7 +335,18 @@ fn run_task(args: &[String]) -> ExitCode {
 
     // A one-shot run has nobody to ask about a write, so writes are refused rather than
     // silently applied. Manifest is the same: unattended, empty map, no y/n.
-    let mut confirmer = bravebot_agent::Unattended;
+    //
+    // Unless the flag was given, which is the one way a run nobody is watching may write: the
+    // person accepted that when they typed it, and this is the only path where the refusal above
+    // is what stands between the flag and an effect.
+    let mut unattended = bravebot_agent::Unattended;
+    let mut confirmer = bravebot_agent::SkipsPermissions::new(&mut unattended, skip_permissions);
+    // On stderr, beside the progress lines, so a pipe of the reply is unaffected. Said even here,
+    // where nobody may be reading: a run that wrote to the tree without asking should leave a record
+    // of having been told not to ask.
+    if skip_permissions {
+        eprintln!("{}", t!(cli_notice, notice = t!(session_permissions_skipped)));
+    }
 
     // Progress goes to stderr so stdout stays the reply and nothing else, which is what makes
     // the command pipeable. Without it a long turn prints nothing until it is over.
@@ -617,7 +660,7 @@ fn record_manifest_run(
         },
     );
 }
-fn resume_named(id: &str) -> ExitCode {
+fn resume_named(id: &str, skip_permissions: bool) -> ExitCode {
     let Ok(directory) = std::env::current_dir() else {
         eprintln!("{}", t!(cli_directory_unknown));
         return ExitCode::FAILURE;
@@ -634,7 +677,10 @@ fn resume_named(id: &str) -> ExitCode {
             }
             ExitCode::FAILURE
         }
-        Some(record) => interactive(bravebot_tui::app::Start::Resuming(Box::new(record))),
+        Some(record) => interactive(
+            bravebot_tui::app::Start::Resuming(Box::new(record)),
+            skip_permissions,
+        ),
         None => {
             eprintln!("{}", t!(cli_no_such_session, id = id));
             ExitCode::FAILURE
@@ -647,7 +693,7 @@ fn resume_named(id: &str) -> ExitCode {
 /// Where there is none, this says so and fails. Starting a fresh session instead would answer a
 /// different question than the one asked, and it would answer it by throwing away the request:
 /// somebody who meant to carry on and got an empty transcript has lost the thing they asked for.
-fn continue_here() -> ExitCode {
+fn continue_here(skip_permissions: bool) -> ExitCode {
     let Ok(directory) = std::env::current_dir() else {
         eprintln!("{}", t!(cli_directory_unknown));
         return ExitCode::FAILURE;
@@ -655,7 +701,7 @@ fn continue_here() -> ExitCode {
     match bravebot_tui::sessions::most_recent(&directory) {
         // By the id, so this arrives at the interface the way a named resume does, down to a
         // record that went away between the list and the read.
-        Some(session) => resume_named(&session.id),
+        Some(session) => resume_named(&session.id, skip_permissions),
         None => {
             eprintln!("{}", t!(cli_nothing_to_continue));
             ExitCode::FAILURE
@@ -663,7 +709,7 @@ fn continue_here() -> ExitCode {
     }
 }
 
-fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
+fn interactive(start: bravebot_tui::app::Start, skip_permissions: bool) -> ExitCode {
     let mut config = match Config::from_env() {
         Ok(c) => c,
         Err(err) => {
@@ -687,7 +733,13 @@ fn interactive(start: bravebot_tui::app::Start) -> ExitCode {
         Err(_) => named(bravebot_sandbox::policy::ConfinementLevel::None),
     };
 
-    match bravebot_tui::app::run(&mut config, &workspace, confinement, start) {
+    match bravebot_tui::app::run(
+        &mut config,
+        &workspace,
+        confinement,
+        start,
+        skip_permissions,
+    ) {
         // Printed after the terminal is handed back, so it survives on the screen the person is
         // left looking at rather than going onto the alternate screen with everything else. A
         // session is worth resuming far more often than anybody thinks to write its name down
@@ -1477,6 +1529,70 @@ mod tests {
         let mut arguments = args(&["-p", "write about incognito mode"]);
         assert!(!take_incognito(&mut arguments));
         assert_eq!(arguments, args(&["-p", "write about incognito mode"]));
+    }
+
+    /// Absent is the state every run is in unless somebody typed the flag, and it is the only state
+    /// in which a write is put to a person first.
+    #[test]
+    fn permissions_are_enforced_unless_the_flag_is_given() {
+        let mut arguments = args(&["do a thing"]);
+        assert!(!take_skip_permissions(&mut arguments));
+        assert_eq!(arguments, args(&["do a thing"]));
+    }
+
+    /// Taken out wherever it appears, so the parser downstream sees only what it already understood.
+    /// Left in, it would come back as "unexpected argument" from whichever parser met it.
+    #[test]
+    fn the_skip_permissions_flag_is_taken_out_wherever_it_appears() {
+        for typed in [
+            &["--dangerously-skip-permissions", "-p", "do a thing"][..],
+            &["-p", "--dangerously-skip-permissions", "do a thing"][..],
+            &["-p", "do a thing", "--dangerously-skip-permissions"][..],
+        ] {
+            let mut arguments = args(typed);
+            assert!(
+                take_skip_permissions(&mut arguments),
+                "{typed:?} did not engage it"
+            );
+            assert_eq!(
+                arguments,
+                args(&["-p", "do a thing"]),
+                "left over: {typed:?}"
+            );
+        }
+    }
+
+    /// It belongs to every way of starting, not only to a one-shot run, so stripping it must leave a
+    /// resume or a bare interactive invocation still recognisable to the dispatch below.
+    #[test]
+    fn the_flag_leaves_every_other_way_of_starting_intact() {
+        let mut arguments = args(&[
+            "--resume",
+            "1787860306-65099",
+            "--dangerously-skip-permissions",
+        ]);
+        assert!(take_skip_permissions(&mut arguments));
+        assert_eq!(arguments, args(&["--resume", "1787860306-65099"]));
+
+        // Nothing but the flag is an interactive session, not an unknown option.
+        let mut alone = args(&["--dangerously-skip-permissions"]);
+        assert!(take_skip_permissions(&mut alone));
+        assert!(alone.is_empty());
+    }
+
+    /// It composes with the other flag that is taken out before dispatch, in either order: both are
+    /// about the whole run rather than about a task, and somebody may well want both.
+    #[test]
+    fn it_composes_with_incognito() {
+        for typed in [
+            &["--incognito", "--dangerously-skip-permissions", "-p", "x"][..],
+            &["--dangerously-skip-permissions", "--incognito", "-p", "x"][..],
+        ] {
+            let mut arguments = args(typed);
+            assert!(take_incognito(&mut arguments), "{typed:?}");
+            assert!(take_skip_permissions(&mut arguments), "{typed:?}");
+            assert_eq!(arguments, args(&["-p", "x"]), "left over: {typed:?}");
+        }
     }
 
     /// Turn is what an unqualified run has always been, so an omitted `--mode` has to stay that.

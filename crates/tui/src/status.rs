@@ -85,6 +85,8 @@ pub struct Facts<'a> {
     pub theme: &'a str,
     pub config: &'a Config,
     pub confinement: &'a str,
+    /// Whether `--dangerously-skip-permissions` is in force for this session.
+    pub skip_permissions: bool,
     pub turns: usize,
     pub tokens: u64,
     /// Where the session's wall clock went, every turn added together.
@@ -200,6 +202,16 @@ pub fn report(facts: &Facts<'_>) -> Report {
     );
 
     lines.push(Line::new(t!(status_confinement), facts.confinement));
+
+    // Only where the flag was given. Absent is the ordinary state and a line saying so on every
+    // session would teach people to skim past exactly the one that matters. Beside confinement
+    // because it is the other half of the same question: what is holding this session back.
+    if facts.skip_permissions {
+        lines.push(Line::new(
+            t!(status_permissions),
+            t!(status_permissions_skipped),
+        ));
+    }
 
     // What is going to happen without anybody typing anything, which is the one thing about a
     // session that a person cannot read off the transcript.
@@ -417,6 +429,9 @@ mod tests {
             theme: "brave",
             config,
             confinement: "kernel-enforced",
+            // Enforced, which is what every session is unless the flag was given. The tests about
+            // the line set this themselves.
+            skip_permissions: false,
             turns: 4,
             tokens: 12_400,
             // Nothing measured, which is what a session looks like before its first turn. Tests
@@ -502,6 +517,34 @@ mod tests {
         let trust = trusting();
         let shown = rendered(&report(&facts(&config, &trust)));
         assert!(shown.contains("every run is put to you"), "{shown}");
+    }
+
+    /// The other standing permission that stops announcing itself, and the broader one: it makes
+    /// every prompt stop rather than one program's. The opening note scrolls away, so this is the
+    /// only place a person can go back to and find out why nothing is being asked.
+    #[test]
+    fn the_report_says_when_every_permission_check_is_bypassed() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let mut facts = facts(&config, &trust);
+        facts.skip_permissions = true;
+
+        let shown = rendered(&report(&facts));
+        // The flag by name, so a reader can tell what to take off the command line.
+        assert!(
+            shown.contains("--dangerously-skip-permissions"),
+            "the report must name the flag: {shown}"
+        );
+    }
+
+    /// Nothing is said where the flag was not given. A line reporting "enforced" on every session is
+    /// a line people learn to skim, and this report has to keep the one above worth reading.
+    #[test]
+    fn an_ordinary_session_says_nothing_about_bypassed_permissions() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let shown = rendered(&report(&facts(&config, &trust)));
+        assert!(!shown.contains("--dangerously-skip-permissions"), "{shown}");
     }
 
     fn rendered(report: &Report) -> String {

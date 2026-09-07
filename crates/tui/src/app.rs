@@ -1302,6 +1302,7 @@ pub fn run(
     workspace: &Workspace,
     confinement: String,
     start: Start,
+    skip_permissions: bool,
 ) -> io::Result<Option<crate::sessions::Resumable>> {
     let mut stdout = io::stdout();
     take_over_terminal(&mut stdout)?;
@@ -1325,7 +1326,14 @@ pub fn run(
         // still arrives here, loading its empty conversation as a turn would continue a run
         // that cannot be continued.
         Some(Start::Resuming(record)) if record.manifest.is_some() => Ok(None),
-        Some(start) => event_loop(&mut terminal, config, workspace, confinement, start),
+        Some(start) => event_loop(
+            &mut terminal,
+            config,
+            workspace,
+            confinement,
+            start,
+            skip_permissions,
+        ),
         // Leaving at the picker resumed nothing and started nothing, so there is nothing to say
         // about picking anything up.
         None => Ok(None),
@@ -1551,6 +1559,7 @@ fn event_loop(
     workspace: &Workspace,
     confinement: String,
     start: Start,
+    skip_permissions: bool,
 ) -> io::Result<Option<crate::sessions::Resumable>> {
     // Owned rather than borrowed, because `/add-dir` opens another directory partway through and
     // the turns after it must see one. The primary root never changes, so nothing keyed on it
@@ -1642,6 +1651,13 @@ fn event_loop(
             session_permission_rule_ignored,
             problem = problem.to_string()
         ));
+    }
+    // For the same reason, and it matters more: this one is not a rule that quietly does nothing but
+    // every rule at once. Said before the first prompt can be typed, so a person who did not mean to
+    // pass the flag finds out before a write happens rather than after one. `/status` says it too,
+    // for the rest of the session, since a note scrolls away.
+    if skip_permissions {
+        session.note(t!(session_permissions_skipped));
     }
     // Named after the startup question, so a directory a file asked for is opened on the same
     // terms as one typed at `/add-dir`, and after the person has agreed to the workspace at all.
@@ -1792,6 +1808,7 @@ fn event_loop(
                     theme: &theme,
                     config,
                     confinement: &session.confinement,
+                    skip_permissions,
                     turns: session.turns,
                     tokens: session.tokens,
                     timing: session.timing_total(),
@@ -1873,6 +1890,7 @@ fn event_loop(
                         trust,
                         programs,
                         &permissions,
+                        skip_permissions,
                     )?;
 
                     // Written after each turn rather than at the end, because the end may never
@@ -2744,6 +2762,7 @@ fn run_turn_animated(
     trust: TrustStore,
     programs: TrustedPrograms,
     permissions: &Permissions,
+    skip_permissions: bool,
 ) -> io::Result<(Conversation, TrustStore, TrustedPrograms, Vec<Stamped>)> {
     // The prompt is in the transcript by now, and drawn before anything that might take a moment:
     // a check that has to run the AWS CLI holds the frame for as long as the process takes, and
@@ -2825,7 +2844,11 @@ fn run_turn_animated(
         // Two handles over one channel back to the thread that owns the terminal: one asks about
         // writes and waits, the other reports progress and moves on.
         let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main.clone());
-        let mut confirmer = crate::remote_confirm::RemoteConfirmer::new(to_main, answer_rx, typed);
+        let mut asking = crate::remote_confirm::RemoteConfirmer::new(to_main, answer_rx, typed);
+        // Wrapped rather than replaced, because two of the six questions still have to cross back to
+        // the terminal: a question the planner posed asks for information rather than consent, and an
+        // interjection is the person typing unprompted.
+        let mut confirmer = bravebot_agent::SkipsPermissions::new(&mut asking, skip_permissions);
         let egress = Egress::new();
         // Owned by the worker for the duration and handed back afterwards, whether the turn
         // succeeded or not. A failed turn is still part of the conversation, and the next one
