@@ -64,6 +64,7 @@ the routing-versus-content split they share.
 | [tools/spawn-processor.md](tools/spawn-processor.md) | `SPAWN` | 3 | `spawn_processor` |
 | [tools/spawn-agent.md](tools/spawn-agent.md) | `AGENT` | 5 | `spawn_agent` |
 | [tools/run.md](tools/run.md) | `RUN` | 12 | `run` |
+| [tools/command-line.md](tools/command-line.md) | `CMDLINE` | 16 | `run`'s command line, compiled rather than interpreted |
 | [tools/read-output.md](tools/read-output.md) | `OUTPUT` | 2 | `read_output` |
 | [tools/load-skill.md](tools/load-skill.md) | `LOAD` | 3 | `load_skill` |
 | [tools/todo-write.md](tools/todo-write.md) | `TODO` | 2 | `todo_write` |
