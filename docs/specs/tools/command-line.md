@@ -12,7 +12,7 @@ governs:
   - crates/core/src/policy.rs
   - crates/tui/src/confirm.rs
 guards:
-  - symbol: CommandLine::compile
+  - symbol: cmdline::compile
   - symbol: Policy::before_run
   - symbol: Policy::read_output
 ---

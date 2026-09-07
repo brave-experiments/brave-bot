@@ -26,6 +26,7 @@
 //! worked out somewhere else, so a person shown the line has not been shown the plan. Quoting
 //! makes every one of them ordinary text, because a quoted `$` is a dollar sign and nothing more.
 
+use bravebot_core::command::{Joiner, Plan, Route, Step, Steps};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -121,17 +122,6 @@ pub enum Redirection {
     Both { target: Word },
     /// `2>&1`: standard error joins standard output, touching no file.
     StderrToStdout,
-}
-
-/// How two nodes are joined.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Joiner {
-    /// `&&`: the right side runs only if the left side succeeded.
-    And,
-    /// `||`: the right side runs only if the left side failed.
-    Or,
-    /// `;`: the right side runs either way.
-    Then,
 }
 
 /// One command: its environment, its program and operands, and its redirections.
@@ -1713,132 +1703,46 @@ fn class_matches(body: &str, c: char) -> bool {
     hit != negated
 }
 
-/// A command line, compiled.
+/// Compile `line` into the plan that would run it in `directory`.
 ///
-/// This is the routing field a raw string did not have: what will run, with which binary and
-/// which literal arguments, every file it may write, every file it may read, and where it runs. A
-/// person endorses this rather than the text they were sent, because after compilation this is
-/// what decides where an effect lands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandLine {
-    /// The line as the planner spelled it, kept as context for a reader and binding nothing.
-    pub line: String,
-    /// The directory every step runs in.
-    pub directory: PathBuf,
-    /// What runs, and how the parts are joined.
-    pub steps: Steps,
-    /// Every file the plan may write, in the order the line names them.
-    pub writes: Vec<PathBuf>,
-    /// Every file the plan reads by naming it as a destination for a stream.
-    pub reads: Vec<PathBuf>,
+/// Every branch is compiled, whether or not it would be reached, so that a person answering one
+/// question has been shown everything the line could do. Anything the compiler cannot fully
+/// resolve is a refusal, and a refusal yields no plan.
+pub fn compile(line: &str, directory: &Path, home: Option<&Path>) -> Result<Plan, Refused> {
+    let node = parse(line)?;
+    let mut compiler = Compiler {
+        directory,
+        home,
+        writes: Vec::new(),
+        reads: Vec::new(),
+    };
+    let steps = compiler.node(&node)?;
+    Ok(Plan {
+        line: line.trim_end().to_string(),
+        directory: directory.to_path_buf(),
+        steps,
+        writes: compiler.writes,
+        reads: compiler.reads,
+        stdin: None,
+    })
 }
 
-/// What a plan runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Steps {
-    /// Steps feeding one another, and a single step where the line had no pipe.
-    Pipeline(Vec<Step>),
-    /// Two of these joined by `&&`, `||` or `;`.
-    Join {
-        left: Box<Steps>,
-        joiner: Joiner,
-        right: Box<Steps>,
-    },
-    /// `( … )`, which groups and starts nothing of its own.
-    Group(Box<Steps>),
+/// One compile in progress: where it runs, and what the plan has named so far.
+struct Compiler<'a> {
+    directory: &'a Path,
+    home: Option<&'a Path>,
+    writes: Vec<PathBuf>,
+    reads: Vec<PathBuf>,
 }
 
-impl Steps {
-    /// Every step that could run, in the order the line writes them.
-    ///
-    /// Every one of them, including those a branch may not reach. A step that does not run is not
-    /// an effect, but it was still endorsed, and that is the conservative direction.
-    pub fn steps(&self) -> Vec<&Step> {
-        let mut out = Vec::new();
-        self.collect(&mut out);
-        out
-    }
-
-    fn collect<'a>(&'a self, out: &mut Vec<&'a Step>) {
-        match self {
-            Self::Pipeline(steps) => out.extend(steps.iter()),
-            Self::Join { left, right, .. } => {
-                left.collect(out);
-                right.collect(out);
-            }
-            Self::Group(inner) => inner.collect(out),
-        }
-    }
-}
-
-/// One program in a plan, resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Step {
-    /// The name the line used, which is what a reader recognises.
-    pub program: String,
-    /// The file that name resolved to, absolute.
-    ///
-    /// Resolved once, here, before anybody is asked. Looking the name up again after the approval
-    /// would leave a window in which `$PATH` changed and something else ran.
-    pub resolved: PathBuf,
-    /// The argument vector, literal and final.
-    pub args: Vec<String>,
-    /// `NAME=value` written in front of this step's program.
-    pub environment: Vec<(String, String)>,
-    /// Where this step's streams go.
-    pub routes: Vec<Route>,
-}
-
-/// Where one of a step's streams goes.
-///
-/// The paths are absolute and are not tidied: what is recorded is what will be opened, and
-/// rewriting a `..` away would make the two differ wherever a symlink is involved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Route {
-    Stdout {
-        path: PathBuf,
-        append: bool,
-    },
-    Stdin {
-        path: PathBuf,
-    },
-    Stderr {
-        path: PathBuf,
-        append: bool,
-    },
-    Both {
-        path: PathBuf,
-    },
-    /// Standard error joins standard output, touching no file.
-    StderrToStdout,
-}
-
-impl CommandLine {
-    /// Compile `line` into the plan that would run it in `directory`.
-    ///
-    /// Every branch is compiled, whether or not it would be reached, so that a person answering
-    /// one question has been shown everything the line could do. Anything the compiler cannot
-    /// fully resolve is a refusal, and a refusal yields no plan.
-    pub fn compile(line: &str, directory: &Path, home: Option<&Path>) -> Result<Self, Refused> {
-        let node = parse(line)?;
-        let mut plan = Self {
-            line: line.trim_end().to_string(),
-            directory: directory.to_path_buf(),
-            steps: Steps::Pipeline(Vec::new()),
-            writes: Vec::new(),
-            reads: Vec::new(),
-        };
-        plan.steps = plan.node(&node, home)?;
-        Ok(plan)
-    }
-
-    fn node(&mut self, node: &Node, home: Option<&Path>) -> Result<Steps, Refused> {
+impl Compiler<'_> {
+    fn node(&mut self, node: &Node) -> Result<Steps, Refused> {
         match node {
-            Node::Command(command) => Ok(Steps::Pipeline(vec![self.step(command, home)?])),
+            Node::Command(command) => Ok(Steps::Pipeline(vec![self.step(command)?])),
             Node::Pipeline(commands) => {
                 let mut steps = Vec::with_capacity(commands.len());
                 for command in commands {
-                    steps.push(self.step(command, home)?);
+                    steps.push(self.step(command)?);
                 }
                 Ok(Steps::Pipeline(steps))
             }
@@ -1847,22 +1751,21 @@ impl CommandLine {
                 joiner,
                 right,
             } => {
-                let left = self.node(left, home)?;
-                let right = self.node(right, home)?;
+                let left = self.node(left)?;
+                let right = self.node(right)?;
                 Ok(Steps::Join {
                     left: Box::new(left),
                     joiner: *joiner,
                     right: Box::new(right),
                 })
             }
-            Node::Group(inner) => Ok(Steps::Group(Box::new(self.node(inner, home)?))),
+            Node::Group(inner) => Ok(Steps::Group(Box::new(self.node(inner)?))),
         }
     }
 
-    fn step(&mut self, command: &Command, home: Option<&Path>) -> Result<Step, Refused> {
-        let directory = self.directory.clone();
+    fn step(&mut self, command: &Command) -> Result<Step, Refused> {
         let word = command.program();
-        let expanded = expand(word, &directory, home)?;
+        let expanded = expand(word, self.directory, self.home)?;
         let [program] = expanded.as_slice() else {
             return Err(Refused {
                 span: word.span,
@@ -1881,20 +1784,21 @@ impl CommandLine {
             });
         }
 
-        let resolved = crate::programs::resolve(program, &directory).ok_or_else(|| Refused {
-            span: word.span,
-            text: program.clone(),
-            reason: Reason::NotFound,
-        })?;
+        let resolved =
+            crate::programs::resolve(program, self.directory).ok_or_else(|| Refused {
+                span: word.span,
+                text: program.clone(),
+                reason: Reason::NotFound,
+            })?;
 
         let mut args = Vec::new();
         for word in &command.words[1..] {
-            args.extend(expand(word, &directory, home)?);
+            args.extend(expand(word, self.directory, self.home)?);
         }
 
         let mut routes = Vec::new();
         for redirection in &command.redirections {
-            routes.push(self.route(redirection, home)?);
+            routes.push(self.route(redirection)?);
         }
 
         Ok(Step {
@@ -1911,26 +1815,21 @@ impl CommandLine {
     }
 
     /// One redirection, with its target recorded in the write set or the read set.
-    fn route(&mut self, redirection: &Redirection, home: Option<&Path>) -> Result<Route, Refused> {
-        let writing = |target: &Word, plan: &mut Self| -> Result<PathBuf, Refused> {
-            let path = plan.target(target, home)?;
-            plan.writes.push(path.clone());
-            Ok(path)
-        };
+    fn route(&mut self, redirection: &Redirection) -> Result<Route, Refused> {
         Ok(match redirection {
             Redirection::Stdout { target, append } => Route::Stdout {
-                path: writing(target, self)?,
+                path: self.writing(target)?,
                 append: *append,
             },
             Redirection::Stderr { target, append } => Route::Stderr {
-                path: writing(target, self)?,
+                path: self.writing(target)?,
                 append: *append,
             },
             Redirection::Both { target } => Route::Both {
-                path: writing(target, self)?,
+                path: self.writing(target)?,
             },
             Redirection::Stdin { target } => {
-                let path = self.target(target, home)?;
+                let path = self.target(target)?;
                 self.reads.push(path.clone());
                 Route::Stdin { path }
             }
@@ -1940,12 +1839,18 @@ impl CommandLine {
         })
     }
 
+    fn writing(&mut self, target: &Word) -> Result<PathBuf, Refused> {
+        let path = self.target(target)?;
+        self.writes.push(path.clone());
+        Ok(path)
+    }
+
     /// The one file a redirection names.
     ///
     /// A pattern is refused even where it happens to match a single file today. The plan has to
     /// say where the bytes go, and a destination worked out from what is on disk is a destination
     /// that changes when the tree does.
-    fn target(&self, word: &Word, home: Option<&Path>) -> Result<PathBuf, Refused> {
+    fn target(&self, word: &Word) -> Result<PathBuf, Refused> {
         let refused = || Refused {
             span: word.span,
             text: render(&word.pieces),
@@ -1954,7 +1859,7 @@ impl CommandLine {
         if word.pieces.iter().any(is_pattern) {
             return Err(refused());
         }
-        let expanded = expand(word, &self.directory, home)?;
+        let expanded = expand(word, self.directory, self.home)?;
         let [one] = expanded.as_slice() else {
             return Err(refused());
         };
@@ -2652,13 +2557,13 @@ mod tests {
         assert_eq!(expanded("ls '*.rs'", 1, &tree.root), ["*.rs"]);
     }
 
-    fn compiled(line: &str, at: &Path) -> CommandLine {
-        CommandLine::compile(line, at, None)
+    fn compiled(line: &str, at: &Path) -> Plan {
+        compile(line, at, None)
             .unwrap_or_else(|e| panic!("`{line}` should compile, and was refused: {e}"))
     }
 
     fn compile_refused(line: &str, at: &Path) -> Refused {
-        CommandLine::compile(line, at, None).expect_err("should have been refused")
+        compile(line, at, None).expect_err("should have been refused")
     }
 
     /// The plan is the routing field a raw string did not have, so a step has to carry the file
@@ -2793,7 +2698,7 @@ mod tests {
     fn the_same_program_without_the_interactive_part_is_not_refused() {
         let tree = Tree::new("noninteractive");
         for line in ["git rebase --continue", "git add .", "git commit -m done"] {
-            let refusal = CommandLine::compile(line, &tree.root, None);
+            let refusal = compile(line, &tree.root, None);
             let interactive = matches!(
                 refusal.as_ref().err().map(|e| &e.reason),
                 Some(Reason::Interactive(_))

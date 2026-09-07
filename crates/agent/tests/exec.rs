@@ -576,11 +576,9 @@ fn a_grandchild_holding_the_pipe_does_not_hang_the_run() {
 
 // A compiled command line, end to end: whether the plan that was endorsed is the plan that runs.
 
-use bravebot_agent::cmdline::CommandLine;
-
 /// Compile a line for `at` and run it, the way the tool will.
 fn line(text: &str, at: &std::path::Path) -> exec::Ran {
-    let plan = CommandLine::compile(text, at, None)
+    let plan = bravebot_agent::cmdline::compile(text, at, None)
         .unwrap_or_else(|e| panic!("`{text}` should compile: {e}"));
     exec::run_plan(&plan, &Cancel::new(), exec::LIMIT)
         .unwrap_or_else(|e| panic!("`{text}` should run: {e}"))

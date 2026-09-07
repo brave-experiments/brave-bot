@@ -48,9 +48,9 @@
 //! for, and a filter matching names cannot tell one of those from an exfiltration, so it is not
 //! attempted: what holds is narrow and exact rather than broad and approximate.
 
-use crate::cmdline::{CommandLine, Joiner, Route, Step, Steps};
 use bravebot_core::Pipeline;
 use bravebot_core::cancel::Cancel;
+use bravebot_core::command::{Joiner, Plan, Route, Step, Steps};
 use std::fmt;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -224,7 +224,7 @@ pub fn run_within(
 ///
 /// Every part of the plan shares one deadline, because the limit is on the line rather than on
 /// any one program in it, and a part reached after the time ran out is not started.
-pub fn run_plan(plan: &CommandLine, cancel: &Cancel, limit: Duration) -> Result<Ran, ExecError> {
+pub fn run_plan(plan: &Plan, cancel: &Cancel, limit: Duration) -> Result<Ran, ExecError> {
     Running::new(&plan.directory, cancel, limit).finish(&plan.steps)
 }
 
