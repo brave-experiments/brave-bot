@@ -193,6 +193,8 @@ pub struct Config {
     /// their model that the listing does not say, and silently replacing it would make the setting
     /// look broken. Nothing reads this except [`Config::adopt_window`].
     budget_was_chosen: bool,
+    /// Whether the context budget was adopted from an advertised window.
+    budget_was_advertised: bool,
 }
 
 /// A value captured when this binary was built, or `None` if the build had none.
@@ -373,6 +375,7 @@ impl Config {
         // window that is not the one in force.
         let context_budget = chosen_budget.unwrap_or(DEFAULT_CONTEXT_BUDGET);
         let budget_was_chosen = chosen_budget.is_some();
+        let budget_was_advertised = false;
 
         Ok(Self {
             bedrock,
@@ -384,24 +387,43 @@ impl Config {
             default_model,
             context_budget,
             budget_was_chosen,
+            budget_was_advertised,
         })
+    }
+
+    /// Whether the context budget is a guess rather than set by hand or advertised by the model.
+    pub fn budget_is_guessed(&self) -> bool {
+        !self.budget_was_chosen && !self.budget_was_advertised
     }
 
     /// Take the window the endpoint advertised for the model in use, where it is worth taking.
     ///
-    /// Ignored when a budget was set by hand, and when the endpoint advertised nothing or something
-    /// too small to work in: in both cases what is already here stands. Returns whether the budget
-    /// changed, so a caller can say so once rather than every turn.
+    /// Ignored when a budget was set by hand. An advertised window sets the budget; when the
+    /// endpoint advertises nothing or a placeholder, the budget reverts to the default. Returns
+    /// whether the budget changed, so a caller can say so once rather than every turn.
     pub fn adopt_window(&mut self, advertised: Option<u64>) -> bool {
         if self.budget_was_chosen {
             return false;
         }
         match budget_for_window(advertised) {
-            Some(budget) if budget != self.context_budget => {
-                self.context_budget = budget;
-                true
+            Some(budget) => {
+                self.budget_was_advertised = true;
+                if budget != self.context_budget {
+                    self.context_budget = budget;
+                    true
+                } else {
+                    false
+                }
             }
-            _ => false,
+            None => {
+                self.budget_was_advertised = false;
+                if self.context_budget != DEFAULT_CONTEXT_BUDGET {
+                    self.context_budget = DEFAULT_CONTEXT_BUDGET;
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 
@@ -570,6 +592,29 @@ mod tests {
     fn adopting_the_budget_already_in_use_reports_no_change() {
         let mut config = Config::from_lookup(complete_env).unwrap();
         assert!(!config.adopt_window(Some(DEFAULT_CONTEXT_BUDGET)));
+    }
+
+    #[test]
+    fn a_default_budget_is_marked_as_guessed() {
+        let config = Config::from_lookup(complete_env).unwrap();
+        assert!(config.budget_is_guessed());
+    }
+
+    #[test]
+    fn an_advertised_budget_is_not_marked_as_guessed() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(config.adopt_window(Some(102_400)));
+        assert!(!config.budget_is_guessed());
+    }
+
+    #[test]
+    fn a_budget_set_by_hand_is_not_marked_as_guessed() {
+        let config = Config::from_lookup(|k| match k {
+            env_var::CONTEXT_BUDGET => Some("4096".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert!(!config.budget_is_guessed());
     }
 
     /// The default is a guess at a window nobody reports, so someone running a model it is wrong

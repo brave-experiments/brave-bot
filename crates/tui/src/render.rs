@@ -2505,11 +2505,15 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         return;
     }
 
-    // Only once a request has been measured. A gauge reading zero before anything has been sent
-    // would be a claim about a context nobody has counted.
-    let context = match session.fullness() {
-        Some(percent) => format!("context {percent}%"),
-        None => String::new(),
+    // How the context currently stands: unmeasured, compacted, or measured as a percentage.
+    let context = match session.occupancy() {
+        crate::state::Occupancy::Unmeasured => String::new(),
+        crate::state::Occupancy::Compacted => "context compacted".to_string(),
+        crate::state::Occupancy::Measured { guessed, .. } => match session.fullness() {
+            Some(percent) if guessed => format!("context ~{percent}%"),
+            Some(percent) => format!("context {percent}%"),
+            None => String::new(),
+        },
     };
 
     // The way into the view, for as long as it holds anything. The row that reports what the turn
@@ -4920,10 +4924,19 @@ mod tests {
     #[test]
     fn the_hint_line_says_how_full_the_context_is() {
         let mut session = Session::new("none");
-        session.measured(62_000, 100_000);
+        session.measured(62_000, 100_000, false);
         let output = rendered_at(&session, 120, 24);
 
         assert!(output.contains("context 62%"), "{output}");
+    }
+
+    #[test]
+    fn the_hint_line_marks_a_guessed_budget() {
+        let mut session = Session::new("none");
+        session.measured(62_000, 100_000, true);
+        let output = rendered_at(&session, 120, 24);
+
+        assert!(output.contains("context ~62%"), "{output}");
     }
 
     /// Before anything has been measured there is no figure, and a gauge at zero would be a claim
@@ -4932,6 +4945,16 @@ mod tests {
     fn the_hint_line_says_nothing_about_an_unmeasured_context() {
         let output = rendered_at(&Session::new("none"), 120, 24);
         assert!(!output.contains("context"), "{output}");
+    }
+
+    /// After compaction the line reports that the context was compacted.
+    #[test]
+    fn the_hint_line_reports_a_compacted_context() {
+        let mut session = Session::new("none");
+        session.compacted();
+        let output = rendered_at(&session, 120, 24);
+
+        assert!(output.contains("context compacted"), "{output}");
     }
 
     /// Narrowing shows only what still matches, so the list answers what the half-typed word could

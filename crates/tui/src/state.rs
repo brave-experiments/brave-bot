@@ -525,6 +525,33 @@ pub struct Watching {
     pub on_session: bool,
 }
 
+/// How the context currently stands in a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Occupancy {
+    /// No request has been measured yet.
+    Unmeasured,
+    /// Compaction shortened the conversation and the next turn has not measured yet.
+    Compacted,
+    /// Measured token count against the budget, and whether the budget was guessed.
+    Measured {
+        used: u64,
+        budget: u64,
+        guessed: bool,
+    },
+}
+
+impl Occupancy {
+    /// How full the context is, as a percentage, or `None` where nothing has been measured.
+    pub fn percent(&self) -> Option<u64> {
+        match *self {
+            Occupancy::Measured { used, budget, .. } if used > 0 && budget > 0 => {
+                Some((used.saturating_mul(100) / budget).min(100))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -630,12 +657,9 @@ pub struct Session {
     timing: std::collections::BTreeMap<usize, bravebot_agent::timing::Timing>,
     /// How large the last request was, and the budget it is compacted at.
     ///
-    /// `None` until a request has been measured, which is the honest reading: nothing has been
-    /// counted yet, and drawing a gauge at zero would claim it had.
-    ///
     /// Not the same figure as [`Session::tokens`], which adds every round of every turn together
     /// and so says what the session has cost. This says how full the context is now.
-    occupancy: Option<(u64, u64)>,
+    occupancy: Occupancy,
     /// What the last turn actually asked for, and what the server answered with.
     ///
     /// `None` until a turn has run, which is the honest reading: whether premium is in use is not a
@@ -877,7 +901,7 @@ impl Session {
             tokens: 0,
             spend: std::collections::BTreeMap::new(),
             timing: std::collections::BTreeMap::new(),
-            occupancy: None,
+            occupancy: Occupancy::Unmeasured,
             served: None,
             // Nothing has been served, so nothing has been compared. Set by the first turn.
             served_names_are_comparable: true,
@@ -1157,7 +1181,7 @@ impl Session {
         self.tokens = 0;
         self.spend.clear();
         self.timing.clear();
-        self.occupancy = None;
+        self.occupancy = Occupancy::Unmeasured;
         self.written = 0;
         self.todos.clear();
         self.phase = None;
@@ -3119,8 +3143,38 @@ impl Session {
     }
 
     /// Record how full the context is, against the budget it is compacted at.
-    pub fn measured(&mut self, used: u64, budget: u64) {
-        self.occupancy = Some((used, budget));
+    pub fn measured(&mut self, used: u64, budget: u64, guessed: bool) {
+        if used == 0 {
+            self.occupancy = Occupancy::Unmeasured;
+        } else {
+            self.occupancy = Occupancy::Measured {
+                used,
+                budget,
+                guessed,
+            };
+        }
+    }
+
+    /// Record that compaction shortened the conversation underneath the session.
+    pub fn compacted(&mut self) {
+        self.occupancy = Occupancy::Compacted;
+    }
+
+    /// The occupancy state of the session context.
+    pub fn occupancy(&self) -> Occupancy {
+        self.occupancy
+    }
+
+    /// Update the context budget and guessed status against which occupancy is calculated,
+    /// preserving the measured token count.
+    pub fn update_budget(&mut self, budget: u64, guessed: bool) {
+        if let Occupancy::Measured { used, .. } = self.occupancy {
+            self.occupancy = Occupancy::Measured {
+                used,
+                budget,
+                guessed,
+            };
+        }
     }
 
     /// Record what the last turn asked for, what the server answered with, and which tier it ran on.
@@ -3174,12 +3228,8 @@ impl Session {
     /// Capped at a hundred rather than allowed past it. The budget is a guess at a window nobody
     /// reports, so a request larger than it is a session that will be compacted next round, not a
     /// context that is a hundred and forty per cent full.
-    /// Zero reads as "not measured" rather than as an empty context. No request costs nothing, so
-    /// the figure only ever arrives as zero when there has not been one to count: before the
-    /// first turn, and after a compaction has shortened the conversation underneath it.
     pub fn fullness(&self) -> Option<u64> {
-        let (used, budget) = self.occupancy?;
-        (used > 0 && budget > 0).then(|| (used * 100 / budget).min(100))
+        self.occupancy.percent()
     }
 
     /// Enter the working state for something that is not a turn.
@@ -5054,7 +5104,7 @@ mod tests {
     #[test]
     fn how_full_the_context_is_comes_back_as_a_percentage() {
         let mut s = Session::new("none");
-        s.measured(25_000, 100_000);
+        s.measured(25_000, 100_000, false);
         assert_eq!(s.fullness(), Some(25));
     }
 
@@ -5063,7 +5113,7 @@ mod tests {
     #[test]
     fn a_request_past_the_budget_reads_as_full_rather_than_more_than_full() {
         let mut s = Session::new("none");
-        s.measured(140_000, 100_000);
+        s.measured(140_000, 100_000, false);
         assert_eq!(s.fullness(), Some(100));
     }
 
@@ -5073,8 +5123,34 @@ mod tests {
     #[test]
     fn a_context_measured_at_nothing_is_a_context_nobody_has_measured() {
         let mut s = Session::new("none");
-        s.measured(0, 100_000);
+        s.measured(0, 100_000, false);
         assert_eq!(s.fullness(), None);
+    }
+
+    #[test]
+    fn a_compacted_session_reports_compacted_occupancy() {
+        let mut s = Session::new("none");
+        s.compacted();
+        assert_eq!(s.occupancy(), Occupancy::Compacted);
+        assert_eq!(s.fullness(), None);
+    }
+
+    #[test]
+    fn updating_budget_retains_token_count_with_new_capacity() {
+        let mut s = Session::new("none");
+        s.measured(20_000, 24_000, true);
+        assert_eq!(s.fullness(), Some(83));
+
+        s.update_budget(100_000, false);
+        assert_eq!(
+            s.occupancy(),
+            Occupancy::Measured {
+                used: 20_000,
+                budget: 100_000,
+                guessed: false,
+            }
+        );
+        assert_eq!(s.fullness(), Some(20));
     }
 
     /// Before the first turn there is no turn to report, and a line claiming one would be about
@@ -5141,8 +5217,9 @@ mod tests {
     #[test]
     fn clearing_a_session_forgets_how_full_the_old_one_was() {
         let mut s = Session::new("none");
-        s.measured(90_000, 100_000);
+        s.measured(90_000, 100_000, false);
         s.clear();
+        assert_eq!(s.occupancy(), Occupancy::Unmeasured);
         assert_eq!(s.fullness(), None);
     }
 
