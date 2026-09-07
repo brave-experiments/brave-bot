@@ -22,7 +22,7 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 | Tool | Routing arguments | Content arguments | Result |
 |---|---|---|---|
 | [`read_file`](read-file.md) | `path`, `path_ref`, `offset`, `limit` | none | the lines, or a reference |
-| [`list_files`](list-files.md) | `directory`, `pattern` | none | the paths, or a reference per entry |
+| [`list_files`](list-files.md) | `directory`, `pattern`, `depth` | none | the paths, or a reference per entry |
 | [`search`](search.md) | `pattern`, `directory`, `include` | none | matching lines, or a reference |
 | [`write_file`](write-file.md) | `path`, `path_ref`, `contents_ref` | `contents` | confirmation |
 | [`edit_file`](edit-file.md) | `path`, `path_ref`, `replace_all` | `old_text`, `new_text` | confirmation |

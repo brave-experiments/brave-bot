@@ -37,7 +37,7 @@ use bravebot_core::todo::{self, Item, List, Status};
 use bravebot_core::value::Labelled;
 use serde_json::{Value, json};
 
-use crate::workspace::{Page, Workspace};
+use crate::workspace::{Listing, Page, Workspace};
 
 /// The statuses the schema advertises, taken from the kernel so the two cannot drift.
 const TODO_STATUSES: [&str; 3] = Status::NAMES;
@@ -88,11 +88,13 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
         ),
         Tool::function(
             "list_files",
-            "List files in the workspace, recursively, under a directory. Give a glob \
-             pattern to narrow the result rather than listing everything. In a directory you \
-             may not read, the names are quarantined and you get one reference per file \
-             instead: use those as path_ref to read a file, process it, and write it back, \
-             without ever being told what it is called.",
+            "List files in the workspace under a directory, recursively unless you give a \
+             depth. Give a glob pattern or a depth to narrow the result rather than listing \
+             everything: depth 1 is the one directory itself, the way ls reads it, and is what \
+             to use when you want to know what a project holds rather than every file it \
+             contains. In a directory you may not read, the names are quarantined and you get \
+             one reference per file instead: use those as path_ref to read a file, process it, \
+             and write it back, without ever being told what it is called.",
             json!({
                 "type": "object",
                 "properties": {
@@ -105,6 +107,15 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                         "description": "Optional glob, e.g. \"*.rs\" for Rust files at any \
                                         depth, or \"src/**/*.rs\" to anchor it. Supports \
                                         *, ? and **; brace groups are not supported."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Optional number of directory levels to descend. 1 \
+                                        lists this directory and no deeper, naming each \
+                                        subdirectory with a trailing / so you can see where \
+                                        the tree continues. Omit it to walk the whole tree, \
+                                        which in a large project is thousands of paths.",
+                        "minimum": 1
                     }
                 },
                 "required": ["directory"]
@@ -1640,12 +1651,23 @@ fn list_files<S: Sink>(
         None => None,
     };
 
+    // Read as a plain number, like the offset and limit on a read: it narrows a confined read
+    // and cannot name anything, so there is no destination for it to decide.
+    let depth = arguments
+        .get("depth")
+        .and_then(Value::as_u64)
+        .map(|depth| depth.max(1).min(usize::MAX as u64) as usize);
+
     let (proposed_dir, _) = proposed.into_parts_for_decoding();
 
-    match workspace.list(policy, &directory, pattern.as_ref()) {
+    match workspace.list(policy, &directory, pattern.as_ref(), depth) {
         Ok(listing) => {
             let note = note_for(policy, "list_files", &listing, |listing| {
-                tally(listing.files.len(), "file", "files")
+                tally(
+                    listing.files.len() + listing.directories.len(),
+                    "entry",
+                    "entries",
+                )
             });
 
             // A listing the planner may not read is handed over one reference per entry rather
@@ -1684,6 +1706,14 @@ fn list_files<S: Sink>(
             }
 
             let rendered = policy.render_in_place("list_files", &listing, |listing| {
+                let mut entries: Vec<String> = listing.files.clone();
+                entries.extend(listing.directories.iter().map(|name| format!("{name}/")));
+                entries.sort();
+                let listing = Listing {
+                    files: entries,
+                    directories: Vec::new(),
+                    truncated: listing.truncated,
+                };
                 if listing.files.is_empty() {
                     "(no files)".to_string()
                 } else if listing.truncated {

@@ -1210,6 +1210,9 @@ fn run_step<S: Sink, C: Confirmer>(
                     policy,
                     &Labelled::trusted(directory.clone()),
                     pattern.map(Labelled::trusted).as_ref(),
+                    // A manifest fixes its routing before anything is read, and depth narrows a
+                    // read rather than aiming it, so there is no field here to lock.
+                    None,
                 )
                 .map_err(|e| e.to_string())?;
             let rendered = policy.render_in_place("list_files", &listing, |l| l.files.join("\n"));
