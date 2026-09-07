@@ -411,3 +411,22 @@ that has observed untrusted content those are untrusted bytes and it may not bra
 `verified-by: bravebot_tui::state::a_finished_reply_keeps_the_answer_and_not_the_thought`
 `verified-by: bravebot_tui::state::a_round_that_thought_before_speaking_records_only_what_it_said`
 `verified-by: bravebot_tui::state::a_round_that_only_thought_leaves_no_entry`
+
+
+<a id="VIEW-19"></a>
+### VIEW-19: a note is the session speaking, not a detail of the line above it
+
+A note is drawn at the column the rest of the transcript's text starts in, without the marker that
+ties a line to the entry above it. Consecutive notes are drawn as one block, and the blank line
+falls after the last of them rather than between each.
+
+**Why.** The marker means the line belongs to the entry above it, and a note belongs to no entry:
+the ones startup leaves are drawn before there is anything above them at all, so the marker pointed
+at nothing and left the note hanging off it.
+
+The spacing is the same fact from the other side. A session reporting three things as it starts is
+making one report, and a blank between each presents it as three separate turns. The run ends where
+the notes do, so the last of them is still held apart from whatever is said next.
+
+`verified-by: bravebot_tui::render::a_note_is_not_drawn_as_a_detail_of_the_line_above_it`
+`verified-by: bravebot_tui::render::a_run_of_notes_is_not_spaced_apart`

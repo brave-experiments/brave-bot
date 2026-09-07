@@ -778,7 +778,7 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
         lines.push(Line::raw(""));
     }
 
-    for entry in &session.transcript {
+    for (index, entry) in session.transcript.iter().enumerate() {
         match entry.speaker {
             // The user's own words, echoed the way they were typed.
             Speaker::User => {
@@ -794,10 +794,13 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
             // The model writes markdown whether or not it is asked to, so the reply is styled
             // rather than shown with its markers.
             Speaker::Assistant => lines.extend(assistant_lines(&entry.text, width)),
+            // The session in its own voice, indented to the column the rest of the transcript's
+            // text starts in. Not behind the detail marker: that says the line belongs to the
+            // entry above it, and the notes starting up leaves are drawn before there is one.
             Speaker::System => {
                 for text in entry.text.lines() {
                     lines.push(Line::from(Span::styled(
-                        format!("{DETAIL_MARKER} {text}"),
+                        format!("{:LEAD$}{text}", ""),
                         Style::default().fg(theme::note()),
                     )));
                 }
@@ -854,8 +857,19 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
         }
 
         // Tool calls come in runs and read as one block, so they are not spaced apart. A turn
-        // that read six files would otherwise take twelve lines of blank.
-        if entry.speaker != Speaker::Tool {
+        // that read six files would otherwise take twelve lines of blank. Notes run together the
+        // same way, and only for as long as the run lasts: starting up leaves three at once,
+        // which a blank between each would present as three separate turns, while the last of
+        // them still has to be held apart from whatever is said next.
+        let runs_on = match entry.speaker {
+            Speaker::Tool => true,
+            Speaker::System => session
+                .transcript
+                .get(index + 1)
+                .is_some_and(|next| next.speaker == Speaker::System),
+            _ => false,
+        };
+        if !runs_on {
             lines.push(Line::raw(""));
         }
     }
@@ -3890,6 +3904,52 @@ mod tests {
         assert!(
             !inks.contains(&theme::running()),
             "the note is still yellow"
+        );
+    }
+
+    /// Starting up leaves several notes at once, and a blank between each of them presents one
+    /// report as three separate turns. The run still has to end where the session starts saying
+    /// something else, so the blank goes after the last of them rather than between each.
+    #[test]
+    fn a_run_of_notes_is_not_spaced_apart() {
+        let mut session = Session::new("none");
+        session.note("compacting above 131072 tokens");
+        session.note("trusting /tmp/x");
+        session.note("theme catppuccin");
+
+        let lines: Vec<String> = transcript_lines(&session, 90, 24)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        let first = lines
+            .iter()
+            .position(|line| line.contains("compacting"))
+            .expect("the first note was not drawn");
+        assert!(
+            lines[first + 1].contains("trusting") && lines[first + 2].contains("theme"),
+            "the notes were spaced apart: {lines:?}"
+        );
+        assert!(
+            lines[first + 3].trim().is_empty(),
+            "the run did not end where the notes did: {lines:?}"
+        );
+    }
+
+    /// The detail marker says the line belongs to the entry above it, and a note belongs to no
+    /// entry at all: the ones starting up leaves are drawn before there is anything above them.
+    #[test]
+    fn a_note_is_not_drawn_as_a_detail_of_the_line_above_it() {
+        let mut session = Session::new("none");
+        session.note("trusting /tmp/x");
+
+        let drawn = transcript_lines(&session, 90, 24)
+            .iter()
+            .map(|line| line.to_string())
+            .find(|line| line.contains("trusting"))
+            .expect("the note was not drawn");
+        assert!(
+            !drawn.contains(DETAIL_MARKER),
+            "the note was drawn hanging off nothing: {drawn}"
         );
     }
 
