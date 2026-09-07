@@ -283,6 +283,8 @@ run-stages = { $count ->
    *[other] { $count } étapes
     }
 run-in-directory = dans { $directory }
+run-line-sent = le modèle a écrit :
+run-writes = il écrit ces fichiers :
 run-not-sandboxed =
     ceci n'est pas isolé : l'exécution a les mêmes accès que votre propre shell
 run-releases-private =
