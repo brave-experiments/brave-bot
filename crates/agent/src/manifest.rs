@@ -1225,12 +1225,16 @@ fn run_step<S: Sink, C: Confirmer>(
             let pattern = locked(policy, index, "pattern")?;
             let directory = locked(policy, index, "directory")?;
             let include = locked_filter(policy, index, "include")?;
+            let needles = [Labelled::trusted(pattern.clone())];
             let hits = workspace
                 .grep(
                     policy,
-                    &Labelled::trusted(pattern.clone()),
+                    &needles,
                     &Labelled::trusted(directory),
                     include.map(Labelled::trusted).as_ref(),
+                    // A manifest step names one pattern and means it literally, spelling and
+                    // all: it was written ahead of the run rather than guessed at mid-turn.
+                    true,
                 )
                 .map_err(|e| e.to_string())?;
             let rendered = policy.render_in_place("search", &hits, |hits| {

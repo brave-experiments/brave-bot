@@ -20,6 +20,7 @@ use bravebot_core::policy::{Denial, Policy};
 use bravebot_core::value::Labelled;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// The most an attachment may weigh.
 ///
@@ -107,6 +108,11 @@ pub struct Workspace {
     /// relative paths mean, what the session record is keyed on, and where `AGENTS.md` is looked
     /// for. Making it one root among many would make all three ambiguous.
     added: Vec<PathBuf>,
+    /// How many files a search may walk. [`MAX_SEARCH_FILES`] unless a caller lowered it.
+    ///
+    /// A field rather than a constant so a test can reach the cap without writing a hundred
+    /// thousand files, and so a host on a slow filesystem can say so.
+    search_files: usize,
 }
 
 /// What changed when the working directory moved.
@@ -139,7 +145,18 @@ impl Workspace {
         Ok(Self {
             root: canonical,
             added: Vec::new(),
+            search_files: MAX_SEARCH_FILES,
         })
+    }
+
+    /// Lower how many files a search may walk.
+    ///
+    /// Only ever lowered in practice: the default is chosen to be past what any tree a person
+    /// works in holds, and raising it trades a bounded search for an unbounded one.
+    #[must_use]
+    pub fn with_search_limit(mut self, files: usize) -> Self {
+        self.search_files = files;
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -810,8 +827,32 @@ pub fn read_label() -> Label {
 /// context. Truncation is size hygiene, not filtering: nothing is inspected to decide
 /// what to drop.
 pub(crate) const MAX_ENTRIES: usize = 2_000;
+
+/// How many files a *search* may walk before it gives up on the rest.
+///
+/// Far above [`MAX_ENTRIES`] because the two caps guard different things. A listing's paths
+/// are the answer and every one of them is spent on context, so a listing is capped at what
+/// is worth reading. A search's paths are never shown: only matching lines are, and those
+/// have their own cap in [`MAX_MATCHES`]. Holding a search to a listing's budget bought no
+/// context back and cost whole subtrees, which is the failure that matters: a search that
+/// stops after a couple of thousand files reports nothing for a needle it never looked for,
+/// and nothing reads as an answer.
+///
+/// Walking is cheap: a path is a stat and a string. Reading is not, which is what
+/// [`MAX_SEARCH_TIME`] is for.
+pub const MAX_SEARCH_FILES: usize = 100_000;
+
 const MAX_MATCHES: usize = 200;
 const MAX_MATCH_LINE: usize = 500;
+
+/// How long a search may spend opening files.
+///
+/// The match cap already stops a *productive* search early. This is for the other one: a
+/// pattern that matches nothing is read to the end of the tree, so on a large repository the
+/// worst case is every file. A wall-clock budget bounds that without bounding the useful
+/// case, and stopping is reported the same way the entry cap is, since the answer is partial
+/// either way, and what the reader must not do is take it for complete.
+const MAX_SEARCH_TIME: Duration = Duration::from_secs(10);
 
 /// Caps on a single paged read.
 ///
@@ -826,24 +867,57 @@ const SNIFF_BYTES: usize = 8_192;
 
 /// Directories skipped when walking a tree.
 ///
-/// Version control and build output would dominate a listing without adding anything a task
-/// needs. This is size hygiene applied to *directory names*, not to content: nothing is
-/// read to decide, so it cannot be steered by what a file contains.
+/// Version control, build output and vendored dependencies would dominate a listing without
+/// adding anything a task needs. This is size hygiene applied to *directory names*, not to
+/// content: nothing is read to decide, so it cannot be steered by what a file contains.
+///
+/// A fixed list rather than the project's own ignore file, and deliberately. Reading
+/// `.gitignore` would generalise better, being how a search tool learns each repository's
+/// own idea of noise, but it would decide what to walk from the contents of a file in the
+/// tree being walked, and a tree that can hide its own files from search is a tree that can
+/// hide them from review. The names below are ones no project uses for its own sources, so
+/// skipping them needs nobody's word for it.
+///
+/// Vendored code is the entry that earns its place by experience: a search for a common word
+/// spent its entire budget inside a Rust crate mirror and reported documentation comments
+/// about the wrong meaning of the word, having never reached the project.
 const IGNORED_DIRECTORIES: &[&str] = &[
+    // Version control.
     ".git",
     ".hg",
     ".svn",
+    // Build output and caches.
     "target",
-    "node_modules",
     "dist",
     "build",
-    ".venv",
-    "venv",
-    "__pycache__",
     ".next",
+    ".nuxt",
+    ".parcel-cache",
+    ".turbo",
+    ".gradle",
     ".cache",
     ".mypy_cache",
     ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    "__pycache__",
+    "coverage",
+    ".nyc_output",
+    ".terraform",
+    ".stack-work",
+    // Dependencies, fetched or vendored. `out` and `bin` are deliberately absent: plenty of
+    // projects keep real sources under those names.
+    "node_modules",
+    "bower_components",
+    "vendor",
+    "third_party",
+    "thirdparty",
+    "Pods",
+    "Carthage",
+    "site-packages",
+    ".venv",
+    "venv",
+    ".bundle",
 ];
 
 /// Shorten a string to at most `limit` bytes without splitting a character.
@@ -967,6 +1041,26 @@ pub struct Matches {
     /// short of the tree reports no matches for a needle it never looked for, which reads exactly
     /// like the needle not being there.
     pub unvisited: bool,
+    /// Whether reading stopped because [`MAX_SEARCH_TIME`] ran out.
+    ///
+    /// Dangerous in the same way as `unvisited`, and for the same reason: what was not read
+    /// cannot have matched.
+    pub timed_out: bool,
+    /// How many files the `include` glob selected.
+    ///
+    /// The number that separates the two ways a search comes back empty. Zero means the glob
+    /// picked no files at all, so nothing was ever read and the result says nothing about
+    /// whether the needle is in the tree: a broken query, not evidence. Anything above zero
+    /// means files were read and the needle was not in them, which is evidence. Rendered as
+    /// one message, those two are indistinguishable, and a reader who cannot tell them apart
+    /// treats a typo as proof of absence.
+    pub considered: usize,
+    /// How many of the selected files were actually opened.
+    ///
+    /// Below `considered` when a cap or the clock stopped the read early. Reported so the
+    /// question "was this search complete?" has an answer in the result rather than in
+    /// another call.
+    pub searched: usize,
 }
 
 impl Workspace {
@@ -1017,7 +1111,15 @@ impl Workspace {
         let mut stopped_at = Vec::new();
         // Ignored here: what a listing left out is the entry it drops below, which the count
         // answers exactly.
-        let _ = self.walk_filtered(&root, glob.as_deref(), depth, &mut found, &mut stopped_at)?;
+        let patterns = glob.as_deref().map(crate::glob::expand);
+        let _ = self.walk_filtered(
+            &root,
+            patterns.as_deref(),
+            depth,
+            MAX_ENTRIES,
+            &mut found,
+            &mut stopped_at,
+        )?;
         found.sort();
         stopped_at.sort();
 
@@ -1029,9 +1131,12 @@ impl Workspace {
             found.iter().chain(stopped_at.iter()).map(String::as_str),
         )?;
 
-        // `walk` collects one entry past the cap so reaching it is detectable. Which
-        // entries survive is down to traversal order, so a truncated listing is a sample
-        // of the tree rather than its alphabetical head, hence saying so matters.
+        // `walk` collects one entry past the cap so reaching it is detectable. Which entries
+        // survive is down to traversal order, so a truncated listing is a sample of the tree
+        // rather than its alphabetical head, hence saying so matters. The order is at least
+        // the same order every time, which is the walk's doing rather than this sort's: what
+        // is sorted here is what a walk kept, and sorting after a cap cannot choose what it
+        // kept.
         let truncated = found.len() + stopped_at.len() > MAX_ENTRIES;
         found.truncate(MAX_ENTRIES);
         stopped_at.truncate(MAX_ENTRIES.saturating_sub(found.len()));
@@ -1052,24 +1157,32 @@ impl Workspace {
     /// like a file read. Matching is a plain substring test rather than a regex: a
     /// pattern is cheap to get wrong, and a catastrophically backtracking regex supplied
     /// through a turn would be a denial-of-service vector.
+    /// Find lines containing any of `patterns` in files beneath `directory`.
+    ///
+    /// More than one pattern because the alternative is more than one call. A search is a
+    /// round trip, and a round trip is the expensive part of a turn: the tool itself returns
+    /// in milliseconds while the model it answers takes seconds to ask again. Looking for
+    /// three spellings of the same identifier is one question, and it should cost one answer.
+    ///
+    /// Alternation rather than a regular expression, so this stays what it says it is: every
+    /// pattern is a literal, matched with `contains`, and a line matching any of them matches.
+    /// That keeps the property a regex engine would give up, work proportional to the input
+    /// with no pattern able to make the search expensive, while covering the case that
+    /// actually sends a model round the loop again.
     pub fn grep<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
-        pattern: &Labelled<String>,
+        patterns: &[Labelled<String>],
         directory: &Labelled<String>,
         include: Option<&Labelled<String>>,
+        case_sensitive: bool,
     ) -> Result<Labelled<Matches>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
-        policy.before_action("file_grep", "pattern", Role::Routing, pattern)?;
+        for pattern in patterns {
+            policy.before_action("file_grep", "pattern", Role::Routing, pattern)?;
+        }
         policy.before_action("file_grep", "directory", Role::Routing, directory)?;
 
-        let needle = pattern
-            .clone()
-            .into_trusted()
-            .map_err(|_| WorkspaceError::Invalid {
-                path: "<untrusted>".into(),
-                reason: "the pattern was not trusted",
-            })?;
         let relative = directory
             .clone()
             .into_trusted()
@@ -1078,10 +1191,35 @@ impl Workspace {
                 reason: "the directory was not trusted",
             })?;
 
-        if needle.is_empty() {
+        if patterns.is_empty() {
             return Err(WorkspaceError::Invalid {
                 path: relative,
-                reason: "the search pattern was empty",
+                reason: "no search pattern was given",
+            });
+        }
+
+        let mut needles = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            let needle = pattern
+                .clone()
+                .into_trusted()
+                .map_err(|_| WorkspaceError::Invalid {
+                    path: "<untrusted>".into(),
+                    reason: "the pattern was not trusted",
+                })?;
+            if needle.is_empty() {
+                return Err(WorkspaceError::Invalid {
+                    path: relative,
+                    reason: "the search pattern was empty",
+                });
+            }
+            // Folded once here rather than per line. `to_lowercase` is Unicode-aware and
+            // allocates, so doing it inside the match loop would put a per-line allocation on
+            // every file in the tree.
+            needles.push(if case_sensitive {
+                needle
+            } else {
+                needle.to_lowercase()
             });
         }
 
@@ -1108,9 +1246,18 @@ impl Workspace {
         // Whether every file was reached, which the count cannot answer: a tree of exactly the
         // cap fills `paths` without a single file being left out.
         let mut ignored = Vec::new();
-        let unvisited =
-            self.walk_filtered(&root, glob.as_deref(), None, &mut paths, &mut ignored)?;
+        // Expanded once for the whole walk, not once per path.
+        let expanded = glob.as_deref().map(crate::glob::expand);
+        let unvisited = self.walk_filtered(
+            &root,
+            expanded.as_deref(),
+            None,
+            self.search_files,
+            &mut paths,
+            &mut ignored,
+        )?;
         paths.sort();
+        let considered = paths.len();
 
         // Trusted only if every file the search reads is trusted.
         let label = policy.observe_paths(Capability::FileRead, paths.iter().map(String::as_str))?;
@@ -1118,8 +1265,17 @@ impl Workspace {
         // Collected one past the cap for the same reason as `walk`: reaching the limit has
         // to be distinguishable from happening to have exactly that many matches.
         let mut matches = Vec::new();
+        let mut searched = 0usize;
+        let mut timed_out = false;
+        let started = Instant::now();
         for path in paths {
             if matches.len() > MAX_MATCHES {
+                break;
+            }
+            // Checked per file rather than per line: the clock is here to bound a walk over a
+            // large tree, and a single file cannot be large enough to matter beside that.
+            if started.elapsed() >= MAX_SEARCH_TIME {
+                timed_out = true;
                 break;
             }
             let absolute = self.root.join(&path);
@@ -1128,11 +1284,20 @@ impl Workspace {
             let Ok(contents) = std::fs::read_to_string(&absolute) else {
                 continue;
             };
+            searched += 1;
             for (index, line) in contents.lines().enumerate() {
                 if matches.len() > MAX_MATCHES {
                     break;
                 }
-                if line.contains(&needle) {
+                let hit = if case_sensitive {
+                    needles.iter().any(|needle| line.contains(needle))
+                } else {
+                    // One allocation per line, and only on the case-insensitive path, which
+                    // is the one that asked for it.
+                    let folded = line.to_lowercase();
+                    needles.iter().any(|needle| folded.contains(needle))
+                };
+                if hit {
                     let mut text = line.to_string();
                     truncate_on_char_boundary(&mut text, MAX_MATCH_LINE);
                     matches.push(Match {
@@ -1152,6 +1317,9 @@ impl Workspace {
                 matches,
                 truncated,
                 unvisited,
+                timed_out,
+                considered,
+                searched,
             },
             label,
         ))
@@ -1159,17 +1327,18 @@ impl Workspace {
 
     /// Collect workspace-relative paths of regular files beneath `directory`.
     ///
-    /// Symlinks are not followed: a link pointing outside the workspace would otherwise
-    /// pull external files into a listing, which is the same escape `resolve` rejects
-    /// for a named path.
+    /// Symlinks are not followed, which is the same escape `resolve` rejects for a named path.
     ///
-    /// Stops once one entry *past* [`MAX_ENTRIES`] is collected. The extra entry is what
-    /// lets the caller distinguish a tree that exactly fills the cap from one that
-    /// overflows it, so truncation can be reported rather than guessed at.
-    /// `pattern`, when given, keeps only matching paths. The filter is applied before the
-    /// cap, so the cap bounds *matches* rather than files examined. Filtering afterwards
-    /// would make a narrow pattern return nothing in a large tree, which looks identical to
-    /// the file being absent.
+    /// Stops once one entry *past* `limit` is collected. The extra entry is what lets the
+    /// caller distinguish a tree that exactly fills the cap from one that overflows it, so
+    /// truncation can be reported rather than guessed at.
+    ///
+    /// `patterns`, when given, keeps only paths matching at least one of them. They arrive
+    /// already expanded by [`crate::glob::expand`], because one walk applies the same pattern
+    /// to every path it sees and expanding per path would allocate once per file. The filter
+    /// is applied before the cap, so the cap bounds *matches* rather than files examined.
+    /// Filtering afterwards would make a narrow pattern return nothing in a large tree, which
+    /// looks identical to the file being absent.
     ///
     /// Answers whether it stopped at the cap with entries still unvisited, which the length of
     /// `out` cannot: a directory holding exactly one past the cap fills it without anything
@@ -1177,13 +1346,23 @@ impl Workspace {
     ///
     /// `remaining`, when given, is how many more levels may be descended. A directory at the
     /// boundary is put in `stopped_at` instead of being walked, so the caller can say the tree
-    /// continues there. The filter does not apply to those: `pattern` narrows which files are
+    /// continues there. The filter does not apply to those: `patterns` narrows which files are
     /// reported, and the shape of the tree is not a file.
+    ///
+    /// Entries are sorted within each directory, and a directory's own files are taken before
+    /// any of its subdirectories are descended into. Neither is cosmetic. `read_dir` order is
+    /// the filesystem's, so a walk that stopped at a cap used to keep an arbitrary subset and
+    /// the same search could answer differently on two machines. Sorting makes the sample
+    /// reproducible, and taking a directory's files first means every directory the walk
+    /// reaches contributes its own contents before the walk disappears into the first subtree
+    /// under it. A partial answer cannot be helped once the cap is reached. Which part it
+    /// is can.
     fn walk_filtered(
         &self,
         directory: &Path,
-        pattern: Option<&str>,
+        patterns: Option<&[String]>,
         remaining: Option<usize>,
+        limit: usize,
         out: &mut Vec<String>,
         stopped_at: &mut Vec<String>,
     ) -> Result<bool, WorkspaceError> {
@@ -1192,49 +1371,64 @@ impl Workspace {
             detail: e.to_string(),
         })?;
 
+        // Collected before anything is reported so the two passes below can be ordered
+        // independently of how the filesystem happened to hand them over.
+        let mut files = Vec::new();
+        let mut directories = Vec::new();
         for entry in entries.flatten() {
-            if out.len() + stopped_at.len() > MAX_ENTRIES {
-                return Ok(true);
-            }
-            let path = entry.path();
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
-
+            // A link pointing outside the workspace would otherwise pull external files
+            // into a listing.
             if kind.is_symlink() {
                 continue;
             }
             if kind.is_dir() {
-                // Version control and build output would dominate a listing without
-                // adding anything a task needs.
+                // Version control, build output and vendored dependencies would dominate a
+                // listing without adding anything a task needs.
                 let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if IGNORED_DIRECTORIES.contains(&name.as_ref()) {
+                if IGNORED_DIRECTORIES.contains(&name.to_string_lossy().as_ref()) {
                     continue;
                 }
-                if remaining.is_some_and(|left| left <= 1) {
-                    stopped_at.push(self.relative_display(&path));
-                    continue;
-                }
-                // Propagated rather than left to the next iteration's check, which a directory
-                // with nothing after it never reaches.
-                if self.walk_filtered(
-                    &path,
-                    pattern,
-                    remaining.map(|left| left - 1),
-                    out,
-                    stopped_at,
-                )? {
-                    return Ok(true);
-                }
+                directories.push(entry.path());
+            } else if kind.is_file() {
+                files.push(entry.path());
+            }
+        }
+        files.sort();
+        directories.sort();
+
+        for path in files {
+            if out.len() + stopped_at.len() > limit {
+                return Ok(true);
+            }
+            let relative = self.relative_display(&path);
+            match patterns {
+                Some(patterns) if !crate::glob::matches_any(patterns, &relative) => continue,
+                _ => out.push(relative),
+            }
+        }
+
+        for path in directories {
+            if out.len() + stopped_at.len() > limit {
+                return Ok(true);
+            }
+            if remaining.is_some_and(|left| left <= 1) {
+                stopped_at.push(self.relative_display(&path));
                 continue;
             }
-            if kind.is_file() {
-                let relative = self.relative_display(&path);
-                match pattern {
-                    Some(pattern) if !crate::glob::matches(pattern, &relative) => continue,
-                    _ => out.push(relative),
-                }
+            // Propagated rather than left to the next iteration's check, which a directory
+            // with nothing after it never reaches.
+            if self.walk_filtered(
+                &path,
+                patterns,
+                remaining.map(|left| left - 1),
+                limit,
+                out,
+                stopped_at,
+            )? {
+                return Ok(true);
             }
         }
         Ok(false)

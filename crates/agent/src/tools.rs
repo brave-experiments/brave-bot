@@ -235,13 +235,21 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
         ),
         Tool::function(
             "search",
-            "Find a literal substring in workspace files. Returns matching lines.",
+            "Find literal substrings in workspace files. Returns matching lines. Give every \
+             spelling you would otherwise search for one at a time: a list of patterns costs \
+             one call and matches a line holding any of them.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
-                        "type": "string",
-                        "description": "Literal text to find. Not a regular expression."
+                        "description": "Literal text to find. Not a regular expression. May be \
+                                        a list, in which case a line matches if it holds any \
+                                        of them: prefer one call with every spelling you want \
+                                        over one call each.",
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}}
+                        ]
                     },
                     "directory": {
                         "type": "string",
@@ -250,8 +258,14 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     "include": {
                         "type": "string",
                         "description": "Optional glob limiting which files are searched, \
-                                        e.g. \"*.rs\". Supports *, ? and **; brace groups \
-                                        are not supported."
+                                        e.g. \"*.rs\" or \"**/*.{cc,h,mm}\". Supports *, ?, \
+                                        ** and brace groups. Character classes and extended \
+                                        globs are not supported."
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "Whether case matters. Defaults to true. Set false \
+                                        rather than shortening the pattern to dodge a capital."
                     }
                 },
                 "required": ["pattern"]
@@ -959,8 +973,9 @@ fn target_of<S: Sink>(
             key
         };
 
-        match argument(arguments, key) {
-            Some(value) => {
+        match target_text(arguments, key) {
+            Some(text) => {
+                let value = Labelled::new(text, bravebot_core::label::Label::untrusted_public());
                 let proof = policy.authorise_display_release("what a tool is working on");
                 value.declassify(&proof)
             }
@@ -998,10 +1013,8 @@ pub fn describe_stored_call(tool: &str, arguments: &str) -> String {
         names.join(", ")
     } else {
         target_key(tool)
-            .and_then(|key| parsed.get(key))
-            .and_then(Value::as_str)
+            .and_then(|key| target_text(&parsed, key))
             .unwrap_or_default()
-            .to_string()
     };
 
     Activity::running(crate::report::verb_for(tool), target).line()
@@ -1231,6 +1244,22 @@ fn confirmed(text: impl Into<String>, note: impl Into<String>) -> Produced {
 }
 
 /// Extract a string argument the model supplied, labelled untrusted because it is.
+/// A target argument as one line, whether it was given as a string or a list.
+///
+/// `search` takes either, and a call that named three patterns must not announce itself with a
+/// blank where the subject goes. Joining is enough: this reaches a transcript line and a
+/// progress line, and nothing compares it or routes on it.
+fn target_text(arguments: &Value, key: &str) -> Option<String> {
+    match arguments.get(key)? {
+        Value::String(one) => Some(one.clone()),
+        Value::Array(many) => {
+            let parts: Vec<&str> = many.iter().filter_map(Value::as_str).collect();
+            (!parts.is_empty()).then(|| parts.join(", "))
+        }
+        _ => None,
+    }
+}
+
 fn argument(arguments: &Value, key: &str) -> Option<Labelled<String>> {
     let raw = arguments.get(key)?.as_str()?.to_string();
     Some(Labelled::new(
@@ -3036,14 +3065,83 @@ fn reads_as_a_regex(pattern: &str) -> bool {
         || pattern.ends_with('$')
 }
 
+/// Whether an `include` glob leans on syntax the matcher does not have.
+///
+/// The sibling of [`reads_as_a_regex`], and it exists for a worse failure. A pattern the
+/// matcher cannot read selects no files, and a search over no files reports no matches, which
+/// is the same sentence a search that read the whole tree and found nothing prints. A real
+/// turn took that for proof and answered the question wrong: the glob it wanted was
+/// `**/*.{cc,h,mm}`, brace groups were not supported at the time, and it retreated to
+/// `**/*.cc`, dropping the two extensions the answer was actually in.
+///
+/// Braces are supported now. This is for what is still missing, and for the next thing to be
+/// added: the point is that an unreadable pattern must never come back looking like a fact
+/// about the tree.
+fn reads_as_an_unsupported_glob(pattern: &str) -> Option<&'static str> {
+    // Extended globs. Checked before the bracket test, which their contents would otherwise
+    // trip with a less useful message.
+    for tell in ["?(", "*(", "+(", "@(", "!("] {
+        if pattern.contains(tell) {
+            return Some(
+                "extended globs like !(…) and +(…) are not supported; name the files with * \
+                 and ** instead",
+            );
+        }
+    }
+    if pattern.starts_with('!') {
+        return Some(
+            "a leading ! does not negate a pattern here; search without an include instead",
+        );
+    }
+    // A character class. Both halves are required, in order, so a filename holding a stray
+    // bracket is not lectured at.
+    if let Some(open) = pattern.find('[')
+        && pattern[open..].contains(']')
+    {
+        return Some(
+            "character classes like [abc] are not supported; write the alternatives as a \
+             brace group, e.g. {a,b,c}",
+        );
+    }
+    None
+}
+
+/// The patterns a search was asked for.
+///
+/// One string or a list of them, because the model writes both and the difference is not
+/// worth a failed call. A list entry that is not a string is dropped here and the emptiness
+/// is refused below, which is the same shape `references_in` uses.
+fn patterns_in(arguments: &Value) -> Vec<Labelled<String>> {
+    let label = bravebot_core::label::Label::untrusted_public();
+    match arguments.get("pattern") {
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|p| Labelled::new(p.to_string(), label))
+            .collect(),
+        Some(Value::String(one)) => vec![Labelled::new(one.clone(), label)],
+        _ => Vec::new(),
+    }
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     arguments: &Value,
 ) -> Produced {
-    let Some(pattern) = argument(arguments, "pattern") else {
-        return problem("error: 'pattern' is required and must be a string");
-    };
+    let proposed_patterns = patterns_in(arguments);
+    if proposed_patterns.is_empty() {
+        return problem("error: 'pattern' is required and must be a string or a list of strings");
+    }
+
+    let mut patterns = Vec::with_capacity(proposed_patterns.len());
+    for proposed in &proposed_patterns {
+        match policy.promote_confined_read("search", "pattern", proposed) {
+            Ok(p) => patterns.push(p),
+            Err(denial) => return problem(format!("refused: {denial}")),
+        }
+    }
+
     let proposed_dir = argument(arguments, "directory").unwrap_or_else(|| {
         Labelled::new(
             ".".to_string(),
@@ -3051,10 +3149,6 @@ fn search<S: Sink>(
         )
     });
 
-    let pattern = match policy.promote_confined_read("search", "pattern", &pattern) {
-        Ok(p) => p,
-        Err(denial) => return problem(format!("refused: {denial}")),
-    };
     let directory = match policy.promote_confined_read("search", "directory", &proposed_dir) {
         Ok(d) => d,
         Err(denial) => return problem(format!("refused: {denial}")),
@@ -3077,34 +3171,79 @@ fn search<S: Sink>(
         None => None,
     };
 
+    // Case sensitivity is a property of the call, not of anything read, so it is taken from
+    // the arguments directly. Absent means sensitive: a search that quietly widened itself
+    // would report matches the caller cannot see the reason for.
+    let case_sensitive = arguments
+        .get("case_sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
     let (proposed_where, _) = proposed_dir.into_parts_for_decoding();
 
-    match workspace.grep(policy, &pattern, &directory, include.as_ref()) {
+    match workspace.grep(
+        policy,
+        &patterns,
+        &directory,
+        include.as_ref(),
+        case_sensitive,
+    ) {
         Ok(found) => {
             let note = note_for(policy, "search", &found, |found| {
-                tally(found.matches.len(), "match", "matches")
+                format!(
+                    "{} in {}",
+                    tally(found.matches.len(), "match", "matches"),
+                    tally(found.searched, "file", "files")
+                )
             });
 
             // Either cap leaves the answer partial, and the distinction between them matters to
             // whoever reads the body. To the turn it does not: a sample is a sample.
             let incomplete = {
-                let shaped = policy
-                    .render_in_place("search", &found, |found| found.truncated || found.unvisited);
+                let shaped = policy.render_in_place("search", &found, |found| {
+                    found.truncated || found.unvisited || found.timed_out
+                });
                 let proof = policy.authorise_display_release("whether a search hit a cap");
                 shaped.declassify(&proof)
             };
-            // Asked of the pattern alone, and only where the promote gate left it trusted, so
-            // this reads no content and needs no witness. Nothing here looks at the result:
+            // Asked of the patterns alone, and only where the promote gate left them trusted,
+            // so this reads no content and needs no witness. Nothing here looks at the result:
             // whether to say it is decided below, inside the render gate, from whether anything
             // was found.
-            let looks_like_a_regex = pattern
-                .clone()
-                .into_trusted()
-                .is_ok_and(|p| reads_as_a_regex(&p));
+            let looks_like_a_regex = patterns.iter().any(|pattern| {
+                pattern
+                    .clone()
+                    .into_trusted()
+                    .is_ok_and(|p| reads_as_a_regex(&p))
+            });
+            let bad_glob = include.as_ref().and_then(|include| {
+                include
+                    .clone()
+                    .into_trusted()
+                    .ok()
+                    .and_then(|g| reads_as_an_unsupported_glob(&g))
+            });
+            let had_include = include.is_some();
 
             let rendered = policy.render_in_place("search", &found, |found| {
                 let mut body = if found.matches.is_empty() {
-                    let mut empty = "(no matches)".to_string();
+                    // The two ways a search comes back empty, which used to print the same
+                    // sentence. Files were read and the needle was not in them, which is an
+                    // answer. Or the include glob selected nothing, so nothing was read and
+                    // the tree was never asked. Told apart here because a reader who cannot
+                    // tell them apart takes a broken query for proof of absence.
+                    let mut empty = if had_include && found.considered == 0 {
+                        let mut text = "(the include glob matched no files, so nothing was \
+                                        searched; this says nothing about whether the pattern \
+                                        is in the tree)"
+                            .to_string();
+                        if let Some(advice) = bad_glob {
+                            text.push_str(&format!("\n\n({advice})"));
+                        }
+                        text
+                    } else {
+                        "(no matches)".to_string()
+                    };
                     // A literal search for a pattern written as a regular expression finds
                     // nothing and reads as proof the string is absent. What it actually proves is
                     // that nothing in the tree contains ".*", and a planner with no way to tell
@@ -3131,10 +3270,20 @@ fn search<S: Sink>(
                 // it reached the file holding the needle reports nothing, and nothing reads as an
                 // answer: the model concludes the string does not occur in the tree.
                 if found.unvisited {
+                    // The count the walk actually stopped at, not the constant it usually is.
+                    // A host may have lowered the cap, and a notice naming a number the search
+                    // did not reach is worse than one naming none.
                     body.push_str(&format!(
                         "\n\n(this search stopped after {} files and did not reach the whole \
                          tree; search a subdirectory to cover the rest)",
-                        crate::workspace::MAX_ENTRIES
+                        found.considered
+                    ));
+                }
+                if found.timed_out {
+                    body.push_str(&format!(
+                        "\n\n(this search ran out of time after {} files and did not read the \
+                         rest; narrow it with a directory or an include glob)",
+                        found.searched
                     ));
                 }
                 if found.truncated {
@@ -3200,6 +3349,46 @@ mod tests {
             "who? me",
         ] {
             assert!(!reads_as_a_regex(pattern), "{pattern} was flagged");
+        }
+    }
+
+    /// A glob the matcher cannot read selects no files, and a search over no files reports no
+    /// matches, which is the sentence a search that read the whole tree and found nothing
+    /// prints. Saying which syntax was the problem is what keeps the two apart.
+    #[test]
+    fn a_glob_leaning_on_missing_syntax_is_named() {
+        for pattern in [
+            "src/[abc]*.rs",
+            "**/*.[ch]",
+            "!(vendor)/**",
+            "**/+(a|b).rs",
+            "!vendor/**",
+        ] {
+            assert!(
+                reads_as_an_unsupported_glob(pattern).is_some(),
+                "{pattern} was not recognised"
+            );
+        }
+    }
+
+    /// The advice is free on a result that found nothing anyway, but a pattern that works must
+    /// never be lectured at. Brace groups are supported, so they are the first thing that must
+    /// not fire here.
+    #[test]
+    fn a_glob_the_matcher_can_read_is_left_alone() {
+        for pattern in [
+            "*.rs",
+            "**/*.{cc,h,mm}",
+            "{src,tests}/**/*.rs",
+            "crates/**/tools.rs",
+            "a?.rs",
+            // A lone bracket in a filename is not a character class.
+            "notes[draft.md",
+        ] {
+            assert!(
+                reads_as_an_unsupported_glob(pattern).is_none(),
+                "{pattern} was flagged"
+            );
         }
     }
 

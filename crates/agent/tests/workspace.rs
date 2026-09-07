@@ -409,9 +409,10 @@ fn grep_finds_matches_with_line_numbers() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep succeeds");
 
@@ -440,9 +441,10 @@ fn grep_refuses_an_untrusted_pattern() {
     let error = workspace
         .grep(
             &mut policy,
-            &injected,
+            std::slice::from_ref(&injected),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect_err("an untrusted pattern must be refused");
     assert!(error.to_string().contains("injection blocked"));
@@ -465,9 +467,10 @@ fn grep_refuses_a_directory_outside_the_workspace() {
     let error = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("x".to_string()),
+            std::slice::from_ref(&Labelled::trusted("x".to_string())),
             &Labelled::trusted("..".to_string()),
             None,
+            true,
         )
         .expect_err("traversal must be refused");
     assert!(matches!(error, WorkspaceError::Escapes { .. }));
@@ -493,9 +496,10 @@ fn grep_skips_unreadable_files() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep succeeds despite the binary file");
     assert_eq!(found.label(), Label::untrusted_private());
@@ -518,9 +522,10 @@ fn grep_refuses_an_empty_pattern() {
     let error = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted(String::new()),
+            std::slice::from_ref(&Labelled::trusted(String::new())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect_err("an empty pattern is refused");
     assert!(matches!(error, WorkspaceError::Invalid { .. }));
@@ -681,14 +686,21 @@ fn a_listing_past_the_cap_reports_truncation() {
 
 /// A search that stopped before it had opened every file has not answered the question it was
 /// asked, and the empty result is the dangerous one: nothing found reads as nothing there.
+///
+/// The cap is lowered rather than the tree being grown to meet it. The real one is a hundred
+/// thousand files, which is the point of it: a search should reach the end of any tree a
+/// person actually works in. Writing that many to prove the notice fires would trade a
+/// test that runs in milliseconds for one that runs for minutes.
 #[test]
 fn a_search_that_could_not_reach_every_file_says_so() {
     let scratch = Scratch::new("search-unvisited");
     // One past the cap, so the walk returns with entries it never looked at.
-    for n in 0..2_002 {
+    for n in 0..12 {
         std::fs::write(scratch.path.join(format!("f{n:05}.txt")), "filler").unwrap();
     }
-    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let workspace = Workspace::new(&scratch.path)
+        .expect("workspace")
+        .with_search_limit(10);
 
     let mut sink = RecordingSink::new();
     let mut policy = Policy::begin(
@@ -702,9 +714,10 @@ fn a_search_that_could_not_reach_every_file_says_so() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -722,10 +735,12 @@ fn a_search_that_could_not_reach_every_file_says_so() {
 #[test]
 fn a_search_that_reached_every_file_makes_no_claim() {
     let scratch = Scratch::new("search-visited-all");
-    for n in 0..2_001 {
+    for n in 0..11 {
         std::fs::write(scratch.path.join(format!("f{n:05}.txt")), "filler").unwrap();
     }
-    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let workspace = Workspace::new(&scratch.path)
+        .expect("workspace")
+        .with_search_limit(10);
 
     let mut sink = RecordingSink::new();
     let mut policy = Policy::begin(
@@ -739,9 +754,10 @@ fn a_search_that_reached_every_file_makes_no_claim() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -803,9 +819,10 @@ fn a_search_past_the_cap_reports_truncation() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -833,9 +850,10 @@ fn a_search_within_the_cap_reports_no_truncation() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -869,9 +887,10 @@ fn a_long_match_line_is_truncated_without_panicking() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             None,
+            true,
         )
         .expect("grep must not panic on multi-byte text");
     let proof = policy.authorise_content_release("test", "matches");
@@ -1269,9 +1288,10 @@ fn a_search_can_be_limited_to_matching_files() {
     let found = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             Some(&Labelled::trusted("*.rs".to_string())),
+            true,
         )
         .expect("grep succeeds");
     let proof = policy.authorise_content_release("test", "matches");
@@ -1300,9 +1320,10 @@ fn an_untrusted_include_pattern_is_refused() {
     let error = workspace
         .grep(
             &mut policy,
-            &Labelled::trusted("needle".to_string()),
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
             &Labelled::trusted(".".to_string()),
             Some(&injected),
+            true,
         )
         .expect_err("an untrusted include must be refused");
     assert!(matches!(error, WorkspaceError::Denied(_)));
@@ -2297,5 +2318,234 @@ fn a_listing_with_no_depth_walks_the_whole_tree() {
     assert!(
         listing.directories.is_empty(),
         "an unbounded walk reported a boundary it never stopped at"
+    );
+}
+
+/// Helper for the searches below, which all want the same policy and the same declassify.
+fn search_in(
+    root: &std::path::Path,
+    patterns: &[&str],
+    include: Option<&str>,
+    case_sensitive: bool,
+) -> bravebot_agent::workspace::Matches {
+    let workspace = Workspace::new(root).expect("workspace");
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let needles: Vec<Labelled<String>> = patterns
+        .iter()
+        .map(|p| Labelled::trusted((*p).to_string()))
+        .collect();
+    let found = workspace
+        .grep(
+            &mut policy,
+            &needles,
+            &Labelled::trusted(".".to_string()),
+            include.map(|g| Labelled::trusted(g.to_string())).as_ref(),
+            case_sensitive,
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    found.declassify(&proof)
+}
+
+/// The distinction the whole `considered` field exists for. A search whose include glob
+/// selected nothing read no files, so it has learned nothing about the tree, and reported as
+/// "no matches" it reads as proof the pattern is absent. A real turn took that reading and
+/// answered a question wrong on the strength of it.
+#[test]
+fn a_search_says_when_its_include_selected_no_files() {
+    let scratch = Scratch::new("grep-include-empty");
+    std::fs::write(scratch.path.join("a.rs"), "needle in rust\n").unwrap();
+
+    let found = search_in(&scratch.path, &["needle"], Some("*.py"), true);
+    assert!(found.matches.is_empty());
+    assert_eq!(
+        found.considered, 0,
+        "no file matched the glob and the count says otherwise"
+    );
+    assert_eq!(found.searched, 0);
+
+    // The other empty: files were read and the needle was not in them. Same rendering before
+    // this change, and it must not be now.
+    let found = search_in(&scratch.path, &["haystack"], Some("*.rs"), true);
+    assert!(found.matches.is_empty());
+    assert_eq!(
+        found.considered, 1,
+        "the file was read and the count must say so"
+    );
+    assert_eq!(found.searched, 1);
+}
+
+/// Brace groups are the spelling everybody writes. Matched literally they select nothing,
+/// which is the failure above wearing a different hat.
+#[test]
+fn an_include_may_use_a_brace_group() {
+    let scratch = Scratch::new("grep-include-braces");
+    std::fs::write(scratch.path.join("a.cc"), "needle\n").unwrap();
+    std::fs::write(scratch.path.join("b.h"), "needle\n").unwrap();
+    std::fs::write(scratch.path.join("c.py"), "needle\n").unwrap();
+
+    let found = search_in(&scratch.path, &["needle"], Some("*.{cc,h}"), true);
+    assert_eq!(
+        found.matches.len(),
+        2,
+        "the brace group selected the wrong set"
+    );
+    assert_eq!(found.considered, 2);
+}
+
+/// One question, one answer. Three spellings of an identifier used to be three round trips,
+/// and a round trip is the expensive part of a turn.
+#[test]
+fn a_search_takes_more_than_one_pattern() {
+    let scratch = Scratch::new("grep-alternation");
+    std::fs::write(scratch.path.join("a.rs"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+
+    let found = search_in(&scratch.path, &["alpha", "gamma"], None, true);
+    assert_eq!(found.matches.len(), 2);
+    assert_eq!(found.matches[0].text, "alpha");
+    assert_eq!(found.matches[1].text, "gamma");
+
+    // A line holding two of them is one match, not two: the line is what is reported.
+    std::fs::write(scratch.path.join("b.rs"), "alpha and gamma\n").unwrap();
+    let found = search_in(&scratch.path, &["alpha", "gamma"], Some("b.rs"), true);
+    assert_eq!(found.matches.len(), 1);
+}
+
+/// The alternative was mangling the pattern to dodge a capital, which a real turn did:
+/// it searched for "olicy" rather than "Policy".
+#[test]
+fn a_search_can_ignore_case() {
+    let scratch = Scratch::new("grep-case");
+    std::fs::write(scratch.path.join("a.rs"), "EmailAliasesEnabled\n").unwrap();
+
+    assert!(
+        search_in(&scratch.path, &["emailaliases"], None, true)
+            .matches
+            .is_empty()
+    );
+
+    let found = search_in(&scratch.path, &["emailaliases"], None, false);
+    assert_eq!(found.matches.len(), 1);
+    // The line is reported as it is written, not as it was folded to match.
+    assert_eq!(found.matches[0].text, "EmailAliasesEnabled");
+}
+
+/// Vendored dependencies are where a search's budget used to go. A tree that mirrors its
+/// dependencies holds far more of them than of its own code, so a walk that counts them
+/// reaches the cap without ever reaching the project.
+#[test]
+fn a_search_skips_vendored_dependencies() {
+    let scratch = Scratch::new("grep-vendored");
+    std::fs::write(scratch.path.join("mine.rs"), "needle\n").unwrap();
+    for noise in ["vendor", "third_party", "node_modules", "Pods"] {
+        let dir = scratch.path.join(noise);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("theirs.rs"), "needle\n").unwrap();
+    }
+
+    let found = search_in(&scratch.path, &["needle"], None, true);
+    assert_eq!(
+        found.matches.len(),
+        1,
+        "a vendored directory was walked: {:?}",
+        found.matches
+    );
+    assert_eq!(found.matches[0].path, "mine.rs");
+}
+
+/// `read_dir` order is the filesystem's, so a walk that stops at a cap used to keep an
+/// arbitrary subset and the same search could answer differently on two machines. What is
+/// kept is still partial; it now has to be the same partial answer every time.
+#[test]
+fn a_capped_search_keeps_the_same_files_every_time() {
+    let scratch = Scratch::new("grep-deterministic");
+    for n in 0..40 {
+        std::fs::write(scratch.path.join(format!("f{n:03}.txt")), "needle\n").unwrap();
+    }
+
+    let workspace = Workspace::new(&scratch.path)
+        .expect("workspace")
+        .with_search_limit(10);
+
+    let paths_of = || {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing(),
+            ReleasePlan::new(),
+            all_file_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+        let found = workspace
+            .grep(
+                &mut policy,
+                std::slice::from_ref(&Labelled::trusted("needle".to_string())),
+                &Labelled::trusted(".".to_string()),
+                None,
+                true,
+            )
+            .expect("grep succeeds");
+        let proof = policy.authorise_content_release("test", "matches");
+        let found = found.declassify(&proof);
+        found
+            .matches
+            .iter()
+            .map(|m| m.path.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let first = paths_of();
+    assert_eq!(first, paths_of(), "two identical searches disagreed");
+    // Sorted, so the sample is the start of the tree rather than a scattering through it.
+    assert_eq!(first.first().map(String::as_str), Some("f000.txt"));
+}
+
+/// A directory's own files are taken before the walk disappears into the first subtree under
+/// it, so a cap spends its budget on the level somebody is looking at.
+#[test]
+fn a_capped_search_prefers_a_directorys_own_files() {
+    let scratch = Scratch::new("grep-shallow-first");
+    let deep = scratch.path.join("aaa_first_alphabetically");
+    std::fs::create_dir_all(&deep).unwrap();
+    for n in 0..20 {
+        std::fs::write(deep.join(format!("deep{n:03}.txt")), "needle\n").unwrap();
+    }
+    std::fs::write(scratch.path.join("zzz_shallow.txt"), "needle\n").unwrap();
+
+    let workspace = Workspace::new(&scratch.path)
+        .expect("workspace")
+        .with_search_limit(3);
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+    let found = workspace
+        .grep(
+            &mut policy,
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
+            &Labelled::trusted(".".to_string()),
+            None,
+            true,
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert!(
+        found.matches.iter().any(|m| m.path == "zzz_shallow.txt"),
+        "the walk went deep before taking the file beside it: {:?}",
+        found.matches
     );
 }
