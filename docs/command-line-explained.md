@@ -24,29 +24,6 @@ The rest of this document is why that sentence is not as obvious as it sounds.
 
 ---
 
-## What is built, and what is only written down
-
-This document describes the whole change. The tree has the front of it.
-
-| | Where it stands |
-|---|---|
-| The grammar: reading a line, refusing everything outside a closed set | `crates/agent/src/cmdline.rs` |
-| Expansion: braces, a leading `~`, and patterns against the tree, bounded | `crates/agent/src/cmdline.rs` |
-| The plan: resolved binaries, the write set, the read set, the branches | written down |
-| A prompt that shows the plan rather than the line | written down |
-| Permission rules matched against compiled stages | written down |
-| Output straight back as text, capped, with a per-call deadline | written down |
-| Running in the background and being woken when it exits | written down |
-| The read set proving a label, and the prompt that proof removes | written down |
-| A tool description that tells the planner to filter at the source | written down |
-
-Nothing calls the parser yet: `run` still takes an array of argv stages, and everything in
-§§9 to 12 below is the spec's account of work that has not landed. A clause in
-`specs/tools/command-line.md` says `verified-by: none` until the commit that builds it, and that
-commit is where it gains its tests.
-
----
-
 ## 1. The thing everything else is built around
 
 Brave-bot is an AI agent. You give it a task, it reads files, runs commands, and writes code.
