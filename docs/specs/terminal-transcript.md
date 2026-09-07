@@ -3,6 +3,7 @@ id: VIEW
 title: The transcript
 status: normative
 governs:
+  - crates/tui/src/reasoning.rs
   - crates/tui/src/render.rs
   - crates/tui/src/state.rs
   - crates/tui/src/theme.rs
@@ -371,3 +372,42 @@ guessed wrong about costs one `/theme` and it stays fixed.
 `verified-by: bravebot_tui::theme::a_pinned_half_keeps_its_own_palette_whichever_background_was_sensed`
 `verified-by: bravebot_tui::theme::the_pinned_half_in_use_is_listed`
 `verified-by: bravebot_tui::theme::the_list_is_brave_and_eighteen_named_schemes`
+
+
+<a id="VIEW-18"></a>
+### VIEW-18: a model's own working is not drawn as its answer
+
+Where a reply opens with a reasoning block and closes it before answering, the block is not
+drawn, arriving or arrived, and what reaches the transcript is what follows it. Only a block the
+reply opens with counts: a reply that mentions the tags further down keeps every word. A block
+opened and never closed is drawn whole once the reply is finished, and drawn as nothing while it
+is still being written, as is a part-written opening.
+
+**Why.** A model with a channel of its own for its working keeps it out of the reply, and this
+never arises. A model without one writes the same words into the reply instead, where they land
+on top of the answer: a paragraph nobody asked for above every answer, kept in the session record
+and drawn again on every resume.
+
+What an unclosed block means is the whole of the difference between the two cases. Part way
+through a reply it means the model is still thinking, and drawing a thought only to take it back
+when the close arrives is a flicker on every turn such a model takes. At the end of a reply it
+means the words ran out mid-thought, and a truncated thought on the screen says more than a blank
+where the answer should be.
+
+Taking it off is a decision read out of the reply, so it belongs to the side that draws rather
+than to the turn. The driver hands over every byte without looking at it, because in a session
+that has observed untrusted content those are untrusted bytes and it may not branch on them.
+
+`verified-by: bravebot_tui::reasoning::a_leading_reasoning_block_is_not_drawn`
+`verified-by: bravebot_tui::reasoning::every_spelling_of_the_block_is_recognised`
+`verified-by: bravebot_tui::reasoning::a_reply_that_mentions_a_tag_keeps_every_word`
+`verified-by: bravebot_tui::reasoning::a_thought_that_never_closed_is_drawn_whole`
+`verified-by: bravebot_tui::reasoning::a_thought_still_being_written_draws_nothing`
+`verified-by: bravebot_tui::reasoning::the_answer_is_drawn_as_soon_as_the_thought_closes`
+`verified-by: bravebot_tui::reasoning::a_part_written_opening_is_held_back`
+`verified-by: bravebot_tui::reasoning::text_that_cannot_become_a_tag_is_drawn_at_once`
+`verified-by: bravebot_tui::render::a_thought_the_model_wrote_into_the_reply_is_not_drawn`
+`verified-by: bravebot_tui::state::a_thought_arriving_is_not_drawn_at_the_tail`
+`verified-by: bravebot_tui::state::a_finished_reply_keeps_the_answer_and_not_the_thought`
+`verified-by: bravebot_tui::state::a_round_that_thought_before_speaking_records_only_what_it_said`
+`verified-by: bravebot_tui::state::a_round_that_only_thought_leaves_no_entry`

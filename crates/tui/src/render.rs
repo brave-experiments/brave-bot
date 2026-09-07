@@ -864,8 +864,8 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
     // the session rather than from the transcript because it is not an entry yet: when the round
     // ends the same words arrive as one, in this same place and this same shape, and the tail is
     // dropped in the same breath. Nothing on the screen moves at the handover.
-    if !session.streaming.is_empty() {
-        lines.extend(assistant_lines(&session.streaming, width));
+    if !session.reply_so_far().is_empty() {
+        lines.extend(assistant_lines(session.reply_so_far(), width));
         lines.push(Line::raw(""));
     }
 
@@ -2597,6 +2597,27 @@ mod tests {
             arrived.narrate("# Heading\n\nSome **bold** prose.");
 
             assert_eq!(rendered(&arriving), rendered(&arrived));
+        }
+
+        /// A model with no channel of its own for its working opens the reply with it. Drawn,
+        /// the answer sits under a paragraph nobody asked for, and the tail spends the whole
+        /// round showing a model talking to itself.
+        #[test]
+        fn a_thought_the_model_wrote_into_the_reply_is_not_drawn() {
+            let mut arriving = working();
+            arriving.streaming("<think>they want to know how drawing works");
+            assert!(
+                !rendered(&arriving).contains("they want to know"),
+                "the working was drawn while it was being written"
+            );
+
+            arriving.streaming("</think>Looking at the render code");
+            let output = rendered(&arriving);
+            assert!(output.contains("Looking at the render code"));
+            assert!(
+                !output.contains("they want to know"),
+                "the working was drawn"
+            );
         }
 
         #[test]

@@ -583,7 +583,10 @@ pub struct Session {
     /// tail and replaced by the entry the round produces. Keeping it apart is what makes that
     /// handover free of a duplicate, and it is why a session written to disk holds finished
     /// turns rather than a half-finished sentence.
-    pub streaming: String,
+    ///
+    /// Held as it arrived. What is drawn from it is [`Session::reply_so_far`], since a model
+    /// that has nowhere else to put its working writes it in here.
+    streaming: String,
     /// Answers the user has already given this session, keyed by the question.
     ///
     /// A repeated question is answered from here rather than put to them again, since a planner
@@ -1021,6 +1024,15 @@ impl Session {
         self.scroll = 0;
     }
 
+    /// The part of the reply taking shape that is meant for the person watching.
+    ///
+    /// Not the whole of what arrived. A model with no channel of its own for its working writes
+    /// it into the reply, and a person waiting on an answer is not waiting on that. See
+    /// [`crate::reasoning`].
+    pub fn reply_so_far(&self) -> &str {
+        crate::reasoning::spoken_so_far(&self.streaming)
+    }
+
     /// Record what the model said on its way to the next tool call.
     ///
     /// Empty text is dropped here rather than by the turn, which cannot look at it to decide.
@@ -1032,6 +1044,7 @@ impl Session {
         // draw them twice; and a round that said nothing has nothing to leave up either.
         self.streaming.clear();
         let text = text.into();
+        let text = crate::reasoning::spoken(&text);
         if text.trim().is_empty() {
             return;
         }
@@ -2504,8 +2517,9 @@ impl Session {
         // The list moves onto the entry rather than being dropped, so what the turn set out to do
         // stays in the scrollback next to the answer it produced.
         let todos = std::mem::take(&mut self.todos);
+        let reply = reply.into();
         self.transcript
-            .push(Entry::assistant(reply, trail).with_todos(todos));
+            .push(Entry::assistant(crate::reasoning::spoken(&reply), trail).with_todos(todos));
         self.status = Status::Idle;
         self.scroll = 0;
         self.finished = Some(Finished {
@@ -5260,6 +5274,61 @@ mod tests {
             s.streaming("half a thought");
             s.fail("error: something went wrong");
             assert!(s.streaming.is_empty(), "a failed turn left its tail up");
+        }
+
+        /// A model with nowhere else to put its working writes it into the reply and closes it
+        /// before answering. The tail is the same words as the entry that replaces it, so what
+        /// is held back from one is held back from the other.
+        #[test]
+        fn a_thought_arriving_is_not_drawn_at_the_tail() {
+            let mut s = working();
+            s.streaming("<think>they want the config path");
+            assert_eq!(
+                s.reply_so_far(),
+                "",
+                "the working was drawn as it was written"
+            );
+
+            s.streaming("</think>It is in ~/.bravebot.");
+            assert_eq!(s.reply_so_far(), "It is in ~/.bravebot.");
+        }
+
+        /// The answer is what the turn produced and the block above it is the model talking to
+        /// itself. Kept, it goes into the transcript, into the session record, and back onto the
+        /// screen every time that session is resumed.
+        #[test]
+        fn a_finished_reply_keeps_the_answer_and_not_the_thought() {
+            let mut s = working();
+            s.complete(
+                "<think>they want the config path</think>It is in ~/.bravebot.",
+                Vec::new(),
+                0,
+            );
+            assert_eq!(
+                s.transcript.last().expect("an entry").text,
+                "It is in ~/.bravebot."
+            );
+        }
+
+        /// And the same for what a round says on its way to the next call.
+        #[test]
+        fn a_round_that_thought_before_speaking_records_only_what_it_said() {
+            let mut s = working();
+            s.narrate("<think>read the config first</think>Let me look at the config.");
+            assert_eq!(
+                s.transcript.last().expect("an entry").text,
+                "Let me look at the config."
+            );
+        }
+
+        /// A round whose whole narration was a thought said nothing, and a blank entry among the
+        /// calls it made reads as a turn that lost its words.
+        #[test]
+        fn a_round_that_only_thought_leaves_no_entry() {
+            let mut s = working();
+            let before = s.transcript.len();
+            s.narrate("<think>nothing worth saying yet</think>");
+            assert_eq!(s.transcript.len(), before);
         }
 
         /// What a request that was thrown away had written is not part of the reply that
