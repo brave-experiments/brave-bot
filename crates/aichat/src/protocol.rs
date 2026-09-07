@@ -1004,6 +1004,26 @@ mod tests {
             assert!(usage.completion_tokens > 0);
         }
 
+        /// Several models sold through this protocol put their working in `reasoning_content`
+        /// beside the text rather than inside it. It is not the answer, nothing in this tree asks
+        /// for it, and a decoder that folded it into the reply would put a model's private
+        /// working on a person's screen and back into the next request as words it had spoken.
+        #[test]
+        fn reasoning_in_its_own_field_is_no_part_of_the_reply() {
+            let mut acc = StreamAccumulator::new();
+            acc.push(chunk(
+                r#"{"choices":[{"delta":{"reasoning_content":"the user wants a file"}}]}"#,
+            ));
+            acc.push(chunk(r#"{"choices":[{"delta":{"content":"Hello"}}]}"#));
+
+            assert_eq!(acc.content(), "Hello");
+            assert_eq!(
+                acc.output_tokens(),
+                1,
+                "a chunk carrying only reasoning counted as output written"
+            );
+        }
+
         #[test]
         fn output_tokens_climb_as_text_arrives() {
             let mut acc = StreamAccumulator::new();
@@ -1145,6 +1165,15 @@ mod tests {
         }"#;
         let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.first_content().as_deref(), Some("hi"));
+    }
+
+    /// The same field on a reply that was not streamed, and the same reason: what the model
+    /// answered is the text, and its working reached this process in a place of its own.
+    #[test]
+    fn a_reply_that_reasoned_in_its_own_field_answers_with_the_text_alone() {
+        let raw = r#"{"choices":[{"message":{"content":"Hello","reasoning_content":"the user wants a file"}}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.first_content().as_deref(), Some("Hello"));
     }
 
     #[test]
