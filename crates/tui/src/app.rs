@@ -1638,6 +1638,13 @@ fn event_loop(
             session.replay(&conversation, &record.title, &recalled);
             session.restore_spend(record.tokens, record.spend.clone());
             session.restore_timing(record.timing.clone());
+            if conversation.last_request_tokens() > 0 {
+                session.measured(
+                    conversation.last_request_tokens(),
+                    config.context_budget,
+                    config.budget_is_guessed(),
+                );
+            }
             // Said after the transcript, so it reads as a caveat on what was just shown: the work
             // it describes may not be in the tree the user is now looking at.
             if let Some(note) = crate::sessions::branch_note(
@@ -2382,6 +2389,7 @@ fn adopt_budget_for_current_model(session: &mut Session, config: &mut Config) {
     };
     if config.adopt_window(advertised_window(&models, session.model())) {
         session.note(t!(session_context_budget, budget = config.context_budget));
+        session.update_budget(config.context_budget, config.budget_is_guessed());
     }
     session.note_model_reads_effort(reads_effort(&models, session.model()));
 }
@@ -2433,6 +2441,7 @@ fn choose_model(
                 // a budget belongs to the model rather than to a turn.
                 if config.adopt_window(chosen.conversation_tokens) {
                     session.note(t!(session_context_budget, budget = config.context_budget));
+                    session.update_budget(config.context_budget, config.budget_is_guessed());
                 }
                 // Which service answers is said here as well as in the picker: the row that
                 // carried it is gone by the time the note is read, and the same slug reached
@@ -2778,7 +2787,7 @@ fn compact_animated(
     match &done {
         Ok(Some(summary)) => {
             session.end_aside(summary.usage.total());
-            session.measured(conversation.last_request_tokens(), config.context_budget);
+            session.compacted();
             session.note(t!(
                 compact_done,
                 summarised = summary.summarised,
@@ -3151,7 +3160,9 @@ fn run_turn_animated(
         fallback,
         fallback_programs,
         config.context_budget,
+        config.budget_is_guessed(),
         asked,
+        conversation.last_request_tokens(),
     );
     Ok((conversation, trust, programs, events))
 }
@@ -3231,7 +3242,9 @@ fn fold_outcome(
     fallback: TrustStore,
     fallback_programs: TrustedPrograms,
     budget: u64,
+    budget_is_guessed: bool,
     asked: Asked,
+    last_request_tokens: u64,
 ) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
@@ -3252,7 +3265,7 @@ fn fold_outcome(
             // What the turn's last request came to, against what it would be compacted at. Not
             // the same figure as the cost above: that adds every round together, this says how
             // full the context is now.
-            session.measured(outcome.context_tokens, budget);
+            session.measured(outcome.context_tokens, budget, budget_is_guessed);
 
             // What was asked for against what answered. The endpoint substitutes rather than
             // refusing: a premium model requested without a credential comes back as whatever the
@@ -3310,6 +3323,9 @@ fn fold_outcome(
             session.fail(t!(session_error, problem = error));
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;
+            }
+            if last_request_tokens > 0 {
+                session.measured(last_request_tokens, budget, budget_is_guessed);
             }
             (fallback, fallback_programs)
         }
@@ -7720,5 +7736,66 @@ mod tests {
             against_workspace(std::path::Path::new("/tmp/project"), "/opt/other"),
             "/opt/other"
         );
+    }
+
+    #[test]
+    fn a_failed_turn_measures_context_if_requests_were_sent() {
+        let mut session = Session::new("none");
+        let sink = Trail::new();
+        let fallback = TrustStore::new();
+        let fallback_programs = TrustedPrograms::new();
+        let asked = Asked {
+            name: "test-model".to_string(),
+            comparable: true,
+        };
+
+        fold_outcome(
+            &mut session,
+            Err(turn::TurnError::Precommit("failed".to_string())),
+            sink,
+            fallback,
+            fallback_programs,
+            100_000,
+            false,
+            asked,
+            45_000,
+        );
+
+        assert_eq!(
+            session.occupancy(),
+            crate::state::Occupancy::Measured {
+                used: 45_000,
+                budget: 100_000,
+                guessed: false,
+            }
+        );
+        assert_eq!(session.fullness(), Some(45));
+    }
+
+    #[test]
+    fn a_failed_turn_with_no_requests_sent_remains_unmeasured() {
+        let mut session = Session::new("none");
+        let sink = Trail::new();
+        let fallback = TrustStore::new();
+        let fallback_programs = TrustedPrograms::new();
+        let asked = Asked {
+            name: "test-model".to_string(),
+            comparable: true,
+        };
+
+        fold_outcome(
+            &mut session,
+            Err(turn::TurnError::Precommit("failed".to_string())),
+            sink,
+            fallback,
+            fallback_programs,
+            100_000,
+            false,
+            asked,
+            0,
+        );
+
+        assert_eq!(session.occupancy(), crate::state::Occupancy::Unmeasured);
+        assert_eq!(session.fullness(), None);
     }
 }
