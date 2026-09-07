@@ -240,11 +240,24 @@ impl Step {
     /// The resolved binary rather than the name, because that is what will run, and every argument
     /// quoted so that no two argument lists can render alike.
     pub fn display(&self) -> String {
+        self.render(&self.resolved.to_string_lossy())
+    }
+
+    /// The step as the line wrote it.
+    ///
+    /// The name rather than the file it resolved to, because that is what a reader recognises. It
+    /// is shown beside the file and never instead of it: a name is not a program, and a person
+    /// vouching for one should be looking at the binary they are vouching for.
+    pub fn as_written(&self) -> String {
+        self.render(&self.program)
+    }
+
+    fn render(&self, program: &str) -> String {
         let mut out = String::new();
         for (name, value) in &self.environment {
             out.push_str(&format!("{name}={} ", quoted(value)));
         }
-        out.push_str(&self.resolved.to_string_lossy());
+        out.push_str(program);
         for arg in &self.args {
             out.push(' ');
             out.push_str(&quoted(arg));

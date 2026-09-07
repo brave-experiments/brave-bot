@@ -2453,11 +2453,11 @@ fn run<S: Sink, C: Confirmer>(
         .collect();
 
     if policy.run_needs_approval(&pipeline, &shown) {
-        let request = crate::confirm::RunRequest {
-            pipeline: pipeline.clone(),
-            resolved: shown.clone(),
-            directory: directory.display().to_string(),
-        };
+        let request = crate::confirm::RunRequest::from_pipeline(
+            &pipeline,
+            &shown,
+            &directory.display().to_string(),
+        );
         let answer = confirmer.confirm_run(&request);
         if !answer.approved() {
             return problem(

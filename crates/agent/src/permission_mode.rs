@@ -220,14 +220,14 @@ mod tests {
     }
 
     fn a_run() -> RunRequest {
-        RunRequest {
-            pipeline: bravebot_core::Pipeline::new(vec![bravebot_core::Stage::new(
+        RunRequest::from_pipeline(
+            &bravebot_core::Pipeline::new(vec![bravebot_core::Stage::new(
                 "git",
                 vec!["log".into()],
             )]),
-            resolved: vec!["/usr/bin/git".into()],
-            directory: "/tmp/project".into(),
-        }
+            &["/usr/bin/git".into()],
+            "/tmp/project",
+        )
     }
 
     /// Asking is what a session has always done, and what it must still do unless somebody changed

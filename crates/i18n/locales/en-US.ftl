@@ -281,6 +281,8 @@ run-stages = { $count ->
    *[other] { $count } stages
     }
 run-in-directory = in { $directory }
+run-line-sent = the model wrote:
+run-writes = it writes these files:
 run-not-sandboxed = this is not sandboxed: it runs with the access your own shell has
 run-releases-private = it is also being fed your own data, which leaves here with it
 run-always-explained = a: trust this exact command for the rest of this session

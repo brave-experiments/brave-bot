@@ -430,6 +430,7 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
     let area = centred(frame.area());
     let inside = panel(frame, area, theme::accent(), t!(run_title));
 
+    let steps = request.plan.steps();
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
@@ -439,25 +440,44 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                t!(run_stages, count = request.pipeline.len()),
+                t!(run_stages, count = steps.len()),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  {}", t!(run_in_directory, directory = &request.directory)),
+                format!(
+                    "  {}",
+                    t!(run_in_directory, directory = &request.directory())
+                ),
                 Style::default().fg(theme::muted()),
             ),
         ]),
         Line::raw(""),
     ];
 
-    for (index, stage) in request.pipeline.stages.iter().enumerate() {
+    // The line the planner wrote, above the plan and marked as context. It is not what the answer
+    // binds to: two spellings that compile alike are one thing to agree to, and the plan below is
+    // the one being agreed to. Shown all the same, because a reader comparing the two is what
+    // would catch a compiler that got the line wrong.
+    if !request.plan.line.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", t!(run_line_sent)),
+            Style::default().fg(theme::muted()),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("       {}", request.plan.line),
+            Style::default().fg(theme::muted()),
+        )));
+        lines.push(Line::raw(""));
+    }
+
+    for (index, step) in steps.iter().enumerate() {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {}  ", index + 1),
                 Style::default().fg(theme::muted()),
             ),
             Span::styled(
-                stage.display(),
+                step.as_written(),
                 Style::default()
                     .fg(theme::text())
                     .add_modifier(Modifier::BOLD),
@@ -465,10 +485,27 @@ fn draw_run(frame: &mut ratatui::Frame, request: &RunRequest, scroll: u16) -> u1
         ]));
         // The binary, under the name. A name is not a program: $PATH decides what `grep` means,
         // and a person about to vouch for one should be looking at what they are vouching for.
-        if let Some(path) = request.resolved.get(index) {
+        lines.push(Line::from(Span::styled(
+            format!("       {}", step.resolved.display()),
+            Style::default().fg(theme::muted()),
+        )));
+    }
+
+    // Every file the line would create or replace, listed rather than left to be worked out from
+    // the steps above. This is the half of a plan that a shell string hides, so it is the half a
+    // reader most needs spelled out.
+    if !request.plan.writes.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", t!(run_writes)),
+            Style::default().fg(theme::running()),
+        )));
+        for path in &request.plan.writes {
             lines.push(Line::from(Span::styled(
-                format!("       {path}"),
-                Style::default().fg(theme::muted()),
+                format!("       {}", path.display()),
+                Style::default()
+                    .fg(theme::text())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
     }
@@ -982,15 +1019,85 @@ mod tests {
             bravebot_core::Stage::new("git", vec!["log".into(), "--oneline".into()]),
             bravebot_core::Stage::new("sed", vec!["-n".into(), "1,10p".into()]),
         ]);
-        RunRequest {
-            pipeline: if private {
+        RunRequest::from_pipeline(
+            &if private {
                 pipeline.with_stdin(bravebot_core::label::Label::trusted_private())
             } else {
                 pipeline
             },
-            resolved: vec!["/usr/bin/git".into(), "/usr/bin/sed".into()],
-            directory: "/home/someone/project".into(),
+            &["/usr/bin/git".into(), "/usr/bin/sed".into()],
+            "/home/someone/project",
+        )
+    }
+
+    /// A plan from a command line, with a destination and a shape, as the compiler would produce.
+    fn a_compiled_run() -> RunRequest {
+        let step = |program: &str, args: &[&str]| bravebot_core::command::Step {
+            program: program.to_string(),
+            resolved: std::path::PathBuf::from(format!("/usr/bin/{program}")),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            environment: Vec::new(),
+            routes: Vec::new(),
+        };
+        let mut writing = step("tee", &[]);
+        writing.routes = vec![bravebot_core::command::Route::Stdout {
+            path: std::path::PathBuf::from("/home/someone/project/out.txt"),
+            append: false,
+        }];
+        RunRequest {
+            plan: bravebot_core::command::Plan {
+                line: "git log --oneline | tee > out.txt".to_string(),
+                directory: std::path::PathBuf::from("/home/someone/project"),
+                steps: bravebot_core::command::Steps::Pipeline(vec![
+                    step("git", &["log", "--oneline"]),
+                    writing,
+                ]),
+                writes: vec![std::path::PathBuf::from("/home/someone/project/out.txt")],
+                reads: Vec::new(),
+                stdin: None,
+            },
         }
+    }
+
+    /// The answer binds to the plan, so the plan is what the prompt puts in front of a reader: the
+    /// name they recognise, the binary that will actually run, and where each argument ends.
+    #[test]
+    fn a_run_prompt_shows_the_plan_it_would_endorse() {
+        let shown = rendered_run(&a_compiled_run());
+        assert!(shown.contains("git log --oneline"), "{shown}");
+        assert!(shown.contains("/usr/bin/git"), "{shown}");
+        assert!(shown.contains("/usr/bin/tee"), "{shown}");
+    }
+
+    /// The line is context and not the thing agreed to, but it is shown: a reader comparing it
+    /// against the plan is what would catch a compiler that read the line wrong.
+    #[test]
+    fn a_run_prompt_shows_the_line_the_model_wrote_as_context() {
+        let shown = rendered_run(&a_compiled_run());
+        assert!(shown.contains("the model wrote"), "{shown}");
+        assert!(
+            shown.contains("git log --oneline | tee > out.txt"),
+            "{shown}"
+        );
+    }
+
+    /// Where the bytes land is the half of a plan that a shell string hides, so it is the half a
+    /// reader most needs spelled out rather than left to be worked out from the steps.
+    #[test]
+    fn a_run_prompt_lists_every_file_the_line_would_write() {
+        let shown = rendered_run(&a_compiled_run());
+        assert!(shown.contains("it writes these files"), "{shown}");
+        assert!(shown.contains("/home/someone/project/out.txt"), "{shown}");
+    }
+
+    /// A pipeline of argv stages writes nothing and was not spelled as a line, so neither block
+    /// appears. A prompt that said "it writes these files" over an empty list would be noise that
+    /// hides the case the line is for.
+    #[test]
+    fn a_run_prompt_for_argv_stages_shows_neither_a_line_nor_a_write_set() {
+        let shown = rendered_run(&a_run(false));
+        assert!(!shown.contains("the model wrote"), "{shown}");
+        assert!(!shown.contains("it writes these files"), "{shown}");
     }
 
     /// Wide enough that the lines under test are not wrapped by the box, since what is being

@@ -10,6 +10,7 @@ governs:
   - crates/core/src/pure.rs
   - crates/core/src/permissions.rs
   - crates/core/src/policy.rs
+  - crates/agent/src/confirm.rs
   - crates/tui/src/confirm.rs
 guards:
   - symbol: cmdline::compile
@@ -184,7 +185,14 @@ makes possible, is two endorsements.
 that is the plan. Binding to the text would let a change in the working tree change what a prior
 approval covers without the text changing at all.
 
-`verified-by: none`
+`verified-by: bravebot_tui::confirm::a_run_prompt_shows_the_plan_it_would_endorse`
+`verified-by: bravebot_tui::confirm::a_run_prompt_shows_the_line_the_model_wrote_as_context`
+`verified-by: bravebot_tui::confirm::a_run_prompt_lists_every_file_the_line_would_write`
+`verified-by: bravebot_core::command::a_plan_shows_its_resolved_binaries_and_argument_boundaries`
+`verified-by: bravebot_core::command::two_plans_never_encode_alike`
+`verified-by: bravebot_core::command::the_line_a_plan_came_from_is_not_part_of_what_it_encodes`
+`verified-by: bravebot_core::policy::an_endorsement_does_not_authorise_a_differently_joined_plan`
+`verified-by: bravebot_core::policy::an_endorsement_does_not_authorise_a_plan_that_writes_elsewhere`
 
 <a id="CMDLINE-4"></a>
 ### CMDLINE-4: globs are expanded by the harness, before the prompt, and bounded

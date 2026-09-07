@@ -7245,12 +7245,13 @@ fn an_approved_run_executes_and_the_user_saw_what_it_was() {
 
     let asked = seen.lock().unwrap();
     let request = asked.first().expect("the user was asked");
-    assert_eq!(request.pipeline.display(), "touch made.txt");
-    assert_eq!(request.resolved.len(), 1);
+    let steps = request.plan.steps();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].as_written(), "touch made.txt");
     assert!(
-        request.resolved[0].ends_with("touch"),
+        steps[0].resolved.ends_with("touch"),
         "the binary was not shown: {:?}",
-        request.resolved
+        steps[0].resolved
     );
 }
 
@@ -7484,10 +7485,11 @@ echo started
     let request = asked
         .first()
         .expect("a path with a space was refused instead of being run");
+    let steps = request.plan.steps();
     assert!(
-        request.resolved[0].ends_with("Some Program"),
+        steps[0].resolved.ends_with("Some Program"),
         "resolved to something else: {:?}",
-        request.resolved
+        steps[0].resolved
     );
 }
 

@@ -109,36 +109,61 @@ impl WriteRequest {
 /// exceptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
-    /// The stages, in order, exactly as they will be executed.
-    pub pipeline: Pipeline,
-    /// What each stage's program name resolved to, in stage order.
+    /// The plan, exactly as it will be executed.
     ///
-    /// Shown alongside the name, and it is this that the trusted list records. A name is not a
-    /// program: `$PATH` decides what `grep` means, so a person vouching for one should be looking
-    /// at the binary they are vouching for.
-    pub resolved: Vec<String>,
-    /// The directory the stages will run in, for the person to read.
-    ///
-    /// Shown because a program's effect depends on where it runs at least as much as on its
-    /// arguments, and `git clean -fd` is a different proposition in two different trees.
-    pub directory: String,
+    /// The plan and not the line. Two lines that compile alike are one thing to agree to, and a
+    /// person reading the text rather than the plan would be answering for something else.
+    pub plan: bravebot_core::command::Plan,
 }
 
 impl RunRequest {
+    /// A request for a pipeline of argv stages, which is a plan with no redirections.
+    pub fn from_pipeline(pipeline: &Pipeline, resolved: &[String], directory: &str) -> Self {
+        let steps = pipeline
+            .stages
+            .iter()
+            .zip(resolved)
+            .map(|(stage, path)| bravebot_core::command::Step {
+                program: stage.program.clone(),
+                resolved: std::path::PathBuf::from(path),
+                args: stage.args.clone(),
+                environment: Vec::new(),
+                routes: Vec::new(),
+            })
+            .collect();
+        Self {
+            plan: bravebot_core::command::Plan {
+                line: String::new(),
+                directory: std::path::PathBuf::from(directory),
+                steps: bravebot_core::command::Steps::Pipeline(steps),
+                writes: Vec::new(),
+                reads: Vec::new(),
+                stdin: pipeline.stdin,
+            },
+        }
+    }
+
+    /// The directory the steps will run in, for the person to read.
+    ///
+    /// Shown because a program's effect depends on where it runs at least as much as on its
+    /// arguments, and `git clean -fd` is a different proposition in two different trees.
+    pub fn directory(&self) -> String {
+        self.plan.directory.display().to_string()
+    }
     /// Whether approving this would hand the user's own data to a program.
     ///
     /// A second and independent reason to be careful, on confidentiality rather than integrity:
     /// bytes going into a program are released somewhere this policy stops governing.
     pub fn releases_private(&self) -> bool {
-        self.pipeline.releases_private()
+        self.plan.releases_private()
     }
 
     /// A short description for a prompt line.
     pub fn summary(&self) -> String {
         format!(
             "run {} in {}",
-            tally(self.pipeline.len(), "stage", "stages"),
-            self.directory
+            tally(self.plan.steps().len(), "step", "steps"),
+            self.directory()
         )
     }
 
@@ -152,8 +177,8 @@ impl RunRequest {
     /// about `git push`.
     pub fn would_vouch_for(&self) -> Vec<bravebot_core::programs::Command> {
         let mut named: Vec<bravebot_core::programs::Command> = Vec::new();
-        for (stage, path) in self.pipeline.stages.iter().zip(&self.resolved) {
-            let command = bravebot_core::programs::Command::new(path.clone(), stage.args.clone());
+        for step in self.plan.steps() {
+            let command = step.command();
             if !named.contains(&command) {
                 named.push(command);
             }
@@ -809,11 +834,11 @@ mod tests {
     }
 
     fn a_run() -> RunRequest {
-        RunRequest {
-            pipeline: Pipeline::new(vec![bravebot_core::Stage::new("git", vec!["log".into()])]),
-            resolved: vec!["/usr/bin/git".into()],
-            directory: "/tmp/project".into(),
-        }
+        RunRequest::from_pipeline(
+            &Pipeline::new(vec![bravebot_core::Stage::new("git", vec!["log".into()])]),
+            &["/usr/bin/git".into()],
+            "/tmp/project",
+        )
     }
 
     /// Nobody is there, so nothing runs and nothing is vouched for. Picking up a standing
@@ -848,14 +873,14 @@ mod tests {
     /// in it: one that still had to ask about a stage would not have stopped asking.
     #[test]
     fn vouching_covers_every_program_in_the_pipeline() {
-        let request = RunRequest {
-            pipeline: Pipeline::new(vec![
+        let request = RunRequest::from_pipeline(
+            &Pipeline::new(vec![
                 bravebot_core::Stage::new("git", vec!["log".into()]),
                 bravebot_core::Stage::new("sed", vec!["-n".into()]),
             ]),
-            resolved: vec!["/usr/bin/git".into(), "/usr/bin/sed".into()],
-            directory: "/tmp".into(),
-        };
+            &["/usr/bin/git".into(), "/usr/bin/sed".into()],
+            "/tmp",
+        );
         assert_eq!(
             request
                 .would_vouch_for()
@@ -874,14 +899,14 @@ mod tests {
     /// command and not for a program: `sed -n` and `sed -e` do different things.
     #[test]
     fn the_same_program_with_different_arguments_is_two_entries() {
-        let request = RunRequest {
-            pipeline: Pipeline::new(vec![
+        let request = RunRequest::from_pipeline(
+            &Pipeline::new(vec![
                 bravebot_core::Stage::new("sed", vec!["-n".into()]),
                 bravebot_core::Stage::new("sed", vec!["-e".into()]),
             ]),
-            resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
-            directory: "/tmp".into(),
-        };
+            &["/usr/bin/sed".into(), "/usr/bin/sed".into()],
+            "/tmp",
+        );
         assert_eq!(request.would_vouch_for().len(), 2);
     }
 
@@ -889,14 +914,14 @@ mod tests {
     /// twice.
     #[test]
     fn the_identical_command_twice_is_named_once() {
-        let request = RunRequest {
-            pipeline: Pipeline::new(vec![
+        let request = RunRequest::from_pipeline(
+            &Pipeline::new(vec![
                 bravebot_core::Stage::new("sed", vec!["-n".into()]),
                 bravebot_core::Stage::new("sed", vec!["-n".into()]),
             ]),
-            resolved: vec!["/usr/bin/sed".into(), "/usr/bin/sed".into()],
-            directory: "/tmp".into(),
-        };
+            &["/usr/bin/sed".into(), "/usr/bin/sed".into()],
+            "/tmp",
+        );
         assert_eq!(request.would_vouch_for().len(), 1);
     }
 

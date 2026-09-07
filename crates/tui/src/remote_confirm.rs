@@ -341,14 +341,14 @@ mod tests {
     }
 
     fn a_run() -> RunRequest {
-        RunRequest {
-            pipeline: bravebot_core::Pipeline::new(vec![bravebot_core::Stage::new(
+        RunRequest::from_pipeline(
+            &bravebot_core::Pipeline::new(vec![bravebot_core::Stage::new(
                 "git",
                 vec!["log".into()],
             )]),
-            resolved: vec!["/usr/bin/git".into()],
-            directory: "/tmp/project".into(),
-        }
+            &["/usr/bin/git".into()],
+            "/tmp/project",
+        )
     }
 
     /// The run question reaches the other side and the answer comes back.
@@ -359,7 +359,7 @@ mod tests {
 
         let responder = thread::spawn(move || {
             match inbound.recv().expect("a message arrived") {
-                ToMain::Run(asked) => assert_eq!(asked.pipeline.len(), 1),
+                ToMain::Run(asked) => assert_eq!(asked.plan.steps().len(), 1),
                 other => panic!("expected a run question, got {other:?}"),
             }
             answer_tx
