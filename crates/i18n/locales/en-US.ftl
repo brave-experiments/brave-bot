@@ -501,9 +501,12 @@ watching-keys = q closes  ·  n / p another delegate
 watching-keys-one = q closes
 watching-keys-back = q goes back  ·  n / p another delegate
 watching-nothing-yet = nothing yet
-# The list of every delegate this turn has spawned.
+# The list of every delegate this turn has spawned, with the session above them.
 watching-list-title = delegates
 watching-list-keys = up / down moves  ·  enter opens  ·  q closes
+# The first row of the list: the conversation the delegates were spawned from.
+watching-list-session = session
+watching-list-session-detail = back to the conversation
 watching-calls = { $count ->
     [one] { $count } call
    *[other] { $count } calls

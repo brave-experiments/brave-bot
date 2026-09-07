@@ -749,8 +749,11 @@ fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
     let laid = draw_transcript(frame, frame.area(), session);
 
     let delegates = session.delegates();
-    let at = session.watching().map_or(0, |watching| watching.at);
-    let area = delegate_panel(frame.area(), delegates.len());
+    // The session is the first row, so the panel is one taller than the delegates it lists and
+    // the highlight is counted over the rows rather than over the delegates.
+    let rows = delegates.len() + 1;
+    let at = session.list_highlight();
+    let area = delegate_panel(frame.area(), rows);
     frame.render_widget(Clear, area);
 
     // The theme's own colours rather than the terminal's, the way every other panel here is
@@ -782,16 +785,19 @@ fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
     // The window follows the highlight, so a session that has spawned more delegates than the
     // panel is tall still opens on the one the cursor is on.
     let visible = (layout[0].height as usize).max(1);
-    let first = window_start(delegates.len(), at, visible);
+    let first = window_start(rows, at, visible);
     let width = layout[0].width as usize;
-    let rows: Vec<Line> = delegates
-        .iter()
-        .enumerate()
+    let drawn: Vec<Line> = std::iter::once(session_row(at == 0, width))
+        .chain(
+            delegates
+                .iter()
+                .enumerate()
+                .map(|(index, delegate)| delegate_row(delegate, at == index + 1, width)),
+        )
         .skip(first)
         .take(visible)
-        .map(|(index, delegate)| delegate_row(delegate, at == index, width))
         .collect();
-    frame.render_widget(Paragraph::new(rows), layout[0]);
+    frame.render_widget(Paragraph::new(drawn), layout[0]);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -848,11 +854,51 @@ fn window_start(rows: usize, cursor: usize, visible: usize) -> usize {
 ///
 /// The row that would open is filled edge to edge rather than pointed at. A mark beside a short
 /// name reads as decoration on the text; a bar reads as the row being chosen, which is what it is.
-fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'static> {
-    /// Wide enough for the longest kind and a two-digit number, so every task starts in one
-    /// column and the rows read as a table rather than as a ragged list.
-    const NAME_COLUMN: usize = 14;
+/// The first row of the list: the conversation the delegates were spawned from.
+///
+/// Here because the way back was the one destination the list did not offer. Somebody comparing
+/// two delegates could reach either, and reaching the thing they were reading before meant
+/// leaving the mode by a key that is not on any row.
+///
+/// Drawn in the same columns as a delegate's row, and with no count, because it is a place to go
+/// rather than a run that has done any work.
+fn session_row(highlighted: bool, width: usize) -> Line<'static> {
+    let (mark_style, name_style, detail) = if highlighted {
+        let on_bar = Style::default().fg(theme::on_primary());
+        (on_bar, on_bar.add_modifier(Modifier::BOLD), on_bar)
+    } else {
+        (
+            Style::default().fg(theme::brand_primary()),
+            Style::default().fg(theme::text()),
+            dim(),
+        )
+    };
 
+    let name = t!(watching_list_session);
+    let about = t!(watching_list_session_detail);
+    let spent = 4 + NAME_COLUMN + 2;
+    let room = width.saturating_sub(spent);
+    let about: String = match about.chars().count() > room {
+        true => about.chars().take(room).collect(),
+        false => about.to_string(),
+    };
+
+    let line = Line::from(vec![
+        Span::styled(format!("  {TURN_MARKER} "), mark_style),
+        Span::styled(format!("{name:<NAME_COLUMN$}"), name_style),
+        Span::styled(about, detail),
+    ]);
+    match highlighted {
+        true => line.style(Style::default().bg(theme::brand_primary())),
+        false => line,
+    }
+}
+
+/// Wide enough for the longest kind and a two-digit number, so every task starts in one column
+/// and the rows read as a table rather than as a ragged list.
+const NAME_COLUMN: usize = 14;
+
+fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'static> {
     // The glyph carries the standing on the bar as well as off it, so the row under the cursor
     // does not have to spend a colour the highlight has already taken.
     let (mark, colour) = if delegate.is_running() {
@@ -2543,6 +2589,29 @@ mod tests {
             let rows = listed(&session, 90, 24);
             assert!(rows.contains("FIND-THE-PARSER"), "{rows}");
             assert!(rows.contains("COUNT-THE-CALLERS"), "{rows}");
+        }
+
+        /// Every destination the mode can reach is a row, the conversation included. Without it,
+        /// somebody comparing two delegates could reach either and could not reach the thing they
+        /// were reading before by any key the list names.
+        #[test]
+        fn the_list_holds_the_session_above_the_delegates() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "FIND-THE-PARSER");
+            spawn(&mut session, "checker", "RUN-THE-BUILD");
+            session.watch();
+
+            let rows = listed(&session, 90, 24);
+            let session_row = rows
+                .find("session")
+                .expect("the session is not a row: {rows}");
+            let first = rows
+                .find("FIND-THE-PARSER")
+                .expect("the first delegate is not a row");
+            assert!(
+                session_row < first,
+                "the session was drawn below the delegates: {rows}"
+            );
         }
 
         /// The list is a question with a handful of answers, and the transcript is what somebody
