@@ -6228,6 +6228,48 @@ fn a_trusted_workspace_agents_file_reaches_the_system_prompt() {
     );
 }
 
+/// A planner that lists a tree and then asks four delegates to list it again has paid for the
+/// answer twice and put it in the context it was delegating to keep clear. Nothing it read
+/// crosses to a delegate, so the reading has to happen there or not at all.
+#[test]
+fn the_planner_is_told_to_spawn_before_doing_the_work_itself() {
+    let scratch = Scratch::new("delegate-before-reading");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("the answer"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("do the work"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let body = received.recv().expect("request body");
+    assert!(
+        body.contains("Spawn before you do the work yourself"),
+        "the planner was not told to delegate before reading"
+    );
+    // The kind is chosen before the task is written, and a reader cannot run anything, so a task
+    // needing a program run has to go to a kind that holds one.
+    assert!(
+        body.contains("Check what the kind holds against what the task needs"),
+        "the planner was not told to match the kind to the task"
+    );
+    // The round after a spawn is the one that gets spent saying nothing.
+    assert!(
+        body.contains("answer with nothing and wait"),
+        "the planner was not told what its round back is for"
+    );
+}
+
 /// A planner that never compiles what it wrote reports work it has not checked. The instruction
 /// to build and test has to reach the model on every turn, not only where a project happens to
 /// state it: a repository with no AGENTS.md is the case where nothing else will say so.
