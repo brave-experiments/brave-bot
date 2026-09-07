@@ -349,7 +349,7 @@ fn list_enumerates_files_recursively() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect("list succeeds");
 
     // Filenames come from the user's tree, so they are untrusted content too.
@@ -379,7 +379,7 @@ fn list_skips_noise_directories() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect("list succeeds");
     let rendered = format!("{listing:?}");
     // Debug shows only the label, never contents, so assert via the count instead.
@@ -541,7 +541,7 @@ fn listing_requires_the_read_capability() {
     .expect("policy");
 
     let error = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect_err("read capability was not granted");
     assert!(error.to_string().contains("file_read"));
 }
@@ -670,7 +670,7 @@ fn a_listing_past_the_cap_reports_truncation() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
     let listing = listing.declassify(&proof);
@@ -773,7 +773,7 @@ fn a_listing_within_the_cap_reports_no_truncation() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
     let listing = listing.declassify(&proof);
@@ -1210,6 +1210,7 @@ fn a_listing_can_be_narrowed_by_glob() {
             &mut policy,
             &Labelled::trusted(".".to_string()),
             Some(&Labelled::trusted("*.rs".to_string())),
+            None,
         )
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
@@ -1241,6 +1242,7 @@ fn an_untrusted_list_pattern_is_refused() {
             &mut policy,
             &Labelled::trusted(".".to_string()),
             Some(&injected),
+            None,
         )
         .expect_err("an untrusted pattern must be refused");
     assert!(matches!(error, WorkspaceError::Denied(_)));
@@ -1328,6 +1330,7 @@ fn a_pattern_matching_nothing_returns_an_empty_listing() {
             &mut policy,
             &Labelled::trusted(".".to_string()),
             Some(&Labelled::trusted("*.nope".to_string())),
+            None,
         )
         .expect("an unmatched pattern is not an error");
     let proof = policy.authorise_content_release("test", "paths");
@@ -1363,6 +1366,7 @@ fn a_filter_applies_before_the_entry_cap() {
             &mut policy,
             &Labelled::trusted(".".to_string()),
             Some(&Labelled::trusted("*.rs".to_string())),
+            None,
         )
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
@@ -1405,7 +1409,7 @@ fn noise_directories_from_other_ecosystems_are_skipped() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
     let listing = listing.declassify(&proof);
@@ -1438,7 +1442,7 @@ fn the_original_noise_directories_are_still_skipped() {
     .expect("policy");
 
     let listing = workspace
-        .list(&mut policy, &Labelled::trusted(".".to_string()), None)
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
         .expect("list succeeds");
     let proof = policy.authorise_content_release("test", "paths");
     let listing = listing.declassify(&proof);
@@ -2147,4 +2151,151 @@ fn moving_to_something_that_is_not_a_directory_is_refused() {
     assert!(matches!(error, WorkspaceError::Io { .. }));
 
     assert_eq!(workspace.root(), root, "a refused move moved the workspace");
+}
+
+/// A tree is the expensive thing to put in a context, and most questions about a project are
+/// answered by its shape. Without a bound the only listing on offer is every file at every
+/// depth, which in a real repository is thousands of paths in the planner and in every delegate
+/// it hands the same question to.
+#[test]
+fn a_listing_given_a_depth_descends_no_further_than_that() {
+    let scratch = Scratch::new("list-depth");
+    std::fs::create_dir_all(scratch.path.join("crates/agent/src")).unwrap();
+    std::fs::write(scratch.path.join("README.md"), "readme").unwrap();
+    std::fs::write(scratch.path.join("crates/agent/src/lib.rs"), "deep").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            None,
+            Some(1),
+        )
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(listing.files, vec!["README.md".to_string()]);
+    assert!(
+        !listing.files.iter().any(|f| f.contains("lib.rs")),
+        "a depth of 1 walked into a subdirectory"
+    );
+}
+
+/// A depth-limited listing that named only files would describe a tree with no branches, and a
+/// planner reading one concludes the project has no source directory to look in.
+#[test]
+fn a_depth_limited_listing_names_the_directories_it_stopped_at() {
+    let scratch = Scratch::new("list-depth-dirs");
+    std::fs::create_dir_all(scratch.path.join("crates/agent")).unwrap();
+    std::fs::create_dir_all(scratch.path.join("docs")).unwrap();
+    std::fs::write(scratch.path.join("Cargo.toml"), "[workspace]").unwrap();
+    std::fs::write(scratch.path.join("crates/agent/lib.rs"), "deep").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            None,
+            Some(1),
+        )
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(
+        listing.directories,
+        vec!["crates".to_string(), "docs".to_string()],
+        "the walk did not say where the tree continues"
+    );
+}
+
+/// The pattern says which files are wanted. The shape of the tree is not a file, so a narrow
+/// pattern must not hide the directories the answer is in: that is the case where a planner is
+/// told nothing matched and has nowhere to look next.
+#[test]
+fn a_pattern_does_not_hide_the_directories_a_bounded_walk_stopped_at() {
+    let scratch = Scratch::new("list-depth-pattern");
+    std::fs::create_dir_all(scratch.path.join("src")).unwrap();
+    std::fs::write(scratch.path.join("README.md"), "readme").unwrap();
+    std::fs::write(scratch.path.join("src/main.rs"), "fn main() {}").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            Some(&Labelled::trusted("*.rs".to_string())),
+            Some(1),
+        )
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert!(listing.files.is_empty(), "no .rs file sits at the root");
+    assert_eq!(
+        listing.directories,
+        vec!["src".to_string()],
+        "the one directory that could hold a match was left out"
+    );
+}
+
+/// The default is what every existing caller gets, so a listing nobody bounded still walks the
+/// whole tree and reports no boundary: a directory in that listing is one the walk went into.
+#[test]
+fn a_listing_with_no_depth_walks_the_whole_tree() {
+    let scratch = Scratch::new("list-no-depth");
+    std::fs::create_dir_all(scratch.path.join("a/b/c")).unwrap();
+    std::fs::write(scratch.path.join("a/b/c/deep.txt"), "deep").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let listing = workspace
+        .list(&mut policy, &Labelled::trusted(".".to_string()), None, None)
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(listing.files, vec!["a/b/c/deep.txt".to_string()]);
+    assert!(
+        listing.directories.is_empty(),
+        "an unbounded walk reported a boundary it never stopped at"
+    );
 }

@@ -944,6 +944,13 @@ pub struct Match {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
     pub files: Vec<String>,
+    /// Directories the walk stopped at because it had reached the depth it was given.
+    ///
+    /// Empty when the walk was unbounded, where every directory is descended into and the files
+    /// beneath it are the listing. A bounded walk reports them because a listing of names with
+    /// nothing said about the directories beside them describes a tree with no branches, and a
+    /// planner reading one concludes the project has no source directory.
+    pub directories: Vec<String>,
     /// Whether files were left out because a cap was reached.
     pub truncated: bool,
 }
@@ -975,6 +982,7 @@ impl Workspace {
         policy: &mut Policy<'_, S>,
         directory: &Labelled<String>,
         pattern: Option<&Labelled<String>>,
+        depth: Option<usize>,
     ) -> Result<Labelled<Listing>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_list", "directory", Role::Routing, directory)?;
@@ -1006,24 +1014,32 @@ impl Workspace {
         let root = self.resolve(&relative)?;
 
         let mut found = Vec::new();
+        let mut stopped_at = Vec::new();
         // Ignored here: what a listing left out is the entry it drops below, which the count
         // answers exactly.
-        let _ = self.walk_filtered(&root, glob.as_deref(), &mut found)?;
+        let _ = self.walk_filtered(&root, glob.as_deref(), depth, &mut found, &mut stopped_at)?;
         found.sort();
+        stopped_at.sort();
 
         // Labelled after the walk, because which paths were visited is not known before it. A
-        // listing is trusted only if every path in it is.
-        let label = policy.observe_paths(Capability::FileRead, found.iter().map(String::as_str))?;
+        // listing is trusted only if every path in it is. A directory name is a name out of the
+        // same tree, so it is observed with the files rather than beside them.
+        let label = policy.observe_paths(
+            Capability::FileRead,
+            found.iter().chain(stopped_at.iter()).map(String::as_str),
+        )?;
 
         // `walk` collects one entry past the cap so reaching it is detectable. Which
         // entries survive is down to traversal order, so a truncated listing is a sample
         // of the tree rather than its alphabetical head, hence saying so matters.
-        let truncated = found.len() > MAX_ENTRIES;
+        let truncated = found.len() + stopped_at.len() > MAX_ENTRIES;
         found.truncate(MAX_ENTRIES);
+        stopped_at.truncate(MAX_ENTRIES.saturating_sub(found.len()));
 
         Ok(Labelled::new(
             Listing {
                 files: found,
+                directories: stopped_at,
                 truncated,
             },
             label,
@@ -1091,7 +1107,9 @@ impl Workspace {
         let mut paths = Vec::new();
         // Whether every file was reached, which the count cannot answer: a tree of exactly the
         // cap fills `paths` without a single file being left out.
-        let unvisited = self.walk_filtered(&root, glob.as_deref(), &mut paths)?;
+        let mut ignored = Vec::new();
+        let unvisited =
+            self.walk_filtered(&root, glob.as_deref(), None, &mut paths, &mut ignored)?;
         paths.sort();
 
         // Trusted only if every file the search reads is trusted.
@@ -1156,11 +1174,18 @@ impl Workspace {
     /// Answers whether it stopped at the cap with entries still unvisited, which the length of
     /// `out` cannot: a directory holding exactly one past the cap fills it without anything
     /// being left behind.
+    ///
+    /// `remaining`, when given, is how many more levels may be descended. A directory at the
+    /// boundary is put in `stopped_at` instead of being walked, so the caller can say the tree
+    /// continues there. The filter does not apply to those: `pattern` narrows which files are
+    /// reported, and the shape of the tree is not a file.
     fn walk_filtered(
         &self,
         directory: &Path,
         pattern: Option<&str>,
+        remaining: Option<usize>,
         out: &mut Vec<String>,
+        stopped_at: &mut Vec<String>,
     ) -> Result<bool, WorkspaceError> {
         let entries = std::fs::read_dir(directory).map_err(|e| WorkspaceError::Io {
             path: self.relative_display(directory),
@@ -1168,7 +1193,7 @@ impl Workspace {
         })?;
 
         for entry in entries.flatten() {
-            if out.len() > MAX_ENTRIES {
+            if out.len() + stopped_at.len() > MAX_ENTRIES {
                 return Ok(true);
             }
             let path = entry.path();
@@ -1187,9 +1212,19 @@ impl Workspace {
                 if IGNORED_DIRECTORIES.contains(&name.as_ref()) {
                     continue;
                 }
+                if remaining.is_some_and(|left| left <= 1) {
+                    stopped_at.push(self.relative_display(&path));
+                    continue;
+                }
                 // Propagated rather than left to the next iteration's check, which a directory
                 // with nothing after it never reaches.
-                if self.walk_filtered(&path, pattern, out)? {
+                if self.walk_filtered(
+                    &path,
+                    pattern,
+                    remaining.map(|left| left - 1),
+                    out,
+                    stopped_at,
+                )? {
                     return Ok(true);
                 }
                 continue;

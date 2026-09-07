@@ -9,8 +9,9 @@ governs:
 
 ## Scope
 
-Listing what is in a directory. `directory` and `pattern` are routing; there are no content
-arguments. The result is the paths, or one reference per entry when the planner may not see them.
+Listing what is in a directory. `directory`, `pattern` and `depth` are routing; there are no
+content arguments. The result is the paths, or one reference per entry when the planner may not
+see them.
 
 ## Clauses
 
@@ -56,3 +57,30 @@ inside the body reaches nobody.
 `verified-by: bravebot_agent::workspace::a_listing_past_the_cap_reports_truncation`
 `verified-by: bravebot_agent::workspace::a_listing_within_the_cap_reports_no_truncation`
 `verified-by: bravebot_agent::turn::a_quarantined_listing_tells_the_model_it_was_capped`
+
+<a id="LIST-5"></a>
+### LIST-5: a listing walks the whole tree unless it is given a depth, and says where it stopped
+
+`depth` is how many directory levels below `directory` are walked. One is that directory and no
+further. Absent, the walk reaches every file under it, which is what a caller that names no depth
+gets.
+
+A directory a bounded walk did not descend into is named in the result alongside the files, so
+what comes back describes the shape of the tree and not only the part of it that was read. The
+pattern does not apply to those: it says which files are wanted, and a directory is where the
+answer might be rather than an answer.
+
+**Why.** Without a bound the only listing on offer is every path at every depth, which in a real
+repository is thousands of them. That is paid for in the planner's context, again on every round
+that resends it, and again in each delegate handed the same question. The common question is what
+a project holds rather than every file it contains, and a listing bounded to one level answers it
+in the space of a screen.
+
+**Why the directories.** A bounded listing of files alone describes a tree with no branches. A
+planner reading one concludes there is no source directory and looks no further, which is worse
+than the listing it was trying to avoid.
+
+`verified-by: bravebot_agent::workspace::a_listing_given_a_depth_descends_no_further_than_that`
+`verified-by: bravebot_agent::workspace::a_depth_limited_listing_names_the_directories_it_stopped_at`
+`verified-by: bravebot_agent::workspace::a_pattern_does_not_hide_the_directories_a_bounded_walk_stopped_at`
+`verified-by: bravebot_agent::workspace::a_listing_with_no_depth_walks_the_whole_tree`
