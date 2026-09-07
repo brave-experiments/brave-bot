@@ -593,9 +593,14 @@ fn watching_key(session: &mut Session, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
-        // Into the delegate the list is on.
+        // Into the delegate the list is on, or out to the conversation where the highlight is on
+        // the session. The session is a row like the others, so the key that opens a row opens it.
         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') if listing => {
-            session.open_watched();
+            if session.listing_on_the_session() {
+                session.stop_watching();
+            } else {
+                session.open_watched();
+            }
             Action::Redraw
         }
 
@@ -3854,6 +3859,30 @@ mod tests {
                 session.watched().map(|delegate| delegate.kind),
                 Some("reader"),
                 "enter opened a delegate other than the one the list was on"
+            );
+        }
+
+        /// The session is a row in the list like the others, so the key that opens a row is what
+        /// takes somebody back to the conversation. Leaving by a key that is on no row is the
+        /// part of this that was hard to find.
+        #[test]
+        fn opening_the_session_row_goes_back_to_the_conversation() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            handle_key(&mut session, ctrl('l'));
+            handle_key(&mut session, key(KeyCode::Up));
+            handle_key(&mut session, key(KeyCode::Up));
+            assert!(
+                session.listing_on_the_session(),
+                "the highlight never reached the session row"
+            );
+
+            handle_key(&mut session, key(KeyCode::Enter));
+
+            assert!(
+                session.watching().is_none(),
+                "enter on the session row did not go back to the conversation"
             );
         }
     }

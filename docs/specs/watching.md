@@ -165,7 +165,8 @@ What is drawn is the delegate's work and none of the turn's. What it was asked t
 its lines, and the sentence the turn was told closes them, with the report under it.
 
 `n` and `p` move between delegates without going back to the list, and stop at each end rather
-than wrapping. Coming out puts the turn's own view back where it was left.
+than wrapping. They stay among the delegates: the session is a row in the list and not a step
+here. Coming out puts the turn's own view back where it was left.
 
 **Why.** The view is read by somebody who was not told what the delegate was asked to do, and a
 view that stopped at the last call leaves them looking at a command, unable to tell an answer from
@@ -174,6 +175,7 @@ at the last one and know that it is the last.
 
 `verified-by: bravebot_tui::state::watching_a_delegate_shows_its_lines_rather_than_the_turns`
 `verified-by: bravebot_tui::state::moving_between_delegates_stops_at_each_end`
+`verified-by: bravebot_tui::state::the_session_is_not_a_step_in_a_delegates_own_view`
 `verified-by: bravebot_tui::state::coming_back_from_a_delegate_puts_the_turns_view_where_it_was_left`
 `verified-by: bravebot_tui::state::the_turns_view_is_not_dragged_by_reading_through_a_delegate`
 `verified-by: bravebot_tui::render::a_delegates_view_draws_its_own_lines_and_not_the_turns`
@@ -280,6 +282,29 @@ would claim a confinement that is not there; drawing an unread one plain would h
 
 `verified-by: bravebot_tui::render::a_report_the_planner_may_not_read_is_marked_where_it_is_drawn`
 `verified-by: bravebot_agent::turn::what_a_delegate_reported_reaches_the_person_watching`
+
+<a id="WATCH-14"></a>
+### WATCH-14: the session is the first row of the list, and choosing it goes back to the conversation
+
+The list holds the session above the delegates. The key that opens a row opens it, and what that
+does is close the mode and put the turn's own view back where it was left. Moving up from the
+first delegate reaches it; moving down from it reaches the first delegate again.
+
+Coming back to the list from a delegate puts the highlight on that delegate rather than on the
+session.
+
+**Why.** Every destination the mode can reach is a row, except the one somebody was reading
+before they opened it. Leaving was a key on no row, so a person comparing two delegates could
+reach either and had nothing on the screen telling them how to get back to what they came from.
+
+**Why the highlight does not start there.** Somebody pressing the key that goes back to the list
+asked for the list, not for the way out, and a highlight sitting on the way out turns the next
+press of enter into an exit.
+
+`verified-by: bravebot_tui::render::the_list_holds_the_session_above_the_delegates`
+`verified-by: bravebot_tui::state::moving_up_from_the_first_delegate_in_the_list_reaches_the_session`
+`verified-by: bravebot_tui::state::going_back_to_the_list_lands_on_the_delegate_that_was_open`
+`verified-by: bravebot_tui::app::opening_the_session_row_goes_back_to_the_conversation`
 
 ## Known costs
 

@@ -486,6 +486,12 @@ pub struct Watching {
     pub at: usize,
     /// Whether the list of them is what is on the screen, rather than the one at `at`.
     pub listing: bool,
+    /// Whether the list's highlight is on the session rather than on a delegate.
+    ///
+    /// Kept beside `at` rather than folded into it so that `at` stays the delegate somebody was
+    /// last reading: coming back into the list puts the highlight where they left it, and the way
+    /// out is a row rather than a position nothing else can name.
+    pub on_session: bool,
 }
 
 /// Everything the interface needs to draw itself.
@@ -1287,7 +1293,11 @@ impl Session {
         let listing = last > 0;
         self.held_view = Some(self.scroll);
         self.scroll = 0;
-        self.watching = Some(Watching { at, listing });
+        self.watching = Some(Watching {
+            at,
+            listing,
+            on_session: false,
+        });
         true
     }
 
@@ -1319,9 +1329,25 @@ impl Session {
     }
 
     /// The delegate the view is on, whether it is open or highlighted in the list.
+    ///
+    /// `None` where the list's highlight is on the session, which is a row and not a delegate.
     pub fn watched(&self) -> Option<&Delegate> {
-        let watching = self.watching?;
+        let watching = self.watching.filter(|watching| !watching.on_session)?;
         self.delegates().get(watching.at).copied()
+    }
+
+    /// Whether the list's highlight is on the session rather than on one of the delegates.
+    pub fn listing_on_the_session(&self) -> bool {
+        self.watching
+            .is_some_and(|watching| watching.listing && watching.on_session)
+    }
+
+    /// Where the highlight sits among the list's rows, the session being the first of them.
+    pub fn list_highlight(&self) -> usize {
+        match self.watching {
+            Some(watching) if !watching.on_session => watching.at + 1,
+            _ => 0,
+        }
     }
 
     /// Open the delegate the list is on.
@@ -1343,6 +1369,7 @@ impl Session {
         match &mut self.watching {
             Some(watching) if !watching.listing => {
                 watching.listing = true;
+                watching.on_session = false;
                 self.scroll = 0;
                 true
             }
@@ -1354,21 +1381,38 @@ impl Session {
     ///
     /// Each stops at its end rather than wrapping: somebody stepping through wants to arrive at
     /// the last one and know that it is the last.
+    ///
+    /// The session is one of the rows in the list, above the first delegate, so moving up from
+    /// that one reaches it. It is not one of the steps in a delegate's own view: what `n` and `p`
+    /// are for there is comparing two runs, and a key that stepped out of the mode partway
+    /// through would be a different key wearing the same name.
     pub fn watch_next(&mut self) {
         let last = self.delegates().len().saturating_sub(1);
-        if let Some(watching) = &mut self.watching
-            && watching.at < last
-        {
+        let Some(watching) = &mut self.watching else {
+            return;
+        };
+        if watching.on_session {
+            watching.on_session = false;
+            watching.at = 0;
+            self.scroll = 0;
+        } else if watching.at < last {
             watching.at += 1;
             self.scroll = 0;
         }
     }
 
     pub fn watch_previous(&mut self) {
-        if let Some(watching) = &mut self.watching
-            && watching.at > 0
-        {
+        let Some(watching) = &mut self.watching else {
+            return;
+        };
+        if watching.on_session {
+            return;
+        }
+        if watching.at > 0 {
             watching.at -= 1;
+            self.scroll = 0;
+        } else if watching.listing {
+            watching.on_session = true;
             self.scroll = 0;
         }
     }
@@ -3644,6 +3688,7 @@ mod tests {
             spawn(&mut session, "reader", "find the parser");
             spawn(&mut session, "checker", "run the build");
             session.watch();
+            session.open_watched();
             session.watch_previous();
 
             session.watch_previous();
@@ -3655,6 +3700,81 @@ mod tests {
                 session.watching().map(|watching| watching.at),
                 Some(1),
                 "moving past the last delegate wrapped round to the first"
+            );
+        }
+
+        /// The way back was the one destination the list did not offer: somebody comparing two
+        /// delegates could reach either and could not reach what they were reading before.
+        #[test]
+        fn moving_up_from_the_first_delegate_in_the_list_reaches_the_session() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+            session.watch_previous();
+
+            assert!(
+                !session.listing_on_the_session(),
+                "the highlight left the delegates before reaching the first of them"
+            );
+
+            session.watch_previous();
+            assert!(
+                session.listing_on_the_session(),
+                "moving up from the first delegate did not reach the session"
+            );
+            assert_eq!(
+                session.list_highlight(),
+                0,
+                "the session is not the first row of the list"
+            );
+            assert!(
+                session.watched().is_none(),
+                "the session row was reported as a delegate"
+            );
+        }
+
+        /// What n and p are for in a delegate's own view is comparing two runs. A key that
+        /// stepped out of the mode partway through would be a different key wearing the name.
+        #[test]
+        fn the_session_is_not_a_step_in_a_delegates_own_view() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+            session.open_watched();
+            session.watch_previous();
+
+            session.watch_previous();
+            assert!(
+                !session.listing_on_the_session(),
+                "stepping back past the first delegate left the delegates"
+            );
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("reader"),
+                "the view stopped being on a delegate"
+            );
+        }
+
+        /// Going back to the list from a delegate puts the highlight on that delegate. Landing on
+        /// the session instead would offer the way out to somebody who asked for the way back.
+        #[test]
+        fn going_back_to_the_list_lands_on_the_delegate_that_was_open() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            spawn(&mut session, "checker", "run the build");
+            session.watch();
+            session.open_watched();
+
+            assert!(session.list_delegates());
+            assert!(
+                !session.listing_on_the_session(),
+                "coming back from a delegate landed on the session"
+            );
+            assert_eq!(
+                session.watched().map(|delegate| delegate.kind),
+                Some("checker")
             );
         }
 

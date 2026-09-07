@@ -655,9 +655,12 @@ watching-keys = q ferme  ·  n / p un autre delegue
 watching-keys-one = q ferme
 watching-keys-back = q revient  ·  n / p un autre delegue
 watching-nothing-yet = rien pour l'instant
-# La liste de tous les delegues lances par ce tour.
+# La liste de tous les delegues lances par ce tour, la session au-dessus d'eux.
 watching-list-title = delegues
 watching-list-keys = haut / bas deplace  ·  entree ouvre  ·  q ferme
+# La premiere ligne de la liste : la conversation d'ou viennent les delegues.
+watching-list-session = session
+watching-list-session-detail = retour a la conversation
 watching-calls = { $count ->
     [one] { $count } appel
    *[other] { $count } appels
