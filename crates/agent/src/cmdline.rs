@@ -228,6 +228,10 @@ pub enum Reason {
     NotOnePath,
     /// An invocation that would want a terminal, with what to do instead.
     Interactive(&'static str),
+    /// More commands in one line than a plan can put to a person at once.
+    TooManySteps { cap: usize },
+    /// Groups nested deeper than the grammar goes.
+    TooNested { cap: usize },
     /// Anything the shape of the line gets wrong.
     Syntax(&'static str),
 }
@@ -296,6 +300,13 @@ impl fmt::Display for Reason {
                 "a redirection has to name exactly one file. A destination worked out from what is on disk is a destination that moves when the tree does",
             ),
             Self::Interactive(alternative) => f.write_str(alternative),
+            Self::TooManySteps { cap } => write!(
+                f,
+                "a line may hold at most {cap} commands. A plan longer than that is a prompt nobody reads"
+            ),
+            Self::TooNested { cap } => {
+                write!(f, "groups may be nested at most {cap} deep")
+            }
             Self::Syntax(detail) => f.write_str(detail),
         }
     }
@@ -312,6 +323,16 @@ impl fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// How many commands one line may hold.
+///
+/// A reader has to take the whole plan in before answering for it, and a plan with hundreds of
+/// steps in it is a prompt that grants everything. It also bounds the tree, so neither compiling
+/// nor running a line can recurse further than this.
+pub const MAX_STEPS: usize = 64;
+
+/// How deeply `( … )` may nest.
+pub const MAX_NESTING: usize = 16;
 
 /// Words that would put an interpreter back in the plan.
 const INTERPRETERS: [&str; 5] = ["eval", "source", ".", "exec", "trap"];
@@ -351,6 +372,8 @@ pub fn parse(line: &str) -> Result<Node, Refused> {
         line,
         tokens,
         at: 0,
+        commands: 0,
+        nesting: 0,
     };
     let node = parser.sequence()?;
     if let Some(token) = parser.peek() {
@@ -1010,6 +1033,10 @@ struct Parser<'a> {
     line: &'a str,
     tokens: Vec<Tok>,
     at: usize,
+    /// How many commands have been read, so that a line cannot grow past what a plan may hold.
+    commands: usize,
+    /// How deep inside `( … )` the parser is, which is also how deep the tree can get.
+    nesting: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -1073,7 +1100,12 @@ impl<'a> Parser<'a> {
         if let Some(Tok::Open(span)) = self.peek() {
             let span = *span;
             self.at += 1;
+            self.nesting += 1;
+            if self.nesting > MAX_NESTING {
+                return Err(self.refuse(span, Reason::TooNested { cap: MAX_NESTING }));
+            }
             let inner = self.sequence()?;
+            self.nesting -= 1;
             if !matches!(self.peek(), Some(Tok::Close(_))) {
                 return Err(self.refuse(span, Reason::Unclosed('(')));
             }
@@ -1099,6 +1131,13 @@ impl<'a> Parser<'a> {
     /// `assignment* (word | redirection)+`, with at least one word among them.
     fn command(&mut self) -> Result<Command, Refused> {
         let start = self.peek().map_or(self.line.len(), |tok| tok.span().start);
+        self.commands += 1;
+        if self.commands > MAX_STEPS {
+            return Err(self.refuse(
+                Span::new(start, start),
+                Reason::TooManySteps { cap: MAX_STEPS },
+            ));
+        }
         let mut assignments = Vec::new();
         let mut words: Vec<Word> = Vec::new();
         let mut redirections = Vec::new();
@@ -2403,6 +2442,32 @@ mod tests {
     #[test]
     fn an_empty_line_is_refused() {
         assert!(matches!(refused("   ").reason, Reason::Syntax(_)));
+    }
+
+    /// A plan a reader cannot take in is a prompt that grants everything, and the same bound keeps
+    /// the tree shallow enough that compiling or running a line cannot recurse away.
+    #[test]
+    fn a_line_with_more_commands_than_a_plan_may_hold_is_refused() {
+        let long = vec!["true"; MAX_STEPS + 1].join(" ; ");
+        assert_eq!(
+            refused(&long).reason,
+            Reason::TooManySteps { cap: MAX_STEPS }
+        );
+        let allowed = vec!["true"; MAX_STEPS].join(" ; ");
+        assert!(parse(&allowed).is_ok());
+    }
+
+    #[test]
+    fn groups_nested_past_the_bound_are_refused() {
+        let deep = format!(
+            "{}true{}",
+            "(".repeat(MAX_NESTING + 1),
+            ")".repeat(MAX_NESTING + 1)
+        );
+        assert_eq!(
+            refused(&deep).reason,
+            Reason::TooNested { cap: MAX_NESTING }
+        );
     }
 
     /// A scratch tree to expand patterns against.

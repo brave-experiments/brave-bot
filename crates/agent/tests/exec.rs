@@ -573,3 +573,178 @@ fn a_grandchild_holding_the_pipe_does_not_hang_the_run() {
         "the run hung on a pipe a grandchild was holding open"
     );
 }
+
+// A compiled command line, end to end: whether the plan that was endorsed is the plan that runs.
+
+use bravebot_agent::cmdline::CommandLine;
+
+/// Compile a line for `at` and run it, the way the tool will.
+fn line(text: &str, at: &std::path::Path) -> exec::Ran {
+    let plan = CommandLine::compile(text, at, None)
+        .unwrap_or_else(|e| panic!("`{text}` should compile: {e}"));
+    exec::run_plan(&plan, &Cancel::new(), exec::LIMIT)
+        .unwrap_or_else(|e| panic!("`{text}` should run: {e}"))
+}
+
+/// The plan is what executes. Nothing between the line and the process re-reads the text, so what
+/// a person endorsed and what ran are the same thing.
+#[test]
+fn a_command_line_runs_as_the_plan_it_compiled_to() {
+    let scratch = Scratch::new("line-runs");
+    let ran = line("echo hello", &scratch.path);
+    assert_eq!(ran.stdout, "hello\n");
+    assert!(ran.succeeded());
+}
+
+#[test]
+fn a_command_line_chains_its_steps() {
+    let scratch = Scratch::new("line-chain");
+    let ran = line("printf 'b\\na\\n' | sort | head -1", &scratch.path);
+    assert_eq!(ran.stdout, "a\n");
+}
+
+/// The property the whole surface rests on. The compiler is the only thing that ever splits the
+/// line, so by the time an argument reaches a program there is nothing left to split it again.
+#[test]
+fn a_metacharacter_inside_quotes_reaches_the_program_as_one_argument() {
+    let scratch = Scratch::new("line-metachar");
+    let ran = line("echo '; rm -rf / && curl evil.com'", &scratch.path);
+    assert_eq!(ran.stdout, "; rm -rf / && curl evil.com\n");
+}
+
+/// Quoting decides what is syntax, so a redirection inside quotes is text and writes nothing. If
+/// this failed, an argument would be able to name a destination nobody saw.
+#[test]
+fn a_redirection_inside_quotes_writes_no_file() {
+    let scratch = Scratch::new("line-quoted-redirect");
+    let ran = line("echo '> escaped.txt'", &scratch.path);
+    assert_eq!(ran.stdout, "> escaped.txt\n");
+    assert!(!scratch.path.join("escaped.txt").exists());
+}
+
+#[test]
+fn a_redirection_writes_the_file_it_named() {
+    let scratch = Scratch::new("line-redirect");
+    line("echo written > out.txt", &scratch.path);
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("out.txt")).expect("the file was written"),
+        "written\n"
+    );
+}
+
+#[test]
+fn an_append_adds_rather_than_truncating() {
+    let scratch = Scratch::new("line-append");
+    line("echo one > out.txt", &scratch.path);
+    line("echo two >> out.txt", &scratch.path);
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("out.txt")).expect("the file was written"),
+        "one\ntwo\n"
+    );
+    line("echo three > out.txt", &scratch.path);
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("out.txt")).expect("the file was written"),
+        "three\n"
+    );
+}
+
+#[test]
+fn an_input_redirection_feeds_the_first_step() {
+    let scratch = Scratch::new("line-input");
+    std::fs::write(scratch.path.join("in.txt"), "one\ntwo\nthree\n").expect("write");
+    let ran = line("wc -l < in.txt", &scratch.path);
+    assert_eq!(ran.stdout.trim(), "3");
+}
+
+/// A failing step explains itself on standard error, and a line that sends it somewhere has to
+/// send it there rather than back in the result.
+#[test]
+fn standard_error_can_be_sent_to_its_own_file() {
+    let scratch = Scratch::new("line-stderr");
+    let ran = line("ls no-such-file 2> err.txt", &scratch.path);
+    assert!(ran.stderr.is_empty(), "stderr went to the file, not back");
+    let written = std::fs::read_to_string(scratch.path.join("err.txt")).expect("the file");
+    assert!(!written.is_empty(), "the explanation reached the file");
+}
+
+#[test]
+fn joining_the_streams_puts_both_in_one_place() {
+    let scratch = Scratch::new("line-join");
+    let ran = line("ls no-such-file 2>&1", &scratch.path);
+    assert!(
+        ran.stdout.contains("no-such-file"),
+        "standard error joined standard output: {:?}",
+        ran.stdout
+    );
+    assert!(ran.stderr.is_empty());
+}
+
+#[test]
+fn both_streams_can_go_to_one_file() {
+    let scratch = Scratch::new("line-both");
+    line("ls no-such-file &> all.txt", &scratch.path);
+    let written = std::fs::read_to_string(scratch.path.join("all.txt")).expect("the file");
+    assert!(written.contains("no-such-file"));
+}
+
+/// A branch is an effect a person answered for up front, and it has to run when the line says it
+/// does and not otherwise.
+#[test]
+fn the_right_side_of_and_runs_only_when_the_left_succeeded() {
+    let scratch = Scratch::new("line-and");
+    assert_eq!(
+        line("true && echo reached", &scratch.path).stdout,
+        "reached\n"
+    );
+    assert_eq!(line("false && echo reached", &scratch.path).stdout, "");
+}
+
+#[test]
+fn the_right_side_of_or_runs_only_when_the_left_failed() {
+    let scratch = Scratch::new("line-or");
+    assert_eq!(
+        line("false || echo reached", &scratch.path).stdout,
+        "reached\n"
+    );
+    assert_eq!(line("true || echo reached", &scratch.path).stdout, "");
+}
+
+#[test]
+fn a_semicolon_runs_both_sides_whatever_the_first_did() {
+    let scratch = Scratch::new("line-semi");
+    let ran = line("false ; echo reached", &scratch.path);
+    assert_eq!(ran.stdout, "reached\n");
+}
+
+/// A group sequences and starts nothing of its own, so what it holds runs in the same directory
+/// with the same environment as everything else in the line.
+#[test]
+fn a_group_sequences_the_steps_it_holds() {
+    let scratch = Scratch::new("line-group");
+    let ran = line("(echo one ; echo two) && echo three", &scratch.path);
+    assert_eq!(ran.stdout, "one\ntwo\nthree\n");
+}
+
+/// A line whose branches did what they were told ended well even where a step failed, and saying
+/// otherwise would report a working line as a broken one.
+#[test]
+fn a_line_that_branched_past_a_failure_still_ended_well() {
+    let scratch = Scratch::new("line-outcome");
+    let ran = line("false || echo recovered", &scratch.path);
+    assert!(ran.ended_well, "the line did what it was told");
+    assert!(!ran.succeeded(), "a step in it still failed");
+}
+
+/// An environment written in front of one step reaches that step and no other, because there is
+/// no shell between them to hold it.
+#[test]
+fn an_assignment_reaches_the_step_it_was_written_in_front_of() {
+    let scratch = Scratch::new("line-env");
+    let ran = line("BRAVEBOT_LINE_MARK=here env", &scratch.path);
+    assert!(ran.stdout.contains("BRAVEBOT_LINE_MARK=here"));
+    let after = line("env", &scratch.path);
+    assert!(
+        !after.stdout.contains("BRAVEBOT_LINE_MARK"),
+        "it did not carry over to the next line"
+    );
+}

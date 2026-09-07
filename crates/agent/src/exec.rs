@@ -48,6 +48,7 @@
 //! for, and a filter matching names cannot tell one of those from an exfiltration, so it is not
 //! attempted: what holds is narrow and exact rather than broad and approximate.
 
+use crate::cmdline::{CommandLine, Joiner, Route, Step, Steps};
 use bravebot_core::Pipeline;
 use bravebot_core::cancel::Cancel;
 use std::fmt;
@@ -106,6 +107,12 @@ pub struct Ran {
     /// distinction is carried here, where a caller can say which happened without reading a byte
     /// of what was printed.
     pub stopped: Option<Duration>,
+    /// Whether the line ended well, the way its own branches decide.
+    ///
+    /// A pipeline is as good as its worst step, which is what [`Ran::succeeded`] says. A line with
+    /// branches has a second answer: `test -f x || echo missing` did what it was told even though
+    /// its first step failed, and reporting that as a failure would be wrong.
+    pub ended_well: bool,
 }
 
 impl Ran {
@@ -143,6 +150,8 @@ pub enum ExecError {
     Cancelled,
     /// The plumbing itself failed: a pipe that could not be created or read.
     Io(String),
+    /// A redirection's file could not be opened.
+    Redirection { path: String, detail: String },
 }
 
 impl fmt::Display for ExecError {
@@ -153,6 +162,9 @@ impl fmt::Display for ExecError {
             }
             Self::Cancelled => f.write_str("stopped because the turn was cancelled"),
             Self::Io(detail) => write!(f, "the pipeline could not be run: {detail}"),
+            Self::Redirection { path, detail } => {
+                write!(f, "'{path}' could not be opened: {detail}")
+            }
         }
     }
 }
@@ -193,146 +205,319 @@ pub fn run_within(
             "every stage must have been resolved to a program before it runs".to_string(),
         ));
     }
-
-    let mut children: Vec<Child> = Vec::with_capacity(pipeline.len());
-    // Nothing is typed at a program bravebot started, so the first stage reads an empty stdin rather
-    // than the terminal's. Inheriting it would let a program that reads stdin hang the turn.
-    let mut upstream = Stdio::null();
-    // The last stage's stdout is the pipeline's result, so it is kept here rather than handed
-    // onwards. Taking it into the chain like the others left nothing to read and the whole run
-    // came back empty.
-    let mut tail_out = None;
-    let last = pipeline.len() - 1;
-
-    for (index, stage) in pipeline.stages.iter().enumerate() {
-        // The resolved path, never the name. The name was resolved once, before the person was
-        // asked, and running it again by name would leave a window in which `$PATH` changed and
-        // something other than what they approved executed.
-        let mut command = Command::new(&resolved[index]);
-        // The vector, never a string. Nothing here builds a command line, so nothing has to
-        // unbuild one.
-        command
-            .args(&stage.args)
-            .current_dir(directory)
-            // Taken rather than moved, so the compiler can see every iteration starts with a
-            // stdin of its own. The last stage keeps its output instead of passing it on, which
-            // leaves this holding a null it never uses.
-            .stdin(std::mem::replace(&mut upstream, Stdio::null()))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Every stage, not only the first. A credential is as reachable from the middle of a
-        // pipeline as from the front, and one stage spared would be the whole of the hole.
-        crate::scrub::apply(&mut command);
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                // Whatever started already is killed rather than left running behind a pipeline
-                // that will never complete.
-                for mut started in children {
-                    let _ = started.kill();
-                    let _ = started.wait();
-                }
-                return Err(ExecError::NotStarted {
-                    program: stage.program.clone(),
-                    detail: e.to_string(),
-                });
-            }
-        };
-
-        // Handed to the next stage as a file descriptor, so the operating system moves the bytes
-        // between them and no buffer of ours can fill up and deadlock. The last stage has no next
-        // stage, so its output is kept to be read.
-        match child.stdout.take() {
-            Some(out) if index == last => tail_out = Some(out),
-            Some(out) => upstream = Stdio::from(out),
-            None => upstream = Stdio::null(),
-        }
-        children.push(child);
-    }
-
-    // Drained on threads of their own, for the same reason the stages are chained by descriptor: a
-    // stage that writes more to stderr than a pipe holds would block forever if nobody were
-    // reading while we waited for it to exit.
-    let mut draining: Vec<Drain> = Vec::with_capacity(children.len());
-    for child in &mut children {
-        if let Some(err) = child.stderr.take() {
-            draining.push(Drain::reading(err));
-        }
-    }
-
-    // Read on a thread of its own, started before the wait, so the last stage's output is being
-    // collected while it is still being written. Waiting first and reading afterwards would
-    // deadlock as soon as a program produced more than a pipe buffer holds.
-    let tail = tail_out.map(Drain::reading);
-
-    let started = Instant::now();
-    let mut codes = vec![None; children.len()];
-    let mut finished = vec![false; children.len()];
-    let mut stopped = None;
-
-    loop {
-        for (index, child) in children.iter_mut().enumerate() {
-            if finished[index] {
-                continue;
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    codes[index] = status.code();
-                    finished[index] = true;
-                }
-                Ok(None) => {}
-                // A child we cannot ask about is not one to keep waiting for.
-                Err(_) => finished[index] = true,
-            }
-        }
-
-        if finished.iter().all(|done| *done) {
-            break;
-        }
-
-        // Both of these kill. A pipeline still running is an effect in progress, and neither a
-        // cancellation nor the limit is served by leaving it to finish unwatched.
-        if cancel.is_cancelled() {
-            stop(&mut children);
-            return Err(ExecError::Cancelled);
-        }
-        let waited = started.elapsed();
-        if waited >= limit {
-            // Killed, then collected like any other end: the stages are over either way, and the
-            // bytes they wrote before they were stopped are the only account of what happened.
-            stop(&mut children);
-            stopped = Some(waited);
-            break;
-        }
-
-        std::thread::sleep(TICK);
-    }
-
-    // Collected once the stages are over, whether they ended on their own or were killed. The
-    // usual case is that every pipe reached its end the moment the stage writing to it did, and
-    // the wait returns at once; the grace is there for the pipe something else is still holding,
-    // and what had been read by then is taken rather than lost.
-    let waiting = Instant::now();
-    while waiting.elapsed() < DRAIN_GRACE
-        && !(tail.as_ref().is_none_or(Drain::finished) && draining.iter().all(Drain::finished))
-    {
-        std::thread::sleep(TICK);
-    }
-
-    let stdout = tail.as_ref().map(Drain::text).unwrap_or_default();
-    let stderr = draining
+    let steps: Vec<Step> = pipeline
+        .stages
         .iter()
-        .map(Drain::text)
-        .collect::<Vec<_>>()
-        .concat();
+        .zip(resolved)
+        .map(|(stage, path)| Step {
+            program: stage.program.clone(),
+            resolved: path.clone(),
+            args: stage.args.clone(),
+            environment: Vec::new(),
+            routes: Vec::new(),
+        })
+        .collect();
+    Running::new(directory, cancel, limit).finish(&Steps::Pipeline(steps))
+}
 
-    Ok(Ran {
-        stdout,
-        stderr,
-        codes,
-        stopped,
+/// Run a compiled command line and collect what it printed.
+///
+/// Every part of the plan shares one deadline, because the limit is on the line rather than on
+/// any one program in it, and a part reached after the time ran out is not started.
+pub fn run_plan(plan: &CommandLine, cancel: &Cancel, limit: Duration) -> Result<Ran, ExecError> {
+    Running::new(&plan.directory, cancel, limit).finish(&plan.steps)
+}
+
+/// Where one of a step's streams goes.
+enum Where {
+    /// The stage before this one.
+    Upstream,
+    /// The stage after this one.
+    Chain,
+    /// A pipe this module reads, so the bytes come back in the result.
+    Collect,
+    /// A file the plan named, opened for appending where the line said so.
+    File(std::path::PathBuf, bool),
+    /// Wherever standard output is going, as a second handle on the same place.
+    AsStdout,
+}
+
+/// One line's worth of running: its parts in order, what they printed, and one deadline over all
+/// of them.
+struct Running<'a> {
+    directory: &'a std::path::Path,
+    cancel: &'a Cancel,
+    started: Instant,
+    limit: Duration,
+    stdout: String,
+    stderr: String,
+    codes: Vec<Option<i32>>,
+    stopped: Option<Duration>,
+}
+
+impl<'a> Running<'a> {
+    fn new(directory: &'a std::path::Path, cancel: &'a Cancel, limit: Duration) -> Self {
+        Self {
+            directory,
+            cancel,
+            started: Instant::now(),
+            limit,
+            stdout: String::new(),
+            stderr: String::new(),
+            codes: Vec::new(),
+            stopped: None,
+        }
+    }
+
+    fn finish(mut self, steps: &Steps) -> Result<Ran, ExecError> {
+        let ended_well = self.run(steps)?;
+        Ok(Ran {
+            stdout: self.stdout,
+            stderr: self.stderr,
+            codes: self.codes,
+            stopped: self.stopped,
+            ended_well,
+        })
+    }
+
+    /// Run one shape of a plan, and say whether it ended well.
+    fn run(&mut self, steps: &Steps) -> Result<bool, ExecError> {
+        match steps {
+            Steps::Pipeline(steps) => self.pipeline(steps),
+            Steps::Group(inner) => self.run(inner),
+            Steps::Join {
+                left,
+                joiner,
+                right,
+            } => {
+                let ok = self.run(left)?;
+                let onwards = match joiner {
+                    Joiner::And => ok,
+                    Joiner::Or => !ok,
+                    Joiner::Then => true,
+                };
+                // A line that ran out of time does not go on to its next part. The deadline is on
+                // the line, and what was collected before it is the account of what happened.
+                if !onwards || self.stopped.is_some() {
+                    return Ok(ok);
+                }
+                self.run(right)
+            }
+        }
+    }
+
+    /// Run one pipeline of steps, chained by descriptor the way a shell chains them.
+    fn pipeline(&mut self, steps: &[Step]) -> Result<bool, ExecError> {
+        if steps.is_empty() {
+            return Err(ExecError::Io("no stages to run".to_string()));
+        }
+
+        let mut children: Vec<Child> = Vec::with_capacity(steps.len());
+        // Nothing is typed at a program bravebot started, so a step with nothing upstream reads an
+        // empty stdin rather than the terminal's.
+        let mut upstream = Stdio::null();
+        let mut tail: Option<Drain> = None;
+        let mut draining: Vec<Drain> = Vec::new();
+        let last = steps.len() - 1;
+
+        for (index, step) in steps.iter().enumerate() {
+            // The resolved path, never the name. The name was resolved once, before the person was
+            // asked, and looking it up again here would leave a window in which `$PATH` changed.
+            let mut command = Command::new(&step.resolved);
+            // The vector, never a string. Nothing here builds a command line, so nothing has to
+            // unbuild one.
+            command.args(&step.args).current_dir(self.directory);
+            // Written in front of this step's own program, so it reaches this step and no other.
+            for (name, value) in &step.environment {
+                command.env(name, value);
+            }
+            // Every step, not only the first. A credential is as reachable from the middle of a
+            // pipeline as from the front, and one step spared would be the whole of the hole.
+            crate::scrub::apply(&mut command);
+
+            let mut into = Where::Upstream;
+            let mut out = if index == last {
+                Where::Collect
+            } else {
+                Where::Chain
+            };
+            let mut err = Where::Collect;
+            // In the order the line wrote them, which is what decides `> f 2>&1` from `2>&1 > f`.
+            for route in &step.routes {
+                match route {
+                    Route::Stdin { path } => into = Where::File(path.clone(), false),
+                    Route::Stdout { path, append } => out = Where::File(path.clone(), *append),
+                    Route::Stderr { path, append } => err = Where::File(path.clone(), *append),
+                    Route::Both { path } => {
+                        out = Where::File(path.clone(), false);
+                        err = Where::AsStdout;
+                    }
+                    Route::StderrToStdout => err = Where::AsStdout,
+                }
+            }
+
+            command.stdin(match &into {
+                Where::File(path, _) => Stdio::from(for_reading(path)?),
+                // Taken rather than moved, so every iteration starts with a stdin of its own.
+                _ => std::mem::replace(&mut upstream, Stdio::null()),
+            });
+
+            // The duplicate is what `2>&1` needs: a second handle on wherever standard output is
+            // going at that point, rather than a second place.
+            let (writing, reading, duplicate) = destination(&out)?;
+            let (erring, err_reading) = match &err {
+                Where::File(path, append) => (Stdio::from(for_writing(path, *append)?), None),
+                Where::AsStdout => (
+                    duplicate.ok_or_else(|| {
+                        ExecError::Io(
+                            "standard error could not be joined to standard output".to_string(),
+                        )
+                    })?,
+                    None,
+                ),
+                _ => {
+                    let (reader, writer) =
+                        std::io::pipe().map_err(|e| ExecError::Io(e.to_string()))?;
+                    (Stdio::from(writer), Some(reader))
+                }
+            };
+            command.stdout(writing).stderr(erring);
+
+            let child = match command.spawn() {
+                Ok(child) => child,
+                Err(e) => {
+                    // Whatever started already is killed rather than left running behind a
+                    // pipeline that will never complete.
+                    stop(&mut children);
+                    return Err(ExecError::NotStarted {
+                        program: step.program.clone(),
+                        detail: e.to_string(),
+                    });
+                }
+            };
+            children.push(child);
+
+            // Read on threads of their own, started as each step spawns, so a program printing
+            // more than a pipe holds is being drained while it is still writing. Waiting first and
+            // reading afterwards would deadlock on exactly that.
+            match (&out, reading) {
+                (Where::Chain, Some(reader)) => upstream = Stdio::from(reader),
+                (_, Some(reader)) => tail = Some(Drain::reading(reader)),
+                (_, None) => {}
+            }
+            if let Some(reader) = err_reading {
+                draining.push(Drain::reading(reader));
+            }
+        }
+
+        let codes = self.wait(&mut children)?;
+
+        // Collected once the steps are over, whether they ended on their own or were killed. The
+        // usual case is that every pipe reached its end the moment the step writing to it did; the
+        // grace is there for the pipe something else is still holding, and what had been read by
+        // then is taken rather than lost.
+        let waiting = Instant::now();
+        while waiting.elapsed() < DRAIN_GRACE
+            && !(tail.as_ref().is_none_or(Drain::finished) && draining.iter().all(Drain::finished))
+        {
+            std::thread::sleep(TICK);
+        }
+
+        if let Some(tail) = &tail {
+            self.stdout.push_str(&tail.text());
+        }
+        for drain in &draining {
+            self.stderr.push_str(&drain.text());
+        }
+        self.codes.extend(codes.iter().copied());
+
+        Ok(self.stopped.is_none() && codes.iter().all(|code| *code == Some(0)))
+    }
+
+    /// Wait for every child, until they are done, the user says stop, or the time runs out.
+    fn wait(&mut self, children: &mut [Child]) -> Result<Vec<Option<i32>>, ExecError> {
+        let mut codes = vec![None; children.len()];
+        let mut finished = vec![false; children.len()];
+
+        loop {
+            for (index, child) in children.iter_mut().enumerate() {
+                if finished[index] {
+                    continue;
+                }
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        codes[index] = status.code();
+                        finished[index] = true;
+                    }
+                    Ok(None) => {}
+                    // A child we cannot ask about is not one to keep waiting for.
+                    Err(_) => finished[index] = true,
+                }
+            }
+
+            if finished.iter().all(|done| *done) {
+                return Ok(codes);
+            }
+
+            // Both of these kill. Something still running is an effect in progress, and neither a
+            // cancellation nor the deadline is served by leaving it to finish unwatched.
+            if self.cancel.is_cancelled() {
+                stop(children);
+                return Err(ExecError::Cancelled);
+            }
+            let waited = self.started.elapsed();
+            if waited >= self.limit {
+                stop(children);
+                self.stopped = Some(waited);
+                return Ok(codes);
+            }
+
+            std::thread::sleep(TICK);
+        }
+    }
+}
+
+/// Where a step's standard output goes: what the child is given, the end this module keeps, and a
+/// second handle on the same place for `2>&1`.
+fn destination(
+    out: &Where,
+) -> Result<(Stdio, Option<std::io::PipeReader>, Option<Stdio>), ExecError> {
+    match out {
+        Where::File(path, append) => {
+            let file = for_writing(path, *append)?;
+            let duplicate = file.try_clone().ok().map(Stdio::from);
+            Ok((Stdio::from(file), None, duplicate))
+        }
+        _ => {
+            let (reader, writer) = std::io::pipe().map_err(|e| ExecError::Io(e.to_string()))?;
+            let duplicate = writer.try_clone().ok().map(Stdio::from);
+            Ok((Stdio::from(writer), Some(reader), duplicate))
+        }
+    }
+}
+
+/// A redirection's target, opened to be written.
+///
+/// The path is named in the error because it is routing a person endorsed rather than content an
+/// attacker chose.
+fn for_writing(path: &std::path::Path, append: bool) -> Result<std::fs::File, ExecError> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append)
+        .open(path)
+        .map_err(|e| ExecError::Redirection {
+            path: path.display().to_string(),
+            detail: e.to_string(),
+        })
+}
+
+/// A redirection's source, opened to be read.
+fn for_reading(path: &std::path::Path) -> Result<std::fs::File, ExecError> {
+    std::fs::File::open(path).map_err(|e| ExecError::Redirection {
+        path: path.display().to_string(),
+        detail: e.to_string(),
     })
 }
 
