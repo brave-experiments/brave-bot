@@ -9664,3 +9664,112 @@ fn one_trail_records_the_delegate_and_the_turn_that_spawned_it() {
         "the delegate's own run recorded nothing in the turn's trail"
     );
 }
+
+/// Four near-identical paragraphs are model output on the critical path: nothing starts until
+/// the last word of the last copy is written. One call saying what they share and what differs
+/// starts the same four runs without the planner dictating the same instruction four times.
+#[test]
+fn one_call_can_fan_a_task_out_over_several_delegates() {
+    let scratch = Scratch::new("delegate-fanout");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "FAN-THESE-OUT",
+            vec![
+                tool_request(
+                    "spawn_agent",
+                    r#"{"kind":"reader","task":"SHARED-INSTRUCTION","each":["ENTRY-ALPHA","ENTRY-BETA","ENTRY-GAMMA"]}"#,
+                ),
+                reply_with("waiting for the three of them"),
+                reply_with("all three answered"),
+            ],
+        ),
+        ("ENTRY-ALPHA", vec![reply_with("alpha is done")]),
+        ("ENTRY-BETA", vec![reply_with("beta is done")]),
+        ("ENTRY-GAMMA", vec![reply_with("gamma is done")]),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("FAN-THESE-OUT"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    for id in ["d1", "d2", "d3"] {
+        assert!(
+            reporter
+                .position(&format!("delegate {id} finished failed=false"))
+                .is_some(),
+            "{id} was never started or never collected: {:?}",
+            reporter.lines()
+        );
+    }
+
+    // Each was told the shared half as well as its own. A delegate handed only its entry has
+    // been given the part that differs and none of the part that says what to do with it.
+    let bodies: Vec<String> = received.try_iter().collect();
+    for entry in ["ENTRY-ALPHA", "ENTRY-BETA", "ENTRY-GAMMA"] {
+        let delegate = bodies
+            .iter()
+            .find(|body| body.contains(entry) && !body.contains("FAN-THESE-OUT"))
+            .unwrap_or_else(|| panic!("no delegate was asked about {entry}"));
+        assert!(
+            delegate.contains("SHARED-INSTRUCTION"),
+            "the delegate for {entry} was not told the shared half of the task"
+        );
+    }
+}
+
+/// The planner could always start this many one call at a time, so the ceiling is not about
+/// authority. It is about a field that turns one sentence into an unbounded number of runs.
+#[test]
+fn a_fan_out_past_the_ceiling_is_refused_and_starts_nothing() {
+    let scratch = Scratch::new("delegate-fanout-ceiling");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_by_marker(vec![(
+        "FAN-OUT-TOO-FAR",
+        vec![
+            tool_request(
+                "spawn_agent",
+                r#"{"kind":"reader","task":"SHARED","each":["1","2","3","4","5","6","7","8","9"]}"#,
+            ),
+            reply_with("that was too many"),
+        ],
+    )]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = Watched::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("FAN-OUT-TOO-FAR"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        reporter.position("delegate d1 finished").is_none(),
+        "a refused fan-out started a delegate anyway: {:?}",
+        reporter.lines()
+    );
+}
