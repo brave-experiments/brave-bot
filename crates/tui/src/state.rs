@@ -2780,6 +2780,14 @@ impl Session {
         self.show_trail = !self.show_trail;
     }
 
+    /// Whether any turn has left a trail, meaning the toggle has something to reveal.
+    ///
+    /// A trail lands on an entry when the turn it belongs to ends, so a session that has not
+    /// finished one holds nothing for the key to show.
+    pub fn has_trail(&self) -> bool {
+        self.transcript.iter().any(|entry| !entry.trail.is_empty())
+    }
+
     pub fn quit(&mut self) {
         self.status = Status::Quitting;
     }

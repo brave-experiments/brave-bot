@@ -1751,10 +1751,13 @@ fn entry_lines(session: &Session, offered: &[crate::entries::Entry]) -> Vec<Line
 
 /// The shortcut line. Keeps the bindings discoverable without a help command.
 fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
-    let trail = if session.show_trail {
-        "ctrl-t hide trail"
-    } else {
-        "ctrl-t show trail"
+    // Named only once a turn has left a trail to look at. Offering the key before that is a line
+    // under the box inviting a press that changes nothing on screen, and what a person learns from
+    // that press is that the key does not work.
+    let trail = match (session.has_trail(), session.show_trail) {
+        (false, _) => "",
+        (true, true) => "ctrl-t hide trail  ·  ",
+        (true, false) => "ctrl-t show trail  ·  ",
     };
 
     // In shell mode the usual bindings are beside the point: the line goes to a shell, so what a
@@ -1790,7 +1793,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  {trail}  ·  confinement {}{context}  ·  {SHORTCUTS_HINT}",
+                "  {trail}confinement {}{context}  ·  {SHORTCUTS_HINT}",
                 session.confinement
             ),
             dim(),
@@ -3794,10 +3797,53 @@ mod tests {
 
     #[test]
     fn the_hint_reflects_the_trail_state() {
-        let mut session = Session::new("none");
+        let mut session = turn_that_left_a_trail();
         assert!(rendered(&session).contains("show trail"));
         session.toggle_trail();
         assert!(rendered(&session).contains("hide trail"));
+    }
+
+    /// The hint line used to name the key from the first frame, before any turn had left anything
+    /// for it to reveal. Pressing it then toggled a flag and changed nothing on screen, which
+    /// teaches a person that the key is broken.
+    #[test]
+    fn the_hint_names_the_trail_key_only_once_there_is_a_trail() {
+        let mut session = Session::new("none");
+        assert!(!rendered(&session).contains("trail"), "nothing to show yet");
+
+        // Nor part way through the first turn, which is where the trail has still to be recorded.
+        session.type_char('a');
+        session.submit();
+        assert!(!rendered(&session).contains("trail"), "the turn is running");
+
+        session.complete(
+            "reply",
+            vec![Event::Observed {
+                capability: Capability::FileRead,
+                label: Label::untrusted_private(),
+            }],
+            0,
+        );
+        assert!(
+            rendered(&session).contains("ctrl-t show trail"),
+            "the finished turn left a trail the hint did not offer"
+        );
+    }
+
+    /// A finished turn with a trail on it, which is what makes the key worth offering.
+    fn turn_that_left_a_trail() -> Session {
+        let mut session = Session::new("none");
+        session.type_char('a');
+        session.submit();
+        session.complete(
+            "reply",
+            vec![Event::Observed {
+                capability: Capability::FileRead,
+                label: Label::untrusted_private(),
+            }],
+            0,
+        );
+        session
     }
 
     /// A refusal must be visible, since it is the most important thing on screen.
