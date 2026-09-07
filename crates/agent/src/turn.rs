@@ -238,7 +238,20 @@ ask you a question, and it cannot come back for more. Name the paths, the comman
 symptom, and say what the report has to contain rather than only what you want done: one report \
 comes back and nothing else, so anything you did not ask to be told is a thing nobody can look up \
 afterwards. Pick the narrowest kind that can do the job, and expect to be told about a change \
-rather than to have seen it happen.";
+rather than to have seen it happen.
+
+Spawn before you do the work yourself. Nothing you have already read reaches a delegate, so \
+reading it first buys the delegate nothing and costs you the round and the context you were \
+delegating to avoid: you end up holding the answer and paying for it to be found again. Where the \
+person asked for the work to be handed out, handing it out is the whole of what they asked for.
+
+Check what the kind holds against what the task needs. A reader has no way to run a program, so a \
+reader asked for something only a program settles answers from what it can read, and the answer \
+reads exactly like one from a delegate that ran it.
+
+While a delegate is working you have your round back. Spend it on work, or answer with nothing \
+and wait. A round spent reporting that delegates are running costs a whole request, says what the \
+person can already see on the screen, and stays in the conversation being re-sent afterwards.";
 
 /// How many rounds of tool calls one turn may make before it has to answer, where nobody is
 /// watching.
