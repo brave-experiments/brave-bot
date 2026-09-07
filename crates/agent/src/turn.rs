@@ -1781,7 +1781,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                 // Started here rather than inside the call. A delegate outlives the call that asked
                 // for one: that call has already answered, and what is still here when the work
                 // finishes is the turn.
-                if let Some((id, seeded)) = output.delegate.take() {
+                for (id, seeded) in std::mem::take(&mut output.delegate) {
                     let vouched = seeded.vouched.clone();
                     let handle = scope.spawn(move || {
                         let mut confirmer = confirming.delegate(id);

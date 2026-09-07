@@ -491,6 +491,17 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     "task": {
                         "type": "string",
                         "description": "What it has to do, in your own words, as the whole of                                         what it will know. It cannot see this conversation, your                                         references, the user's prompt or anything you have read,                                         and it cannot come back for more, so name the paths, the                                         commands, the symptom and what a finished answer has to                                         contain. Say what you want reported, not just what you                                         want done."
+                    },
+                    "each": {
+                        "type": "array",
+                        "description": "Optional. Start one delegate per entry instead of one \
+                                        in total, each told the task followed by its own entry. \
+                                        Put what they share in task and only the differing part \
+                                        here, e.g. one path per entry. Writing the same \
+                                        paragraph out four times costs you the seconds it takes \
+                                        to say it, and the delegates cannot start until you \
+                                        have.",
+                        "items": {"type": "string"}
                     }
                 },
                 "required": ["kind", "task"]
@@ -656,12 +667,16 @@ pub struct Output {
     /// Travels back to whoever started the loop, which is the only thing that knows there is one.
     /// A turn that says it twice is taken at its last word, since that is the one it ended on.
     pub wakeup: Option<crate::turn::Wakeup>,
-    /// A delegate the kernel approved, for the turn to start.
+    /// The delegates the kernel approved, for the turn to start.
     ///
     /// Started by the turn because a delegate outlives the call that asked for one: the call
     /// answers at once and the delegate goes on working, so what starts it has to be the thing
     /// still there when it finishes.
-    pub delegate: Option<(crate::report::DelegateId, crate::delegate::Seeded)>,
+    ///
+    /// A list because one call may fan a task out over several. Each is gated, numbered and
+    /// seeded on its own, so what the turn starts is the same thing whether the planner asked
+    /// for them one call at a time or all at once.
+    pub delegate: Vec<(crate::report::DelegateId, crate::delegate::Seeded)>,
 }
 
 /// Everything a tool works with that is not the policy.
@@ -764,12 +779,14 @@ struct Produced {
     printed_by: Option<String>,
     /// When the planner asked for the next tick of a self-paced loop.
     wakeup: Option<crate::turn::Wakeup>,
-    /// A delegate the kernel has approved and nobody has started yet.
+    /// The delegates the kernel has approved and nobody has started yet.
     ///
     /// Started by the turn rather than here, because a delegate outlives the call that asked for
     /// one: the call answers immediately and the delegate goes on working. The turn is what is
     /// still there when it finishes.
-    delegate: Option<(crate::report::DelegateId, crate::delegate::Seeded)>,
+    ///
+    /// A list because one call may fan a task out over several.
+    delegate: Vec<(crate::report::DelegateId, crate::delegate::Seeded)>,
 }
 
 impl Produced {
@@ -793,7 +810,7 @@ impl Produced {
             inference: std::time::Duration::ZERO,
             printed_by: None,
             wakeup: None,
-            delegate: None,
+            delegate: Vec::new(),
         }
     }
 
@@ -803,7 +820,7 @@ impl Produced {
         id: crate::report::DelegateId,
         seeded: crate::delegate::Seeded,
     ) -> Self {
-        self.delegate = Some((id, seeded));
+        self.delegate.push((id, seeded));
         self
     }
 
@@ -1204,7 +1221,7 @@ fn problem(text: impl Into<String>) -> Produced {
         usage: Usage::default(),
         inference: std::time::Duration::ZERO,
         printed_by: None,
-        delegate: None,
+        delegate: Vec::new(),
     }
 }
 
@@ -2674,56 +2691,149 @@ fn spawn_agent<S: Sink, R: Reporter>(
             bravebot_core::delegate::Kind::NAMES.join(", ")
         ));
     };
-    let Some(task) = argument(arguments, "task") else {
-        return problem(
-            "error: 'task' is required and must be a string saying what the delegate has to do",
-        );
+    let tasks = match tasks_in(arguments) {
+        Ok(tasks) => tasks,
+        Err(refusal) => return problem(refusal),
     };
 
-    // The trail's name for it is the driver's own word, not the task: a task is a paragraph, and
-    // it would be in every line of the trail that mentions this run.
-    let spec = match policy.before_delegate("delegate", &kind, &task) {
-        Ok(spec) => spec,
-        Err(denial) => return problem(format!("refused: {denial}")),
-    };
+    let mut produced = Produced::new(
+        Labelled::trusted(String::new()),
+        String::new(),
+        String::new(),
+    );
+    let mut started = Vec::new();
+    let mut kind_name = "";
 
-    // Numbered by the driver, in the order this turn spawned them. Everything reported about this
-    // delegate carries the number, which is the only thing saying whose a line is: the alternative
-    // is reading the line, which is prose a model wrote.
-    //
-    // The task goes with it, released for a screen the way the target of any other call is. A
-    // person watching several delegates has nothing else to tell them apart by.
-    *tools.spawned += 1;
-    let id = crate::report::DelegateId::nth(*tools.spawned);
-    let asked = {
-        let proof = policy.authorise_display_release("what a delegate was asked to do");
-        task.declassify(&proof)
-    };
-    reporter.delegate_started(crate::report::Delegation {
-        id,
-        kind: spec.kind().as_str(),
-        task: asked,
-    });
+    for task in &tasks {
+        // The trail's name for it is the driver's own word, not the task: a task is a paragraph,
+        // and it would be in every line of the trail that mentions this run.
+        //
+        // Gated once per delegate rather than once per call. A fan-out is several runs, and a
+        // gate that saw one of them would be approving the others on the strength of a sibling.
+        let spec = match policy.before_delegate("delegate", &kind, task) {
+            Ok(spec) => spec,
+            Err(denial) => return problem(format!("refused: {denial}")),
+        };
 
-    // Everything the kernel settled, taken off the policy here on the turn's own thread. From
-    // this point the delegate needs nothing further from the run that spawned it, which is what
-    // lets the two run at the same time.
-    let seeded = crate::delegate::seed(policy, spec);
+        // Numbered by the driver, in the order this turn spawned them. Everything reported about
+        // this delegate carries the number, which is the only thing saying whose a line is: the
+        // alternative is reading the line, which is prose a model wrote.
+        //
+        // The task goes with it, released for a screen the way the target of any other call is. A
+        // person watching several delegates has nothing else to tell them apart by, and a fan-out
+        // is exactly where several of them read alike.
+        *tools.spawned += 1;
+        let id = crate::report::DelegateId::nth(*tools.spawned);
+        let asked = {
+            let proof = policy.authorise_display_release("what a delegate was asked to do");
+            task.clone().declassify(&proof)
+        };
+        reporter.delegate_started(crate::report::Delegation {
+            id,
+            kind: spec.kind().as_str(),
+            task: asked,
+        });
+
+        kind_name = spec.kind().as_str();
+        started.push(id.to_string());
+
+        // Everything the kernel settled, taken off the policy here on the turn's own thread. From
+        // this point the delegate needs nothing further from the run that spawned it, which is
+        // what lets the two run at the same time.
+        let seeded = crate::delegate::seed(policy, spec);
+        produced = produced.delegating(id, seeded);
+    }
 
     // Started rather than finished. The turn hears about the report when there is one, and in the
     // meantime the planner has its round back: a turn that had to sit still until a delegate
     // answered could only ever have one working.
-    Produced::new(
-        Labelled::trusted(format!(
-            "the {} delegate {id} has started. Its report will reach you when it is ready, and \
-             you do not have to wait for it: carry on, or spawn another. You will be told what it \
-             said before you are asked to answer.",
-            seeded.spec.kind()
-        )),
-        format!("a {} delegate", seeded.spec.kind()),
-        format!("a {} delegate started", seeded.spec.kind()),
-    )
-    .delegating(id, seeded)
+    let named = started.join(", ");
+    let body = if started.len() == 1 {
+        format!(
+            "the {kind_name} delegate {named} has started. Its report will reach you when it is \
+             ready, and you do not have to wait for it: carry on, or spawn another. You will be \
+             told what it said before you are asked to answer."
+        )
+    } else {
+        format!(
+            "{} {kind_name} delegates have started: {named}. Each reports on its own and you do \
+             not have to wait for any of them: carry on, or spawn another. You will be told what \
+             they said before you are asked to answer.",
+            started.len()
+        )
+    };
+    let note = if started.len() == 1 {
+        format!("a {kind_name} delegate started")
+    } else {
+        format!("{} {kind_name} delegates started", started.len())
+    };
+
+    produced.text = Labelled::trusted(body);
+    produced.origin = format!("a {kind_name} delegate");
+    produced.note = note;
+    produced
+}
+
+/// The most delegates one call may fan a task out over.
+///
+/// A bound on futility rather than on authority: the planner could always start this many with
+/// this many calls, and each is gated on its own either way. What changes is the cost of asking,
+/// and a field that turns one sentence into forty runs is a field worth a ceiling.
+const MAX_FANOUT: usize = 8;
+
+/// The tasks one `spawn_agent` call asks for, one per delegate.
+///
+/// Without `each` that is the task itself. With it, the task is what they share and each entry is
+/// what one of them is additionally told, composed here before anything is labelled: both halves
+/// are the same model output out of the same call, so joining them settles nothing about either.
+fn tasks_in(arguments: &Value) -> Result<Vec<Labelled<String>>, String> {
+    let Some(task) = arguments.get("task").and_then(Value::as_str) else {
+        return Err(
+            "error: 'task' is required and must be a string saying what the delegate has to do"
+                .to_string(),
+        );
+    };
+
+    let Some(each) = arguments.get("each") else {
+        return Ok(vec![Labelled::new(
+            task.to_string(),
+            bravebot_core::label::Label::untrusted_public(),
+        )]);
+    };
+
+    let Some(entries) = each.as_array() else {
+        return Err("error: 'each' must be an array of strings, one per delegate".to_string());
+    };
+    if entries.is_empty() {
+        return Err(
+            "error: 'each' was empty, so it named no delegates; leave it out to start one"
+                .to_string(),
+        );
+    }
+    if entries.len() > MAX_FANOUT {
+        return Err(format!(
+            "error: 'each' named {} delegates and at most {MAX_FANOUT} may be started by one \
+             call; split the work or narrow it",
+            entries.len()
+        ));
+    }
+
+    entries
+        .iter()
+        .map(|entry| {
+            let Some(entry) = entry.as_str() else {
+                return Err(
+                    "error: every entry in 'each' must be a string saying what that one \
+                     delegate is additionally told"
+                        .to_string(),
+                );
+            };
+            Ok(Labelled::new(
+                format!("{task}\n\n{entry}"),
+                bravebot_core::label::Label::untrusted_public(),
+            ))
+        })
+        .collect()
 }
 
 /// Read a skill the planner was listed.
