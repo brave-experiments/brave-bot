@@ -5,6 +5,7 @@
 //! by the content it processes.
 
 pub mod backend;
+pub mod cmdline;
 pub mod compact;
 pub mod confirm;
 pub mod conversation;

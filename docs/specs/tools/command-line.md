@@ -3,6 +3,7 @@ id: CMDLINE
 title: command lines
 status: proposed
 governs:
+  - crates/agent/src/cmdline.rs
   - crates/agent/src/exec.rs
   - crates/agent/src/programs.rs
   - crates/core/src/command.rs
@@ -145,7 +146,27 @@ pointless; substituting it after makes the endorsement a lie. A closed set of ha
 names (the workspace root, say) could be admitted later by expanding them at compile time, which
 is the same thing as the planner having written them.
 
-`verified-by: none`
+`verified-by: bravebot_agent::cmdline::a_simple_command_is_its_program_and_its_operands`
+`verified-by: bravebot_agent::cmdline::a_pipeline_keeps_its_stages_in_order`
+`verified-by: bravebot_agent::cmdline::and_binds_tighter_than_a_semicolon`
+`verified-by: bravebot_agent::cmdline::parentheses_group_a_sequence`
+`verified-by: bravebot_agent::cmdline::a_backslash_makes_the_next_character_ordinary`
+`verified-by: bravebot_agent::cmdline::each_redirection_form_is_read_as_the_stream_it_names`
+`verified-by: bravebot_agent::cmdline::a_glob_survives_as_a_pattern_and_a_quoted_one_does_not`
+`verified-by: bravebot_agent::cmdline::braces_are_alternatives_or_a_range`
+`verified-by: bravebot_agent::cmdline::a_leading_tilde_stands_for_a_home_and_a_later_one_does_not`
+`verified-by: bravebot_agent::cmdline::an_assignment_in_front_of_the_program_is_environment`
+`verified-by: bravebot_agent::cmdline::a_command_whose_text_would_be_computed_is_refused`
+`verified-by: bravebot_agent::cmdline::process_substitution_is_refused`
+`verified-by: bravebot_agent::cmdline::a_variable_is_refused`
+`verified-by: bravebot_agent::cmdline::arithmetic_is_refused`
+`verified-by: bravebot_agent::cmdline::backgrounding_is_refused`
+`verified-by: bravebot_agent::cmdline::a_here_document_is_refused`
+`verified-by: bravebot_agent::cmdline::a_program_that_reintroduces_interpretation_is_refused`
+`verified-by: bravebot_agent::cmdline::a_word_that_opens_control_flow_is_refused`
+`verified-by: bravebot_agent::cmdline::an_unquoted_exclamation_mark_is_refused`
+`verified-by: bravebot_agent::cmdline::quoting_makes_a_refused_construct_ordinary_text`
+`verified-by: bravebot_agent::cmdline::a_line_that_half_compiles_yields_nothing`
 
 <a id="CMDLINE-3"></a>
 ### CMDLINE-3: what a person endorses is the compiled plan, not the line they were sent
