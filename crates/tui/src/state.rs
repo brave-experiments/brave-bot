@@ -5,7 +5,7 @@
 //! stops routing from one turn leaking into the next as untrusted content accumulates.
 
 use crate::audit::TrailLine;
-use bravebot_agent::report::{Activity, Landing, Phase, Reported, Shown};
+use bravebot_agent::report::{Activity, Landing, Phase, Printed, Reported, Shown};
 use bravebot_aichat::protocol::Effort;
 use bravebot_core::event::Event;
 use bravebot_i18n::t;
@@ -90,6 +90,36 @@ pub struct Delegate {
     pub reported: Option<Reported>,
     /// Whether it ended by failing, so the line saying so can be coloured as such.
     pub failed: bool,
+}
+
+/// A command this session ran, and what it printed.
+///
+/// Kept whether or not the planner was allowed to read it. The person owns the directory and is
+/// entitled to read what their agent ran; what must not happen is those bytes reaching a model's
+/// context, and a screen is not a context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    /// The command, as the plan the person endorsed showed it.
+    pub command: String,
+    /// What it printed, as far back as is kept.
+    pub lines: Vec<String>,
+    /// How many lines there were altogether, so the view can say what it left out.
+    pub total: usize,
+    /// Whether the planner was allowed to read it.
+    pub read_by_the_planner: bool,
+}
+
+/// Something the delegate view can open.
+///
+/// One list rather than two, because a person pressing the key is asking to see work that is not
+/// in the transcript, and which kind of work it was is a property of the row rather than a reason
+/// for a second key.
+#[derive(Debug, Clone, Copy)]
+pub enum Watched<'a> {
+    /// A delegate's own work.
+    Delegate(&'a Delegate),
+    /// What a command printed.
+    Output(&'a Output),
 }
 
 /// How many of a delegate's own lines the block where it started draws.
@@ -479,18 +509,19 @@ pub fn matched(text: &str, needle: &str) -> Vec<(usize, usize)> {
 /// where there are several, and one delegate's own lines are what somebody came to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Watching {
-    /// Which delegate this is about, by its place in the order they were spawned.
+    /// Which row this is about, by its place in the list: the delegates in the order they were
+    /// spawned, then the commands in the order they ran.
     ///
-    /// A position rather than the driver's number, because it is also where the highlight sits in
-    /// the list, and the two must not be able to disagree.
+    /// A position rather than a name, because it is also where the highlight sits in the list, and
+    /// the two must not be able to disagree.
     pub at: usize,
-    /// Whether the list of them is what is on the screen, rather than the one at `at`.
+    /// Whether the list is what is on the screen, rather than the row at `at`.
     pub listing: bool,
-    /// Whether the list's highlight is on the session rather than on a delegate.
+    /// Whether the list's highlight is on the session rather than on one of the rows.
     ///
-    /// Kept beside `at` rather than folded into it so that `at` stays the delegate somebody was
-    /// last reading: coming back into the list puts the highlight where they left it, and the way
-    /// out is a row rather than a position nothing else can name.
+    /// Kept beside `at` rather than folded into it so that `at` stays the row somebody was last
+    /// reading: coming back into the list puts the highlight where they left it, and the way out
+    /// is a row rather than a position nothing else can name.
     pub on_session: bool,
 }
 
@@ -543,6 +574,12 @@ pub struct Session {
     /// `None` at rest, on the same footing as the scroller: what decides whether a letter is a
     /// letter or a movement is the mode, never what happens to be on the screen.
     watching: Option<Watching>,
+    /// What each command this session ran printed, oldest first.
+    ///
+    /// Held here rather than on the entry that ran it, because the view lists them across the
+    /// whole session the way it lists delegates, and an entry is the wrong place to look for the
+    /// third command when the second one scrolled away.
+    outputs: Vec<Output>,
     /// Where the turn's own view was when somebody went to look at a delegate.
     ///
     /// Held rather than recomputed, so coming back puts them where they were reading instead of
@@ -824,6 +861,7 @@ impl Session {
             scroll: 0,
             scroller: None,
             watching: None,
+            outputs: Vec::new(),
             held_view: None,
             history_search: None,
             laid: Laid::default(),
@@ -1311,22 +1349,52 @@ impl Session {
             .collect()
     }
 
-    /// Open the delegate view: on the list where there are several, and on the one where there is
-    /// one.
+    /// What a command printed, kept for the view.
     ///
-    /// `false` where this session has spawned none, which leaves the key doing nothing at all. A
+    /// Appended rather than attached to a line, so the third command is where the view expects it
+    /// once the second one has scrolled away.
+    pub fn command_printed(&mut self, printed: Printed) {
+        self.outputs.push(Output {
+            command: printed.command,
+            lines: printed.lines,
+            total: printed.total,
+            read_by_the_planner: printed.read_by_the_planner,
+        });
+    }
+
+    /// Every command this session ran, oldest first.
+    pub fn outputs(&self) -> &[Output] {
+        &self.outputs
+    }
+
+    /// Everything the view can open, in the order the list draws it.
+    ///
+    /// The delegates first and the commands after them, so a row's place does not move when the
+    /// next command runs. Both are work that happened outside the transcript, which is what the
+    /// view is for.
+    pub fn watchable(&self) -> Vec<Watched<'_>> {
+        self.delegates()
+            .into_iter()
+            .map(Watched::Delegate)
+            .chain(self.outputs.iter().map(Watched::Output))
+            .collect()
+    }
+
+    /// Open the view: on the list where there are several rows, and on the one where there is one.
+    ///
+    /// `false` where there is nothing to look at, which leaves the key doing nothing at all. A
     /// mode that opened on an empty screen would be worse than a key that did not answer.
     pub fn watch(&mut self) -> bool {
-        let delegates = self.delegates();
-        let Some(last) = delegates.len().checked_sub(1) else {
+        let rows = self.watchable();
+        let Some(last) = rows.len().checked_sub(1) else {
             return false;
         };
-        // The one working, or the most recent where none is. Somebody pressing the key while
-        // something is happening means that one, and there is nothing else it could mean when
-        // nothing is.
-        let at = delegates
+        // The delegate working, or the most recent row where none is. Somebody pressing the key
+        // while something is happening means that one, and there is nothing else it could mean
+        // when nothing is.
+        let at = rows
             .iter()
-            .rposition(|delegate| delegate.is_running())
+            .rposition(|row| matches!(row, Watched::Delegate(delegate) if delegate.is_running()))
             .unwrap_or(last);
         let listing = last > 0;
         self.held_view = Some(self.scroll);
@@ -1356,22 +1424,38 @@ impl Session {
         self.watching
     }
 
-    /// Whether one delegate's own lines are what is on the screen.
+    /// Whether one row's own lines are what is on the screen.
     pub fn watching_a_delegate(&self) -> bool {
         self.watching.is_some_and(|watching| !watching.listing)
     }
 
-    /// Whether the list of delegates is what is on the screen.
+    /// Whether the list is what is on the screen.
     pub fn listing_delegates(&self) -> bool {
         self.watching.is_some_and(|watching| watching.listing)
     }
 
-    /// The delegate the view is on, whether it is open or highlighted in the list.
+    /// The row the view is on, whether it is open or highlighted in the list.
     ///
-    /// `None` where the list's highlight is on the session, which is a row and not a delegate.
-    pub fn watched(&self) -> Option<&Delegate> {
+    /// `None` where the list's highlight is on the session, which is a row and not one of these.
+    pub fn watched(&self) -> Option<Watched<'_>> {
         let watching = self.watching.filter(|watching| !watching.on_session)?;
-        self.delegates().get(watching.at).copied()
+        self.watchable().get(watching.at).copied()
+    }
+
+    /// The delegate the view is on, where the row it is on is a delegate.
+    pub fn watched_delegate(&self) -> Option<&Delegate> {
+        match self.watched() {
+            Some(Watched::Delegate(delegate)) => Some(delegate),
+            _ => None,
+        }
+    }
+
+    /// What a command printed, where the row the view is on is a command.
+    pub fn watched_output(&self) -> Option<&Output> {
+        match self.watched() {
+            Some(Watched::Output(output)) => Some(output),
+            _ => None,
+        }
     }
 
     /// Whether the list's highlight is on the session rather than on one of the delegates.
@@ -1396,12 +1480,12 @@ impl Session {
         }
     }
 
-    /// Go back to the list from one delegate's lines.
+    /// Go back to the list from one row's lines.
     ///
-    /// `false` where this session has only one delegate: there is no list behind it, and the key
-    /// that would have gone back is the key that closes.
+    /// `false` where there is only one row: there is no list behind it, and the key that would
+    /// have gone back is the key that closes.
     pub fn list_delegates(&mut self) -> bool {
-        if self.delegates().len() < 2 {
+        if self.watchable().len() < 2 {
             return false;
         }
         match &mut self.watching {
@@ -1425,7 +1509,7 @@ impl Session {
     /// are for there is comparing two runs, and a key that stepped out of the mode partway
     /// through would be a different key wearing the same name.
     pub fn watch_next(&mut self) {
-        let last = self.delegates().len().saturating_sub(1);
+        let last = self.watchable().len().saturating_sub(1);
         let Some(watching) = &mut self.watching else {
             return;
         };
@@ -3632,7 +3716,7 @@ mod tests {
                 "there was a delegate and the key did nothing"
             );
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("checker"),
                 "the view opened on a delegate that had already finished"
             );
@@ -3789,7 +3873,7 @@ mod tests {
                 "stepping back past the first delegate left the delegates"
             );
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("reader"),
                 "the view stopped being on a delegate"
             );
@@ -3811,7 +3895,7 @@ mod tests {
                 "coming back from a delegate landed on the session"
             );
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("checker")
             );
         }
@@ -3826,7 +3910,7 @@ mod tests {
 
             session.delegate_finished(id, "found it in state.rs".to_string(), false, None);
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("reader"),
                 "a delegate finishing took the screen away from it"
             );
@@ -3845,7 +3929,7 @@ mod tests {
 
             spawn(&mut session, "worker", "write it down");
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("reader"),
                 "a delegate starting took the screen from the one being read"
             );
@@ -3890,6 +3974,99 @@ mod tests {
                 "the view outlived its delegates"
             );
             assert!(session.viewed().is_empty());
+        }
+
+        fn ran(session: &mut Session, command: &str, read: bool) {
+            session.command_printed(bravebot_agent::report::Printed {
+                command: command.to_string(),
+                lines: vec!["first".to_string(), "second".to_string()],
+                total: 2,
+                read_by_the_planner: read,
+            });
+        }
+
+        /// A command's output is drawn nowhere else in full, which is the same reason a delegate's
+        /// work has a view: a line saying "12 lines, quarantined" does not tell somebody who owns
+        /// the directory what their agent just ran.
+        #[test]
+        fn a_command_this_session_ran_is_something_the_view_can_open() {
+            let mut session = Session::new("none");
+            assert!(!session.watch(), "the key opened on nothing");
+
+            ran(&mut session, "cargo test", false);
+            assert!(session.watch(), "a command was not something to look at");
+            assert!(matches!(session.watched(), Some(Watched::Output(_))));
+            assert_eq!(
+                session.watched_output().map(|o| o.command.as_str()),
+                Some("cargo test")
+            );
+        }
+
+        /// One list rather than two. Which kind of work a row is is a property of the row, not a
+        /// reason for a second key to learn.
+        #[test]
+        fn the_list_holds_delegates_and_commands_together() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            ran(&mut session, "cargo test", true);
+
+            let rows = session.watchable();
+            assert_eq!(rows.len(), 2);
+            assert!(matches!(rows[0], Watched::Delegate(_)));
+            assert!(matches!(rows[1], Watched::Output(_)));
+        }
+
+        /// Delegates first and commands after them, so a row's place does not move under somebody
+        /// stepping through it when the next command runs.
+        #[test]
+        fn a_rows_place_in_the_list_does_not_move_when_the_next_command_runs() {
+            let mut session = Session::new("none");
+            ran(&mut session, "first", true);
+            session.watch();
+            let before = session.watched_output().map(|o| o.command.clone());
+            ran(&mut session, "second", true);
+            assert_eq!(
+                session.watched_output().map(|o| o.command.clone()),
+                before,
+                "the view moved to a command nobody asked for"
+            );
+        }
+
+        /// The one thing a person cannot work out from the bytes, and the thing the whole design
+        /// turns on: the same output either reached a model's context or did not.
+        #[test]
+        fn a_command_row_keeps_whether_the_planner_read_it() {
+            let mut session = Session::new("none");
+            ran(&mut session, "cat secret", false);
+            ran(&mut session, "cargo test", true);
+            let kept: Vec<bool> = session
+                .outputs()
+                .iter()
+                .map(|output| output.read_by_the_planner)
+                .collect();
+            assert_eq!(kept, [false, true]);
+        }
+
+        /// Stepping through the list reaches both kinds, since it is one list and the keys that
+        /// move in it do not ask what a row is.
+        #[test]
+        fn stepping_through_the_list_reaches_a_command_after_a_delegate() {
+            let mut session = Session::new("none");
+            spawn(&mut session, "reader", "find the parser");
+            ran(&mut session, "cargo test", true);
+
+            session.watch();
+            assert!(
+                session.listing_delegates(),
+                "two rows did not open the list"
+            );
+            while !matches!(session.watched(), Some(Watched::Output(_))) {
+                let before = session.list_highlight();
+                session.watch_next();
+                assert_ne!(before, session.list_highlight(), "the list stopped moving");
+            }
+            session.open_watched();
+            assert!(session.watched_output().is_some());
         }
 
         /// The point of delegating is that the reading lands somewhere else, and the interface

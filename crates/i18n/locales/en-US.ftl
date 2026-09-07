@@ -281,6 +281,18 @@ run-stages = { $count ->
    *[other] { $count } stages
     }
 run-in-directory = in { $directory }
+watching-list-command = command
+watching-lines = { $count ->
+    [one] 1 line
+   *[other] { $count } lines
+    }
+watching-output-head = what this command printed
+watching-output-read = the model has read this
+watching-output-kept = the model has not read this
+watching-output-more = { $count ->
+    [one] 1 more line was printed and is not kept
+   *[other] { $count } more lines were printed and are not kept
+    }
 run-line-sent = the model wrote:
 run-writes = it writes these files:
 run-not-sandboxed = this is not sandboxed: it runs with the access your own shell has

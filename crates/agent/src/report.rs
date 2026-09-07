@@ -221,6 +221,28 @@ pub struct Shown {
     pub lines: usize,
 }
 
+/// What a command printed, kept whole enough for a person to open.
+///
+/// Sent for every run, whichever way the label went. What the planner may read decides what
+/// enters a model's context; this is a screen, and a person who owns the directory is entitled to
+/// read what their agent just ran. "12 lines, quarantined" does not tell them that.
+///
+/// Released for display by the turn before it gets here, exactly as [`Shown`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Printed {
+    /// The command, as the plan the person endorsed showed it.
+    pub command: String,
+    /// What it printed, as far back as is kept, each line already trimmed to a sensible width.
+    pub lines: Vec<String>,
+    /// How many lines there were altogether, so a view can say what it left out.
+    pub total: usize,
+    /// Whether the planner was allowed to read it.
+    ///
+    /// The one thing a person cannot work out from the bytes, and the thing the whole design
+    /// turns on: the same output either reached a model's context or did not.
+    pub read_by_the_planner: bool,
+}
+
 /// What a delegate handed back, in the shape the person may read it.
 ///
 /// Which of the two it is was settled by the gate that decided what the planner got, and not
@@ -371,6 +393,13 @@ pub trait Reporter {
     /// the one who can tell whether the agent is working on the right file, and leaving them with
     /// "2 files, quarantined" told them nothing they could use.
     fn quarantined(&mut self, _shown: Shown) {}
+
+    /// What a command printed, for the view a person can open over it.
+    ///
+    /// Separate from [`Reporter::quarantined`] because the two answer different questions. That
+    /// one says what the planner was kept from; this one says what a program printed, whether or
+    /// not the planner read it.
+    fn printed(&mut self, _output: Printed) {}
 
     /// Where the result of the call just finished ended up.
     ///

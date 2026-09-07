@@ -361,26 +361,53 @@ fn preview_for<S: Sink>(
     tool: &str,
     content: &Labelled<String>,
 ) -> Preview {
+    let (preview, lines) = released_lines(policy, tool, content, PREVIEW_LINES, PREVIEW_WIDTH);
+    Preview { preview, lines }
+}
+
+/// How many lines of a command's output are kept for the view a person can open over it.
+///
+/// Far enough back to cover what somebody opens a run to ask about, and bounded because a program
+/// can print without end and these are held in memory for a person who may never look.
+const KEPT_LINES: usize = 2000;
+
+/// How wide a kept line may be before it is cut.
+///
+/// Wider than a preview, since this is the view somebody opened to read the thing, and still
+/// bounded: a program printing one line of a million characters must not become a million-cell
+/// row.
+const KEPT_WIDTH: usize = 400;
+
+/// The first `cap` lines of `content`, each cut to `width`, released for a screen.
+///
+/// One release for the whole shaping, so the trail records that content was released once rather
+/// than leaving it implicit in a loop.
+fn released_lines<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tool: &str,
+    content: &Labelled<String>,
+    cap: usize,
+    width: usize,
+) -> (Vec<String>, usize) {
     let shaped = policy.render_in_place(tool, content, |text| {
         let lines = text.lines().count();
-        let preview: Vec<String> = text
+        let kept: Vec<String> = text
             .lines()
-            .take(PREVIEW_LINES)
+            .take(cap)
             .map(|line| {
                 let mut line = line.to_string();
-                if line.chars().count() > PREVIEW_WIDTH {
-                    line = line.chars().take(PREVIEW_WIDTH).collect::<String>();
+                if line.chars().count() > width {
+                    line = line.chars().take(width).collect::<String>();
                     line.push('…');
                 }
                 line
             })
             .collect();
-        (preview, lines)
+        (kept, lines)
     });
 
     let proof = policy.authorise_display_release("quarantined content, for the person watching");
-    let (preview, lines) = shaped.declassify(&proof);
-    Preview { preview, lines }
+    shaped.declassify(&proof)
 }
 
 /// A file the user attached, to be carried rather than read as text.
@@ -1988,6 +2015,26 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             (Presentation::Quarantined(_), _) => {
                                 crate::report::Landing::Quarantined
                             }
+                        });
+                    }
+
+                    // What a command printed, kept whole enough for a person to open. Sent
+                    // whichever way the label went: what the planner may read decides what enters
+                    // a model's context, and a screen is not a context. It is their directory,
+                    // and a line saying "12 lines, quarantined" does not tell them what ran.
+                    if let Some(command) = &output.printed_by {
+                        let (lines, total) = released_lines(
+                            &mut policy,
+                            &output.tool,
+                            &output.text,
+                            KEPT_LINES,
+                            KEPT_WIDTH,
+                        );
+                        reporter.printed(crate::report::Printed {
+                            command: command.clone(),
+                            lines,
+                            total,
+                            read_by_the_planner: matches!(presented, Presentation::Visible(_)),
                         });
                     }
 

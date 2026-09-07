@@ -10,10 +10,12 @@ governs:
 
 ## Scope
 
-What a person sees of the delegates a turn started: where their lines go, how much of them is
-kept, the mode Ctrl-L opens over them, and what that mode does not offer. What a delegate is, how
-many run at once and what crosses back to the planner is [delegation.md](delegation.md). Nothing
-here changes any of it: the subject is what reaches a screen, not what reaches a model.
+What a person sees of work a turn did outside the transcript: the delegates it started and the
+commands it ran, where their lines go, how much of them is kept, the mode Ctrl-L opens over them,
+and what that mode does not offer. What a delegate is, how many run at once and what crosses back
+to the planner is [delegation.md](delegation.md); what a command line may do is
+[tools/command-line.md](tools/command-line.md). Nothing here changes either: the subject is what
+reaches a screen, not what reaches a model.
 
 What is drawn for the turn itself is [terminal-transcript.md](terminal-transcript.md). Reading
 back through what has already happened is [scroller.md](scroller.md), whose keys this mode borrows
@@ -24,6 +26,10 @@ rather than inventing a second dialect of.
 A delegate's work is discarded by design: the planner is told a sentence, and the reading, the
 commands and the narration behind it end with the delegate. Drawn nowhere, that leaves the person
 with a single line about work they cannot see, done in a directory they own.
+
+A command's output has the same shape of problem. The transcript draws the first lines of it and a
+count, which is what a line in a sequence has room for, and the rest is drawn nowhere: a person who
+owns the directory is left with "12 lines, quarantined" about a program their agent ran there.
 
 Several delegates run at once, so there is no single thing to look at. Each is drawn on the
 screen the person is already reading, and the whole of what any one of them is doing is a key
@@ -305,6 +311,48 @@ press of enter into an exit.
 `verified-by: bravebot_tui::state::moving_up_from_the_first_delegate_in_the_list_reaches_the_session`
 `verified-by: bravebot_tui::state::going_back_to_the_list_lands_on_the_delegate_that_was_open`
 `verified-by: bravebot_tui::app::opening_the_session_row_goes_back_to_the_conversation`
+
+<a id="WATCH-15"></a>
+### WATCH-15: what a command printed is one of the rows the view opens
+
+Every command a turn ran is a row in the same list, after the delegates and in the order they ran.
+Opening one draws what it printed, as far back as is kept, in the shape a delegate's own lines are
+drawn in. Where the planner was kept from the output, every row of it carries the margin every
+quarantined block carries, and what is not kept is said rather than dropped silently.
+
+A command's row is there whether or not the planner read what it printed, and the row says which.
+
+**Why.** The transcript has room for a preview and a count, and a person who owns the directory is
+entitled to the rest: "12 lines, quarantined" does not tell them what their agent just ran. That is
+the same reason a delegate has a view, so it is the same list rather than a second key to learn.
+
+**Why after the delegates.** A row's place is what somebody steps through, and a list ordered by
+when things happened would move the row under them every time a command finished.
+
+`verified-by: bravebot_tui::state::a_command_this_session_ran_is_something_the_view_can_open`
+`verified-by: bravebot_tui::state::the_list_holds_delegates_and_commands_together`
+`verified-by: bravebot_tui::state::a_rows_place_in_the_list_does_not_move_when_the_next_command_runs`
+`verified-by: bravebot_tui::state::a_command_row_keeps_whether_the_planner_read_it`
+`verified-by: bravebot_tui::state::stepping_through_the_list_reaches_a_command_after_a_delegate`
+`verified-by: bravebot_tui::render::opening_a_command_shows_what_it_printed`
+`verified-by: bravebot_tui::render::output_the_planner_was_kept_from_is_marked_on_every_row`
+`verified-by: bravebot_tui::render::a_command_that_printed_more_than_is_kept_says_so`
+`verified-by: bravebot_tui::render::the_list_names_a_command_row_as_a_command`
+
+<a id="WATCH-16"></a>
+### WATCH-16: the view says which kind of thing it is showing
+
+The header and the footer name it: a delegate by its kind and its number, a command as a command
+with the line that ran. Stepping from one kind to the other changes what they say. A command's view
+also says whether the planner read what it printed.
+
+**Why.** One list holds both, and the keys that move through it do not ask what a row is. With
+nothing saying so, stepping from a delegate onto a command reads as the same view showing different
+lines, and a person cannot tell work their agent handed on from work it did itself. Whether the
+planner read something is the one thing about it that cannot be worked out from the bytes.
+
+`verified-by: bravebot_tui::render::the_view_says_which_kind_of_thing_it_is_showing`
+`verified-by: bravebot_tui::render::the_view_says_whether_the_model_read_what_a_command_printed`
 
 ## Known costs
 

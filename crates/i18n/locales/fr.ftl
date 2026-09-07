@@ -283,6 +283,18 @@ run-stages = { $count ->
    *[other] { $count } étapes
     }
 run-in-directory = dans { $directory }
+watching-list-command = commande
+watching-lines = { $count ->
+    [one] 1 ligne
+   *[other] { $count } lignes
+    }
+watching-output-head = ce que cette commande a affiché
+watching-output-read = le modèle a lu ceci
+watching-output-kept = le modèle n'a pas lu ceci
+watching-output-more = { $count ->
+    [one] 1 ligne de plus a été affichée et n'est pas conservée
+   *[other] { $count } lignes de plus ont été affichées et ne sont pas conservées
+    }
 run-line-sent = le modèle a écrit :
 run-writes = il écrit ces fichiers :
 run-not-sandboxed =

@@ -3064,6 +3064,7 @@ fn run_turn_animated(
             crate::remote_confirm::ToMain::Started(activity) => session.start_activity(activity),
             crate::remote_confirm::ToMain::Finished(activity) => session.finish_activity(activity),
             crate::remote_confirm::ToMain::Quarantined(shown) => session.show(shown),
+            crate::remote_confirm::ToMain::Printed(output) => session.command_printed(output),
             crate::remote_confirm::ToMain::Landed(landing) => session.landed(landing),
             // The turn has taken the oldest waiting prompt, so it stops being something waiting
             // above the box and becomes something said. Which prompt is not named: the turn takes
@@ -3906,13 +3907,13 @@ mod tests {
 
             handle_key(&mut session, key(KeyCode::Char('p')));
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("reader")
             );
 
             handle_key(&mut session, key(KeyCode::Char('n')));
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("checker")
             );
         }
@@ -3933,7 +3934,7 @@ mod tests {
                 "enter did not open a delegate"
             );
             assert_eq!(
-                session.watched().map(|delegate| delegate.kind),
+                session.watched_delegate().map(|delegate| delegate.kind),
                 Some("reader"),
                 "enter opened a delegate other than the one the list was on"
             );

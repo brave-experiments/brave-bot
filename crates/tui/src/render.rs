@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::audit::TrailLine;
 use crate::logo;
 use crate::markdown;
-use crate::state::{Delegate, Laid, Session, Speaker, Status};
+use crate::state::{Delegate, Laid, Output, Session, Speaker, Status, Watched};
 use crate::table;
 use crate::theme;
 use crate::wrap;
@@ -612,6 +612,9 @@ fn draw_watching(frame: &mut Frame, session: &Session) -> Laid {
     if session.listing_delegates() {
         return draw_delegate_list(frame, session);
     }
+    if let Some(output) = session.watched_output() {
+        return draw_output(frame, session, output);
+    }
 
     let areas = Layout::default()
         .direction(Direction::Vertical)
@@ -633,13 +636,100 @@ fn draw_watching(frame: &mut Frame, session: &Session) -> Laid {
     laid
 }
 
+/// Draw what one command printed, in full as far as it is kept.
+///
+/// The same shape as a delegate's view, because a person arriving here has already learned it:
+/// a header saying what they are looking at, the lines, and a footer with the way out. What
+/// differs is the header, which has to say which kind of view this is: two keys for two lists
+/// would be worse than one list whose rows say what they are.
+fn draw_output(frame: &mut Frame, session: &Session, output: &Output) -> Laid {
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // which command, and whether the model read it
+            Constraint::Min(1),    // what it printed
+            Constraint::Length(1), // footer
+        ])
+        .split(frame.area());
+
+    let (standing, colour) = if output.read_by_the_planner {
+        (t!(watching_output_read), theme::ok())
+    } else {
+        (t!(watching_output_kept), theme::running())
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(format!("{TURN_MARKER} "), Style::default().fg(colour)),
+                Span::styled(
+                    t!(watching_output_head),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("  {standing}"), Style::default().fg(colour)),
+            ]),
+            // The command, which a person endorsed, so it is the driver's own record of what ran
+            // rather than something read out of a file.
+            Line::from(Span::styled(
+                format!("  {}", one_line(&output.command)),
+                dim(),
+            )),
+        ]),
+        areas[0],
+    );
+
+    // Marked on every row where the planner was kept from it, the way every other block of
+    // content it was kept from is marked, and marked structurally rather than by a line of text
+    // the content could imitate: the bar is in the margin on the next row too.
+    let width = areas[1].width as usize;
+    let margin = Span::styled(
+        format!("  {QUARANTINE_BAR} "),
+        Style::default().fg(theme::running()),
+    );
+    let mut lines: Vec<Line> = Vec::new();
+    for line in &output.lines {
+        let spans = [Span::styled(line.clone(), dim())];
+        if output.read_by_the_planner {
+            lines.extend(marked_rows(&Span::raw("  "), &spans, width));
+        } else {
+            lines.extend(marked_rows(&margin, &spans, width));
+        }
+    }
+    // Said rather than silently dropped, for the same reason a truncated diff says so.
+    if output.total > output.lines.len() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {}",
+                t!(
+                    watching_output_more,
+                    count = output.total - output.lines.len()
+                )
+            ),
+            dim(),
+        )));
+    }
+
+    // Counted back from the end, the way the transcript is, so a view opened on a long log starts
+    // at the last thing the command said and the same keys walk back through it.
+    let total = lines.len() as u16;
+    let max_offset = total.saturating_sub(areas[1].height);
+    let offset = max_offset.saturating_sub(session.scroll.min(max_offset));
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), areas[1]);
+
+    draw_watching_footer(frame, areas[2], session);
+    if let Some(selection) = &session.selection {
+        crate::select::highlight(frame.buffer_mut(), selection);
+    }
+    Laid::default()
+}
+
 /// Which delegate this is, and what it was asked to do.
 ///
 /// Above its lines rather than in them, so it stays put while somebody reads back through a
 /// delegate that has made hundreds of calls. The question a reader has at every row is which run
 /// they are looking at, and a header that scrolled away would answer it only at the top.
 fn draw_delegate_head(frame: &mut Frame, area: Rect, session: &Session) {
-    let Some(delegate) = session.watched() else {
+    let Some(delegate) = session.watched_delegate() else {
         return;
     };
 
@@ -680,39 +770,51 @@ fn draw_delegate_head(frame: &mut Frame, area: Rect, session: &Session) {
 /// Nothing a model wrote is quoted here. The footer is the one row the interface speaks in its
 /// own voice, and what the delegate was asked is above it where content belongs.
 fn draw_watching_footer(frame: &mut Frame, area: Rect, session: &Session) {
-    let Some(delegate) = session.watched() else {
-        return;
-    };
     let Some(watching) = session.watching() else {
         return;
     };
 
-    let (standing, colour) = if delegate.is_running() {
-        (t!(watching_working), theme::running())
-    } else if delegate.failed {
-        (t!(watching_failed), theme::fail())
-    } else {
-        (t!(watching_answered), theme::ok())
-    };
-
-    let mut spans = vec![
-        Span::styled(
-            format!(
-                "  {}",
+    // Which kind of view this is, said in the footer as well as in the header, because the list
+    // holds both kinds and the row somebody stepped onto may not be the kind they came from.
+    let (name, standing, colour) = match session.watched() {
+        Some(Watched::Delegate(delegate)) => {
+            let (standing, colour) = if delegate.is_running() {
+                (t!(watching_working), theme::running())
+            } else if delegate.failed {
+                (t!(watching_failed), theme::fail())
+            } else {
+                (t!(watching_answered), theme::ok())
+            };
+            (
                 t!(
                     watching_footer,
                     kind = delegate.kind,
                     number = delegate.id.to_string()
                 )
-            ),
-            Style::default().fg(Color::Cyan),
-        ),
+                .to_string(),
+                standing,
+                colour,
+            )
+        }
+        Some(Watched::Output(output)) => {
+            let (standing, colour) = if output.read_by_the_planner {
+                (t!(watching_output_read), theme::ok())
+            } else {
+                (t!(watching_output_kept), theme::running())
+            };
+            (t!(watching_list_command).to_string(), standing, colour)
+        }
+        None => return,
+    };
+
+    let mut spans = vec![
+        Span::styled(format!("  {name}"), Style::default().fg(Color::Cyan)),
         Span::styled(format!("  ·  {standing}"), Style::default().fg(colour)),
     ];
 
     // Where it sits among the others, and the keys for moving, only where there are others. One
-    // delegate has no position to be in and nowhere to move to.
-    let total = session.delegates().len();
+    // row has no position to be in and nowhere to move to.
+    let total = session.watchable().len();
     if total > 1 {
         spans.push(Span::styled(
             format!(
@@ -748,10 +850,10 @@ fn draw_watching_footer(frame: &mut Frame, area: Rect, session: &Session) {
 fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
     let laid = draw_transcript(frame, frame.area(), session);
 
-    let delegates = session.delegates();
-    // The session is the first row, so the panel is one taller than the delegates it lists and
-    // the highlight is counted over the rows rather than over the delegates.
-    let rows = delegates.len() + 1;
+    let watchable = session.watchable();
+    // The session is the first row, so the panel is one taller than what it lists and the
+    // highlight is counted over the rows rather than over the things.
+    let rows = watchable.len() + 1;
     let at = session.list_highlight();
     let area = delegate_panel(frame.area(), rows);
     frame.render_widget(Clear, area);
@@ -788,12 +890,13 @@ fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
     let first = window_start(rows, at, visible);
     let width = layout[0].width as usize;
     let drawn: Vec<Line> = std::iter::once(session_row(at == 0, width))
-        .chain(
-            delegates
-                .iter()
-                .enumerate()
-                .map(|(index, delegate)| delegate_row(delegate, at == index + 1, width)),
-        )
+        .chain(watchable.iter().enumerate().map(|(index, row)| {
+            let highlighted = at == index + 1;
+            match row {
+                Watched::Delegate(delegate) => delegate_row(delegate, highlighted, width),
+                Watched::Output(output) => output_row(output, highlighted, width),
+            }
+        }))
         .skip(first)
         .take(visible)
         .collect();
@@ -944,6 +1047,57 @@ fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'s
         Span::styled(format!("{name:<NAME_COLUMN$}"), name_style),
         Span::styled(format!("{task}  "), detail),
         Span::styled(calls, detail),
+    ]);
+    match highlighted {
+        true => line.style(Style::default().bg(theme::brand_primary())),
+        false => line,
+    }
+}
+
+/// One row for what a command printed.
+///
+/// The glyph says the thing a person cannot work out from the bytes and the thing the whole design
+/// turns on: whether the planner read this or was kept from it.
+fn output_row(output: &Output, highlighted: bool, width: usize) -> Line<'static> {
+    let (mark, colour) = if output.read_by_the_planner {
+        ("▸", theme::ok())
+    } else {
+        ("▪", theme::running())
+    };
+
+    let name = t!(watching_list_command);
+    let count = t!(watching_lines, count = output.total);
+
+    let spent = 4 + NAME_COLUMN + count.chars().count() + 4;
+    let room = width.saturating_sub(spent);
+    let command = one_line(&output.command);
+    let command = if command.chars().count() > room {
+        command
+            .chars()
+            .take(room.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    } else {
+        let padding = room.saturating_sub(command.chars().count());
+        command + &" ".repeat(padding)
+    };
+
+    let (mark_style, name_style, detail) = if highlighted {
+        let on_bar = Style::default().fg(theme::on_primary());
+        (on_bar, on_bar.add_modifier(Modifier::BOLD), on_bar)
+    } else {
+        (
+            Style::default().fg(colour),
+            Style::default().fg(theme::text()),
+            dim(),
+        )
+    };
+
+    let line = Line::from(vec![
+        Span::styled(format!("  {mark} "), mark_style),
+        Span::styled(format!("{name:<NAME_COLUMN$}"), name_style),
+        Span::styled(format!("{command}  "), detail),
+        Span::styled(count, detail),
     ]);
     match highlighted {
         true => line.style(Style::default().bg(theme::brand_primary())),
@@ -1376,7 +1530,7 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
     // What the turn was told, closing the delegate's own view. A view that stopped at the last
     // call leaves a reader looking at a command, unable to tell an answer from a failure.
     if session.watching_a_delegate()
-        && let Some(delegate) = session.watched()
+        && let Some(delegate) = session.watched_delegate()
     {
         match &delegate.note {
             Some(note) => {
@@ -2584,6 +2738,134 @@ mod tests {
                 screen.contains("THE-PARSER-IS-IN-LEX"),
                 "the view did not say how the delegate ended: {screen}"
             );
+        }
+
+        fn ran(session: &mut Session, command: &str, read: bool, lines: &[&str], total: usize) {
+            session.command_printed(bravebot_agent::report::Printed {
+                command: command.to_string(),
+                lines: lines.iter().map(|line| (*line).to_string()).collect(),
+                total,
+                read_by_the_planner: read,
+            });
+        }
+
+        /// The view exists so what a command printed can be read in full. Drawn nowhere else at
+        /// that length: the transcript shows a preview, and a person who owns the directory is
+        /// entitled to the rest.
+        #[test]
+        fn opening_a_command_shows_what_it_printed() {
+            let mut session = Session::new("kernel-enforced");
+            ran(
+                &mut session,
+                "cargo test --workspace",
+                true,
+                &["PECULIAR-FIRST-LINE", "PECULIAR-LAST-LINE"],
+                2,
+            );
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(screen.contains("PECULIAR-FIRST-LINE"), "{screen}");
+            assert!(screen.contains("PECULIAR-LAST-LINE"), "{screen}");
+            assert!(
+                screen.contains("cargo test --workspace"),
+                "the view did not say which command this was: {screen}"
+            );
+        }
+
+        /// One list holds both kinds, so the view has to say which kind it just switched to.
+        /// Stepping from a delegate onto a command with nothing saying so would read as the same
+        /// view showing different lines.
+        #[test]
+        fn the_view_says_which_kind_of_thing_it_is_showing() {
+            let mut session = Session::new("kernel-enforced");
+            ran(&mut session, "cargo test", true, &["ok"], 1);
+            session.watch();
+            assert!(
+                rendered(&session).contains("what this command printed"),
+                "the view did not name what it was showing"
+            );
+        }
+
+        /// The thing a person cannot work out from the bytes, said in the view rather than left
+        /// to be inferred: the same output either reached a model's context or did not.
+        #[test]
+        fn the_view_says_whether_the_model_read_what_a_command_printed() {
+            let mut session = Session::new("kernel-enforced");
+            ran(&mut session, "cat notes", false, &["a line"], 1);
+            session.watch();
+            assert!(
+                rendered(&session).contains("has not read this"),
+                "the view did not say the output was kept from the planner"
+            );
+
+            let mut session = Session::new("kernel-enforced");
+            ran(&mut session, "cargo test", true, &["a line"], 1);
+            session.watch();
+            assert!(
+                rendered(&session).contains("has read this"),
+                "the view did not say the output reached the planner"
+            );
+        }
+
+        /// Marked the way every other block the planner was kept from is marked, and marked
+        /// structurally: the bar is in the margin on every row, so content saying the block ends
+        /// cannot end it.
+        #[test]
+        fn output_the_planner_was_kept_from_is_marked_on_every_row() {
+            let mut session = Session::new("kernel-enforced");
+            ran(
+                &mut session,
+                "cat notes",
+                false,
+                &["PECULIAR-KEPT-ONE", "PECULIAR-KEPT-TWO"],
+                2,
+            );
+            session.watch();
+
+            let screen = rendered(&session);
+            for line in ["PECULIAR-KEPT-ONE", "PECULIAR-KEPT-TWO"] {
+                let row = screen
+                    .lines()
+                    .find(|row| row.contains(line))
+                    .unwrap_or_else(|| panic!("{line} was not drawn: {screen}"));
+                assert!(
+                    row.contains(crate::render::QUARANTINE_BAR),
+                    "a kept row was drawn without the margin: {row}"
+                );
+            }
+        }
+
+        /// A command that printed more than is kept says so, for the same reason a truncated diff
+        /// does: a sample read as the whole of it is how somebody concludes a build passed.
+        #[test]
+        fn a_command_that_printed_more_than_is_kept_says_so() {
+            let mut session = Session::new("kernel-enforced");
+            ran(&mut session, "cargo build", true, &["one", "two"], 900);
+            session.watch();
+            assert!(
+                rendered(&session).contains("more lines were printed"),
+                "the view did not say what it left out"
+            );
+        }
+
+        /// The list holds both kinds, so a row has to say which it is rather than leaving a
+        /// reader to tell a delegate from a command by its name.
+        #[test]
+        fn the_list_names_a_command_row_as_a_command() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            ran(&mut session, "cargo test", true, &["ok"], 1);
+            session.watch();
+            assert!(
+                session.listing_delegates(),
+                "two rows did not open the list"
+            );
+
+            let screen = rendered(&session);
+            assert!(screen.contains("command"), "{screen}");
+            assert!(screen.contains("cargo test"), "{screen}");
+            assert!(screen.contains("reader"), "{screen}");
         }
 
         /// The whole of what a delegate did ends with it, so what it answered is the only thing
