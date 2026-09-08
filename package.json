@@ -22,10 +22,16 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node npm/scripts/postinstall.js"
+    "postinstall": "node npm/scripts/postinstall.js",
+    "lint:lockfile": "lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-package-names --validate-integrity"
   },
   "engines": {
     "node": ">=18"
   },
-  "private": true
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "lockfile-lint": "^5.0.1"
+  }
 }

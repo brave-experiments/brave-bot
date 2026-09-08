@@ -44,6 +44,22 @@ jobs:
       - name: Test
         run: cargo test --all --locked
 
+  npm-lockfile:
+    name: npm lockfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install from the lockfile and lint it
+        run: |
+          npm ci --ignore-scripts
+          npm run lint:lockfile
+
   # Builds against the declared minimum toolchain. The pinned cross-build container
   # ships an older Rust than most developers have locally, so without this a feature
   # that only compiles on a newer toolchain reaches the release build unnoticed.

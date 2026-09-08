@@ -1,0 +1,92 @@
+name: Publish npm
+
+# Started by hand, after the tag exists and after Jenkins has created the GitHub
+# release. Authentication is OIDC: there is no NPM_TOKEN.
+#
+# On npmjs.com, the trusted publisher for @brave/bravebot must name this file
+# exactly: publish-npm.yml
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to publish (v followed by the version in the tree)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @brave/bravebot
+    if: github.repository == 'brave-experiments/brave-bot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Refuse a tag that does not match the tree
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          cargo_version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)"
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ -z "$cargo_version" ] || [ "$pkg_version" != "$cargo_version" ]; then
+            echo "error: package.json ($pkg_version) does not match Cargo.toml ($cargo_version)"
+            exit 1
+          fi
+          if [ "$TAG" != "v${pkg_version}" ]; then
+            echo "error: tag $TAG does not match package.json version ${pkg_version}"
+            exit 1
+          fi
+
+      - name: Refuse a GitHub release that is missing a platform asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          missing=""
+          for asset in \
+            bravebot-darwin-arm64 \
+            bravebot-darwin-amd64 \
+            bravebot-linux-amd64 \
+            bravebot-linux-arm64 \
+            bravebot-windows-amd64.exe \
+            bravebot-windows-arm64.exe
+          do
+            if ! printf '%s\n' "$names" | grep -qx "$asset"; then
+              missing="$missing $asset"
+            fi
+            if ! printf '%s\n' "$names" | grep -qx "${asset}.sha256"; then
+              missing="$missing ${asset}.sha256"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "error: GitHub release $TAG is missing:$missing"
+            echo "run Jenkins job brave-bot-build (UPLOAD and RELEASE) first"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Install from the lockfile
+        run: npm ci --ignore-scripts
+
+      - name: Lint the lockfile
+        run: npm run lint:lockfile
+
+      # Provenance is attached automatically for trusted publishing from a public
+      # repository. --provenance keeps that explicit. No NODE_AUTH_TOKEN: a token
+      # would hide OIDC and skip the trusted-publisher path. --ignore-scripts keeps
+      # postinstall from fetching a binary during the publish run itself.
+      - name: Publish
+        run: npm publish --access public --provenance --ignore-scripts
