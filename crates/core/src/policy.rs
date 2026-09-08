@@ -187,6 +187,13 @@ pub struct Policy<'sink, S: Sink> {
     /// retrying a read does not put the same question up twice, but it is not a standing refusal
     /// and the next turn may ask again.
     vouch_asked: std::collections::BTreeSet<String>,
+    /// The host a `fetch_url` call is approved for, while one is in flight.
+    ///
+    /// Set by [`Policy::before_fetch`] and cleared by [`Policy::fetch_finished`], so the egress
+    /// gate can tell a hop of the planner's fetch from this program reaching its own backend. The
+    /// two go through one gate and are not the same act: only the first is something a turn asked
+    /// for, and only the first is what a `WebFetch` rule is about.
+    fetching: Option<String>,
     /// The integrity of every observation this turn has made, met together.
     ///
     /// Starts trusted, since the task is the user's own words, and drops to untrusted the moment
@@ -268,6 +275,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             programs: crate::programs::TrustedPrograms::new(),
             permissions: crate::permissions::Permissions::new(),
             vouch_asked: std::collections::BTreeSet::new(),
+            fetching: None,
             context: Integrity::Trusted,
         })
     }
@@ -305,10 +313,127 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
     /// Check a network egress before it happens. Called for the initial URL *and* for
     /// every redirect hop, so a permitted host cannot redirect into a denied one.
+    ///
+    /// While a `fetch_url` call is in flight the hop is also checked against the host a person
+    /// approved, which is what makes the sentence above true: an approval names one URL, and the
+    /// host at the end of a redirect chain is one nobody was ever shown.
+    ///
+    /// Outside such a call this is the capability check and nothing more. Reaching the configured
+    /// model endpoint is egress too, and it is this program's own operation rather than something
+    /// a turn asked for: a `WebFetch` rule is about where the planner may send it, so applying one
+    /// here would let a rule about a website stop the agent from talking to its backend.
     pub fn before_network(&mut self, url: &str) -> Gated<()> {
         self.before_capability(Capability::WebFetch)?;
+
+        if let Some(approved) = self.fetching.clone() {
+            let host = crate::url::host_of(url).unwrap_or_default();
+            let ruling = self.permissions.for_host(&host);
+
+            if ruling == crate::permissions::Decision::Ruled(crate::permissions::Ruling::Deny) {
+                return Err(self.deny(
+                    "network",
+                    Principle::IntegrityGate,
+                    format!("a rule in the settings file denies fetching from {host}"),
+                ));
+            }
+
+            // A redirect to somewhere else is a destination nobody saw. Allowed only where a rule
+            // names it, which is a person having written that host down in advance.
+            if host != approved
+                && ruling != crate::permissions::Decision::Ruled(crate::permissions::Ruling::Allow)
+            {
+                return Err(self.deny(
+                    "network",
+                    Principle::IntegrityGate,
+                    format!(
+                        "this fetch was approved for {approved} and redirected to {host}, \
+                         which nobody was shown"
+                    ),
+                ));
+            }
+        }
+
         self.allow("network", format!("egress to {url}"));
         Ok(())
+    }
+
+    /// Whether a person has to approve fetching `url`.
+    ///
+    /// Asked of the host, since that is what a person can answer for: a rule naming one is a
+    /// statement about who is being talked to, and the path is where a URL carries the particular
+    /// thing being asked for.
+    pub fn fetch_needs_approval(&mut self, url: &str) -> bool {
+        let Some(host) = crate::url::host_of(url) else {
+            // Nothing to ask about yet. The fetch fails on the URL itself further down, and
+            // asking about a URL with no host would put a question nobody can answer.
+            self.allow(
+                "approval",
+                "the url names no host, leaving nothing to approve".to_string(),
+            );
+            return true;
+        };
+
+        match self.permissions.for_host(&host) {
+            crate::permissions::Decision::Ruled(ruling) => {
+                let needed = ruling != crate::permissions::Ruling::Allow;
+                self.allow(
+                    "approval",
+                    format!(
+                        "a rule in the settings file says {ruling} for {host}, {}",
+                        if needed { "asking" } else { "no prompt" }
+                    ),
+                );
+                needed
+            }
+            crate::permissions::Decision::Unmatched => {
+                self.allow("approval", format!("nothing says who {host} is, asking"));
+                true
+            }
+        }
+    }
+
+    /// Record that a person approved fetching this exact URL.
+    ///
+    /// Bound to the URL as it was shown, so an approval cannot be spent on a different one.
+    pub fn endorse_fetch(&mut self, url: &str) {
+        self.issue_grant("fetch_url", "url", url.to_string());
+    }
+
+    /// The gate a fetch passes immediately before the request goes out. Returns the label the
+    /// body will carry.
+    ///
+    /// Always `(U,pub)`, from the capability. Nothing a person says about a host changes it: a
+    /// fetch approval is consent to talk to somebody, never a claim about what they will say, and
+    /// this is the one place the two could be confused. That is the difference from
+    /// [`Policy::before_plan`], where vouching for a command does trust its output because a
+    /// person can read one command and answer for both.
+    pub fn before_fetch(&mut self, url: &str) -> Gated<Label> {
+        self.before_capability(Capability::WebFetch)?;
+        self.consume_grant("fetch_url", "url", url)?;
+
+        // What the egress gate checks each hop against, until the call reports back.
+        self.fetching = Some(crate::url::host_of(url).unwrap_or_default());
+
+        let label = Capability::WebFetch.output_label().ok_or_else(|| Denial {
+            principle: Principle::Capability,
+            message: "a fetched body must have a label".to_string(),
+        })?;
+        self.allow(
+            "provenance",
+            format!(
+                "fetch_url: body labelled {label}, because a server may send anything and \
+                 approving a host says nothing about what it returns"
+            ),
+        );
+        Ok(label)
+    }
+
+    /// Say that the fetch has finished, however it went.
+    ///
+    /// Called on every path out of the tool, so a failed request does not leave the turn's later
+    /// egress being checked against a host that one call was approved for.
+    pub fn fetch_finished(&mut self) {
+        self.fetching = None;
     }
 
     /// Record that a capability produced an observation, returning the label it must
@@ -4584,6 +4709,164 @@ mod tests {
         assert!(
             !label.is_trusted(),
             "a settings-file rule made a program's output trusted"
+        );
+    }
+
+    /// A host nobody has said anything about is put to a person, for the reason an unvouched
+    /// command is: nothing here can establish who is at the other end.
+    #[test]
+    fn a_host_nobody_has_ruled_on_is_put_to_a_person() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        assert!(policy.fetch_needs_approval("https://example.com/docs"));
+    }
+
+    #[test]
+    fn a_rule_written_in_advance_answers_the_fetch_prompt() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_permissions(permissions(
+            &[],
+            &[],
+            &["WebFetch(domain:example.com)"],
+        ));
+        assert!(!policy.fetch_needs_approval("https://docs.example.com/a"));
+        // And a host the rule does not name is still asked about.
+        assert!(policy.fetch_needs_approval("https://elsewhere.test/a"));
+    }
+
+    /// The distinction that keeps a fetch from becoming a trust laundering route. Approving a host
+    /// is consent to talk to somebody; it says nothing whatever about what they send back, so the
+    /// body is untrusted however the approval was given.
+    #[test]
+    fn approving_a_fetch_never_trusts_what_comes_back() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_permissions(permissions(
+            &[],
+            &[],
+            &["WebFetch(domain:example.com)"],
+        ));
+        let url = "https://example.com/docs";
+
+        assert!(!policy.fetch_needs_approval(url));
+        policy.endorse_fetch(url);
+        let label = policy.before_fetch(url).expect("the fetch was allowed");
+        assert!(
+            !label.is_trusted(),
+            "a fetched body was trusted, so a page could steer the turn that read it"
+        );
+        assert!(
+            label.is_public(),
+            "a fetched body is not the user's own data and must not be treated as confidential"
+        );
+    }
+
+    /// The endorsement is bound to the URL a person saw, so an answer given for one cannot be
+    /// spent on another.
+    #[test]
+    fn an_approval_for_one_url_does_not_fetch_another() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.endorse_fetch("https://example.com/approved");
+        assert!(
+            policy
+                .before_fetch("https://example.com/something-else")
+                .is_err(),
+            "an approval for one URL was spent on another"
+        );
+    }
+
+    #[test]
+    fn a_fetch_without_an_endorsement_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        assert!(policy.before_fetch("https://example.com").is_err());
+    }
+
+    /// A deny rule has to hold at the point the request goes out, not only where a person is
+    /// asked. An approval names the URL the planner proposed, and the host at the end of a
+    /// redirect chain is one nobody was ever shown.
+    #[test]
+    fn a_denied_host_is_refused_at_the_egress_gate_so_a_redirect_cannot_reach_it() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_permissions(permissions(
+            &["WebFetch(domain:evil.test)"],
+            &[],
+            &[],
+        ));
+
+        let start = "https://example.com/start";
+        policy.endorse_fetch(start);
+        policy.before_fetch(start).expect("the fetch was allowed");
+
+        assert!(policy.before_network(start).is_ok());
+        assert!(
+            policy.before_network("https://evil.test/landed").is_err(),
+            "a denied host was reachable by redirect"
+        );
+        assert!(
+            policy
+                .before_network("https://sub.evil.test/landed")
+                .is_err(),
+            "a subdomain of a denied host was reachable by redirect"
+        );
+    }
+
+    /// A redirect to a host nobody named is refused too, denied or not: the approval was for one
+    /// host, and the person was never shown the second.
+    #[test]
+    fn a_fetch_cannot_be_redirected_to_a_host_nobody_approved() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let start = "https://example.com/start";
+        policy.endorse_fetch(start);
+        policy.before_fetch(start).expect("the fetch was allowed");
+
+        // Same host, and a redirect within it is the ordinary case.
+        assert!(policy.before_network("https://example.com/moved").is_ok());
+        assert!(
+            policy
+                .before_network("https://elsewhere.test/landed")
+                .is_err(),
+            "a fetch approved for one host followed a redirect to another"
+        );
+    }
+
+    /// Reaching the configured model endpoint is egress too, and it is this program operating
+    /// rather than something a turn asked for. A `WebFetch` rule is about where the planner may
+    /// send a request, so one must not be able to stop the agent talking to its own backend.
+    #[test]
+    fn a_web_fetch_rule_does_not_govern_this_programs_own_connection() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_permissions(permissions(
+            &["WebFetch(domain:example.com)"],
+            &[],
+            &[],
+        ));
+
+        assert!(
+            policy
+                .before_network("https://example.com/v1/messages")
+                .is_ok(),
+            "a rule about a website stopped the agent reaching its endpoint"
+        );
+    }
+
+    /// A fetch that failed must not leave the rest of the turn confined to its host.
+    #[test]
+    fn a_finished_fetch_stops_confining_the_turns_other_egress() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let start = "https://example.com/start";
+        policy.endorse_fetch(start);
+        policy.before_fetch(start).expect("the fetch was allowed");
+        assert!(policy.before_network("https://elsewhere.test/x").is_err());
+
+        policy.fetch_finished();
+        assert!(
+            policy.before_network("https://elsewhere.test/x").is_ok(),
+            "a finished fetch went on confining where the turn could reach"
         );
     }
 

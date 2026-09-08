@@ -336,6 +336,18 @@ output-yes = let it read this
 output-no = keep it back
 
 
+## Fetching a URL
+
+fetch-title = fetch this?
+fetch-verb = Fetch
+fetch-host = talking to { $host }
+fetch-explained =
+    what comes back stays quarantined however you answer: the model can pass it to a
+    processor or write it to a file, and cannot read it or be told what it says.
+fetch-yes = fetch it
+fetch-no = don't
+
+
 ## Vouching for a quarantined file
 
 vouch-title = let the model read this file?
@@ -720,6 +732,7 @@ verb-load-skill = Skill
 verb-ask-user = Ask
 verb-run = Run
 verb-read-output = Read output
+verb-fetch-url = Fetch
 verb-spawn-agent = Delegate
 verb-schedule-next = Schedule
 verb-unknown = Tool

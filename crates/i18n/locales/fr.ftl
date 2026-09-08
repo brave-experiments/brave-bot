@@ -336,6 +336,19 @@ output-yes = le laisser lire ceci
 output-no = le garder pour vous
 
 
+## Récupérer une URL
+
+fetch-title = récupérer ceci ?
+fetch-verb = Récupérer
+fetch-host = communication avec { $host }
+fetch-explained =
+    ce qui revient reste en quarantaine quelle que soit votre réponse : le modèle peut le
+    confier à un processeur ou l'écrire dans un fichier, et ne peut ni le lire ni savoir
+    ce qu'il contient.
+fetch-yes = le récupérer
+fetch-no = ne pas le récupérer
+
+
 ## Approuver un fichier en quarantaine
 
 vouch-title = laisser le modèle lire ce fichier ?
@@ -667,6 +680,7 @@ verb-load-skill = Compétence
 verb-ask-user = Demander
 verb-run = Exécuter
 verb-read-output = Lire la sortie
+verb-fetch-url = Récupérer
 verb-spawn-agent = Déléguer
 verb-schedule-next = Programmer
 verb-unknown = Outil

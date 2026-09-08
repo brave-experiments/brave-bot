@@ -513,6 +513,24 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                 "required": ["kind", "task"]
             }),
         ),
+        Tool::function(
+            "fetch_url",
+            "Fetch an http or https URL. What comes back is quarantined, like a file nobody \
+             vouched for: you get a reference rather than the text, and you cannot read it or be \
+             told what it says. Hand the reference to spawn_processor to have a question answered \
+             about it, or to write_file as contents_ref to save it. The user is asked before \
+             anything leaves the machine.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The absolute http or https URL to fetch."
+                    }
+                },
+                "required": ["url"]
+            }),
+        ),
     ];
 
     if self_paced {
@@ -586,6 +604,7 @@ pub fn for_delegate(capabilities: &bravebot_core::capability::CapabilitySet) -> 
             "spawn_agent" | "ask_user" | "todo_write" | "schedule_next" => false,
             "write_file" | "edit_file" => capabilities.contains(Capability::FileWrite),
             "run" | "read_output" => capabilities.contains(Capability::ShellExec),
+            "fetch_url" => capabilities.contains(Capability::WebFetch),
             _ => capabilities.contains(Capability::FileRead),
         })
         .collect()
@@ -940,6 +959,7 @@ fn target_key(tool: &str) -> Option<&'static str> {
         "list_files" => Some("directory"),
         "search" => Some("pattern"),
         "load_skill" => Some("name"),
+        "fetch_url" => Some("url"),
         _ => None,
     }
 }
@@ -1188,6 +1208,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "ask_user" => ask_user(policy, confirmer, &arguments),
         "run" => run(policy, tools, confirmer, &arguments),
         "read_output" => read_output(policy, tools, confirmer, &arguments),
+        "fetch_url" => fetch_url(policy, tools, confirmer, &arguments),
         "schedule_next" if tools.self_paced => schedule_next(policy, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
@@ -2501,6 +2522,96 @@ fn run<S: Sink, C: Confirmer>(
     }
 }
 
+fn fetch_url<S: Sink, C: Confirmer>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> Produced {
+    let Some(proposed) = argument(arguments, "url") else {
+        return problem(
+            "error: 'url' is required and must be a string holding an http or https URL",
+        );
+    };
+
+    // The planner's own words, so untrusted. Released through one witness, because the legitimate
+    // destination is a person reading it: their reading it is what the approval is.
+    let proof = policy.authorise_display_release("a proposed url");
+    let url = proposed.declassify(&proof);
+
+    // Worked out here rather than in the prompt, so what a person is asked about is the host the
+    // request will reach and not whatever the string looks like it names.
+    let Some(host) = bravebot_core::url::host_of(&url) else {
+        return problem(format!(
+            "error: '{url}' names no host to fetch from; give an absolute http or https URL"
+        ));
+    };
+
+    if policy.fetch_needs_approval(&url) {
+        let request = crate::confirm::FetchRequest {
+            url: url.clone(),
+            host: host.clone(),
+        };
+        if confirmer.confirm_fetch(&request) == Decision::Reject {
+            return problem(
+                "refused: the user did not approve fetching this. Do not retry the same URL; \
+                 ask what they would prefer."
+                    .to_string(),
+            );
+        }
+    }
+
+    // Bound to this exact URL, so an approval cannot be spent on another.
+    policy.endorse_fetch(&url);
+    let label = match policy.before_fetch(&url) {
+        Ok(label) => label,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
+    let request = bravebot_net::Request::get(&url);
+    let fetched = tools
+        .chat
+        .egress
+        .fetch_watching(policy, request, label, Some(tools.cancel));
+    // Before anything returns, so a failure does not leave the rest of the turn's egress being
+    // checked against the host this one call was approved for.
+    policy.fetch_finished();
+
+    match fetched {
+        Ok(response) => {
+            // Decoded lossily rather than refused for not being text. What a server sends is
+            // untrusted either way, and a page with one bad byte is still the page that was asked
+            // for: nothing here reads it, so there is nothing for a decoding failure to protect.
+            let (bytes, body_label) = response.body.into_parts_for_decoding();
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+
+            let note = format!(
+                "{}, {}",
+                response.status,
+                tally(text.lines().count(), "line", "lines")
+            );
+
+            // The URL as it was requested, not `final_url`. A redirect chain ends somewhere the
+            // person approving never saw, and naming that in the transcript would present a host
+            // nobody agreed to as though they had.
+            let mut produced = Produced::new(
+                Labelled::new(text, body_label),
+                format!("what {url} returned"),
+                note,
+            )
+            .of_content()
+            .capped(response.truncated);
+            // Always. A fetched body is never trusted, so the block a person is shown is always
+            // marked as content nobody vouched for.
+            produced.untrusted = true;
+            produced
+        }
+        // The URL is safe to repeat: a person approved it, so it is not something an attacker
+        // chose. Nothing of the response is, and none of it is read to build this.
+        Err(error) => problem(format!("error: fetching {url} failed: {error}")),
+    }
+}
+
 /// How much of a command's output may enter the conversation.
 ///
 /// A context-budget decision and not a safety one: a single tool result must never be able to
@@ -3368,7 +3479,8 @@ mod tests {
                 "ask_user",
                 "run",
                 "read_output",
-                "spawn_agent"
+                "spawn_agent",
+                "fetch_url"
             ]
         );
     }
@@ -3880,6 +3992,10 @@ mod tests {
                 &mut self,
                 _request: &crate::confirm::OutputRequest,
             ) -> Decision {
+                Decision::Reject
+            }
+
+            fn confirm_fetch(&mut self, _request: &crate::confirm::FetchRequest) -> Decision {
                 Decision::Reject
             }
 

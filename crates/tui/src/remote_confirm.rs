@@ -20,7 +20,8 @@
 //! decision taken against a question nobody matched is worse than no decision at all.
 
 use bravebot_agent::confirm::{
-    Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
+    Confirmer, Decision, FetchRequest, OutputRequest, RunDecision, RunRequest, VouchRequest,
+    WriteRequest,
 };
 use bravebot_agent::report::{
     Activity, DelegateId, Delegation, Landing, Phase, Printed, Reported, Reporter, Shown,
@@ -86,6 +87,8 @@ pub enum ToMain {
     /// A command's output needs a person to read it before the planner may. The main thread
     /// must reply.
     ReadOutput(OutputRequest),
+    /// A URL the planner wants fetched. The main thread must reply.
+    Fetch(FetchRequest),
     /// A quarantined file the model would like to read. The main thread must reply.
     Vouch(VouchRequest),
     /// The planner is asking the user something. The main thread must reply.
@@ -136,6 +139,7 @@ pub enum Reply {
     Write(Decision),
     Run(RunDecision),
     ReadOutput(Decision),
+    Fetch(Decision),
     Vouch(Decision),
     Ask(Vec<Answer>),
 }
@@ -192,6 +196,14 @@ impl Confirmer for RemoteConfirmer {
             Some(Reply::ReadOutput(decision)) => decision,
             // A reply to a different question is not consent to put these bytes in the planner's
             // context.
+            _ => Decision::Reject,
+        }
+    }
+
+    fn confirm_fetch(&mut self, request: &FetchRequest) -> Decision {
+        match self.exchange(ToMain::Fetch(request.clone())) {
+            Some(Reply::Fetch(decision)) => decision,
+            // A reply to another question is not consent to leave this machine.
             _ => Decision::Reject,
         }
     }
@@ -625,6 +637,7 @@ mod tests {
                     ToMain::Ask(_) => seen.push("ask"),
                     ToMain::Run(_) => seen.push("run"),
                     ToMain::ReadOutput(_) => seen.push("read_output"),
+                    ToMain::Fetch(_) => seen.push("fetch"),
                     ToMain::Vouch(_) => seen.push("vouch"),
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),

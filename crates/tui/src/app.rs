@@ -3154,6 +3154,15 @@ fn run_turn_animated(
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::ReadOutput(answer.decision()));
             }
+            crate::remote_confirm::ToMain::Fetch(request) => {
+                let answer = crate::confirm::ask_fetch(terminal, &request);
+                if answer == crate::confirm::Answer::Interrupt {
+                    cancel.cancel();
+                }
+                // Nothing is noted on the transcript: an approval covers this one URL and leaves
+                // no standing permission behind, so there is no decision to record.
+                let _ = answer_tx.send(crate::remote_confirm::Reply::Fetch(answer.decision()));
+            }
             crate::remote_confirm::ToMain::Vouch(request) => {
                 let answer = crate::confirm::ask_vouch(terminal, &request);
                 if answer == crate::confirm::Answer::Interrupt {

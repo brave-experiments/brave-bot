@@ -8,7 +8,8 @@
 //! event all resolve to refusal.
 
 use bravebot_agent::confirm::{
-    Confirmer, Decision, Intent, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
+    Confirmer, Decision, FetchRequest, Intent, OutputRequest, RunDecision, RunRequest,
+    VouchRequest, WriteRequest,
 };
 use bravebot_agent::diff::Change;
 use bravebot_core::ask::{Answer as UserAnswer, Asking};
@@ -49,6 +50,10 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
 
     fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
         ask_output(self.terminal, request).decision()
+    }
+
+    fn confirm_fetch(&mut self, request: &FetchRequest) -> Decision {
+        ask_fetch(self.terminal, request).decision()
     }
 
     fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
@@ -807,6 +812,98 @@ fn draw_output(frame: &mut ratatui::Frame, request: &OutputRequest, scroll: u16)
 }
 
 /// Draw the offer to vouch for a quarantined file, and wait for an answer.
+/// Ask whether to fetch a URL, blocking until answered.
+pub fn ask_fetch<B: Backend>(terminal: &mut Terminal<B>, request: &FetchRequest) -> Answer {
+    loop {
+        if terminal.draw(|frame| draw_fetch(frame, request)).is_err() {
+            return Answer::Reject;
+        }
+
+        match event::read() {
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(Response::Answer(answer)) => return answer,
+                // Nothing here scrolls: a URL and a host are two lines, and there is no body to
+                // page through because none has been fetched yet.
+                Some(Response::Scroll(_)) => continue,
+                None => continue,
+            },
+            Ok(_) => continue,
+            Err(_) => return Answer::Reject,
+        }
+    }
+}
+
+/// Draw the fetch question.
+///
+/// The host is drawn on its own line rather than left inside the URL. A person skimming
+/// `https://example.com@evil.test/` reads the first name and the request goes to the second, so
+/// what they are actually answering about is put where it cannot be misread.
+fn draw_fetch(frame: &mut ratatui::Frame, request: &FetchRequest) {
+    let area = centred(frame.area());
+    let inside = panel(frame, area, theme::ok(), t!(fetch_title));
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", t!(fetch_verb)),
+                Style::default()
+                    .fg(theme::ok())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                request.url.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::styled(
+            format!("  {}", t!(fetch_host, host = request.host.as_str())),
+            Style::default().fg(theme::muted()),
+        ),
+        Line::raw(""),
+    ];
+    lines.extend(indented(
+        t!(fetch_explained),
+        Style::default().fg(theme::muted()),
+        inside.width as usize,
+    ));
+
+    let keys = Line::from(vec![
+        Span::styled(
+            "  y",
+            Style::default()
+                .fg(theme::ok())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" {}    ", t!(fetch_yes))),
+        Span::styled(
+            "n",
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" {}    ", t!(fetch_no))),
+        Span::styled(
+            "ctrl-c",
+            Style::default()
+                .fg(theme::muted())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}", t!(stop_the_turn)),
+            Style::default().fg(theme::muted()),
+        ),
+    ]);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inside);
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[0]);
+    frame.render_widget(Paragraph::new(keys), rows[1]);
+}
+
 pub fn ask_vouch<B: Backend>(terminal: &mut Terminal<B>, request: &VouchRequest) -> Answer {
     let mut scroll = 0u16;
     loop {

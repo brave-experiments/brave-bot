@@ -93,6 +93,7 @@ rules here.
 | rules written in advance about what to ask about or refuse | [permissions.md](docs/specs/permissions.md) |
 | the one component that reads untrusted content | [processors.md](docs/specs/processors.md) |
 | a tool's arguments, refusals, or results | [tools/](docs/specs/tools/tool-surface.md) |
+| fetching a URL, and which hosts a person agreed to | [fetch-url.md](docs/specs/tools/fetch-url.md) |
 | why the planner has no shell, and what `run` may do | [shell-mode.md](docs/specs/shell-mode.md), [run.md](docs/specs/tools/run.md) |
 | `@`, pasting, dropping a file | [naming-files.md](docs/specs/naming-files.md), [pasting.md](docs/specs/pasting.md), [dropping.md](docs/specs/dropping.md) |
 | when a person is asked, and what an answer grants | [prompting.md](docs/specs/prompting.md) |

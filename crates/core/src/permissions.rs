@@ -49,6 +49,8 @@ pub enum Subject {
     Edit,
     /// Running a program: every stage of a `run` pipeline.
     Bash,
+    /// Fetching a URL: `fetch_url`, and every redirect hop it follows.
+    WebFetch,
 }
 
 impl Subject {
@@ -58,6 +60,7 @@ impl Subject {
             Self::Read => "Read",
             Self::Edit => "Edit",
             Self::Bash => "Bash",
+            Self::WebFetch => "WebFetch",
         }
     }
 
@@ -67,6 +70,7 @@ impl Subject {
             "Read" => Some(Self::Read),
             "Edit" => Some(Self::Edit),
             "Bash" => Some(Self::Bash),
+            "WebFetch" => Some(Self::WebFetch),
             _ => None,
         }
     }
@@ -151,6 +155,8 @@ enum Pattern {
     Absolute(PathPattern),
     /// A command pattern, matched against one stage's argv rendered as a line.
     Command(String),
+    /// A host, from a `domain:` specifier, matched against a URL's host and its subdomains.
+    Domain(String),
 }
 
 /// A path pattern and whether it was written anchored.
@@ -216,6 +222,22 @@ impl Rule {
                         "needs a home directory or a settings directory to say where it points",
                     )
                 })?,
+            Some(specifier) if subject == Subject::WebFetch => {
+                // Claude Code's spelling, and the only one: a URL prefix would read as covering a
+                // path, and a rule about a path on a host it does not also pin is not a rule
+                // anybody could rely on.
+                let Some(domain) = specifier.strip_prefix("domain:") else {
+                    return Err(Rejected::new(
+                        text,
+                        "needs a domain, written WebFetch(domain:example.com)",
+                    ));
+                };
+                let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
+                if domain.is_empty() {
+                    return Err(Rejected::new(text, "names no domain after 'domain:'"));
+                }
+                Pattern::Domain(domain)
+            }
             Some(specifier) => Pattern::Command(command_pattern(specifier)),
         };
 
@@ -233,7 +255,7 @@ impl Rule {
     fn covers_path(&self, path: &str, restricting: bool) -> bool {
         match &self.pattern {
             Pattern::Everything => true,
-            Pattern::Command(_) => false,
+            Pattern::Command(_) | Pattern::Domain(_) => false,
             Pattern::Relative(pattern) => {
                 !is_absolute(path) && pattern.matches(&segments_of(path), restricting)
             }
@@ -248,7 +270,25 @@ impl Rule {
         match &self.pattern {
             Pattern::Everything => true,
             Pattern::Command(pattern) => command_matches(pattern, command),
-            Pattern::Relative(_) | Pattern::Absolute(_) => false,
+            Pattern::Relative(_) | Pattern::Absolute(_) | Pattern::Domain(_) => false,
+        }
+    }
+
+    /// Whether this rule covers fetching from `host`, which is already lowercased.
+    ///
+    /// A rule for `example.com` covers `docs.example.com`, which is what a person writing one
+    /// means, and never `notexample.com`: the boundary has to be a label boundary or a rule about
+    /// one site would silently cover somebody else's.
+    fn covers_host(&self, host: &str) -> bool {
+        match &self.pattern {
+            Pattern::Everything => true,
+            Pattern::Domain(domain) => {
+                host == domain
+                    || host
+                        .strip_suffix(domain)
+                        .is_some_and(|prefix| prefix.ends_with('.'))
+            }
+            Pattern::Relative(_) | Pattern::Absolute(_) | Pattern::Command(_) => false,
         }
     }
 }
@@ -346,6 +386,15 @@ impl Permissions {
     /// What the rules say about running one stage, rendered as a command line.
     pub fn for_command(&self, command: &str) -> Decision {
         self.decide(|rule, _| rule.subject == Subject::Bash && rule.covers_command(command))
+    }
+
+    /// What the rules say about fetching from `host`.
+    ///
+    /// The host alone, never the path or the query: those are where a URL carries what somebody
+    /// asked for, and a rule matching on them would be answering a different question each time.
+    pub fn for_host(&self, host: &str) -> Decision {
+        let host = host.to_ascii_lowercase();
+        self.decide(|rule, _| rule.subject == Subject::WebFetch && rule.covers_host(&host))
     }
 
     /// What the rules say about running a whole pipeline.
@@ -961,7 +1010,9 @@ mod tests {
     fn a_rule_that_cannot_be_read_is_dropped_and_reported() {
         let texts: Vec<String> = [
             "Bash(git diff",
-            "WebFetch(domain:example.com)",
+            // A family this agent has, with a specifier it does not read.
+            "WebFetch(https://example.com/docs)",
+            "WebFetch(domain:)",
             "Write(src/**)",
             "Bash()",
             "",
@@ -973,6 +1024,74 @@ mod tests {
         let (permissions, rejected) = Permissions::parse(&texts, &[], &[], &anchors());
         assert!(permissions.is_empty(), "an unreadable rule was kept");
         assert_eq!(rejected.len(), texts.len());
+    }
+
+    /// A rule for a domain covers that host and anything under it, which is what somebody writing
+    /// one means by it.
+    #[test]
+    fn a_domain_rule_covers_the_host_and_its_subdomains() {
+        let permissions = rules(&[], &[], &["WebFetch(domain:example.com)"]);
+        for host in ["example.com", "docs.example.com", "a.b.example.com"] {
+            assert_eq!(
+                permissions.for_host(host),
+                Decision::Ruled(Ruling::Allow),
+                "{host} was not covered"
+            );
+        }
+    }
+
+    /// The boundary has to be a label boundary. Matching on the suffix alone makes a rule about
+    /// one site cover every domain somebody registers ending in the same letters, which is a rule
+    /// nobody wrote and the sort of hole a deny rule would be trusted not to have.
+    #[test]
+    fn a_domain_rule_stops_at_a_label_boundary() {
+        let permissions = rules(&["WebFetch(domain:example.com)"], &[], &[]);
+        for host in ["notexample.com", "example.com.evil.test", "example.co"] {
+            assert_eq!(
+                permissions.for_host(host),
+                Decision::Unmatched,
+                "{host} was matched by a rule about example.com"
+            );
+        }
+        assert_eq!(
+            permissions.for_host("example.com"),
+            Decision::Ruled(Ruling::Deny)
+        );
+    }
+
+    /// A host arrives from a URL, where case says nothing, so the comparison cannot depend on it.
+    #[test]
+    fn a_domain_rule_ignores_case() {
+        let permissions = rules(&[], &[], &["WebFetch(domain:Example.COM)"]);
+        assert_eq!(
+            permissions.for_host("DOCS.example.com"),
+            Decision::Ruled(Ruling::Allow)
+        );
+    }
+
+    /// A bare family name covers every use of it, as it does for the other families.
+    #[test]
+    fn a_bare_web_fetch_rule_covers_every_host() {
+        let permissions = rules(&["WebFetch"], &[], &[]);
+        assert_eq!(
+            permissions.for_host("anywhere.test"),
+            Decision::Ruled(Ruling::Deny)
+        );
+    }
+
+    /// A family names one family, so a rule about fetching decides nothing about reading a file
+    /// and a rule about a path decides nothing about a host.
+    #[test]
+    fn a_web_fetch_rule_decides_nothing_about_other_families() {
+        let permissions = rules(&[], &[], &["WebFetch(domain:example.com)"]);
+        assert_eq!(
+            permissions.for_path(Subject::Read, "example.com"),
+            Decision::Unmatched
+        );
+        assert_eq!(permissions.for_command("example.com"), Decision::Unmatched);
+
+        let paths = rules(&[], &[], &["Read(src/**)"]);
+        assert_eq!(paths.for_host("example.com"), Decision::Unmatched);
     }
 
     /// One bad rule must not take the others down with it, or a typo in an allow rule would

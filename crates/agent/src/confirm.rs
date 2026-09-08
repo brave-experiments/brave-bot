@@ -217,6 +217,32 @@ impl OutputRequest {
     }
 }
 
+/// A URL the model has asked to fetch.
+///
+/// The host is carried beside the URL rather than left for a drawing to pick out, because it is
+/// what the question is actually about and what remembering the answer would cover. A person
+/// approving this is agreeing to talk to that host; nothing about it says what will come back,
+/// which stays untrusted whatever they answer. See
+/// [`Policy::before_fetch`](bravebot_core::policy::Policy::before_fetch).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchRequest {
+    /// The URL, exactly as it will be requested.
+    pub url: String,
+    /// The host it will talk to, taken from the URL rather than from its own text.
+    ///
+    /// Shown because a URL is easy to misread: `https://example.com@evil.test/` names one site to
+    /// a person skimming it and reaches another, so what a person is answering about is put in
+    /// front of them separately from the string it came out of.
+    pub host: String,
+}
+
+impl FetchRequest {
+    /// A short description for a prompt line.
+    pub fn summary(&self) -> String {
+        format!("fetch from {}", self.host)
+    }
+}
+
 /// A quarantined file the model would like to read.
 ///
 /// Offered at the moment a read is refused, so the trust question is put where it matters rather
@@ -322,6 +348,14 @@ pub trait Confirmer {
     /// question cannot mean.
     fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision;
 
+    /// Ask about fetching a URL. Implementations must default to refusal when they cannot ask.
+    ///
+    /// Separate from [`Confirmer::confirm_run`] because what a yes grants is different. Vouching
+    /// for a command trusts what it prints, since a person can read one command and answer for
+    /// both; a host will send whatever it likes on every later request, so approving one is
+    /// consent to talk to it and never a claim about what it returns.
+    fn confirm_fetch(&mut self, request: &FetchRequest) -> Decision;
+
     /// Ask whether to vouch for a quarantined file the model wants to read. Implementations must
     /// default to refusal when they cannot ask.
     ///
@@ -382,6 +416,11 @@ impl Confirmer for Unattended {
         Decision::Reject
     }
 
+    /// Refuses. Nothing about a test double is a person agreeing to talk to a host.
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
         Decision::Reject
     }
@@ -419,6 +458,11 @@ impl Confirmer for ApproveWrites {
         Decision::Reject
     }
 
+    /// Refuses. Nothing about a test double is a person agreeing to talk to a host.
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
         Decision::Reject
     }
@@ -447,6 +491,11 @@ impl Confirmer for ChoosesFirst {
     }
 
     fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
+    /// Refuses. Nothing about a test double is a person agreeing to talk to a host.
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
         Decision::Reject
     }
 
@@ -497,6 +546,11 @@ impl Confirmer for ApproveRuns {
         Decision::Reject
     }
 
+    /// Refuses. Nothing about a test double is a person agreeing to talk to a host.
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
         Decision::Reject
     }
@@ -528,6 +582,11 @@ impl Confirmer for RemembersRuns {
         Decision::Reject
     }
 
+    /// Refuses. Nothing about a test double is a person agreeing to talk to a host.
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
         Decision::Reject
     }
@@ -556,6 +615,46 @@ impl Confirmer for ReadsOutput {
     }
 
     fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Approve
+    }
+
+    /// Refuses. Nothing about a test double is a person agreeing to talk to a host.
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn ask_user(&mut self, _asking: &Asking) -> Vec<Answer> {
+        Vec::new()
+    }
+
+    /// Nobody is typing.
+    fn interjection(&mut self) -> Option<String> {
+        None
+    }
+}
+
+/// Approves every fetch, and nothing else. Test-only, and named so its use is conspicuous.
+#[derive(Debug, Default)]
+pub struct ApproveFetches;
+
+impl Confirmer for ApproveFetches {
+    fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_run(&mut self, _request: &RunRequest) -> RunDecision {
+        RunDecision::reject()
+    }
+
+    fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+        Decision::Reject
+    }
+
+    fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
         Decision::Approve
     }
 
@@ -621,6 +720,10 @@ impl<C: Confirmer + ?Sized> Confirmer for Timed<'_, C> {
 
     fn confirm_read_output(&mut self, request: &OutputRequest) -> Decision {
         self.timing(|inner| inner.confirm_read_output(request))
+    }
+
+    fn confirm_fetch(&mut self, request: &FetchRequest) -> Decision {
+        self.timing(|inner| inner.confirm_fetch(request))
     }
 
     fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
@@ -711,6 +814,11 @@ mod tests {
         }
 
         fn confirm_read_output(&mut self, _request: &OutputRequest) -> Decision {
+            std::thread::sleep(self.0);
+            Decision::Reject
+        }
+
+        fn confirm_fetch(&mut self, _request: &FetchRequest) -> Decision {
             std::thread::sleep(self.0);
             Decision::Reject
         }

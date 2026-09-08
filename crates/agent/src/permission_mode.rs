@@ -164,6 +164,22 @@ impl<C: Confirmer> Confirmer for Confining<'_, C> {
         }
     }
 
+    /// Asked in every mode but bypass, including plan mode.
+    ///
+    /// Accepting edits does not accept fetches: the two have nothing to do with each other, and a
+    /// person who said yes to writing files in this tree has said nothing about which hosts may be
+    /// talked to. Plan mode asks rather than refusing, because reading a page is how a plan gets
+    /// written and a fetch changes nothing here; what it does do is leave the machine, which is
+    /// the person's to agree to.
+    fn confirm_fetch(&mut self, request: &crate::confirm::FetchRequest) -> Decision {
+        match self.mode {
+            PermissionMode::Bypass => Decision::Approve,
+            PermissionMode::Ask | PermissionMode::AcceptEdits | PermissionMode::Plan => {
+                self.inner.confirm_fetch(request)
+            }
+        }
+    }
+
     /// Vouches for the file only where every check is being bypassed, which is the part of that mode
     /// that costs the most: the label on those bytes is what keeps a file's contents from being read
     /// as instructions, and this hands it over for every quarantined file the planner asks for.

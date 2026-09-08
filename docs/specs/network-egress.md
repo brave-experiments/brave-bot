@@ -37,7 +37,13 @@ is bounded, so a loop ends rather than running forever.
 **Why.** Following redirects automatically would mean the gate only ever saw the first URL, and a
 permitted host could hand off to a denied one.
 
+Revalidating is what makes a hop checkable; what the check consists of depends on why the request is
+being made. For a `fetch_url` call it is [FETCH-4](tools/fetch-url.md#FETCH-4), which holds the
+chain to the host a person approved. For this program's own connection to its endpoint it is the
+capability and nothing more, for the reason that clause gives.
+
 `verified-by: bravebot_net::egress::every_redirect_hop_is_revalidated`
+`verified-by: bravebot_core::policy::a_fetch_cannot_be_redirected_to_a_host_nobody_approved`
 `verified-by: bravebot_net::egress::a_redirect_loop_is_bounded`
 `verified-by: bravebot_net::lib::redirect_status_codes_are_recognised`
 `verified-by: bravebot_net::lib::absolute_redirects_are_used_as_given`

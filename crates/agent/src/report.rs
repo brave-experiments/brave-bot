@@ -670,6 +670,7 @@ pub(crate) fn verb_for(tool: &str) -> &'static str {
         "ask_user" => t!(verb_ask_user),
         "run" => t!(verb_run),
         "read_output" => t!(verb_read_output),
+        "fetch_url" => t!(verb_fetch_url),
         // Named for what it is rather than for what it does, exactly as a processor is: a person
         // watching a line go by should be able to see that the work moved somewhere else.
         "spawn_agent" => t!(verb_spawn_agent),

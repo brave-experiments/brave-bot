@@ -173,6 +173,10 @@ impl<T: Confirmer + ?Sized> Confirmer for Borrowed<'_, '_, T> {
         self.lent.hold().confirm_read_output(request)
     }
 
+    fn confirm_fetch(&mut self, request: &crate::confirm::FetchRequest) -> Decision {
+        self.lent.hold().confirm_fetch(request)
+    }
+
     fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
         self.lent.hold().confirm_vouch(request)
     }

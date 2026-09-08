@@ -35,13 +35,18 @@ therefore holds in every mode, including the mode that asks about nothing.
 <a id="PERM-1"></a>
 ### PERM-1: a rule names a family of tools, and matches on routing only
 
-A rule is `Tool` or `Tool(specifier)`. Three families exist: `Read` covers every tool that reads or
-enumerates a file, `Edit` covers every tool that changes one, and `Bash` covers running a program.
-They are categories rather than tool names, and `Bash` names no shell: there is none, and a
-specifier is matched against one stage's program and arguments.
+A rule is `Tool` or `Tool(specifier)`. Four families exist: `Read` covers every tool that reads or
+enumerates a file, `Edit` covers every tool that changes one, `Bash` covers running a program, and
+`WebFetch` covers fetching a URL. They are categories rather than tool names, and `Bash` names no
+shell: there is none, and a specifier is matched against one stage's program and arguments.
 
-A specifier is matched against a **routing** field and nothing else: a path, or a stage's argv.
-Never a file's contents, never a program's output, never anything else a turn observed.
+A specifier is matched against a **routing** field and nothing else: a path, a stage's argv, or a
+host. Never a file's contents, never a program's output, never anything else a turn observed.
+
+`WebFetch` takes `domain:` and nothing else, so `WebFetch(domain:example.com)` covers that host and
+its subdomains. A URL prefix would read as covering a path, and the boundary is a label boundary: a
+rule about `example.com` never covers `notexample.com`. What a matching rule decides for a fetch,
+and what it does not decide, is [fetch-url.md](tools/fetch-url.md).
 
 **Why.** Routing is trusted and public before it reaches any gate, so matching on it is the driver
 deciding from trusted input, which is what the driver is for. A rule matched against observed bytes
@@ -49,6 +54,11 @@ would be the driver branching on untrusted content, whatever the rule said.
 
 `verified-by: bravebot_core::permissions::a_bare_family_name_covers_every_use_of_it`
 `verified-by: bravebot_core::permissions::a_rule_for_one_family_does_not_decide_another`
+`verified-by: bravebot_core::permissions::a_domain_rule_covers_the_host_and_its_subdomains`
+`verified-by: bravebot_core::permissions::a_domain_rule_stops_at_a_label_boundary`
+`verified-by: bravebot_core::permissions::a_domain_rule_ignores_case`
+`verified-by: bravebot_core::permissions::a_bare_web_fetch_rule_covers_every_host`
+`verified-by: bravebot_core::permissions::a_web_fetch_rule_decides_nothing_about_other_families`
 
 <a id="PERM-2"></a>
 ### PERM-2: deny, then ask, then allow, and the first match decides

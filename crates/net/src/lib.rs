@@ -344,7 +344,22 @@ impl Egress {
         request: Request,
         label: Label,
     ) -> Result<Response, EgressError> {
-        let (status, content_type, url, reader) = self.fetch_checked(policy, &request, None)?;
+        self.fetch_watching(policy, request, label, None)
+    }
+
+    /// As [`Egress::fetch`], but abandonable while it waits.
+    ///
+    /// For a fetch a person is waiting on inside a turn they can stop. Every gate is the same one
+    /// at the same point: the token decides how long this waits, never where the request may go or
+    /// what its body is labelled.
+    pub fn fetch_watching<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        request: Request,
+        label: Label,
+        cancel: Option<&Cancel>,
+    ) -> Result<Response, EgressError> {
+        let (status, content_type, url, reader) = self.fetch_checked(policy, &request, cancel)?;
         let (body, truncated) = read_capped(reader).map_err(|e| EgressError::Transport {
             url: url.clone(),
             detail: e.to_string(),
