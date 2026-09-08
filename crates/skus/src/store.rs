@@ -696,6 +696,10 @@ mod tests {
     /// The file holds a bearer secret, so it must not be readable by other users on the machine.
     /// Checked on the real file rather than trusted from the open flags, since an existing file
     /// keeps its own mode and the truncating reopen is the easy way to lose this.
+    ///
+    /// Unix only: there is no mode to read on Windows, and the extension that reads one is not on
+    /// that target.
+    #[cfg(unix)]
     #[test]
     fn the_file_is_not_readable_by_anyone_else() {
         with_temp_home("mode", || {
