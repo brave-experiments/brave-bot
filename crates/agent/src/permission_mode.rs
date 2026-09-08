@@ -180,6 +180,22 @@ impl<C: Confirmer> Confirmer for Confining<'_, C> {
         }
     }
 
+    /// Asked in every mode but bypass, including plan mode and accepting edits.
+    ///
+    /// Accepting edits does not start servers: what that mode grants is writes to this tree, and a
+    /// language server runs the ecosystem's build tooling with the user's own access, which is
+    /// nearer to a run than to an edit. Plan mode asks rather than refusing, for the reason a fetch
+    /// does: reading the code is how a plan gets written, and a server writes nothing here. What it
+    /// does do is execute code out of the dependency tree, which stays the person's to agree to.
+    fn confirm_server(&mut self, request: &crate::confirm::ServerRequest) -> Decision {
+        match self.mode {
+            PermissionMode::Bypass => Decision::Approve,
+            PermissionMode::Ask | PermissionMode::AcceptEdits | PermissionMode::Plan => {
+                self.inner.confirm_server(request)
+            }
+        }
+    }
+
     /// Vouches for the file only where every check is being bypassed, which is the part of that mode
     /// that costs the most: the label on those bytes is what keeps a file's contents from being read
     /// as instructions, and this hands it over for every quarantined file the planner asks for.

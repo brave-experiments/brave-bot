@@ -1,19 +1,9 @@
-//! The same end-to-end claim as `live.rs`, against a server that can answer from a read-only tree.
+//! The same end-to-end claim as `live.rs`, against a second server.
 //!
-//! This exists because the Rust case cannot prove the tool works. rust-analyzer needs to build a
-//! crate graph, which needs a subprocess and a writable target directory, so under LSP-5's profile it
-//! never finishes indexing and every answer is honestly marked partial: the known cost in
-//! docs/specs/tools/lsp.md says so. That leaves the central question open, which is whether a
-//! language server confined the way this repository confines one can answer a real question at all.
-//!
-//! `typescript-language-server` was chosen as the case that should have answered it, since it reads
-//! the tree and needs no build. It does not: it calls `mkdir` on a private temp directory while
-//! starting and exits when the profile denies that. So both servers tested fail on the write denial,
-//! by different routes, and the known cost in the spec now says so.
-//!
-//! These tests are therefore written to become real assertions the moment LSP-5 grants a scratch
-//! directory, and to report rather than fail until then. What they already pin is that nothing in an
-//! answer carries text out of a file, which holds whatever the server managed to index.
+//! One implementation agreeing with this client is weak evidence about a protocol: the shapes an
+//! answer can take differ per server, and `locations_in` has to handle all of them. This is the
+//! second data point, and it is a Node server rather than a Rust one so the launch path is exercised
+//! for a script whose shebang names an interpreter.
 //!
 //! Skipped where the server is absent, for LSP-6's reason.
 
@@ -26,11 +16,8 @@ use std::path::{Path, PathBuf};
 /// A tiny TypeScript project, written under this crate's own build directory.
 ///
 /// Built rather than checked in: it is a fixture for a live server and not a thing this repository
-/// otherwise needs. Under `target/` specifically, because the profile grants the workspace and a
-/// server cannot read a directory nobody granted, including the one it is started in: a fixture in
-/// `/tmp` failed with `process.cwd failed ... uv_cwd` before the server reached its first message.
-/// That is the profile behaving correctly, and it is worth knowing it presents as a crash in the
-/// runtime rather than as a denied read.
+/// otherwise needs, and a `.ts` file in the tree proper would be indexed by every other test's
+/// server too. Under `target/`, which is already ignored.
 fn project() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -51,6 +38,24 @@ fn project() -> Option<PathBuf> {
         "{ \"compilerOptions\": { \"strict\": true }, \"include\": [\"src\"] }\n",
     )
     .ok()?;
+
+    // The server refuses to start without a TypeScript installation it can find, and it looks in the
+    // workspace. Linked from wherever the global one is rather than installed here, since a test that
+    // fetched a package would be a test that needs the network.
+    let modules = root.join("node_modules");
+    std::fs::create_dir_all(&modules).ok()?;
+    let linked = modules.join("typescript");
+    if !linked.exists() {
+        let global = resolve("typescript-language-server")?
+            .parent()?
+            .parent()?
+            .join("lib/node_modules/typescript");
+        if global.is_dir() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&global, &linked).ok()?;
+        }
+    }
+
     Some(root)
 }
 
@@ -66,11 +71,6 @@ fn ask(root: &Path, question: &Question<'_>) -> Option<Answer> {
         eprintln!("skipped: typescript-language-server is not on PATH");
         return None;
     }
-    let Ok(sandbox) = bravebot_sandbox::for_current_platform() else {
-        eprintln!("skipped: no confinement on this platform, so LSP-5 forbids launching one");
-        return None;
-    };
-
     let mut sink = RecordingSink::new();
     let mut routing = Routing::new();
     routing.insert_trusted("task", "look up a symbol");
@@ -86,32 +86,39 @@ fn ask(root: &Path, question: &Question<'_>) -> Option<Answer> {
         root.to_path_buf(),
         std::env::var_os("HOME").map(PathBuf::from),
         resolve,
+        false,
+        Vec::new(),
     );
 
-    match servers.ask(&mut policy, sandbox.as_ref(), question) {
+    // LSP-5 asks before a server starts. A test is not a person, so it says yes explicitly rather
+    // than having the answer inferred: what is being exercised is the protocol, not the prompt.
+    match servers.ask(&mut policy, question, &mut |_| true) {
         Ok(answer) => Some(answer),
-        // Reported rather than asserted, because this is the known cost in the spec rather than a
-        // regression: typescript-language-server calls `mkdir` on a private temp directory while
-        // starting and exits when the profile denies it. The day LSP-5 grants a scratch directory
-        // this becomes a real assertion, and until then a failure here would be a test pinning a
-        // limitation as though it were behaviour.
         Err(error) => {
-            eprintln!(
-                "the server did not answer under confinement: {error}\n\
-                 see the known cost in docs/specs/tools/lsp.md: no server tested so far runs \
-                 usefully with writes denied"
-            );
-            None
+            // This server drives `tsserver.js` out of a TypeScript installation, and TypeScript 7
+            // does not ship one, so on a machine with 7 installed the pair cannot work whatever this
+            // crate does. Skipped rather than failed, because it says nothing about the client: the
+            // point of this file is a second opinion on the protocol, and there is none to be had
+            // here. Anything else is a real failure.
+            let said = error.to_string();
+            if said.contains("tsserver.js") || said.contains("valid TypeScript installation") {
+                eprintln!(
+                    "skipped: the installed typescript-language-server cannot drive the \
+                           installed TypeScript ({said})"
+                );
+                return None;
+            }
+            panic!("typescript-language-server is installed, so this must answer: {error}")
         }
     }
 }
 
-/// The claim the Rust case cannot make: a confined server answers a real question correctly.
+/// A second server answers a real question correctly.
 ///
 /// `resolve` is called from `useIt` in the same file, so asking for its definition from that call
 /// must come back naming `lib.ts` at the line the function is declared on.
 #[test]
-fn a_confined_server_answers_a_real_question() {
+fn a_second_server_answers_a_real_question() {
     let Some(root) = project() else {
         eprintln!("skipped: could not write the fixture project");
         return;
@@ -144,8 +151,7 @@ fn a_confined_server_answers_a_real_question() {
 
     assert!(
         !answer.locations.is_empty(),
-        "a confined server must find the definition of resolve; if this is empty the design does \
-         not work, rather than merely being awkward for Rust"
+        "the server must find the definition of resolve"
     );
     assert!(
         answer
@@ -196,9 +202,9 @@ fn locations_from_a_second_server_carry_no_text() {
     }
 }
 
-/// `findReferences` against a server that actually settles, which the Rust case cannot reach.
+/// `findReferences` against the second server.
 #[test]
-fn references_are_found_by_a_confined_server() {
+fn references_are_found_by_a_second_server() {
     let Some(root) = project() else {
         return;
     };

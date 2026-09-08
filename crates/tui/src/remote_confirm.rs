@@ -20,8 +20,8 @@
 //! decision taken against a question nobody matched is worse than no decision at all.
 
 use bravebot_agent::confirm::{
-    Confirmer, Decision, FetchRequest, OutputRequest, RunDecision, RunRequest, VouchRequest,
-    WriteRequest,
+    Confirmer, Decision, FetchRequest, OutputRequest, RunDecision, RunRequest, ServerRequest,
+    VouchRequest, WriteRequest,
 };
 use bravebot_agent::report::{
     Activity, DelegateId, Delegation, Landing, Phase, Printed, Reported, Reporter, Shown,
@@ -91,6 +91,8 @@ pub enum ToMain {
     Fetch(FetchRequest),
     /// A quarantined file the model would like to read. The main thread must reply.
     Vouch(VouchRequest),
+    /// A language server the planner would like started. The main thread must reply.
+    Server(ServerRequest),
     /// The planner is asking the user something. The main thread must reply.
     Ask(Asking),
     /// The task list changed. No reply.
@@ -141,6 +143,7 @@ pub enum Reply {
     ReadOutput(Decision),
     Fetch(Decision),
     Vouch(Decision),
+    Server(Decision),
     Ask(Vec<Answer>),
 }
 
@@ -211,6 +214,13 @@ impl Confirmer for RemoteConfirmer {
     fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
         match self.exchange(ToMain::Vouch(request.clone())) {
             Some(Reply::Vouch(decision)) => decision,
+            _ => Decision::Reject,
+        }
+    }
+
+    fn confirm_server(&mut self, request: &ServerRequest) -> Decision {
+        match self.exchange(ToMain::Server(request.clone())) {
+            Some(Reply::Server(decision)) => decision,
             _ => Decision::Reject,
         }
     }
@@ -639,6 +649,7 @@ mod tests {
                     ToMain::ReadOutput(_) => seen.push("read_output"),
                     ToMain::Fetch(_) => seen.push("fetch"),
                     ToMain::Vouch(_) => seen.push("vouch"),
+                    ToMain::Server(_) => seen.push("server"),
                     ToMain::Todos(_) => seen.push("todos"),
                     ToMain::Written(_) => seen.push("written"),
                     ToMain::Phase(_) => seen.push("phase"),

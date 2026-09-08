@@ -1378,17 +1378,18 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     let (catalogue, mut notices) =
         crate::skills::discover(&mut policy, workspace, task.home.as_deref());
 
-    // `None` where this platform cannot confine a subprocess, which LSP-5 says means no server
-    // runs: the tool then answers by saying so rather than by starting one unconfined. Nothing is
-    // launched here either way, since LSP-8 starts a server on the first question that needs one
-    // and a session that asks nothing of a language starts nothing.
+    // Nothing is started here: LSP-8 starts a server on the first question that needs one, and
+    // LSP-5 asks the person before it does, so a session that never asks about a symbol never
+    // prompts about a server.
     //
     // Built per turn rather than per session, which is short of what LSP-8 asks for: a second turn
-    // re-indexes. The set has to outlive the turn to fix that, and the entry points that would
-    // carry it are the caller's, so it is left for the change that gives a session somewhere to
-    // keep one.
-    let mut servers =
-        crate::lsp::LanguageServers::new(workspace.root().to_path_buf(), task.home.clone()).ok();
+    // starts a fresh server and re-indexes. The set has to outlive the turn to fix that, and the
+    // entry points that would carry it are the caller's, so it is left for the change that gives a
+    // session somewhere to keep one.
+    let mut servers = Some(crate::lsp::LanguageServers::new(
+        workspace.root().to_path_buf(),
+        task.home.clone(),
+    ));
 
     // Built once and put in front of every round of this turn. Nothing here is stored in the
     // conversation, so a session running many turns holds one copy of AGENTS.md rather than one

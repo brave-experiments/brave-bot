@@ -173,7 +173,6 @@ name = "bravebot-lsp"
 version = "0.4.0"
 dependencies = [
  "bravebot-core",
- "bravebot-sandbox",
  "serde",
  "serde_json",
 ]

@@ -5,9 +5,9 @@
 //! framing, the handshake, the progress tokens and the result shapes are right about a server that
 //! actually exists, which is exactly where a protocol client is usually wrong.
 //!
-//! Skipped rather than failed where the binary is absent or the platform cannot confine one, because
-//! LSP-5 and LSP-6 both say that is a legitimate state of the world and not a broken test. A skip
-//! prints why, so a run that quietly tested nothing does not read as a pass.
+//! Skipped rather than failed where the binary is absent, because LSP-6 says that is a legitimate
+//! state of the world and not a broken test. A skip prints why, so a run that quietly tested nothing
+//! does not read as a pass.
 
 use bravebot_core::capability::{Capability, CapabilitySet};
 use bravebot_core::event::RecordingSink;
@@ -50,21 +50,12 @@ fn have_rust_analyzer() -> bool {
     })
 }
 
-fn can_confine() -> bool {
-    bravebot_sandbox::for_current_platform().is_ok()
-}
-
 /// Ask one question of a real server, or `None` where there is nothing to ask.
 fn ask(question: &Question<'_>) -> Option<bravebot_lsp::Answer> {
     if !have_rust_analyzer() {
         eprintln!("skipped: rust-analyzer is not on PATH");
         return None;
     }
-    if !can_confine() {
-        eprintln!("skipped: this platform offers no confinement, so LSP-5 forbids launching one");
-        return None;
-    }
-
     let root = workspace();
     let mut sink = RecordingSink::new();
     let mut routing = Routing::new();
@@ -81,18 +72,18 @@ fn ask(question: &Question<'_>) -> Option<bravebot_lsp::Answer> {
         root.clone(),
         std::env::var_os("HOME").map(PathBuf::from),
         resolve,
+        false,
+        Vec::new(),
     );
-    let sandbox = bravebot_sandbox::for_current_platform().expect("checked above");
 
-    match servers.ask(&mut policy, sandbox.as_ref(), question) {
+    // LSP-5 asks before a server starts. A test is not a person, so it says yes explicitly rather
+    // than having the answer inferred: what is being exercised is the protocol, not the prompt.
+    match servers.ask(&mut policy, question, &mut |_| true) {
         Ok(answer) => Some(answer),
-        // A server that is installed and confinable and still did not answer is a bug in this
-        // crate, not a state of the world to skip over. The first version of this test skipped
-        // here and hid one: the profile could not read `.cargo/bin`, so the binary could not be
-        // exec'd, and "exited before replying" read as an absent server.
-        Err(error) => panic!(
-            "rust-analyzer is installed and confinement is available, so this must answer: {error}"
-        ),
+        // A server that is installed and was allowed to start must answer. Skipping here would hide
+        // exactly the failures this file exists to catch, since every one of them presents as a
+        // server that did not reply.
+        Err(error) => panic!("rust-analyzer is installed, so this must answer: {error}"),
     }
 }
 
@@ -127,21 +118,11 @@ fn a_definition_is_found_in_the_file_that_holds_it() {
         return;
     };
 
-    // A server that never finished indexing cannot answer this, and under LSP-5's profile on this
-    // workspace it does not: see the known cost in the spec. Reported rather than asserted, because
-    // an answer marked partial is LSP-7 working, not this crate failing.
-    if answer.partial {
-        eprintln!(
-            "the index was still building, so LSP-7 marks this partial; the known cost in \
-             docs/specs/tools/lsp.md says why rust-analyzer does not get there under this profile"
-        );
-        assert!(
-            answer.locations.is_empty() || answer.locations.iter().any(|l| l.path.ends_with(".rs")),
-            "a partial answer may be empty, but anything in it must still be a real location"
-        );
-        return;
-    }
-
+    assert!(
+        !answer.partial,
+        "the index must settle inside the wait: a server given the user's access and a cache \
+         directory indexes this workspace in about twenty seconds"
+    );
     assert!(
         !answer.locations.is_empty(),
         "a settled index must find a definition of Label"
@@ -219,13 +200,6 @@ fn references_span_more_than_the_declaration() {
     }) else {
         return;
     };
-
-    // An indexing server may answer before it is ready, which LSP-7 says is partial rather than
-    // wrong, so a thin answer is not a failure here.
-    if answer.partial {
-        eprintln!("the index was still building, so this answer is partial by LSP-7");
-        return;
-    }
 
     assert!(
         answer.locations.len() > 1,

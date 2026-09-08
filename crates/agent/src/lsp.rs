@@ -18,22 +18,20 @@
 //! [LSP-3]: ../../../docs/specs/tools/lsp.md
 //! [RUN-13]: ../../../docs/specs/tools/run.md
 
+use crate::confirm::{Confirmer, Decision, ServerRequest};
 use bravebot_core::event::Sink;
 use bravebot_core::label::Label;
 use bravebot_core::policy::Policy;
 use bravebot_core::value::Labelled;
 use bravebot_lsp::{Answer, Location, LspResult, Operation, Servers};
-use bravebot_sandbox::Sandbox;
 use std::path::{Path, PathBuf};
 
-/// The servers a session has started, with the sandbox that confines them.
+/// The language servers a session has started.
 ///
-/// The two travel together because neither is usable without the other: a server is only ever
-/// launched through the sandbox, and LSP-5 says a host that cannot confine one does not get to run
-/// it. Built once for a session and carried by the turn.
+/// Built once for a session and carried by the turn, because indexing is the whole cost and paying it
+/// per question would make this slower than the search it replaces.
 pub struct LanguageServers {
     servers: Servers,
-    sandbox: Box<dyn Sandbox>,
     root: PathBuf,
 }
 
@@ -41,35 +39,43 @@ impl std::fmt::Debug for LanguageServers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LanguageServers")
             .field("running", &self.servers.running())
-            .field("confinement", &self.sandbox.capabilities().level)
             .finish_non_exhaustive()
     }
 }
 
 /// Resolve a server's name to the file it names, on `$PATH`.
 ///
-/// A function rather than a closure so it can be a `fn` pointer. The working directory passed is
-/// the process's own, which matters not at all here: every name in the table is bare, so the
+/// A function rather than a closure so it can be a `fn` pointer. The working directory passed is the
+/// process's own, which matters not at all here: every name in the table is bare, so the
 /// `has_separator` branch that would use it is never taken.
 fn resolve_program(program: &str) -> Option<PathBuf> {
     crate::programs::resolve(program, Path::new("."))
 }
 
 impl LanguageServers {
-    /// Build the set for a workspace, or refuse where the platform cannot confine a subprocess.
+    /// Build the set for a workspace.
     ///
-    /// A refusal here is the same one MCP-3 makes: an unconfinable third-party process does not
-    /// run, so the tool is absent rather than unconfined.
-    pub fn new(root: impl Into<PathBuf>, home: Option<PathBuf>) -> Result<Self, String> {
-        let sandbox = bravebot_sandbox::for_current_platform().map_err(|e| e.to_string())?;
+    /// Nothing is started here. LSP-8 starts a server on the first question that needs one, so a
+    /// session that asks nothing of a language starts nothing and nobody is asked about anything.
+    pub fn new(root: impl Into<PathBuf>, home: Option<PathBuf>) -> Self {
         let root = root.into();
-        Ok(Self {
+        // Read here rather than threaded in: incognito is a property of the process, so a caller
+        // passing it would be repeating something already true.
+        let incognito = bravebot_core::incognito::engaged();
+        Self {
             // The same `$PATH` lookup `run` uses, so a name cannot mean one binary to a command a
-            // person approved and another to a question put to a server.
-            servers: Servers::new(root.clone(), home, resolve_program),
-            sandbox,
+            // person approved and another to a question put to a server. And the same withheld
+            // credentials, which is RUN-12: a person approving a server did not approve handing it
+            // what this agent authenticates with.
+            servers: Servers::new(
+                root.clone(),
+                home,
+                resolve_program,
+                incognito,
+                crate::scrub::names(&bravebot_config::Settings::load()),
+            ),
             root,
-        })
+        }
     }
 
     /// The workspace these servers index.
@@ -78,12 +84,25 @@ impl LanguageServers {
     }
 
     /// Ask one question, starting a server for the file's language if none is running.
-    pub fn ask<S: Sink>(
+    ///
+    /// The person is asked before a server starts, once per language per session. A refusal comes
+    /// back as an error the planner is told about, since what it needs to know is that no server
+    /// answered and that asking again will not change it.
+    pub fn ask<S: Sink, C: Confirmer + ?Sized>(
         &mut self,
         policy: &mut Policy<'_, S>,
+        confirmer: &mut C,
         question: &bravebot_lsp::Question<'_>,
     ) -> LspResult<Answer> {
-        self.servers.ask(policy, self.sandbox.as_ref(), question)
+        self.servers.ask(policy, question, &mut |starting| {
+            let request = ServerRequest {
+                language: starting.language.as_str(),
+                program: starting.resolved.display().to_string(),
+                workspace: starting.workspace.display().to_string(),
+                runs_build_tooling: starting.runs_build_tooling,
+            };
+            confirmer.confirm_server(&request) == Decision::Approve
+        })
     }
 }
 

@@ -9,6 +9,5 @@ repository.workspace = true
 
 [dependencies]
 bravebot-core = { path = "../core" }
-bravebot-sandbox = { path = "../sandbox" }
 serde = { workspace = true }
 serde_json = { workspace = true }

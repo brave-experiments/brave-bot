@@ -107,6 +107,25 @@ rules here.
 Before adding a tool, ask what its routing field is and whether a person could approve that field
 alone. If they could not, it does not get built.
 
+### A spec says what is true now
+
+Present tense, no history. A clause describes the behaviour as it stands and the reasoning that holds
+it in place, so it reads the same whether it was written today or two years ago.
+
+Keep out of a spec: what an earlier version did, what was tried and abandoned, which bug prompted a
+change, and any sentence beginning "an earlier version" or "this used to". A reader wants the rule,
+not its biography, and a spec that accumulates changelog stops being readable as a statement of
+behaviour. Git history is where that lives, so put it in the commit message.
+
+A measurement is different from a story about one. "Denying writes leaves the index unsettled" is a
+fact about the system and belongs in the clause it justifies. "I tried denying writes and it broke"
+is the same fact wearing a diary entry, and does not.
+
+The exception is a **known cost**, which is present-tense too: it names a weakness the design still
+has, not a mistake somebody made on the way. If the sentence is only interesting because of who
+learned it and when, it is not a known cost. An **open question** is for a decision genuinely
+unsettled, not for a thing that was settled and is being justified after the fact.
+
 ## Committing
 
 No co-attribution markers for Claude Code.

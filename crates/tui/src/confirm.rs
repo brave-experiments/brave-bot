@@ -9,7 +9,7 @@
 
 use bravebot_agent::confirm::{
     Confirmer, Decision, FetchRequest, Intent, OutputRequest, RunDecision, RunRequest,
-    VouchRequest, WriteRequest,
+    ServerRequest, VouchRequest, WriteRequest,
 };
 use bravebot_agent::diff::Change;
 use bravebot_core::ask::{Answer as UserAnswer, Asking};
@@ -54,6 +54,10 @@ impl<B: Backend> Confirmer for TerminalConfirmer<'_, B> {
 
     fn confirm_fetch(&mut self, request: &FetchRequest) -> Decision {
         ask_fetch(self.terminal, request).decision()
+    }
+
+    fn confirm_server(&mut self, request: &ServerRequest) -> Decision {
+        ask_server(self.terminal, request).decision()
     }
 
     fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
@@ -832,6 +836,115 @@ pub fn ask_fetch<B: Backend>(terminal: &mut Terminal<B>, request: &FetchRequest)
             Err(_) => return Answer::Reject,
         }
     }
+}
+
+/// Put the language-server question to the user.
+///
+/// Its own prompt rather than a run's, because what a yes grants has a different shape: a process
+/// that lives for the session rather than one argv that exits. LSP-5 is where that is settled.
+pub fn ask_server<B: Backend>(terminal: &mut Terminal<B>, request: &ServerRequest) -> Answer {
+    loop {
+        if terminal.draw(|frame| draw_server(frame, request)).is_err() {
+            return Answer::Reject;
+        }
+
+        match event::read() {
+            Ok(TermEvent::Key(key)) if key.kind != event::KeyEventKind::Press => continue,
+            Ok(TermEvent::Key(key)) => match answer_for(key) {
+                Some(Response::Answer(answer)) => return answer,
+                // Nothing here scrolls: the whole question is a binary, a directory and two
+                // sentences, and there is no body because nothing has been read yet.
+                Some(Response::Scroll(_)) => continue,
+                None => continue,
+            },
+            Ok(_) => continue,
+            Err(_) => return Answer::Reject,
+        }
+    }
+}
+
+/// Draw the language-server question.
+///
+/// What a person is answering about is what the process will be allowed to do, so the build-tooling
+/// sentence is drawn where it cannot be missed rather than left inside "with your own access". A
+/// server that only reads says that instead, because the two are genuinely different propositions
+/// and a prompt that warned about both would teach the reader to skim.
+fn draw_server(frame: &mut ratatui::Frame, request: &ServerRequest) {
+    let area = centred(frame.area());
+    let inside = panel(frame, area, theme::ok(), t!(server_title));
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", t!(server_verb)),
+                Style::default()
+                    .fg(theme::ok())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                request.program.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::styled(
+            format!(
+                "  {}",
+                t!(server_workspace, workspace = request.workspace.as_str())
+            ),
+            Style::default().fg(theme::muted()),
+        ),
+        Line::raw(""),
+    ];
+
+    // The consequential half. Drawn in the warning colour where dependency code runs, since that is
+    // the part of this question a person could not have inferred from the word "start".
+    let (sentence, style) = if request.runs_build_tooling {
+        (t!(server_build_tooling), Style::default().fg(theme::note()))
+    } else {
+        (t!(server_reads_only), Style::default().fg(theme::muted()))
+    };
+    lines.extend(indented(sentence, style, inside.width as usize));
+    lines.push(Line::raw(""));
+    lines.extend(indented(
+        t!(server_explained),
+        Style::default().fg(theme::muted()),
+        inside.width as usize,
+    ));
+
+    let keys = Line::from(vec![
+        Span::styled(
+            "  y",
+            Style::default()
+                .fg(theme::ok())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" {}    ", t!(server_yes))),
+        Span::styled(
+            "n",
+            Style::default()
+                .fg(theme::fail())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" {}    ", t!(server_no))),
+        Span::styled(
+            "ctrl-c",
+            Style::default()
+                .fg(theme::muted())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}", t!(stop_the_turn)),
+            Style::default().fg(theme::muted()),
+        ),
+    ]);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inside);
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[0]);
+    frame.render_widget(Paragraph::new(keys), rows[1]);
 }
 
 /// Draw the fetch question.

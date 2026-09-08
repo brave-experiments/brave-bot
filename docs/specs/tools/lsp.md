@@ -139,31 +139,41 @@ outside the tree.
 `verified-by: bravebot_agent::lsp::naming_an_outside_location_does_not_make_it_readable`
 
 <a id="LSP-5"></a>
-### LSP-5: the server is confined, or it is not started
+### LSP-5: a server is a program a person approved, and runs with their own access
 
-A language server is third-party code, so [MCP-3](../mcp.md#MCP-3) applies unchanged: no
-confinement, no process. Its profile is read-only access to the workspace, plus the read-only paths
-its ecosystem needs to resolve dependencies, and nothing else. No network, no children, no write
-access anywhere.
+Starting one is put to the user, and what they approve is a process that runs for the session with
+the access their own shell would give it. Not confined, and the record of what was approved belongs
+to the session in the way [RUN-9](run.md#RUN-9) describes.
 
-**Why the profile is wider than a stdio MCP server's.** A server that cannot read the tree cannot
-index it, and one that cannot read the dependency sources answers `goToDefinition` with nothing for
-most symbols. The grant is still deny-by-default under
-[SANDBOX-2](../sandboxing.md#SANDBOX-2) and is meaningful under it: reads are enumerated, and
-writes, network and subprocesses are all denied.
+**Why not confined, when a stdio MCP server is.** [sandboxing.md](../sandboxing.md) says what
+confinement is for: code nobody vouched for. It says in the same breath that "a program the user
+asked for runs with the access their own shell would give it", and [RUN-10](run.md#RUN-10) says
+programs "are not enumerated and not confined". A language server is the second kind of thing. The
+analogy to [MCP-3](../mcp.md#MCP-3) does not hold: an MCP server is a tool somebody found on the
+internet, and a language server is part of the toolchain the user already builds with.
 
-**Why no network.** A server that fetched a dependency it was missing would be egress outside the
-chokepoint [NET](../network-egress.md) governs. A server that wants an index it has not got answers
-worse instead, which is the direction to fail in.
+**Why confinement is not an option here.** A language server indexes by running its ecosystem's build
+tooling: rust-analyzer builds a crate graph with `cargo metadata`, which needs a subprocess and
+somewhere to write, and a Node server wants a private directory before it will start. A profile
+denying those does not yield a confined server that answers; it yields one whose index never settles,
+so every answer is marked partial by [LSP-7](#LSP-7). The choice is between a server with the user's
+access and no working tool.
 
-**Why no writes.** rust-analyzer would like a build directory. Granting one would make the tool a
-thing that changes the workspace as a side effect of a question, and a person who approved a query
-about a symbol did not approve a build. A server that cannot write answers from what is already
-indexed.
+**What is being approved, said plainly at the prompt.** The server reads the whole tree and the
+dependency sources, runs the build tooling of its ecosystem, and for Rust that means `build.rs` and
+proc macros out of `Cargo.lock` execute. That is code from the dependency tree running with the
+user's access. It is the same thing `cargo test` does and the same thing `run` does after
+[RUN-7](run.md#RUN-7), and it must be asked for in those terms rather than described as a lookup.
 
-`verified-by: bravebot_lsp::server::a_server_is_not_launched_without_confinement`
-`verified-by: bravebot_lsp::server::the_profile_grants_no_network_and_no_writes`
-`verified-by: bravebot_lsp::server::the_profile_is_meaningful_confinement`
+**What does not change, and this is the important half.** The safety property here was never the
+sandbox. It is the label on what comes back: [RUN-4](run.md#RUN-4)'s reasoning applies unchanged, so
+a server's output is untrusted, hover text is quarantined by the trust map, and [LSP-3](#LSP-3) is
+what lets a location through. None of those rest on confinement and none of them move. A server that
+can read the disk is not a server that can put prose in the planner's context.
+
+`verified-by: bravebot_lsp::server::starting_a_server_is_put_to_a_person`
+`verified-by: bravebot_lsp::server::a_refused_server_does_not_start`
+`verified-by: bravebot_lsp::server::a_server_is_not_asked_about_twice_in_a_session`
 
 <a id="LSP-6"></a>
 ### LSP-6: no server means no answer, and says which
@@ -239,6 +249,40 @@ doing so. A capability set that could not tell those apart could not describe th
 `verified-by: bravebot_core::capability::the_lsp_capability_produces_no_routing_safe_output`
 `verified-by: bravebot_agent::lsp::a_delegate_without_the_capability_is_refused`
 
+<a id="LSP-10"></a>
+### LSP-10: the index is cached under `~/.bravebot`, and that directory confers nothing on it
+
+A server is given a cache directory of its own, keyed by the workspace it indexes, under the
+directory this process already owns. Never inside the workspace, and never read by the driver.
+
+**Why not the workspace.** A cache under `target/` would make a question about a symbol change the
+tree the user is working in, and a directory that appeared as a side effect of a read is the sort of
+write [write-file.md](write-file.md) exists to put in front of somebody.
+
+**Why not a temporary directory.** The cost this avoids is the indexing, and an index thrown away at
+the end of a session pays it again at the start of the next. `~/.bravebot` is where this process
+already keeps what outlives a session, so a cache there inherits
+[TRUST-11](../trust-map.md#TRUST-11) and [incognito.md](../incognito.md) rather than needing rules of
+its own.
+
+**It is not trusted, and `~/.bravebot` is exactly why somebody will think it is.**
+[TRUST-11](../trust-map.md#TRUST-11) makes that directory trusted by provenance, and the provenance
+it means is that the user wrote what is in it. This cache is written by us and holds bytes derived
+from workspace files, so [LABEL-2](../labels.md#LABEL-2) taints it with those files' labels and
+[LABEL-7](../labels.md#LABEL-7) forbids recovering a better one. Reading it back as trusted because
+of where it sits would be laundering, with a directory doing the work of a constructor. Nothing here
+does: the only reader is the server, the driver never opens it, and what reaches the planner is what
+[LSP-3](#LSP-3) governs.
+
+**Incognito writes none of it**, since that mode adds nothing to `~/.bravebot`. The server still runs
+and still answers; it re-indexes each session and says so under [LSP-7](#LSP-7). That is the same
+trade incognito already makes for the session record.
+
+`verified-by: bravebot_lsp::server::the_cache_is_outside_the_workspace`
+`verified-by: bravebot_lsp::server::the_cache_is_keyed_by_the_workspace`
+`verified-by: bravebot_lsp::server::an_incognito_session_is_given_no_cache`
+`verified-by: bravebot_lsp::server::the_cache_is_never_read_by_the_driver`
+
 ## Known costs
 
 - **A location is attention, and attention can be steered.** [LSP-3](#LSP-3) grants that an
@@ -252,55 +296,31 @@ doing so. A capability set that could not tell those apart could not describe th
   new, but it is worth saying that this tool is at its weakest exactly where a codebase is least
   vouched for.
 
-- **The index is only as good as what the server was allowed to read.** Denying writes under
-  [LSP-5](#LSP-5) means a server that wanted to build in order to resolve a macro answers without
-  having done so, and reports a partial index under [LSP-7](#LSP-7) at best. A proc-macro-heavy
-  Rust workspace is the case where this shows.
+- **A server runs the dependency tree's code, and that is the price of the tool working at all.**
+  [LSP-5](#LSP-5) grants a server the user's own access, so for Rust `build.rs` and proc macros out of
+  `Cargo.lock` execute. The alternative is not a safer tool but no tool, since a server whose index
+  never settles answers only that it is unsure. What bounds this is that the user is asked in those
+  words, and that nothing about the label on the output depends on their answer.
 
-- **No language server tested so far runs usefully under LSP-5's profile, and the reason is the write
-  denial in both cases.** This is measured against two real servers, not predicted, and it is the
-  finding that decides whether this tool is worth having.
+- **An index survives between sessions, and nothing prunes it.** [LSP-10](#LSP-10) keeps a cache per
+  workspace under `~/.bravebot`, which is what makes the second session fast. It is not small: this
+  workspace's is a few hundred megabytes, since what rust-analyzer keeps there is a build directory. A
+  machine that has been in many workspaces holds one for each, and nothing removes them.
 
-  **rust-analyzer** gets as far as `rustAnalyzer/Fetching` and stops. The next pass builds the crate
-  graph, which means running `cargo metadata`: a subprocess and a writable target directory. Granting
-  `process-fork` alone changes nothing, so the blocker is the write denial rather than the child.
-  Unconfined it finishes all seven passes in a little under a minute. Confined, every answer comes
-  back marked partial by [LSP-7](#LSP-7), which is honest and useless.
-
-  **typescript-language-server** was chosen as the case that should have worked, since it reads the
-  tree and needs no build. It gets further and still fails: it calls `mkdir` on a private temp
-  directory during startup and exits when that is denied.
-
-  So "a server that can answer from a read-only tree" is a category this spec assumed exists, and
-  neither server tested is in it. A third data point would help but the pattern is already clear: a
-  language server expects somewhere to write, and LSP-5 gives it nowhere.
-
-  The ways out are each a real decision, and the first is now the only one that addresses the general
-  case rather than one ecosystem:
-
-  1. Grant a scratch directory outside the workspace: a per-session temp directory, writable, that
-     no workspace path resolves into. A question then has a side effect, which is what
-     [LSP-5](#LSP-5) currently forbids and what its "no writes" paragraph argues against. That
-     argument was written before either measurement and should be re-read in their light: what it
-     rules out is a server *building the project*, and a scratch directory for a cache is not that.
-  2. Point a server at an index somebody else built, which exists for none of the servers here.
-  3. Say the tool supports no language yet, and keep it for whichever server turns out to need
-     nothing written.
-
-  Everything else in this spec is implemented and tested, including [LSP-3](#LSP-3) against real
-  answer shapes from both servers. What is unproven is that any server usefully answers under the
-  confinement these clauses require. Until (1) is settled the tool is honest and inert, which is the
-  right direction to fail in but is not a working feature.
-
-- **Two profile bugs found by running a real server, both of which presented as something else.**
-  Worth recording because the failure modes were misleading. A profile that could not read the
-  binary's own directory made `execvp` fail, which surfaced as "the server exited before replying"
-  and read exactly like a server that was not installed. And the sandbox clears the environment,
-  which is right, but a server whose shebang is `#!/usr/bin/env node` then cannot find its
-  interpreter: it died before writing a byte. The fix restores `PATH` holding one directory, the one
-  the resolved binary is in, which grants no reach the profile had not already granted.
+- **A server that goes quiet is indistinguishable from one that is working.** The bound in
+  [LSP-7](#LSP-7) is what separates them, and it has to be enforced against a process that may send
+  nothing at all rather than only between the messages it does send.
 
 ## Open questions
+
+- Whether a server needs children of its own at all. rust-analyzer accepts a crate graph through
+  `linkedProjects`, so `cargo metadata` could be run once through [`run`](run.md), approved under
+  [RUN-7](run.md#RUN-7), and its output handed over. That puts the approval where this repository
+  usually puts it and narrows what [LSP-5](#LSP-5) has to grant, at the cost of a second moving part
+  per ecosystem.
+
+- Whether the cache needs an eviction rule, and what it should be keyed on. [LSP-10](#LSP-10)
+  accumulates one directory per workspace and nothing removes them.
 
 - Whether a location should carry the symbol's *name* as well as its position. A name is a token
   the file chose, so it is content by [LSP-3](#LSP-3) and quarantined; but a list of positions with

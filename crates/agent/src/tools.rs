@@ -1447,7 +1447,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "read_file" => read_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
-        "lsp" => lsp(policy, tools, &arguments),
+        "lsp" => lsp(policy, tools, confirmer, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
         "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
@@ -3674,7 +3674,12 @@ fn patterns_in(arguments: &Value) -> Vec<Labelled<String>> {
 ///   with the locations listed either way.
 ///
 /// [LSP-3]: ../../../docs/specs/tools/lsp.md
-fn lsp<S: Sink>(policy: &mut Policy<'_, S>, tools: &mut Tools<'_>, arguments: &Value) -> Produced {
+fn lsp<S: Sink, C: Confirmer + ?Sized>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    confirmer: &mut C,
+    arguments: &Value,
+) -> Produced {
     let Some(named) = argument(arguments, "operation") else {
         return problem("error: 'operation' is required");
     };
@@ -3764,6 +3769,7 @@ fn lsp<S: Sink>(policy: &mut Policy<'_, S>, tools: &mut Tools<'_>, arguments: &V
 
     let answer = match servers.ask(
         policy,
+        confirmer,
         &bravebot_lsp::Question {
             operation,
             path: &absolute,
@@ -4623,6 +4629,11 @@ mod tests {
             }
 
             fn confirm_vouch(&mut self, _request: &crate::confirm::VouchRequest) -> Decision {
+                Decision::Reject
+            }
+
+            /// Refuses. A test double is not a person agreeing to start a process.
+            fn confirm_server(&mut self, _request: &crate::confirm::ServerRequest) -> Decision {
                 Decision::Reject
             }
 

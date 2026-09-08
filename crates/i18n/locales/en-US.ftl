@@ -354,6 +354,24 @@ fetch-yes = fetch it
 fetch-no = don't
 
 
+## Starting a language server
+
+server-title = start a language server?
+server-verb = Start
+server-workspace = to index { $workspace }
+server-build-tooling =
+    this runs the build tooling of its ecosystem, so code from your dependencies runs with
+    your own access, the way cargo test does. it stays running for this session.
+server-reads-only =
+    it reads the project and stays running for this session. nothing is written to your
+    project.
+server-explained =
+    what it reports stays on the same footing however you answer: a place in a file is
+    shown, and the text at that place is quarantined unless you vouched for the file.
+server-yes = start it
+server-no = don't
+
+
 ## Vouching for a quarantined file
 
 vouch-title = let the model read this file?
@@ -653,6 +671,7 @@ session-trusting-unasked =
     trusting { $directory } (--dangerously-skip-permissions, so you were not asked)
 session-not-trusting = this directory is not trusted; every write will be shown to you
 session-vouched-for = trusting { $path } for this session
+session-started-server = running the { $language } language server for this session ({ $program })
 session-answered-already = answered already: { $question }
 session-something-was-refused = a policy gate refused something during that turn
 # The endpoint substitutes a model it will not serve rather than refusing, so without this a

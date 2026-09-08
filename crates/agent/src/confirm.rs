@@ -243,6 +243,38 @@ impl FetchRequest {
     }
 }
 
+/// A language server the planner would like started.
+///
+/// Its own question rather than a reuse of [`RunRequest`], because what a yes grants has a different
+/// shape. A run is one argv that executes and exits; this is a process that lives for the session and
+/// answers every later question, so approving it is closer to opening a directory than to running a
+/// command. [LSP-5] is where that is settled.
+///
+/// [LSP-5]: ../../../docs/specs/tools/lsp.md
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRequest {
+    /// The language this server answers about, in the words a person reads.
+    pub language: &'static str,
+    /// The binary, resolved to an absolute path, so what is approved is what runs.
+    pub program: String,
+    /// The workspace it will index.
+    pub workspace: String,
+    /// Whether starting it runs the ecosystem's build tooling, and so code out of the dependency
+    /// tree.
+    ///
+    /// Told to the person rather than left for them to infer: for Rust this means `build.rs` and proc
+    /// macros execute, which is the part of LSP-5 that has to be said out loud rather than left
+    /// inside the phrase "with your own access".
+    pub runs_build_tooling: bool,
+}
+
+impl ServerRequest {
+    /// A short description for a prompt line.
+    pub fn summary(&self) -> String {
+        format!("start the {} language server", self.language)
+    }
+}
+
 /// A quarantined file the model would like to read.
 ///
 /// Offered at the moment a read is refused, so the trust question is put where it matters rather
@@ -356,6 +388,16 @@ pub trait Confirmer {
     /// consent to talk to it and never a claim about what it returns.
     fn confirm_fetch(&mut self, request: &FetchRequest) -> Decision;
 
+    /// Ask whether to start a language server. Implementations must default to refusal when they
+    /// cannot ask.
+    ///
+    /// Separate from [`Confirmer::confirm_run`] because what a yes grants has a different shape: a
+    /// run is one argv that executes and exits, and this is a process that lives for the session.
+    /// What it does not grant is anything about the answers: a server's output is labelled by the
+    /// trust map either way, so this question is about starting a process and never about believing
+    /// it.
+    fn confirm_server(&mut self, request: &ServerRequest) -> Decision;
+
     /// Ask whether to vouch for a quarantined file the model wants to read. Implementations must
     /// default to refusal when they cannot ask.
     ///
@@ -404,6 +446,11 @@ pub trait Confirmer {
 pub struct Unattended;
 
 impl Confirmer for Unattended {
+    /// Refuses. Nothing about a test double is a person agreeing to start a process.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
     }
@@ -443,6 +490,11 @@ impl Confirmer for Unattended {
 pub struct ApproveWrites;
 
 impl Confirmer for ApproveWrites {
+    /// Refuses: this double approves writes and nothing else.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Approve
     }
@@ -482,6 +534,11 @@ impl Confirmer for ApproveWrites {
 pub struct ChoosesFirst;
 
 impl Confirmer for ChoosesFirst {
+    /// Refuses: this double answers questions and approves nothing.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
     }
@@ -529,6 +586,11 @@ impl Confirmer for ChoosesFirst {
 pub struct ApproveRuns;
 
 impl Confirmer for ApproveRuns {
+    /// Refuses: approving a run is not approving a process that outlives it.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Approve
     }
@@ -570,6 +632,11 @@ impl Confirmer for ApproveRuns {
 pub struct RemembersRuns;
 
 impl Confirmer for RemembersRuns {
+    /// Refuses: approving a run is not approving a process that outlives it.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
     }
@@ -606,6 +673,11 @@ impl Confirmer for RemembersRuns {
 pub struct ReadsOutput;
 
 impl Confirmer for ReadsOutput {
+    /// Refuses: this double approves one run and reading what it printed.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
     }
@@ -642,6 +714,11 @@ impl Confirmer for ReadsOutput {
 pub struct ApproveFetches;
 
 impl Confirmer for ApproveFetches {
+    /// Refuses: this double approves fetches and nothing else.
+    fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
+        Decision::Reject
+    }
+
     fn confirm_write(&mut self, _request: &WriteRequest) -> Decision {
         Decision::Reject
     }
@@ -728,6 +805,10 @@ impl<C: Confirmer + ?Sized> Confirmer for Timed<'_, C> {
 
     fn confirm_vouch(&mut self, request: &VouchRequest) -> Decision {
         self.timing(|inner| inner.confirm_vouch(request))
+    }
+
+    fn confirm_server(&mut self, request: &ServerRequest) -> Decision {
+        self.timing(|inner| inner.confirm_server(request))
     }
 
     fn ask_user(&mut self, asking: &Asking) -> Vec<Answer> {
@@ -824,6 +905,11 @@ mod tests {
         }
 
         fn confirm_vouch(&mut self, _request: &VouchRequest) -> Decision {
+            std::thread::sleep(self.0);
+            Decision::Reject
+        }
+
+        fn confirm_server(&mut self, _request: &ServerRequest) -> Decision {
             std::thread::sleep(self.0);
             Decision::Reject
         }

@@ -343,6 +343,14 @@ fn a_picture_goes_to_a_processor() {
 struct ApprovesRuns;
 
 impl bravebot_agent::Confirmer for ApprovesRuns {
+    /// Refuses. This double approves runs, and a server is not one: it outlives the call.
+    fn confirm_server(
+        &mut self,
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(&mut self, _r: &bravebot_agent::WriteRequest) -> bravebot_agent::Decision {
         bravebot_agent::Decision::Reject
     }

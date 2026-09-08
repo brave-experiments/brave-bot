@@ -21,7 +21,7 @@ pub mod protocol;
 pub mod server;
 
 pub use protocol::{Location, Operation, SymbolKind};
-pub use server::{Language, Question, Server, Servers};
+pub use server::{Language, Question, Server, Servers, Starting};
 
 use bravebot_core::policy::Denial;
 use std::fmt;
@@ -47,11 +47,8 @@ pub struct Answer {
 
 #[derive(Debug)]
 pub enum LspError {
-    /// Confinement could not be established, so the server was not launched.
-    Confinement {
-        language: server::Language,
-        detail: String,
-    },
+    /// A person was asked whether to start the server and said no.
+    Refused { language: server::Language },
     /// The policy refused the call.
     Denied(Denial),
     /// This file's language has no server in the table.
@@ -93,9 +90,10 @@ pub enum LspError {
 impl fmt::Display for LspError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Confinement { language, detail } => write!(
+            Self::Refused { language } => write!(
                 f,
-                "refusing to launch the {} language server without confinement: {detail}",
+                "the {} language server was not started, because the user declined; nothing here \
+                 says anything about the code, and asking again will not change it",
                 language.as_str()
             ),
             Self::Denied(denial) => write!(f, "{denial}"),
@@ -152,15 +150,18 @@ impl fmt::Display for LspError {
 impl std::error::Error for LspError {}
 
 impl LspError {
-    /// Whether this is one of the three ways LSP-6 says there was no server, as opposed to a
-    /// question that reached one and came back empty.
+    /// Whether no server answered, as opposed to one that answered and came back empty.
     ///
-    /// The distinction the clause exists for: a planner that reads "no references" as proof will
-    /// delete a function that is called from a file the server never indexed.
+    /// The distinction LSP-6 exists for: a planner that reads "no references" as proof will delete a
+    /// function that is called from a file no server ever indexed. A refusal belongs here too, since
+    /// a server nobody allowed to start is a server that said nothing.
     pub fn is_absence_of_a_server(&self) -> bool {
         matches!(
             self,
-            Self::NoServerFor { .. } | Self::NoBinary { .. } | Self::Start { .. }
+            Self::NoServerFor { .. }
+                | Self::NoBinary { .. }
+                | Self::Start { .. }
+                | Self::Refused { .. }
         )
     }
 }

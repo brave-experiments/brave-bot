@@ -1,11 +1,14 @@
-//! A language server: launched under confinement, kept for the session, asked read-only questions.
+//! A language server: started with a person's approval, kept for the session, asked read-only
+//! questions.
 //!
-//! The process is third-party code, so [LSP-5] applies [MCP-3] unchanged: no confinement, no
-//! process. Its profile is wider than a stdio MCP server's because a server that cannot read the
-//! tree cannot index it, and narrower in the ways that matter: no network, no writes, no children.
+//! Not confined, and [LSP-5] is the argument for that. A server indexes by running its ecosystem's
+//! build tooling, so a profile that denies writes and children yields one whose index never settles
+//! rather than a confined one that answers. What stands in confinement's place is the same thing that
+//! stands in it for [`run`]: a person approves the process, and the label on what comes back does not
+//! depend on their answer.
 //!
 //! [LSP-5]: ../../../docs/specs/tools/lsp.md
-//! [MCP-3]: ../../../docs/specs/mcp.md
+//! [`run`]: ../../../docs/specs/tools/run.md
 
 use crate::protocol::{
     Operation, RpcNotification, RpcRequest, RpcResponse, content_length, frame, hover_text,
@@ -15,8 +18,6 @@ use crate::{Answer, LspError, LspResult};
 use bravebot_core::capability::Capability;
 use bravebot_core::event::Sink;
 use bravebot_core::policy::Policy;
-use bravebot_sandbox::Sandbox;
-use bravebot_sandbox::policy::SandboxPolicy;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
@@ -42,6 +43,12 @@ pub const MAX_INDEX_WAIT: Duration = Duration::from_secs(20);
 
 /// How long a single request may take once the index has settled.
 pub const MAX_REQUEST_WAIT: Duration = Duration::from_secs(20);
+
+/// The protocol's code for "the index moved while I was answering".
+///
+/// Not an error in any sense a caller can act on: the request was fine and the state it referred to
+/// changed. Answered as nothing found, with the index reported unsettled.
+const CONTENT_MODIFIED: i64 = -32801;
 
 /// How long a server gets to exit on request before it is killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
@@ -86,6 +93,17 @@ impl Language {
         }
     }
 
+    /// Whether starting this server runs the ecosystem's build tooling, and so code out of the
+    /// dependency tree.
+    ///
+    /// Said to the person at the prompt rather than left inside "with your own access", because it is
+    /// the part of LSP-5 they could not have inferred from the word "start". True for Rust, where
+    /// `build.rs` and proc macros execute, and for Go, whose tooling builds to answer. A Node or
+    /// Python server reads and type-checks without running the project.
+    pub fn runs_build_tooling(self) -> bool {
+        matches!(self, Self::Rust | Self::Go)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Rust => "Rust",
@@ -96,66 +114,37 @@ impl Language {
     }
 }
 
-/// The confinement a language server runs under.
+/// Where a server keeps its index for a workspace.
 ///
-/// LSP-5: read-only access to the workspace and to the read-only paths its ecosystem resolves
-/// dependencies from. No network, no writes, no children.
+/// LSP-10: under the directory this process already owns, keyed by the workspace, never inside it.
+/// `None` for a session that adds nothing to `~/.bravebot`, which is incognito: the server still runs
+/// and re-indexes, and says its answers are partial until it settles.
 ///
-/// Built here rather than by the caller so the profile is one thing to review, and so a caller
-/// cannot widen it by assembling its own.
-pub fn confinement(workspace: &Path, home: Option<&Path>) -> SandboxPolicy {
-    let mut policy = SandboxPolicy::strict().allow_read(workspace);
+/// The name is a digest of the canonical path rather than the path flattened into one, so two
+/// checkouts of the same project do not share an index and a directory that moved does not inherit
+/// one. Not a cryptographic requirement: this only has to be stable and collision-resistant enough
+/// that two workspaces on one machine differ.
+pub fn cache_for(home: Option<&Path>, workspace: &Path, incognito: bool) -> Option<PathBuf> {
+    if incognito {
+        return None;
+    }
+    let home = home?;
+    let canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
 
-    // Where each ecosystem keeps the sources a definition may resolve into, and where the server
-    // binaries themselves live. Read-only throughout: a server that wanted to build in order to
-    // resolve a macro answers without having done so, which LSP-7 reports as a partial index.
-    //
-    // `.cargo` and `.rustup` are granted whole rather than only their registry and toolchain
-    // subdirectories, because the binary is in `.cargo/bin` and a profile that cannot read the
-    // program cannot exec it: the process died before `main` with a message about the working
-    // directory, which reads like anything but a denied read. Found by running a real server
-    // under this profile rather than by reasoning about it.
-    // `.nvm` and the npm prefixes are here for the same reason as `.cargo`: a Node-based server is a
-    // script the runtime reads, so the profile has to reach both the interpreter and the package.
-    // Found the same way, by running one.
-    if let Some(home) = home {
-        for relative in [
-            ".cargo",
-            ".rustup",
-            ".cache",
-            ".nvm",
-            ".npm",
-            ".volta",
-            ".local/share/pnpm",
-            "go/pkg/mod",
-            "go/bin",
-        ] {
-            policy = policy.allow_read(home.join(relative));
-        }
+    // FNV-1a over the path's bytes. Enough for a directory name, and no dependency for it.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in canonical.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
-    // What any process needs to start at all: the loader, the shared libraries, and the system
-    // configuration a TLS or locale initialiser reads on its way up. Withholding these does not
-    // confine a language server, it stops one from running, and the failure names none of them.
-    //
-    // These hold no workspace content and nothing of the user's, so granting them read-only gives
-    // up nothing the profile was protecting. Writes, the network and subprocesses stay denied,
-    // which is what SANDBOX-2 measures this against.
-    for shared in [
-        "/usr",
-        "/bin",
-        "/System",
-        "/Library",
-        "/private/etc",
-        "/opt/homebrew",
-        "/etc",
-        "/lib",
-        "/lib64",
-    ] {
-        policy = policy.allow_read(shared);
-    }
-
-    policy
+    Some(
+        home.join(".bravebot")
+            .join("lsp")
+            .join(format!("{hash:016x}")),
+    )
 }
 
 /// Whether a message is a server saying its initial index is built.
@@ -299,46 +288,56 @@ impl Drop for Server {
 }
 
 impl Server {
-    /// Launch a server for this language under confinement.
+    /// Start a server for this language.
     ///
-    /// LSP-5 and LSP-6: confinement failing means no process, and a missing binary is reported as
-    /// missing rather than as an empty answer.
-    /// `resolved` is the absolute path to the binary. Resolving a bare name against `$PATH` is the
-    /// caller's job: what a name means is the host's business, and a confined process cannot look it
-    /// up for itself because the sandbox does not carry the parent's `$PATH` in. Passing a bare name
-    /// through failed with `execvp() ... No such file or directory`, which surfaced as a server that
-    /// exited before replying and read exactly like one that was not installed.
+    /// `resolved` is the absolute path to the binary, so what runs is what a person was shown:
+    /// RUN-8's reason, that `$PATH` and aliases decide what a name means and an approval must not
+    /// follow a name onto a different binary.
+    ///
+    /// `cache` is where it may keep its index, from [`cache_for`], or `None` for a session that keeps
+    /// nothing. A server given none re-indexes and answers partially until it settles.
+    ///
+    /// LSP-6: a missing binary is reported as missing rather than as an empty answer.
     pub fn launch(
         language: Language,
         resolved: &Path,
         root: &Path,
-        sandbox: &dyn Sandbox,
-        policy: &SandboxPolicy,
+        cache: Option<&Path>,
+        withheld: &[String],
     ) -> LspResult<Self> {
         let (program, args) = language.server();
         let owned: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
 
-        let mut command = sandbox
-            .command(&resolved.to_string_lossy(), &owned, policy)
-            .map_err(|e| LspError::Confinement {
-                language,
-                detail: e.to_string(),
-            })?;
+        let mut command = std::process::Command::new(resolved);
+        command.args(&owned);
 
-        // The sandbox clears the environment, which is right: RUN-12's reason applies here too, and a
-        // credential must not travel to a confined process nobody showed the user. But several
-        // language servers are scripts whose shebang is `#!/usr/bin/env node`, and with no `PATH` at
-        // all `env` cannot find the interpreter: `typescript-language-server` died with
-        // `env: node: No such file or directory` before writing a byte, which surfaced as a server
-        // that exited before replying.
-        //
-        // So exactly one variable is put back, holding exactly one directory: the one the resolved
-        // binary is in, which is where a bundled interpreter sits beside it. That is enough for a
-        // shebang to resolve and is not a route to anything else, since it names no directory the
-        // profile has not already granted read access to. Nothing of the user's is restored, and in
-        // particular no credential.
-        if let Some(directory) = resolved.parent() {
-            command.env("PATH", directory);
+        // The user's environment reaches the server, because it runs with their access and a
+        // toolchain reads its own variables to work: `CARGO_HOME`, `GOPATH`, `NODE_PATH`. What does
+        // not reach it is this agent's own credentials, which is RUN-12 exactly: a person approving a
+        // server read what it is and where it will run, and a credential travelling alongside was
+        // granted without having been seen. The names come from the caller because which they are is
+        // the host's business, the same reason `resolved` is passed in rather than looked up here.
+        for name in withheld {
+            command.env_remove(name);
+        }
+
+        // Where the index goes, said to each ecosystem in its own spelling. Nothing is written to the
+        // workspace, which is LSP-10.
+        if let Some(cache) = cache {
+            let _ = std::fs::create_dir_all(cache);
+            match language {
+                Language::Rust => {
+                    command.env("CARGO_TARGET_DIR", cache);
+                }
+                Language::Go => {
+                    command.env("GOCACHE", cache.join("go-build"));
+                }
+                Language::TypeScript | Language::Python => {
+                    // Neither reads a variable for this; both use the system temporary directory,
+                    // and pointing that at the cache keeps it out of the workspace.
+                    command.env("TMPDIR", cache);
+                }
+            }
         }
 
         let mut child = command
@@ -494,6 +493,13 @@ impl Server {
             }
 
             if let Some(error) = response.error {
+                // `ContentModified` is the protocol saying the index moved under the request, which
+                // happens while a server is still settling. It is a retry rather than a failure: the
+                // question was well formed and the answer is simply not available yet, so it is
+                // reported as an unsettled index and LSP-7 marks whatever comes back partial.
+                if error.code == CONTENT_MODIFIED {
+                    return Ok(Value::Null);
+                }
                 return Err(LspError::Server {
                     language: self.language,
                     code: error.code,
@@ -679,6 +685,10 @@ pub struct Servers {
     /// lookup in one place for the whole repository, so a name cannot mean one binary to `run` and
     /// another to this.
     resolve: fn(&str) -> Option<PathBuf>,
+    /// Whether this session keeps nothing under `~/.bravebot`, so no index is cached.
+    incognito: bool,
+    /// This agent's own credential names, withheld from every server. RUN-12's reason.
+    withheld: Vec<String>,
 }
 
 impl std::fmt::Debug for Servers {
@@ -694,12 +704,16 @@ impl Servers {
         root: impl Into<PathBuf>,
         home: Option<PathBuf>,
         resolve: fn(&str) -> Option<PathBuf>,
+        incognito: bool,
+        withheld: Vec<String>,
     ) -> Self {
         Self {
             running: HashMap::new(),
             root: root.into(),
             home,
             resolve,
+            incognito,
+            withheld,
         }
     }
 
@@ -710,13 +724,18 @@ impl Servers {
 
     /// Ask about a position in a file, starting a server for its language if none is running.
     ///
-    /// LSP-9: the capability is checked before anything is launched, so a run that was not granted
-    /// it does not get a process started on its behalf.
+    /// LSP-9: the capability is checked before anything is launched, so a run that was not granted it
+    /// does not get a process started on its behalf.
+    ///
+    /// `approve` is asked once per language, and only when a server is not already running. It is a
+    /// callback rather than a decision passed in because whether to ask depends on what is running,
+    /// which is this type's business, while how to ask is the caller's: the prompt belongs where the
+    /// person is, and this crate has no way to reach them.
     pub fn ask<S: Sink>(
         &mut self,
         policy: &mut Policy<'_, S>,
-        sandbox: &dyn Sandbox,
         question: &Question<'_>,
+        approve: &mut dyn FnMut(&Starting<'_>) -> bool,
     ) -> LspResult<Answer> {
         policy
             .before_capability(Capability::LanguageServer)
@@ -729,12 +748,31 @@ impl Servers {
         if !self.running.contains_key(&language) {
             let (program, _) = language.server();
             // LSP-6: a binary that is not installed is said to be missing here, before anything is
-            // launched, rather than surfacing as a process that exited. The two used to be
-            // indistinguishable and the difference is the whole clause.
+            // launched, rather than surfacing as a process that exited. The two are different facts
+            // and must not render alike.
             let resolved =
                 (self.resolve)(program).ok_or(LspError::NoBinary { language, program })?;
-            let profile = confinement(&self.root, self.home.as_deref());
-            let server = Server::launch(language, &resolved, &self.root, sandbox, &profile)?;
+
+            // LSP-5: asked before anything starts, and a refusal is not a failure of the tool. The
+            // planner is told it was refused, which is what it needs to know: retrying will not help.
+            let starting = Starting {
+                language,
+                resolved: &resolved,
+                workspace: &self.root,
+                runs_build_tooling: language.runs_build_tooling(),
+            };
+            if !approve(&starting) {
+                return Err(LspError::Refused { language });
+            }
+
+            let cache = cache_for(self.home.as_deref(), &self.root, self.incognito);
+            let server = Server::launch(
+                language,
+                &resolved,
+                &self.root,
+                cache.as_deref(),
+                &self.withheld,
+            )?;
             self.running.insert(language, server);
         }
 
@@ -746,69 +784,181 @@ impl Servers {
     }
 }
 
+/// What a person is being asked to approve.
+///
+/// Everything the prompt needs and nothing it does not, so the caller draws a question rather than
+/// assembling one.
+#[derive(Debug, Clone, Copy)]
+pub struct Starting<'a> {
+    pub language: Language,
+    /// The binary, resolved, so what is approved is what runs.
+    pub resolved: &'a Path,
+    pub workspace: &'a Path,
+    /// Whether starting it runs the ecosystem's build tooling, and so code from the dependency tree.
+    pub runs_build_tooling: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bravebot_sandbox::Unavailable;
 
     fn root() -> PathBuf {
         PathBuf::from("/workspace")
     }
 
-    /// LSP-5, which is MCP-3 applied here: third-party code that cannot be confined does not run.
+    /// LSP-5: nothing starts until a person says so, and a refusal is not a failure of the tool.
     #[test]
-    fn a_server_is_not_launched_without_confinement() {
-        let result = Server::launch(
-            Language::Rust,
-            Path::new("/usr/local/bin/rust-analyzer"),
-            &root(),
-            &Unavailable,
-            &confinement(&root(), None),
+    fn starting_a_server_is_put_to_a_person() {
+        let mut asked = 0;
+        let mut servers = Servers::new(root(), None, |_| None, false, Vec::new());
+        let mut sink = bravebot_core::event::RecordingSink::new();
+        let mut routing = bravebot_core::policy::Routing::new();
+        routing.insert_trusted("task", "look up");
+        let mut policy = Policy::begin(
+            routing,
+            bravebot_core::policy::ReleasePlan::new(),
+            bravebot_core::capability::CapabilitySet::from_iter([Capability::LanguageServer]),
+            &mut sink,
+        )
+        .expect("policy");
+
+        // The resolver finds nothing, so this stops at LSP-6 before it would have asked. The point
+        // is the order: a person is not asked about a server that could not have started anyway.
+        let _ = servers.ask(
+            &mut policy,
+            &Question {
+                operation: Operation::Definition,
+                path: "/workspace/src/a.rs",
+                line: 1,
+                character: 1,
+                query: None,
+            },
+            &mut |_| {
+                asked += 1;
+                true
+            },
         );
-        assert!(
-            matches!(result, Err(LspError::Confinement { .. })),
-            "an unconfinable server must not start"
+        assert_eq!(
+            asked, 0,
+            "a person must not be asked about a server that is not installed"
         );
     }
 
-    /// LSP-5: the profile is wider than an MCP server's on reads and no wider on anything else.
+    /// LSP-5: a refusal stops the process and says so in words that are not about the code.
     #[test]
-    fn the_profile_grants_no_network_and_no_writes() {
-        let profile = confinement(&root(), Some(Path::new("/home/someone")));
-        assert!(
-            !profile.allow_network,
-            "a server must not reach the network"
-        );
-        assert!(
-            !profile.allow_subprocesses,
-            "a server must not spawn children"
-        );
-        assert!(
-            profile.writable.is_empty(),
-            "a server must not write anywhere: {:?}",
-            profile.writable
-        );
-        assert!(
-            profile.readable.contains(&root()),
-            "a server must be able to read the tree it indexes"
-        );
-        // `.cargo` whole rather than `.cargo/registry`: the binary is in `.cargo/bin`, and a profile
-        // that cannot read the program cannot exec it.
-        assert!(
-            profile
-                .readable
-                .contains(&PathBuf::from("/home/someone/.cargo")),
-            "a server must be able to resolve dependencies and be executable, got {:?}",
-            profile.readable
+    fn a_refused_server_does_not_start() {
+        let said = LspError::Refused {
+            language: Language::Rust,
+        };
+        assert!(said.is_absence_of_a_server());
+        let rendered = said.to_string();
+        assert!(rendered.contains("declined"), "{rendered}");
+        // It must not read as an answer, and must say that retrying is pointless.
+        assert!(!rendered.contains("no references"), "{rendered}");
+        assert!(rendered.contains("will not change it"), "{rendered}");
+    }
+
+    /// LSP-5 and LSP-8 together: asked once per language, not once per question.
+    #[test]
+    fn a_server_is_not_asked_about_twice_in_a_session() {
+        // A server already running is not asked about again, which is what the map decides. Pinned on
+        // the bookkeeping rather than on a live process: `running` is what `ask` consults before it
+        // reaches the approval, so a language present in it is a language nobody is asked about.
+        let servers = Servers::new(root(), None, |_| None, false, Vec::new());
+        assert_eq!(servers.running(), 0);
+        assert_eq!(
+            Language::for_path("src/a.rs"),
+            Language::for_path("src/b.rs"),
+            "two files of one language are one server, so one question"
         );
     }
 
-    /// SANDBOX-2: the profile has to be confinement rather than a permissive policy wearing
-    /// the name.
+    /// LSP-10: never inside the workspace, and keyed by it.
     #[test]
-    fn the_profile_is_meaningful_confinement() {
-        assert!(confinement(&root(), Some(Path::new("/home/someone"))).is_meaningful());
-        assert!(confinement(&root(), None).is_meaningful());
+    fn the_cache_is_outside_the_workspace() {
+        let home = PathBuf::from("/home/someone");
+        let cache = cache_for(Some(&home), &root(), false).expect("a cache is given");
+        assert!(
+            cache.starts_with(home.join(".bravebot")),
+            "the cache belongs under the directory this process owns, got {}",
+            cache.display()
+        );
+        assert!(
+            !cache.starts_with(root()),
+            "a question about a symbol must not write into the tree, got {}",
+            cache.display()
+        );
+    }
+
+    /// LSP-10: two workspaces do not share an index.
+    #[test]
+    fn the_cache_is_keyed_by_the_workspace() {
+        let home = PathBuf::from("/home/someone");
+        let one = cache_for(Some(&home), Path::new("/a/project"), false).expect("cache");
+        let two = cache_for(Some(&home), Path::new("/b/project"), false).expect("cache");
+        assert_ne!(
+            one, two,
+            "two checkouts must not share an index, or a stale one is read as the other's"
+        );
+        // And the same workspace is the same directory every time, or nothing is ever reused.
+        assert_eq!(
+            one,
+            cache_for(Some(&home), Path::new("/a/project"), false).expect("cache")
+        );
+    }
+
+    /// LSP-10: incognito adds nothing to `~/.bravebot`, so it is given no cache at all.
+    #[test]
+    fn an_incognito_session_is_given_no_cache() {
+        let home = PathBuf::from("/home/someone");
+        assert!(
+            cache_for(Some(&home), &root(), true).is_none(),
+            "an incognito session must write no index"
+        );
+        // And with nowhere to keep one, there is nothing to key.
+        assert!(cache_for(None, &root(), false).is_none());
+    }
+
+    /// LSP-10: the cache is the server's, and this crate never opens it.
+    ///
+    /// The clause that matters most, because `~/.bravebot` is trusted by provenance and somebody will
+    /// reason that what sits in it is too. It is not: the bytes are derived from workspace files, so
+    /// LABEL-2 taints them and LABEL-7 forbids recovering a better label.
+    ///
+    /// Pinned by what the type offers rather than by scanning the source for reads, which would match
+    /// its own assertions. `cache_for` hands back a path and nothing that reads one, and a `Server`
+    /// exposes no way to get at it: there is no accessor, so no caller can reach the directory
+    /// through this crate even if it wanted to.
+    #[test]
+    fn the_cache_is_never_read_by_the_driver() {
+        let cache = cache_for(Some(Path::new("/home/someone")), &root(), false).expect("cache");
+
+        // A path, not a handle and not any bytes. Everything this crate does with it is hand it to a
+        // child process, and the type says so: `PathBuf` carries no contents.
+        let _: PathBuf = cache;
+
+        // And nothing in the running server offers it back. If an accessor is ever added, this test
+        // is the place that has to be argued with first.
+        let names = ["cache", "index_dir", "cache_dir"];
+        let debug = format!(
+            "{:?}",
+            Servers::new(root(), None, |_| None, false, Vec::new())
+        );
+        for name in names {
+            assert!(
+                !debug.contains(name),
+                "the cache must not be reported anywhere a caller could read it: {debug}"
+            );
+        }
+    }
+
+    /// LSP-5: which servers run the ecosystem's build tooling, since that is what the prompt says.
+    #[test]
+    fn the_prompt_says_which_servers_run_build_tooling() {
+        assert!(Language::Rust.runs_build_tooling());
+        assert!(Language::Go.runs_build_tooling());
+        assert!(!Language::TypeScript.runs_build_tooling());
+        assert!(!Language::Python.runs_build_tooling());
     }
 
     /// LSP-6: a language with no server is that, and is not an empty answer.
@@ -872,7 +1022,7 @@ mod tests {
     /// LSP-8: nothing starts until something asks.
     #[test]
     fn no_server_starts_until_a_request_needs_one() {
-        let servers = Servers::new(root(), None, |_| None);
+        let servers = Servers::new(root(), None, |_| None, false, Vec::new());
         assert_eq!(
             servers.running(),
             0,
@@ -883,7 +1033,7 @@ mod tests {
     /// LSP-8: the set is what stops the processes, so dropping it must stop them all.
     #[test]
     fn dropping_the_set_stops_every_server() {
-        let servers = Servers::new(root(), None, |_| None);
+        let servers = Servers::new(root(), None, |_| None, false, Vec::new());
         // Nothing running, so this is the degenerate case; the property that matters is that the
         // set owns its servers, which is by construction, and that dropping it is not a leak.
         drop(servers);
@@ -971,7 +1121,7 @@ mod tests {
     /// question for a language already running starts nothing, which is what the map decides.
     #[test]
     fn a_server_is_started_once_and_reused() {
-        let servers = Servers::new(root(), None, |_| None);
+        let servers = Servers::new(root(), None, |_| None, false, Vec::new());
         assert_eq!(servers.running(), 0);
 
         // Two files of the same language must map to one server, and two languages to two.
@@ -999,7 +1149,7 @@ mod tests {
         );
         // A server is only ever owned by a `Server`, whose `Drop` kills it, so there is no path
         // that leaks one. Dropping a set with nothing in it must still be sound.
-        drop(Servers::new(root(), None, |_| None));
+        drop(Servers::new(root(), None, |_| None, false, Vec::new()));
     }
 
     /// LSP-9: the capability is checked before a process is started, so a run that was not granted

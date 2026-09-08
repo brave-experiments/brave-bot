@@ -1179,6 +1179,15 @@ fn time_spent_waiting_for_an_approval_is_not_charged_to_the_tool() {
     struct SlowlyApproves;
 
     impl bravebot_agent::confirm::Confirmer for SlowlyApproves {
+        /// Refuses. A test double is not a person agreeing to start a process.
+        fn confirm_server(
+            &mut self,
+
+            _request: &bravebot_agent::confirm::ServerRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+
         fn confirm_write(
             &mut self,
             _request: &bravebot_agent::confirm::WriteRequest,
@@ -1448,6 +1457,15 @@ impl RecordingConfirmer {
 }
 
 impl bravebot_agent::Confirmer for RecordingConfirmer {
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(
         &mut self,
         request: &bravebot_agent::WriteRequest,
@@ -1869,6 +1887,15 @@ impl SaysOnce {
 }
 
 impl bravebot_agent::Confirmer for SaysOnce {
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(
         &mut self,
         _request: &bravebot_agent::WriteRequest,
@@ -3720,6 +3747,15 @@ fn a_cancelled_turn_stops_before_running_a_tool() {
     }
 
     impl bravebot_agent::Confirmer for CancelWhenAsked {
+        /// Refuses. A test double is not a person agreeing to start a process.
+        fn confirm_server(
+            &mut self,
+
+            _request: &bravebot_agent::confirm::ServerRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+
         fn confirm_write(
             &mut self,
             _request: &bravebot_agent::WriteRequest,
@@ -7061,6 +7097,14 @@ impl bravebot_agent::Confirmer for AnswersWith {
         bravebot_agent::Decision::Reject
     }
 
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn ask_user(&mut self, asking: &bravebot_core::ask::Asking) -> Vec<bravebot_core::ask::Answer> {
         self.asked.push(asking.clone());
         self.replies.clone()
@@ -7369,6 +7413,15 @@ impl AskedAboutRuns {
 }
 
 impl bravebot_agent::Confirmer for AskedAboutRuns {
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(
         &mut self,
         _request: &bravebot_agent::WriteRequest,
@@ -8075,6 +8128,15 @@ impl ReadsWhatItRan {
 }
 
 impl bravebot_agent::Confirmer for ReadsWhatItRan {
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(
         &mut self,
         _request: &bravebot_agent::WriteRequest,
@@ -8404,6 +8466,15 @@ impl VouchesForFiles {
 }
 
 impl bravebot_agent::Confirmer for VouchesForFiles {
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(
         &mut self,
         _request: &bravebot_agent::WriteRequest,
@@ -10797,6 +10868,15 @@ fn a_denied_host_is_not_fetched_even_when_approved() {
 struct ApprovesFetchesAndWrites;
 
 impl bravebot_agent::Confirmer for ApprovesFetchesAndWrites {
+    /// Refuses. A test double is not a person agreeing to start a process.
+    fn confirm_server(
+        &mut self,
+
+        _request: &bravebot_agent::confirm::ServerRequest,
+    ) -> bravebot_agent::Decision {
+        bravebot_agent::Decision::Reject
+    }
+
     fn confirm_write(
         &mut self,
         _request: &bravebot_agent::WriteRequest,
