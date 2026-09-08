@@ -241,6 +241,24 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// How the caller is told it ended.
+    ///
+    /// A whole sentence rather than the few words a row has room for, and said beside output the
+    /// caller may read and beside a reference to output it may not alike: a program's own bytes
+    /// do not say whether it did what it was asked, and a command that fails silently prints
+    /// nothing at all.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Succeeded => "It exited 0.".to_string(),
+            Self::Failed(detail) => format!("It failed: {detail}."),
+            Self::Stopped(after) => format!(
+                "It was still running after {} seconds and was stopped, so this is what it had \
+                 printed by then and not the whole of what it would print.",
+                after.as_secs()
+            ),
+        }
+    }
+
     /// The driver's few words about how it ended, for the line the person watching reads.
     pub fn summary(&self) -> String {
         match self {

@@ -7540,6 +7540,94 @@ fn a_vouched_commands_output_reaches_the_planner() {
     );
 }
 
+/// A program's output does not say whether the program did what it was asked. `false` prints
+/// nothing and `cargo test` prints much the same lines either way, so a planner told only the
+/// bytes cannot tell the run that worked from the one that did not.
+#[test]
+fn the_planner_is_told_how_a_run_it_may_read_ended() {
+    let scratch = Scratch::new("run-status-read");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    // Vouched, so what it printed is trusted and the planner is shown the output rather than a
+    // reference to it. `false` prints nothing, which leaves the exit status as the whole of what
+    // there is to report.
+    let program = bravebot_agent::programs::resolve("false", &scratch.path).expect("false exists");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"false"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::reject()),
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::from_iter([
+            bravebot_core::programs::Command::new(program.display().to_string(), Vec::new()),
+        ]),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("exited 1"),
+        "the planner was not told the run failed: {second}"
+    );
+}
+
+/// The exit status is structure rather than content, so it is told even where none of the bytes
+/// can be: a planner holding a reference to output it may not read still has to know whether the
+/// program worked.
+#[test]
+fn the_planner_is_told_how_a_run_it_may_not_read_ended() {
+    let scratch = Scratch::new("run-status-kept");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"false"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("could not be shown to you"),
+        "the output was not quarantined, so this tests the wrong branch: {second}"
+    );
+    assert!(
+        second.contains("exited 1"),
+        "the planner was not told how a run it may not read ended: {second}"
+    );
+}
+
 /// Vouching for one command must not make another command of the same program readable. The label
 /// follows the same entry the prompt does, so `cat secret.txt` says nothing about `cat other.txt`.
 #[test]

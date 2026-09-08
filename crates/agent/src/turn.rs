@@ -2039,9 +2039,19 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         });
                     }
 
+                    // How a run ended, for the caller, and in front of what it printed so that a
+                    // long log does not bury the verdict. Said from the exit codes and the clock,
+                    // so it is there whether the bytes could be shown or not: a program's output
+                    // does not say whether it worked, and one that fails silently prints nothing
+                    // to read either way.
+                    let ended = match &output.printed_by {
+                        Some(command) => format!("{}\n\n", command.outcome.describe()),
+                        None => String::new(),
+                    };
+
                     match &presented {
                         Presentation::Visible(text) => {
-                            format!("{TOOL_RESULT_PREFIX}{}:\n\n{text}", output.tool)
+                            format!("{TOOL_RESULT_PREFIX}{}:\n\n{ended}{text}", output.tool)
                         }
                         Presentation::Quarantined(reference) => {
                             // A processor that answered "leave it alone" produced the document it
@@ -2110,7 +2120,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                                 String::new()
                             };
                             format!(
-                                "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{}{capped}",
+                                "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{ended}{}{capped}",
                                 output.tool,
                                 reference.describe()
                             )

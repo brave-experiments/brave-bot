@@ -251,6 +251,30 @@ as their own terminal does, and nothing else about it is gated either.
 `verified-by: bravebot_agent::scrub::nothing_of_the_users_own_is_withheld_by_guesswork`
 `verified-by: bravebot_agent::scrub::a_name_from_the_settings_file_is_withheld_as_well`
 
+<a id="RUN-13"></a>
+### RUN-13: the caller is told how the run ended, whichever way the label went
+
+Every result carries the driver's sentence about how the run ended, said from the exit codes and
+the clock: that it exited 0, which stages did not and with what code, or that it outstayed the
+limit and was stopped. It stands in front of what the program printed, and it is there in the same
+words where the output is quarantined and the caller holds a reference to it instead.
+
+**Why.** A program's own bytes do not say whether it did what it was asked. A test run prints much
+the same lines whether it passed or failed, a command that fails silently prints nothing at all,
+and a caller left to infer the verdict from the output either re-runs everything or believes
+whatever the last line implies. It stands in front of the output because a build log's verdict is
+not always in the lines a reader gets to.
+
+**Why it holds for quarantined output.** The exit status is structure and not content, exactly as a
+line count is: it was read off the process and never out of a byte the program printed, so telling
+a planner about it puts nothing in its context that a program chose. Withholding it would leave the
+one case where the output is least useful, a reference the planner may not read, as the one case
+where it also cannot tell success from failure.
+
+`verified-by: bravebot_agent::turn::the_planner_is_told_how_a_run_it_may_read_ended`
+`verified-by: bravebot_agent::turn::the_planner_is_told_how_a_run_it_may_not_read_ended`
+
+## Open questions
 ## Open questions
 
 - Whether to confine children is issue #4. Whether output can ever be trusted by proof rather than
