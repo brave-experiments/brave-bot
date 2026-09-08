@@ -37,6 +37,7 @@ cli-usage-task = Exécuter une seule tâche
 cli-usage-piped = ... avec une entrée redirigée, jamais fiable
 cli-usage-resume = Reprendre une session dans ce répertoire
 cli-usage-continue = Reprendre la session la plus récente de ce répertoire
+cli-usage-fork = Dupliquer une session pour explorer une autre voie
 cli-usage-doctor = Vérifier la configuration et le confinement
 cli-usage-import = Importer un abonnement Leo Premium
 
@@ -83,6 +84,7 @@ cli-interface-problem = erreur d'interface : { $problem }
 cli-directory-unknown = impossible de savoir de quel répertoire il s'agit
 cli-no-such-session = aucune session { $id } dans ce répertoire
 cli-nothing-to-continue = aucune session à reprendre dans ce répertoire
+cli-fork-needs-a-name = --fork nécessite un identifiant de session
 cli-piped-input-unreadable = avertissement : impossible de lire l'entrée redirigée : { $problem }
 cli-piped-input-too-large =
     l'entrée redirigée dépasse { $limit } Mio. Écrivez-la dans un fichier et nommez celui-ci

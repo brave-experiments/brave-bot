@@ -1079,6 +1079,43 @@ pub fn export(
     Ok(target)
 }
 
+/// Fork a session, creating a new session record that starts with the same transcript.
+///
+/// Inherits the title, branch, conversation and other state, but is given a new UUID
+/// and starts tracking a new timestamp. Refuses to fork manifest runs (SESSION-10).
+pub fn fork(project: &Path, source_id: &str) -> Option<Record> {
+    let mut record = load(project, source_id)?;
+
+    // Manifest runs cannot be continued or forked (SESSION-10).
+    if record.manifest.is_some() {
+        return None;
+    }
+
+    let old_id = record.id.clone();
+    record.id = new_id();
+    record.started = now();
+    record.updated = now();
+    record.title = format!("{} (fork)", record.title);
+
+    if let Some(directory) = writable_project_directory(project) {
+        let path = directory.join(format!("{}.json", record.id));
+
+        if let Ok(body) = serde_json::to_vec_pretty(&record) {
+            let _ = write_secure(&path, &body);
+        }
+
+        // The prefix is shared, so what its gates decided is the fork's history too. A fork
+        // whose trail began at the fork point would report a conversation arriving from nowhere.
+        let old_audit_path = directory.join(format!("{}.audit.jsonl", old_id));
+        let new_audit_path = directory.join(format!("{}.audit.jsonl", record.id));
+        if let Ok(content) = std::fs::read(&old_audit_path) {
+            let _ = write_secure(&new_audit_path, &content);
+        }
+    }
+
+    Some(record)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1578,6 +1615,38 @@ mod tests {
         .expect("export nested");
         assert!(exported.exists());
         assert_eq!(std::fs::read_to_string(&exported).unwrap(), "# Content");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forking_a_manifest_session_is_refused() {
+        let root = std::env::temp_dir().join("bravebot-fork-manifest");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+
+        let record = Record {
+            id: "manifest-sess".to_string(),
+            directory: root.display().to_string(),
+            title: "manifest run".to_string(),
+            turns: 1,
+            tokens: 10,
+            manifest: Some(StoredManifest {
+                shape: None,
+                proposed: None,
+                plan: None,
+                steps: vec!["one".to_string()],
+                failure: None,
+            }),
+            ..a_record()
+        };
+
+        let dir = project_directory(&root).expect("dir");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("manifest-sess.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+        assert!(fork(&root, "manifest-sess").is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }

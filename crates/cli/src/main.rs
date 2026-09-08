@@ -56,6 +56,14 @@ fn main() -> ExitCode {
         // The same, for the session somebody was in a moment ago, which is the one they mean
         // often enough that asking them to find its id is asking for nothing.
         Some("--continue" | "-c") => continue_here(skip_permissions),
+        // Fork a session, creating a new session record that starts with the same transcript.
+        Some("--fork" | "-f") => match args.get(1) {
+            Some(id) => fork_named(id, skip_permissions),
+            None => {
+                eprintln!("{}", t!(cli_fork_needs_a_name));
+                ExitCode::FAILURE
+            }
+        },
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
         Some("-p" | "--print" | "--mode" | "--file" | "--trace") => {
@@ -110,6 +118,7 @@ fn print_help() {
         ("cat file | bravebot -p \"<task>\"", t!(cli_usage_piped)),
         ("bravebot --resume [id]", t!(cli_usage_resume)),
         ("bravebot --continue", t!(cli_usage_continue)),
+        ("bravebot --fork <id>", t!(cli_usage_fork)),
         ("bravebot doctor", t!(cli_usage_doctor)),
         ("bravebot import-leo-creds [channel]", t!(cli_usage_import)),
     ] {
@@ -692,6 +701,40 @@ fn resume_named(id: &str, skip_permissions: bool) -> ExitCode {
             bravebot_tui::app::Start::Resuming(Box::new(record)),
             skip_permissions,
         ),
+        None => {
+            eprintln!("{}", t!(cli_no_such_session, id = id));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn fork_named(id: &str, skip_permissions: bool) -> ExitCode {
+    let Ok(directory) = std::env::current_dir() else {
+        eprintln!("{}", t!(cli_directory_unknown));
+        return ExitCode::FAILURE;
+    };
+    match bravebot_tui::sessions::load(&directory, id) {
+        Some(record) if record.manifest.is_some() => {
+            eprintln!("{}", bravebot_tui::resume::manifest_note());
+            if let Some(stored) = &record.manifest {
+                let report = stored.describe();
+                if !report.is_empty() {
+                    eprintln!();
+                    eprint!("{report}");
+                }
+            }
+            ExitCode::FAILURE
+        }
+        Some(_) => match bravebot_tui::sessions::fork(&directory, id) {
+            Some(record) => interactive(
+                bravebot_tui::app::Start::Resuming(Box::new(record)),
+                skip_permissions,
+            ),
+            None => {
+                eprintln!("{}", t!(cli_no_such_session, id = id));
+                ExitCode::FAILURE
+            }
+        },
         None => {
             eprintln!("{}", t!(cli_no_such_session, id = id));
             ExitCode::FAILURE
