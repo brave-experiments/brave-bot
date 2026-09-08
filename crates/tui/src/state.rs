@@ -374,6 +374,17 @@ pub enum Offered {
     Shortcuts,
 }
 
+/// What a yank or a delete took, and whether it was whole lines.
+///
+/// The distinction is what `p` needs: a yanked word goes back beside the caret, and a yanked line goes
+/// back as a line of its own. Without it, `yy` then `p` would splice a sentence into the middle of
+/// another one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Yanked {
+    text: String,
+    lines: bool,
+}
+
 /// A binding vi spells with a letter, which the key handler answers as though the key had arrived.
 ///
 /// These reach past the line: at the ends of the input the row keys walk the prompt history and then
@@ -655,6 +666,22 @@ pub struct Session {
     /// Remembered because `;` and `,` mean nothing on their own: they say "that again", and there is
     /// nothing else on the session that says what "that" was.
     last_find: Option<crate::vim::Find>,
+    /// What the last yank or delete took, for the keys that put it back.
+    ///
+    /// Vi's unnamed register, and the only one: the named ones are a filing system, and a box holding
+    /// one line of thought has nothing to file. Not the system clipboard either, which Ctrl-V owns and
+    /// which a person shares with every other window they have open.
+    register: Option<Yanked>,
+    /// The last change, for the key that does it again.
+    ///
+    /// The instruction rather than what it produced, so `.` acts at the caret wherever that now is.
+    /// That is the whole of why the key is worth having: the change is repeated somewhere else.
+    last_change: Option<(crate::vim::Operator, crate::vim::Extent)>,
+    /// The line as it stood before the last change, for the key that puts it back.
+    ///
+    /// One step rather than a stack, on the same footing as the stash: the key that undoes and the
+    /// keystroke that will be regretted are one press apart, and a depth is a thing to remember.
+    before_last_change: Option<(String, usize)>,
     pub status: Status,
     /// Whether the audit trail is shown alongside replies.
     pub show_trail: bool,
@@ -964,6 +991,9 @@ impl Session {
             mode: crate::vim::Mode::default(),
             half_typed: None,
             last_find: None,
+            register: None,
+            last_change: None,
+            before_last_change: None,
             status: Status::Idle,
             show_trail: false,
             scroll: 0,
@@ -1903,7 +1933,6 @@ impl Session {
     ///
     /// A letter vi does not use does nothing at all, which is the mode's whole bargain: the box is
     /// not typing, so an instruction it does not recognise is not text to fall back on.
-    ///
     fn obey(&mut self, c: char) {
         // A key that was waiting for one more takes this press and nothing else looks at it. Cleared
         // first, so a pair that means nothing ends the wait rather than holding it open: one stray
@@ -1924,12 +1953,275 @@ impl Session {
 
     /// Act on an instruction that has everything it needs.
     fn carry_out(&mut self, command: crate::vim::Command) {
+        use crate::vim::Command;
+
         match command {
-            crate::vim::Command::Insert(opening) => self.open_insert(opening),
-            crate::vim::Command::Move(motion) => self.move_by(motion),
-            crate::vim::Command::Wait(pending) => self.half_typed = Some(pending),
-            crate::vim::Command::Nothing => {}
+            Command::Insert(opening) => self.open_insert(opening),
+            Command::Move(motion) => self.move_by(motion),
+            Command::Change(operator, extent) => self.change(operator, extent),
+            Command::Wait(pending) => self.half_typed = Some(pending),
+            Command::Undo => self.undo_last_change(),
+            Command::Again => {
+                if let Some((operator, extent)) = self.last_change {
+                    self.change(operator, extent);
+                }
+            }
+            Command::Paste { before } => self.put_the_register_back(before),
+            Command::Join => self.join_the_line_below(),
+            Command::Nothing => {}
         }
+    }
+
+    /// Do something to the stretch of the line an extent names.
+    ///
+    /// The one place a vi instruction changes the line, so the register, the undo step and the record
+    /// of what `.` repeats are all kept here. Three copies of that bookkeeping, one per operator, is
+    /// how one of them would come to be missing.
+    fn change(&mut self, operator: crate::vim::Operator, extent: crate::vim::Extent) {
+        use crate::vim::Operator;
+
+        let Some((from, to)) = self.stretch(self.as_vi_reads_it(operator, extent)) else {
+            return;
+        };
+
+        if !operator.reads_only() {
+            self.before_last_change = Some((self.input.clone(), self.caret));
+            self.last_change = Some((operator, extent));
+            self.history.leave();
+            self.completion = 0;
+        }
+
+        let whole_lines = extent == crate::vim::Extent::Line;
+        self.register = Some(Yanked {
+            text: self.input[from..to].to_string(),
+            lines: whole_lines,
+        });
+
+        match operator {
+            // Nothing moves, so the caret has no reason to be anywhere but where the yank began, which
+            // is where vi leaves it.
+            Operator::Yank => self.caret = from,
+            Operator::Change => {
+                self.input.replace_range(from..to, "");
+                self.caret = from;
+                self.mode = crate::vim::Mode::Insert;
+            }
+            Operator::Delete => {
+                // A whole line takes the newline that ends it, so the gap closes rather than leaving a
+                // blank line where the line was. The one before it on the last line, or the line above
+                // gains a trailing newline it never had. `cc` is the other way and keeps it, which is
+                // what leaves the person typing on the line they asked to replace.
+                let (from, to) = if whole_lines {
+                    match (to < self.input.len(), from > 0) {
+                        (true, _) => (from, to + 1),
+                        (false, true) => (from - 1, to),
+                        (false, false) => (from, to),
+                    }
+                } else {
+                    (from, to)
+                };
+                self.input.replace_range(from..to, "");
+                self.caret = from;
+                // The caret has to land on a character, and taking the end of a line leaves it past the
+                // last one.
+                self.step_back_off_the_end();
+            }
+            Operator::Indent | Operator::Dedent => {
+                self.shift_the_line(operator == Operator::Indent)
+            }
+        }
+    }
+
+    /// The extent an operator actually acts on, which is not always the one the keys spelled.
+    ///
+    /// `cw` on a character that is not a blank means `ce`: it changes the word and leaves the space
+    /// after it, where `dw` takes that space. This is vi's own special case rather than something
+    /// derivable, and it exists because the alternative is useless: somebody replacing a word almost
+    /// never wants it run into the next one, and typing the space back every time is what `cw` would
+    /// otherwise cost. On a blank there is no word to change, and it means `dw` again.
+    ///
+    /// Measured against vim itself rather than reasoned about, since a special case is a fact about
+    /// what people's hands expect and not something the rest of this can predict.
+    fn as_vi_reads_it(
+        &self,
+        operator: crate::vim::Operator,
+        extent: crate::vim::Extent,
+    ) -> crate::vim::Extent {
+        use crate::vim::{Extent, Motion, Operator};
+
+        let on_a_blank = self.input[self.caret..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace);
+        match (operator, extent) {
+            (Operator::Change, Extent::To(Motion::WordRight)) if !on_a_blank => {
+                Extent::To(Motion::WordEnd)
+            }
+            _ => extent,
+        }
+    }
+
+    /// The stretch of the line an extent names, as byte offsets, or `None` where it names nothing.
+    ///
+    /// Worked out by moving the caret and reading where it lands, then putting it back. That is what
+    /// makes an operator obey the marker rules for free: the ends of the stretch are positions the
+    /// caret could rest at, so no stretch can begin or end inside a marker, and `dw` over one takes the
+    /// whole of it.
+    fn stretch(&mut self, extent: crate::vim::Extent) -> Option<(usize, usize)> {
+        use crate::vim::Extent;
+
+        let was = self.caret;
+        let span = match extent {
+            // The line's own characters, and not the newline that ends it. What happens to that
+            // newline is the operator's business rather than the extent's: `dd` takes it so the gap
+            // closes, `cc` leaves it so the person is typing on the line they asked to replace, and
+            // `yy` records the content and puts a newline back when it lands.
+            Extent::Line => Some(self.caret_line()),
+            Extent::ToLineEnd => Some((self.caret, self.caret_line().1)),
+            Extent::Character => {
+                // Whole where it is a marker, which is what the caret is on rather than the bracket it
+                // begins with.
+                match self.marker_at_caret() {
+                    Some(span) => Some(span),
+                    None => self.input[self.caret..]
+                        .chars()
+                        .next()
+                        .map(|c| (self.caret, self.caret + c.len_utf8())),
+                }
+            }
+            Extent::To(motion) => {
+                self.move_by_for(motion, true);
+                let landed = self.caret;
+                match landed.cmp(&was) {
+                    std::cmp::Ordering::Equal => None,
+                    // Forwards, and the character landed on is taken or not depending on the motion:
+                    // `de` takes the word's last letter and `dw` stops before the next word's first.
+                    std::cmp::Ordering::Greater => {
+                        let end = if motion.takes_what_it_lands_on() {
+                            self.after_the_caret()
+                        } else {
+                            landed
+                        };
+                        Some((was, end))
+                    }
+                    // Backwards, where the character the caret started on is the one not asked for:
+                    // `db` takes back to the start of the word and leaves what the caret was on.
+                    std::cmp::Ordering::Less => Some((landed, was)),
+                }
+            }
+        };
+        self.caret = was;
+        span.filter(|(from, to)| from < to)
+    }
+
+    /// Move the line the caret is on towards or away from the margin.
+    ///
+    /// A fixed step of spaces rather than a tab, because the box draws what it holds and a tab's width
+    /// is the terminal's opinion: a line indented with one would sit somewhere different here than in
+    /// the file it was copied from.
+    fn shift_the_line(&mut self, further: bool) {
+        /// How far one press moves a line.
+        const STEP: usize = 2;
+
+        let (start, _) = self.caret_line();
+        if further {
+            self.input.insert_str(start, &" ".repeat(STEP));
+            self.caret += STEP;
+            return;
+        }
+        let blanks = self.input[start..]
+            .chars()
+            .take(STEP)
+            .take_while(|c| *c == ' ')
+            .count();
+        self.input.replace_range(start..start + blanks, "");
+        self.caret = self.caret.saturating_sub(blanks).max(start);
+    }
+
+    /// Put the register back into the line, beside the caret or as a line of its own.
+    ///
+    /// Nothing where nothing has been yanked, rather than a guess at what to insert.
+    fn put_the_register_back(&mut self, before: bool) {
+        let Some(yanked) = self.register.clone() else {
+            return;
+        };
+        self.before_last_change = Some((self.input.clone(), self.caret));
+        self.history.leave();
+        self.completion = 0;
+
+        if yanked.lines {
+            // A yanked line goes back as a line rather than into the middle of the one the caret is
+            // on, which is the whole reason the register remembers which it was.
+            // The register holds the line's characters without the newline that ended it, so the
+            // newline goes on whichever side puts the text on a line of its own.
+            let (start, end) = self.caret_line();
+            let (at, text) = if before {
+                (start, format!("{}\n", yanked.text))
+            } else {
+                (end, format!("\n{}", yanked.text))
+            };
+            self.input.insert_str(at, &text);
+            self.caret = if before { start } else { at + 1 };
+            return;
+        }
+
+        // `p` puts it after the character the caret is on, which is where vi puts it: the caret is on a
+        // character rather than between two, so there is no position that means "here" for both keys.
+        let at = if before {
+            self.caret
+        } else {
+            self.after_the_caret()
+        };
+        self.input.insert_str(at, &yanked.text);
+        self.caret = at + yanked.text.len();
+        self.step_back_off_the_end();
+    }
+
+    /// The position just past the character the caret is on, which is where `p` inserts.
+    fn after_the_caret(&self) -> usize {
+        if let Some((_, end)) = self.marker_at_caret() {
+            return end;
+        }
+        match self.input[self.caret..].chars().next() {
+            Some(c) => self.caret + c.len_utf8(),
+            None => self.caret,
+        }
+    }
+
+    /// Make this line and the one below into one, which is what `J` asks for.
+    ///
+    /// The newline becomes a single space, which is what vi does: two sentences run together with no
+    /// gap is not what somebody joining lines wants, and the blanks the next line was indented with are
+    /// part of the shape it no longer has.
+    fn join_the_line_below(&mut self) {
+        let (_, end) = self.caret_line();
+        if end >= self.input.len() {
+            return;
+        }
+        self.before_last_change = Some((self.input.clone(), self.caret));
+        self.history.leave();
+        self.completion = 0;
+
+        let below = end + 1;
+        let text = self.input[below..].to_string();
+        let blanks = text.len() - text.trim_start_matches([' ', '\t']).len();
+        self.input.replace_range(end..below + blanks, " ");
+        self.caret = end;
+    }
+
+    /// Put the line back as it stood before the last change.
+    ///
+    /// Nothing where no change has been made. One step rather than a stack, on the same footing as the
+    /// stash: the press that undoes and the keystroke that will be regretted are one apart.
+    fn undo_last_change(&mut self) {
+        let Some((line, caret)) = self.before_last_change.take() else {
+            return;
+        };
+        self.input = line;
+        self.caret = caret;
+        self.history.leave();
+        self.completion = 0;
+        self.step_back_off_the_end();
     }
 
     /// The key a press in NORMAL mode stands for, where vi spells an existing binding with a letter.
@@ -1962,15 +2254,30 @@ impl Session {
     /// that did byte arithmetic on the line would have to know about markers itself, and the one that
     /// forgot would be the one that put the caret in the middle of a picture.
     fn move_by(&mut self, motion: crate::vim::Motion) {
+        self.move_by_for(motion, false);
+    }
+
+    /// The same motion, told whether it is moving the caret or measuring a stretch for an operator.
+    ///
+    /// The two differ in one place: the position after the last character of the line. The caret cannot
+    /// rest there, but it is where a stretch ending at that character ends, so a motion clamped for
+    /// both would leave `dl` on a final character measuring nothing at all.
+    fn move_by_for(&mut self, motion: crate::vim::Motion, measuring: bool) {
         use crate::vim::Motion;
 
         match motion {
             Motion::Left => self.move_left(),
             // Stopping on the last character rather than the column after it, which is where the
             // arrows leave the caret in INSERT mode and is not a position NORMAL mode has.
+            //
+            // Except when a stretch is being measured, where the position after the last character is
+            // the end of that stretch rather than somewhere the caret will rest: clamped, `dl` on the
+            // final character measures nothing and the key that means `x` would do nothing there.
             Motion::Right => {
                 self.move_right();
-                self.step_back_off_the_end();
+                if !measuring {
+                    self.step_back_off_the_end();
+                }
             }
             Motion::WordRight => self.move_word_start_right(),
             Motion::WordEnd => self.move_word_end_right(),
@@ -8345,5 +8652,228 @@ mod tests {
 
         s.type_char('/');
         assert_eq!(s.caret, 1, "the jump did not happen");
+    }
+
+    /// What a run of presses in NORMAL mode leaves the line as.
+    fn edited(line: &str, at: usize, keys: &str) -> String {
+        let mut s = normal(line, at);
+        for c in keys.chars() {
+            s.type_char(c);
+        }
+        s.input
+    }
+
+    /// One operator over one set of extents, which is what makes these one idea rather than a binding
+    /// each: the letter says what happens and the rest says where.
+    #[test]
+    fn the_delete_operator_takes_the_stretch_a_motion_names() {
+        assert_eq!(edited("one two three", 0, "dw"), "two three");
+        assert_eq!(edited("one two three", 4, "de"), "one  three");
+        assert_eq!(edited("one two three", 4, "db"), "two three");
+        assert_eq!(edited("one two three", 4, "d$"), "one ");
+        assert_eq!(edited("one two three", 0, "dfo"), " three");
+        assert_eq!(edited("one two three", 0, "dto"), "o three");
+    }
+
+    /// `x` takes the character under the caret and `dd` the whole line, newline and all: a line taken
+    /// out has to close the gap it left rather than leaving a blank one where it was.
+    #[test]
+    fn the_character_and_the_line_are_extents_of_their_own() {
+        assert_eq!(edited("hello", 1, "x"), "hllo");
+        assert_eq!(edited("one\ntwo\nthree", 4, "dd"), "one\nthree");
+        assert_eq!(edited("one\ntwo", 5, "dd"), "one");
+        assert_eq!(edited("only", 1, "dd"), "");
+        assert_eq!(edited("one two", 3, "D"), "one");
+    }
+
+    /// `c` is `d` and then INSERT mode, which is the whole of the difference: it takes the same stretch
+    /// and leaves the person typing where it was.
+    #[test]
+    fn the_change_operator_takes_the_stretch_and_starts_typing() {
+        let mut s = normal("one two", 0);
+        s.type_char('c');
+        s.type_char('w');
+        // `cw` on a character that is not a blank is `ce`: the space after the word stays, where `dw`
+        // would take it. Vi's own special case, because a word replaced and run into the next one is
+        // never what was wanted.
+        assert_eq!(s.input, " two");
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Insert));
+        s.type_char('x');
+        assert_eq!(s.input, "x two", "the box was not taking letters");
+
+        // `s` and `S` are the same operator over a character and a line.
+        assert_eq!(edited("hello", 0, "sx"), "xello");
+        assert_eq!(edited("one\ntwo", 4, "Sx"), "one\nx");
+        assert_eq!(edited("one two", 4, "Cx"), "one x");
+    }
+
+    /// `cw` on a character that is not a blank is `ce`, leaving the space that `dw` would take, and on
+    /// a blank it is `dw` again. Vi's own special case, kept because the alternative is useless: a word
+    /// replaced and run into the next one is never what somebody meant, and typing the space back every
+    /// time is what the key would otherwise cost.
+    #[test]
+    fn changing_a_word_leaves_the_space_after_it() {
+        assert_eq!(edited("one two", 0, "cwX"), "X two");
+        assert_eq!(edited("one two", 0, "dw"), "two");
+        // On a blank there is no word to change, so it takes the blanks as `dw` does.
+        assert_eq!(edited("one  two", 3, "cwX"), "oneXtwo");
+    }
+
+    /// `y` reads without writing, which is why there is nothing for undo to put back after one. The
+    /// line is untouched and the register holds what was under the motion.
+    #[test]
+    fn the_yank_operator_leaves_the_line_alone() {
+        let mut s = normal("one two", 0);
+        s.type_char('y');
+        s.type_char('w');
+        assert_eq!(s.input, "one two", "yanking changed the line");
+
+        // Which is proved by putting it back: `p` is the only way to see what the register holds.
+        s.type_char('p');
+        assert_eq!(s.input, "oone ne two");
+    }
+
+    /// A yanked line goes back as a line and a yanked word beside the caret, which is what the register
+    /// remembers besides the text. Without it, `yy` then `p` splices a sentence into the middle of
+    /// another one.
+    #[test]
+    fn a_yanked_line_comes_back_as_a_line() {
+        assert_eq!(edited("one\ntwo", 0, "yyp"), "one\none\ntwo");
+        assert_eq!(edited("one\ntwo", 0, "yyP"), "one\none\ntwo");
+        assert_eq!(edited("one\ntwo", 4, "yyP"), "one\ntwo\ntwo");
+    }
+
+    /// `P` puts it before the character the caret is on and `p` after it, which is where vi puts them:
+    /// the caret sits on a character rather than between two, so no single position means "here" for
+    /// both keys.
+    #[test]
+    fn the_register_goes_back_on_either_side_of_the_caret() {
+        assert_eq!(edited("ab", 0, "ylp"), "aab");
+        assert_eq!(edited("ab", 1, "ylP"), "abb");
+    }
+
+    /// With nothing yanked there is nothing to put back, and the key does nothing rather than guessing
+    /// at what to insert.
+    #[test]
+    fn putting_back_an_empty_register_does_nothing() {
+        assert_eq!(edited("hello", 0, "p"), "hello");
+        assert_eq!(edited("hello", 0, "P"), "hello");
+    }
+
+    /// `>>` and `<<` move the line by a fixed number of spaces rather than a tab, because the box draws
+    /// what it holds and a tab's width is the terminal's opinion. Dedenting a line at the margin has
+    /// nothing to take and leaves it there.
+    #[test]
+    fn the_line_shifts_by_spaces_and_stops_at_the_margin() {
+        assert_eq!(edited("one", 0, ">>"), "  one");
+        assert_eq!(edited("one", 0, ">>>>"), "    one");
+        assert_eq!(edited("    one", 4, "<<"), "  one");
+        assert_eq!(edited("one", 0, "<<"), "one");
+    }
+
+    /// `J` makes two lines one, with a single space where the newline was: two sentences run together
+    /// with no gap is not what somebody joining lines wants, and the blanks the next line was indented
+    /// with are part of a shape it no longer has.
+    #[test]
+    fn joining_puts_one_space_where_the_newline_was() {
+        assert_eq!(edited("one\ntwo", 0, "J"), "one two");
+        assert_eq!(edited("one\n    two", 0, "J"), "one two");
+        assert_eq!(edited("only", 0, "J"), "only", "there was no line to join");
+    }
+
+    /// `u` puts back what the last change took. The failure worth ruling out is the one that loses a
+    /// paragraph: every operator that writes records the line first, in the one place they all pass
+    /// through, so none of them can be the one that forgot.
+    #[test]
+    fn undo_puts_back_what_a_change_took() {
+        for keys in ["dw", "dd", "D", "x", "cw", "J", ">>", "p"] {
+            let mut s = normal("one two\nthree", 0);
+            // So that `p` has something to put back, and every case starts from the same line.
+            s.register = Some(Yanked {
+                text: "x".to_string(),
+                lines: false,
+            });
+            for c in keys.chars() {
+                s.type_char(c);
+            }
+            assert_ne!(s.input, "one two\nthree", "{keys} changed nothing to undo");
+
+            s.enter_vi_normal();
+            s.type_char('u');
+            assert_eq!(s.input, "one two\nthree", "{keys} could not be undone");
+        }
+    }
+
+    /// Undo with nothing to undo does nothing, and a yank is not a change: there is nothing to put back
+    /// after one, so `u` after it must not reach past it to an earlier change.
+    #[test]
+    fn there_is_nothing_to_undo_after_a_yank_or_before_a_change() {
+        assert_eq!(edited("hello", 0, "u"), "hello");
+
+        let mut s = normal("one two", 0);
+        s.type_char('d');
+        s.type_char('w');
+        s.type_char('y');
+        s.type_char('w');
+        s.type_char('u');
+        assert_eq!(s.input, "one two", "the yank got in the way of the undo");
+    }
+
+    /// `.` repeats the instruction rather than what it produced, which is the whole reason to have it:
+    /// the change happens again at the caret, wherever that now is.
+    #[test]
+    fn the_repeat_key_does_the_last_change_again_at_the_caret() {
+        assert_eq!(edited("one two three", 0, "dw."), "three");
+        assert_eq!(edited("aaa", 0, "x."), "a");
+    }
+
+    /// A marker is one thing, so an operator takes the whole of it or none: half a marker stands for
+    /// nothing, and text that still reads as an attachment over something no longer attached is the
+    /// failure this rules out. It holds because a stretch is measured between positions the caret could
+    /// rest at, and none of those is inside a marker.
+    #[test]
+    fn an_operator_takes_a_marker_whole() {
+        for keys in ["x", "dw", "d$", "D", "dl"] {
+            let mut s = vi();
+            for c in "look at ".chars() {
+                s.type_char(c);
+            }
+            s.attach(picture(b"pixels"));
+            for c in " and say".chars() {
+                s.type_char(c);
+            }
+            let opens = s.input.find('[').expect("the marker is in the line");
+            s.enter_vi_normal();
+            s.caret = opens;
+
+            for c in keys.chars() {
+                s.type_char(c);
+            }
+
+            assert!(
+                !s.input.contains('[') && !s.input.contains(']'),
+                "{keys} left half a marker: {:?}",
+                s.input
+            );
+        }
+    }
+
+    /// A deleted marker takes the attachment off, which is what a marker is for: it is the only thing
+    /// the person can see to delete, and a picture still attached to a line that no longer names it
+    /// would go with the prompt unseen.
+    #[test]
+    fn an_operator_that_takes_a_marker_takes_the_attachment_with_it() {
+        let mut s = vi();
+        s.attach(picture(b"pixels"));
+        assert_eq!(s.pasted_named(&s.input).len(), 1);
+        s.enter_vi_normal();
+        s.caret = 0;
+
+        s.type_char('x');
+
+        assert!(
+            s.pasted_named(&s.input).is_empty(),
+            "the picture is still named by a line that has no marker"
+        );
     }
 }

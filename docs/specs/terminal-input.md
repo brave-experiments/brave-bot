@@ -992,3 +992,72 @@ cannot see scroll away above it.
 `verified-by: bravebot_tui::app::the_row_keys_reach_the_prompt_history_at_the_ends_of_the_input`
 `verified-by: bravebot_tui::app::a_slash_opens_the_search_over_earlier_prompts`
 `verified-by: bravebot_tui::app::the_letters_that_spell_keys_are_typed_in_insert_mode`
+
+<a id="INPUT-28"></a>
+### INPUT-28: an operator and an extent, and a marker is taken whole or not at all
+
+`d` takes a stretch out, `c` takes it out and opens INSERT mode where it was, `y` keeps it and leaves
+the line alone, `>` and `<` move the line a step from or towards the margin. Each waits for the
+stretch to act on:
+
+| Keys | The stretch |
+|---|---|
+| a motion | from the caret to wherever that motion would take it |
+| the operator's own letter doubled | the whole line |
+| `D`, `C`, `x`, `s` | to the end of the line, and the character under the caret |
+| `Y`, `S` | the whole line |
+
+Whether the character the motion landed on is taken depends on the motion: `de` takes the word's last
+letter, `dw` stops before the next word's first. `cw` on a character that is not a blank leaves the
+space after it, and on a blank takes it.
+
+`p` and `P` put the register back after and before the caret. A stretch that was whole lines comes
+back as a line of its own. `J` makes this line and the one below into one with a single space where
+the newline was. `u` puts back what the last change took, one step. `.` does the last change again at
+the caret.
+
+A marker is taken whole by every operator, or not at all, and taking one takes the attachment off.
+
+**Why.** One operator over one set of extents is why `dw`, `cw` and `yw` are one idea rather than
+three bindings, and why `d$` and `dG` work without being listed: the letter says what happens and the
+rest says where.
+
+The inclusive and exclusive motions are vi's distinction and not decoration. `cw` behaving as `ce` is
+vi's own special case, kept because the alternative is useless: a word replaced and run into the next
+one is never what somebody meant, and typing the space back each time is what the key would cost.
+Both were measured against vim rather than reasoned about, since they are facts about what people's
+hands expect.
+
+The register is vi's unnamed one and the only one. Named registers are a filing system, and a box
+holding one line of thought has nothing to file. It is not the system clipboard, which Ctrl-V owns
+and which a person shares with every other window they have open.
+
+Undo is one step, on the same footing as putting a line away: the press that undoes and the keystroke
+that will be regretted are one apart, and a depth is a thing to remember. `.` repeats the instruction
+rather than what it produced, which is the whole point of the key.
+
+A marker is one thing on the screen and one thing to the person looking at it, so half of one stands
+for nothing and text that still reads as an attachment over something no longer attached is the
+outcome to rule out. It holds because a stretch is measured between positions the caret could rest
+at, and no such position is inside a marker.
+
+`verified-by: bravebot_tui::vim::an_operator_takes_any_motion_as_its_stretch`
+`verified-by: bravebot_tui::vim::the_doubled_letter_is_the_whole_line_and_only_its_own`
+`verified-by: bravebot_tui::vim::an_operator_over_a_jump_waits_again_for_the_character`
+`verified-by: bravebot_tui::vim::a_motion_says_whether_an_operator_takes_the_character_it_landed_on`
+`verified-by: bravebot_tui::vim::the_yank_is_the_operator_that_only_reads`
+`verified-by: bravebot_tui::state::the_delete_operator_takes_the_stretch_a_motion_names`
+`verified-by: bravebot_tui::state::the_character_and_the_line_are_extents_of_their_own`
+`verified-by: bravebot_tui::state::the_change_operator_takes_the_stretch_and_starts_typing`
+`verified-by: bravebot_tui::state::changing_a_word_leaves_the_space_after_it`
+`verified-by: bravebot_tui::state::the_yank_operator_leaves_the_line_alone`
+`verified-by: bravebot_tui::state::a_yanked_line_comes_back_as_a_line`
+`verified-by: bravebot_tui::state::the_register_goes_back_on_either_side_of_the_caret`
+`verified-by: bravebot_tui::state::putting_back_an_empty_register_does_nothing`
+`verified-by: bravebot_tui::state::the_line_shifts_by_spaces_and_stops_at_the_margin`
+`verified-by: bravebot_tui::state::joining_puts_one_space_where_the_newline_was`
+`verified-by: bravebot_tui::state::undo_puts_back_what_a_change_took`
+`verified-by: bravebot_tui::state::there_is_nothing_to_undo_after_a_yank_or_before_a_change`
+`verified-by: bravebot_tui::state::the_repeat_key_does_the_last_change_again_at_the_caret`
+`verified-by: bravebot_tui::state::an_operator_takes_a_marker_whole`
+`verified-by: bravebot_tui::state::an_operator_that_takes_a_marker_takes_the_attachment_with_it`

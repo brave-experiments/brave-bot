@@ -87,14 +87,64 @@ pub enum Command {
     Insert(Opening),
     /// Move the caret, and nothing else.
     Move(Motion),
+    /// Change the line, over the stretch of it the second half names.
+    Change(Operator, Extent),
     /// Wait for one more key, which the instruction needs before it means anything.
     Wait(Pending),
+    /// Put back what the last change took, which is `u`.
+    Undo,
+    /// Do the last change again, at the caret, which is `.`.
+    Again,
+    /// Put the register into the line, before or after the caret: `P` and `p`.
+    Paste { before: bool },
+    /// Join this line and the one below into one, which is `J`.
+    Join,
     /// The key means nothing in this mode, and nothing at all should happen.
     ///
     /// Not "fall through to the ordinary bindings": a letter that vi does not use is a letter that
     /// does nothing, and typing it into the line would be the box acting on an instruction it did
     /// not understand.
     Nothing,
+}
+
+/// What is done to a stretch of the line.
+///
+/// Three operators over one set of extents, which is what makes `dw`, `cw` and `yw` one idea rather
+/// than three bindings: the letter says what happens and the rest says where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operator {
+    /// `d`: take it out, keeping it in the register.
+    Delete,
+    /// `c`: take it out and open INSERT mode where it was.
+    Change,
+    /// `y`: keep it in the register and leave the line alone.
+    Yank,
+    /// `>`: move the line a step further from the margin.
+    Indent,
+    /// `<`: move the line a step back towards the margin.
+    Dedent,
+}
+
+impl Operator {
+    /// Whether the line is left as it was.
+    ///
+    /// The one operator that reads without writing, which is why undo has nothing to record for it.
+    pub fn reads_only(self) -> bool {
+        matches!(self, Operator::Yank)
+    }
+}
+
+/// Which stretch of the line an operator acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extent {
+    /// From the caret to wherever a motion would take it: `dw`, `d$`, `df,`.
+    To(Motion),
+    /// The whole line, newline and all: `dd`, `cc`, `yy`.
+    Line,
+    /// From the caret to the end of the line: `D`, `C`, `Y`.
+    ToLineEnd,
+    /// The character under the caret: `x`, and `s` with a change.
+    Character,
 }
 
 /// Where a motion takes the caret.
@@ -122,6 +172,32 @@ pub enum Motion {
     InputEnd,
     /// `f`, `F`, `t`, `T` once their character has arrived, and `;` and `,` repeating one.
     ToChar(Find),
+}
+
+impl Motion {
+    /// Whether an operator over this motion takes the character it landed on.
+    ///
+    /// Vi's distinction, and it is not decoration: `dw` from the start of a word takes the word and the
+    /// blank after it, stopping before the next word's first letter, while `de` takes the word and
+    /// stops having taken its last. Both are what the keys mean, and the difference is exactly this.
+    ///
+    /// The forward-looking motions that land *on* something are inclusive. The ones that land where the
+    /// next thing begins are not, since that character is the start of what was not asked for.
+    pub fn takes_what_it_lands_on(self) -> bool {
+        match self {
+            Motion::WordEnd | Motion::LineEnd => true,
+            // `f` lands on the character and takes it; `t` stops one short and takes that one.
+            Motion::ToChar(find) => find.forwards,
+            Motion::Left
+            | Motion::Right
+            | Motion::WordRight
+            | Motion::WordLeft
+            | Motion::LineStart
+            | Motion::FirstNonBlank
+            | Motion::InputStart
+            | Motion::InputEnd => false,
+        }
+    }
 }
 
 /// A jump to a character on the line, which is the shape `f`, `F`, `t` and `T` share.
@@ -156,6 +232,15 @@ pub enum Pending {
     Find { forwards: bool, short: bool },
     /// `g`, which means nothing alone and `gg` with the second press.
     G,
+    /// An operator waiting for the stretch to act on: the motion in `dw`, or the doubled letter in
+    /// `dd`.
+    Operate(Operator),
+    /// An operator waiting for the character in `df,` or `ct)`, having already taken the `f` or `t`.
+    OperateToChar {
+        operator: Operator,
+        forwards: bool,
+        short: bool,
+    },
 }
 
 impl Pending {
@@ -174,7 +259,69 @@ impl Pending {
             })),
             Pending::G if c == 'g' => Command::Move(Motion::InputStart),
             Pending::G => Command::Nothing,
+            Pending::OperateToChar {
+                operator,
+                forwards,
+                short,
+            } => Command::Change(
+                operator,
+                Extent::To(Motion::ToChar(Find {
+                    target: c,
+                    forwards,
+                    short,
+                })),
+            ),
+            Pending::Operate(operator) => operated(operator, c),
         }
+    }
+}
+
+/// What an operator does to the stretch the next key names.
+///
+/// The doubled letter is the whole line, which is why `dd` and `cc` are spelled that way and why the
+/// letter has to be compared against the operator that is waiting: `dy` is not a line.
+///
+/// The jump keys wait again rather than resolving here, since `df` still needs the character. That is
+/// the only place two keys stack up before anything happens.
+fn operated(operator: Operator, c: char) -> Command {
+    let doubled = match operator {
+        Operator::Delete => 'd',
+        Operator::Change => 'c',
+        Operator::Yank => 'y',
+        Operator::Indent => '>',
+        Operator::Dedent => '<',
+    };
+    if c == doubled {
+        return Command::Change(operator, Extent::Line);
+    }
+    match c {
+        'f' => Command::Wait(Pending::OperateToChar {
+            operator,
+            forwards: true,
+            short: false,
+        }),
+        'F' => Command::Wait(Pending::OperateToChar {
+            operator,
+            forwards: false,
+            short: false,
+        }),
+        't' => Command::Wait(Pending::OperateToChar {
+            operator,
+            forwards: true,
+            short: true,
+        }),
+        'T' => Command::Wait(Pending::OperateToChar {
+            operator,
+            forwards: false,
+            short: true,
+        }),
+        // Any motion at all names a stretch, so `d$` and `dG` work for the reason `dw` does rather
+        // than because they were listed. A key that is not a motion is not a stretch, and the pair
+        // means nothing.
+        _ => match command(c) {
+            Command::Move(motion) => Command::Change(operator, Extent::To(motion)),
+            _ => Command::Nothing,
+        },
     }
 }
 
@@ -237,6 +384,28 @@ pub fn command(c: char) -> Command {
             forwards: false,
             short: true,
         }),
+        // The operators, each waiting for the stretch to act on.
+        'd' => Command::Wait(Pending::Operate(Operator::Delete)),
+        'c' => Command::Wait(Pending::Operate(Operator::Change)),
+        'y' => Command::Wait(Pending::Operate(Operator::Yank)),
+        '>' => Command::Wait(Pending::Operate(Operator::Indent)),
+        '<' => Command::Wait(Pending::Operate(Operator::Dedent)),
+        // The capitals are the same operators to the end of the line, which is the one stretch common
+        // enough to have a key of its own.
+        'D' => Command::Change(Operator::Delete, Extent::ToLineEnd),
+        'C' => Command::Change(Operator::Change, Extent::ToLineEnd),
+        // `Y` is the line rather than the rest of it, which is vi's own inconsistency and the one
+        // people's hands expect: `yy` and `Y` are the same key twice.
+        'Y' => Command::Change(Operator::Yank, Extent::Line),
+        // The character under the caret. `x` takes it and stays, `s` takes it and starts typing.
+        'x' => Command::Change(Operator::Delete, Extent::Character),
+        's' => Command::Change(Operator::Change, Extent::Character),
+        'S' => Command::Change(Operator::Change, Extent::Line),
+        'p' => Command::Paste { before: false },
+        'P' => Command::Paste { before: true },
+        'J' => Command::Join,
+        'u' => Command::Undo,
+        '.' => Command::Again,
         _ => Command::Nothing,
     }
 }
@@ -358,5 +527,81 @@ mod tests {
         assert_eq!(command('g'), Command::Wait(Pending::G));
         assert_eq!(Pending::G.then('g'), Command::Move(Motion::InputStart));
         assert_eq!(Pending::G.then('x'), Command::Nothing);
+    }
+
+    /// Any motion at all names a stretch, which is what makes `dw`, `d$` and `dG` one idea rather than
+    /// three bindings. A key that is not a motion names no stretch, and the pair means nothing.
+    #[test]
+    fn an_operator_takes_any_motion_as_its_stretch() {
+        let after = |c: char| Pending::Operate(Operator::Delete).then(c);
+        assert_eq!(
+            after('w'),
+            Command::Change(Operator::Delete, Extent::To(Motion::WordRight))
+        );
+        assert_eq!(
+            after('$'),
+            Command::Change(Operator::Delete, Extent::To(Motion::LineEnd))
+        );
+        assert_eq!(after('z'), Command::Nothing);
+    }
+
+    /// The doubled letter is the whole line, and it is compared against the operator that is waiting:
+    /// `dy` is not a line, and reading any second letter as one would make every mistyped pair take a
+    /// line out.
+    #[test]
+    fn the_doubled_letter_is_the_whole_line_and_only_its_own() {
+        assert_eq!(
+            Pending::Operate(Operator::Delete).then('d'),
+            Command::Change(Operator::Delete, Extent::Line)
+        );
+        assert_eq!(
+            Pending::Operate(Operator::Yank).then('y'),
+            Command::Change(Operator::Yank, Extent::Line)
+        );
+        assert_eq!(
+            Pending::Operate(Operator::Delete).then('y'),
+            Command::Nothing
+        );
+    }
+
+    /// `df,` is two keys before anything can happen, which is the only place a wait stacks on a wait:
+    /// the operator has its motion and the motion still needs its character.
+    #[test]
+    fn an_operator_over_a_jump_waits_again_for_the_character() {
+        let pending = match Pending::Operate(Operator::Delete).then('f') {
+            Command::Wait(pending) => pending,
+            other => panic!("df was {other:?} rather than a wait"),
+        };
+        assert_eq!(
+            pending.then(','),
+            Command::Change(
+                Operator::Delete,
+                Extent::To(Motion::ToChar(Find {
+                    target: ',',
+                    forwards: true,
+                    short: false,
+                }))
+            )
+        );
+    }
+
+    /// `de` takes the word's last letter and `dw` stops before the next word's first, which is the whole
+    /// of the difference between an inclusive motion and an exclusive one.
+    #[test]
+    fn a_motion_says_whether_an_operator_takes_the_character_it_landed_on() {
+        assert!(Motion::WordEnd.takes_what_it_lands_on());
+        assert!(Motion::LineEnd.takes_what_it_lands_on());
+        assert!(!Motion::WordRight.takes_what_it_lands_on());
+        assert!(!Motion::WordLeft.takes_what_it_lands_on());
+    }
+
+    /// A yank reads without writing, which is why there is nothing for undo to put back after one and
+    /// why it is the operator that records no change.
+    #[test]
+    fn the_yank_is_the_operator_that_only_reads() {
+        assert!(Operator::Yank.reads_only());
+        assert!(!Operator::Delete.reads_only());
+        assert!(!Operator::Change.reads_only());
+        assert!(!Operator::Indent.reads_only());
     }
 }
