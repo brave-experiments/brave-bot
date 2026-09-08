@@ -41,6 +41,7 @@ pub mod trust_prompt;
 /// produced it rather than inferred from its own symptoms.
 pub const BUILD: &str = env!("BRAVEBOT_BUILD");
 pub mod verbs;
+pub mod vim;
 pub mod wrap;
 
 pub use state::{Entry, Session, Speaker, Status};

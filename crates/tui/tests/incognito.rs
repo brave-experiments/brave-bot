@@ -156,6 +156,7 @@ fn a_choice_applies_to_the_session_and_is_not_recorded() {
     store::save_model("some-other-model");
     store::save_theme("brave");
     store::save_effort(Some(bravebot_aichat::protocol::Effort::Xhigh));
+    store::save_editing(bravebot_tui::vim::Editing::Vi);
 
     assert_eq!(
         store::load_model().as_deref(),
@@ -171,6 +172,11 @@ fn a_choice_applies_to_the_session_and_is_not_recorded() {
         store::load_effort(),
         None,
         "an incognito session recorded an effort level"
+    );
+    assert_eq!(
+        store::load_editing(),
+        None,
+        "an incognito session recorded a style of editing"
     );
 
     let mut expected = vec!["model".to_string(), "theme".to_string()];

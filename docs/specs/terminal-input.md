@@ -8,6 +8,7 @@ governs:
   - crates/tui/src/wrap.rs
   - crates/tui/src/editor.rs
   - crates/tui/src/history_search.rs
+  - crates/tui/src/vim.rs
 ---
 
 ## Scope
@@ -807,3 +808,108 @@ answer is to set the budget rather than to compact.
 `verified-by: bravebot_config::lib::an_advertised_budget_is_not_marked_as_guessed`
 `verified-by: bravebot_config::lib::a_budget_set_by_hand_is_not_marked_as_guessed`
 `verified-by: bravebot_config::lib::a_window_nobody_advertised_leaves_an_adopted_budget_standing_and_marks_it_guessed`
+
+<a id="INPUT-23"></a>
+### INPUT-23: the box edits the ordinary way or vi's, and only a person chooses which
+
+The style is a preference about the person, so it outlives the session that chose it and applies in
+every directory. A choice they made outranks a settings file, the file answers for somebody who has
+never made one, and with neither the box is the ordinary one. A configured word naming no style
+leaves the ordinary box and stops nothing from starting.
+
+Vi editing has two modes over the same line. INSERT is the box everybody has, where a typed
+character lands at the caret. NORMAL takes a letter as an instruction, and a letter it has no
+instruction for does nothing at all rather than being typed. Every session opens in INSERT.
+
+The ordinary box is in neither mode, and nothing about a mode is drawn at it.
+
+**Why.** Somebody who edits text in vi reaches for `hjkl` before reading anything, and the cost of
+the habit meeting a box without it is a prompt full of stray letters. It is a habit rather than a
+property of a checkout, which is why the choice is the person's and why a file in a repository is
+the weaker claim.
+
+Opening in NORMAL is the one arrangement worth ruling out. The first sentence somebody typed would
+go nowhere, and a box that swallows what is typed into it cannot be told apart from one that has
+stopped working.
+
+A letter with no instruction does nothing because the mode is not typing. Falling back to inserting
+it would make NORMAL mode a place where half the alphabet quietly edits the prompt, and the person
+would find out by reading the line rather than by pressing the key.
+
+`verified-by: bravebot_tui::vim::the_configured_word_for_vi_editing_is_the_one_other_tools_use`
+`verified-by: bravebot_tui::vim::the_configured_word_is_read_whatever_its_case`
+`verified-by: bravebot_tui::vim::a_word_naming_no_style_is_no_choice_at_all`
+`verified-by: bravebot_tui::state::a_box_that_edits_vis_way_still_opens_taking_letters_as_letters`
+`verified-by: bravebot_tui::state::the_ordinary_box_is_in_no_vi_mode_and_cannot_enter_one`
+`verified-by: bravebot_tui::state::a_letter_typed_in_normal_mode_does_not_reach_the_line`
+`verified-by: bravebot_tui::state::a_configured_style_is_adopted_and_an_unknown_word_is_not`
+`verified-by: bravebot_tui::state::choosing_a_style_of_editing_leaves_the_box_taking_letters`
+`verified-by: bravebot_tui::store::a_stored_style_of_editing_is_read_back_without_its_newline`
+`verified-by: bravebot_tui::store::a_file_naming_no_style_of_editing_is_not_a_choice`
+`verified-by: bravebot_config::settings::a_style_of_editing_resolves_like_any_other_single_value`
+`verified-by: bravebot_config::settings::a_blank_value_is_not_a_choice`
+`verified-by: bravebot_config::settings::a_style_of_editing_is_among_the_names_reported`
+
+<a id="INPUT-24"></a>
+### INPUT-24: Escape takes the letters as instructions, and takes nothing else
+
+In vi's style Escape enters NORMAL mode and leaves the line exactly as it was. Ctrl-`[` is the same
+request from a terminal that reports the modifier rather than sending the byte Escape already is,
+and both are answered. Pressed in NORMAL mode the key is claimed and does nothing.
+
+A turn in flight is still stopped first, and discarding a half-typed line is still Ctrl-C. In the
+ordinary style Escape discards the line as it always has (INPUT-4).
+
+The mode the box is in is drawn beneath it, beside the mode that says what the session asks before
+it acts, and is given up only after everything that is not a mode.
+
+**Why.** These are two presses of one key in the same box, and a key that both entered a mode and
+threw a paragraph away would be one nobody could press safely. Somebody reaching for NORMAL mode
+would lose a prompt each time, and the way to find out is to have already lost one.
+
+Answering one spelling of the chord works on one machine and does nothing on the next, which reads
+as a broken key rather than as a terminal difference.
+
+The mode earns its place beneath the box because it decides whether the next letter is a letter. A
+person who cannot see that they are in NORMAL mode is looking at a box that has apparently stopped
+taking what they type, and that is the same failure opening in NORMAL would cause.
+
+`verified-by: bravebot_tui::app::escape_enters_normal_mode_without_discarding_the_line`
+`verified-by: bravebot_tui::app::either_spelling_of_escape_enters_normal_mode`
+`verified-by: bravebot_tui::app::the_chord_that_enters_normal_mode_does_nothing_to_the_ordinary_box`
+`verified-by: bravebot_tui::app::escape_still_stops_a_turn_before_it_enters_normal_mode`
+`verified-by: bravebot_tui::state::leaving_insert_mode_puts_the_caret_on_a_character`
+`verified-by: bravebot_tui::render::the_hint_line_says_which_vi_mode_the_box_is_in`
+`verified-by: bravebot_tui::render::the_hint_line_says_nothing_about_a_box_that_edits_the_ordinary_way`
+`verified-by: bravebot_tui::render::the_key_list_says_what_escape_does_in_the_box_it_is_drawn_over`
+
+<a id="INPUT-25"></a>
+### INPUT-25: six keys open INSERT mode, each saying where the caret lands
+
+`i` before the character the caret is on, `I` at the first character of the line, `a` after the
+character the caret is on, `A` at the end of the line, `o` on a new line below, `O` on a new line
+above. Opening a line leaves the caret on the new one.
+
+Leaving INSERT mode puts the caret on a character rather than past the end of the line, since in
+NORMAL mode the caret sits on the character the next instruction acts on.
+
+`!` and `?` are instructions in NORMAL mode rather than the marks that arm shell mode and put the
+key list up (INPUT-2, INPUT-13). Both are a press of `i` away.
+
+**Why.** These are the keys somebody's hands already know, and the only thing that distinguishes
+them is where the caret ends up, which is why they are one set rather than six unrelated bindings.
+
+The caret cannot rest past the end of the line because there is no character there for an
+instruction to act on, and a block drawn over the column after the line says the next press will
+take something that is not there.
+
+Reading `!` as the shell mark would arm a mode from a press asking for something else, and there is
+no way out of a shell armed by accident except deleting back past the mark. The same press in
+INSERT mode still arms it, which is where somebody who wanted a command is.
+
+`verified-by: bravebot_tui::vim::the_keys_that_open_insert_mode_say_where_the_caret_lands`
+`verified-by: bravebot_tui::vim::a_letter_that_means_nothing_in_normal_mode_types_nothing`
+`verified-by: bravebot_tui::state::the_keys_that_open_insert_mode_land_the_caret_where_vi_does`
+`verified-by: bravebot_tui::state::opening_a_line_leaves_the_caret_on_the_new_one`
+`verified-by: bravebot_tui::state::the_shell_marker_is_not_armed_from_normal_mode`
+`verified-by: bravebot_tui::state::the_key_list_is_not_opened_from_normal_mode`

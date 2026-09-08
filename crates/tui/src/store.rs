@@ -1,10 +1,10 @@
 //! Where global state lives on disk.
 //!
 //! `~/.bravebot` holds anything that should outlive a session: prompt history, the model the user
-//! chose, and the theme they paint the interface in. The directory rather than a per-project file,
-//! for the same reason in each case: a question worth asking again is usually worth asking in
-//! another checkout too, and which model to think with or which theme to draw in is not a property
-//! of a checkout.
+//! chose, the theme they paint the interface in, and how they edit text. The directory rather than a
+//! per-project file, for the same reason in each case: a question worth asking again is usually worth
+//! asking in another checkout too, and which model to think with, which theme to draw in and which
+//! keys move the caret are not properties of a checkout.
 //!
 //! Every operation here degrades to doing nothing. A missing home directory, a read-only disk, a
 //! corrupt file: none of that is worth refusing to start over, because the session works without
@@ -42,6 +42,12 @@ const THEME_FILE: &str = "theme";
 
 /// The chosen effort level, one line, inside the global state directory.
 const EFFORT_FILE: &str = "effort";
+
+/// The chosen style of editing, one line, inside the global state directory.
+///
+/// Named for the setting a file spells rather than for the type here, so somebody looking at both
+/// sees one name.
+const EDITING_FILE: &str = "editor-mode";
 
 /// The longest model name worth reading back.
 ///
@@ -354,6 +360,47 @@ pub fn save_effort(effort: Option<Effort>) {
     }
 }
 
+/// The style of editing the user chose, or `None` if they never have.
+///
+/// Global rather than per-directory, on the same footing as the effort level: how somebody edits text
+/// is a habit of theirs, not a property of a checkout.
+pub fn load_editing() -> Option<crate::vim::Editing> {
+    let path = directory()?.join(EDITING_FILE);
+    parse_editing(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Read the style out of the file's contents.
+///
+/// Separate from the I/O so the rules are testable. A blank file, or one naming a style this program
+/// does not have, is no choice at all: the caller then falls back to what the settings say and to the
+/// ordinary box, rather than to a box whose letters do something nobody asked for.
+pub fn parse_editing(contents: &str) -> Option<crate::vim::Editing> {
+    crate::vim::Editing::named(contents.lines().next()?)
+}
+
+/// Record the style of editing the user chose.
+///
+/// Written to a temporary file and renamed, so an interrupted write leaves the previous choice rather
+/// than a half-written word. Best-effort like everything else here.
+///
+/// The ordinary style is written rather than removing the file, unlike the effort level: there the
+/// absent file and the chosen absence are the same request, and here they are not. Somebody who turns
+/// vi editing off has made a choice that has to outlast the session, and removing the file would let a
+/// settings file turn it back on for them tomorrow.
+pub fn save_editing(editing: crate::vim::Editing) {
+    let Some(dir) = writable() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    let temporary = dir.join("editor-mode.tmp");
+    if std::fs::write(&temporary, format!("{}\n", editing.as_str())).is_ok() {
+        let _ = std::fs::rename(&temporary, dir.join(EDITING_FILE));
+    }
+}
+
 /// Encode a prompt as one line.
 ///
 /// A prompt may contain newlines, which would otherwise become several entries on the way back
@@ -587,6 +634,29 @@ and this?
     #[test]
     fn only_the_first_effort_line_is_read() {
         assert_eq!(parse_effort("low\nmax\n"), Some(Effort::Low));
+    }
+
+    #[test]
+    fn a_stored_style_of_editing_is_read_back_without_its_newline() {
+        assert_eq!(parse_editing("vim\n"), Some(crate::vim::Editing::Vi));
+        assert_eq!(
+            parse_editing("emacs\n"),
+            Some(crate::vim::Editing::Ordinary)
+        );
+    }
+
+    /// A corrupt or hand-edited file must leave the box everybody has. Read as vi editing, a word this
+    /// program does not know would give somebody a box whose letters do things they never asked for,
+    /// and the typo that caused it is the one thing they cannot see.
+    #[test]
+    fn a_file_naming_no_style_of_editing_is_not_a_choice() {
+        for contents in ["", "\n", "   \n", "vi\n", "modal\n"] {
+            assert_eq!(
+                parse_editing(contents),
+                None,
+                "{contents:?} became a choice"
+            );
+        }
     }
 
     #[test]

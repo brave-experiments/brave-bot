@@ -2350,7 +2350,7 @@ fn lines_beneath_the_box(
         crate::state::Offered::Nothing => Vec::new(),
         crate::state::Offered::Commands(commands) => command_lines(session, commands),
         crate::state::Offered::Files(entries) => entry_lines(session, entries),
-        crate::state::Offered::Shortcuts => shortcut_lines(width),
+        crate::state::Offered::Shortcuts => shortcut_lines(session.editing(), width),
     });
     lines
 }
@@ -2405,28 +2405,39 @@ const SHORTCUTS_HINT: &str = "? for shortcuts";
 /// The meanings are kept short deliberately. The longest of them sets the column, so a word saved
 /// here is what lets two columns fit a terminal eighty wide, and that halves the rows the list takes
 /// out of the transcript.
-const SHORTCUTS: [(&str, &str); 20] = [
-    ("!", "run a shell command"),
-    ("/", "commands"),
-    ("@", "name a file"),
-    ("?", "this list"),
-    ("enter", "send"),
-    ("shift-enter", "new line, or ctrl-j"),
-    ("tab", "take what is offered"),
-    ("shift-tab", "what to ask before acting"),
-    ("esc", "clear the line"),
-    ("up / down", "earlier prompts"),
-    ("pgup / pgdn", "scroll the transcript"),
-    ("ctrl-c", "stop, clear, then exit"),
-    ("ctrl-d", "exit"),
-    ("ctrl-g", "write prompt in $EDITOR"),
-    ("ctrl-l", "watch a delegate work"),
-    ("ctrl-r", "search earlier prompts"),
-    ("ctrl-s", "stash, or bring it back"),
-    ("ctrl-t", "show what a turn did"),
-    ("ctrl-v", "paste, pictures too"),
-    ("drag", "select, copy on release"),
-];
+///
+/// Taken against the style of editing, because Escape does something different in each and this is
+/// the one place a binding's meaning is written down: a list that went on saying "clear the line" to
+/// somebody whose Escape takes the letters as commands would advertise a binding that is not there.
+/// Every other row means the same thing either way.
+fn shortcuts(editing: crate::vim::Editing) -> [(&'static str, &'static str); 20] {
+    let escape = match editing {
+        crate::vim::Editing::Ordinary => "clear the line",
+        crate::vim::Editing::Vi => "take letters as commands",
+    };
+    [
+        ("!", "run a shell command"),
+        ("/", "commands"),
+        ("@", "name a file"),
+        ("?", "this list"),
+        ("enter", "send"),
+        ("shift-enter", "new line, or ctrl-j"),
+        ("tab", "take what is offered"),
+        ("shift-tab", "what to ask before acting"),
+        ("esc", escape),
+        ("up / down", "earlier prompts"),
+        ("pgup / pgdn", "scroll the transcript"),
+        ("ctrl-c", "stop, clear, then exit"),
+        ("ctrl-d", "exit"),
+        ("ctrl-g", "write prompt in $EDITOR"),
+        ("ctrl-l", "watch a delegate work"),
+        ("ctrl-r", "search earlier prompts"),
+        ("ctrl-s", "stash, or bring it back"),
+        ("ctrl-t", "show what a turn did"),
+        ("ctrl-v", "paste, pictures too"),
+        ("drag", "select, copy on release"),
+    ]
+}
 
 /// The shortcuts in as many columns as the width will hold.
 ///
@@ -2435,7 +2446,7 @@ const SHORTCUTS: [(&str, &str); 20] = [
 /// to be. One column when nothing else fits, and the meanings are cut to the width there rather
 /// than drawn past the edge, where the terminal would wrap them under the keys and put the list one
 /// row over the height the layout reserved for it.
-fn shortcut_lines(width: u16) -> Vec<Line<'static>> {
+fn shortcut_lines(editing: crate::vim::Editing, width: u16) -> Vec<Line<'static>> {
     /// Blank columns between one column of the list and the next.
     const GUTTER: usize = 3;
     /// Where the list starts, matching the other rows drawn beneath the box.
@@ -2448,20 +2459,21 @@ fn shortcut_lines(width: u16) -> Vec<Line<'static>> {
         return Vec::new();
     }
 
-    let key_column = SHORTCUTS
+    let listed = shortcuts(editing);
+    let key_column = listed
         .iter()
         .map(|(key, _)| key.chars().count())
         .max()
         .unwrap_or(0)
         .min(room);
-    let widest = SHORTCUTS
+    let widest = listed
         .iter()
         .map(|(_, meaning)| meaning.chars().count())
         .max()
         .unwrap_or(0);
 
     let columns = ((room + GUTTER) / (key_column + 2 + widest + GUTTER)).max(1);
-    let rows = SHORTCUTS.len().div_ceil(columns);
+    let rows = listed.len().div_ceil(columns);
     // What a meaning has to itself once the keys, the padding and the gutters are taken out. As wide
     // as the longest wherever there is room for it, which is every width but the narrowest; zero
     // where the keys alone fill the row, and then they are listed without their meanings rather than
@@ -2474,7 +2486,7 @@ fn shortcut_lines(width: u16) -> Vec<Line<'static>> {
         .map(|row| {
             let mut spans = vec![Span::raw(" ".repeat(INDENT))];
             for column in 0..columns {
-                let Some((key, meaning)) = SHORTCUTS.get(row + column * rows) else {
+                let Some((key, meaning)) = listed.get(row + column * rows) else {
                     break;
                 };
                 // Only between columns, so no row carries trailing blanks a selection would pick up.
@@ -2495,7 +2507,7 @@ fn shortcut_lines(width: u16) -> Vec<Line<'static>> {
                 let padding = meaning_column - shown.chars().count();
                 spans.push(Span::styled(shown, dim()));
                 // Padded only where another column follows, for the same reason as the gutter.
-                if row + (column + 1) * rows < SHORTCUTS.len() {
+                if row + (column + 1) * rows < listed.len() {
                     spans.push(Span::raw(" ".repeat(padding)));
                 }
             }
@@ -2645,37 +2657,48 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // An empty part is skipped rather than drawn, so a session with no trail, nothing measured and
     // nothing to open does not open its line on a separator with nothing in front of it.
     let mode = crate::status::named_mode(session.permission_mode());
+    // Beside the permission mode, on the same footing and for the same reason: which vi mode the box
+    // is in decides whether the next letter is a letter or an instruction, so of everything here the
+    // two of them are what somebody has to catch without going looking. Nothing at all for the box
+    // everybody else has, which is in no mode to report.
+    let editing = session
+        .vi_mode()
+        .map(|mode| mode.as_str().to_string())
+        .unwrap_or_default();
     let parts = [
         mode.unwrap_or_default().to_string(),
+        editing,
         trail.to_string(),
         context,
         watchable,
         SHORTCUTS_HINT.to_string(),
     ];
     // Indices into `parts`, in the order they are given up: the way to the bindings first, then the
-    // trail toggle, both being things somebody learns once. Then the figures. The mode is never
-    // listed, because of everything here it is the one that changes what the next keystroke does.
-    let kept = fitted(&parts, &[4, 1, 2, 3], area.width);
+    // trail toggle, both being things somebody learns once. Then the figures. Neither mode is ever
+    // listed, because of everything here they are what changes what the next keystroke does.
+    let kept = fitted(&parts, &[5, 2, 3, 4], area.width);
 
-    // Drawn from `kept` like everything else, so a terminal with no room for it drops it whole rather
-    // than showing the front half of it.
+    // The modes lead the line and are the only coloured part of it, so what is marked is exactly what
+    // changes the meaning of a keystroke. Drawn from `kept` like everything else, so a terminal with
+    // no room for a part drops it whole rather than showing the front half of it.
+    const AFTER_THE_MODES: usize = 2;
+    let joined = |indices: &[usize]| -> Vec<&str> {
+        indices.iter().map(|index| parts[*index].as_str()).collect()
+    };
+    let (modes, rest): (Vec<usize>, Vec<usize>) =
+        kept.iter().partition(|index| **index < AFTER_THE_MODES);
+
     let mut spans = Vec::new();
-    if kept.contains(&0) {
+    if !modes.is_empty() {
         spans.push(Span::styled(
-            format!("  {}", parts[0]),
+            format!("  {}", joined(&modes).join("  ·  ")),
             Style::default().fg(theme::accent()),
         ));
     }
-    // The rest is one span, so the colour above marks the mode and nothing else.
-    let rest: Vec<&str> = kept
-        .iter()
-        .filter(|index| **index != 0)
-        .map(|index| parts[*index].as_str())
-        .collect();
     if !rest.is_empty() {
-        let separator = if kept.contains(&0) { "  ·  " } else { "  " };
+        let separator = if modes.is_empty() { "  " } else { "  ·  " };
         spans.push(Span::styled(
-            format!("{separator}{}", rest.join("  ·  ")),
+            format!("{separator}{}", joined(&rest).join("  ·  ")),
             dim(),
         ));
     }
@@ -3368,7 +3391,9 @@ mod tests {
         #[test]
         fn the_shortcut_list_names_the_key_that_watches() {
             assert!(
-                SHORTCUTS.iter().any(|(key, _)| *key == "ctrl-l"),
+                shortcuts(crate::vim::Editing::Ordinary)
+                    .iter()
+                    .any(|(key, _)| *key == "ctrl-l"),
                 "the shortcut list does not name the key"
             );
         }
@@ -4923,6 +4948,36 @@ mod tests {
         assert!(!hint.contains('⏵') && !hint.contains('⏸'), "{hint}");
     }
 
+    /// Which vi mode the box is in decides whether the next letter is a letter, so it is drawn where
+    /// the other fact of that kind is drawn. Somebody who cannot see they are in NORMAL mode is
+    /// looking at a box that has apparently stopped taking what they type.
+    #[test]
+    fn the_hint_line_says_which_vi_mode_the_box_is_in() {
+        let mut session = Session::new("kernel-enforced");
+        session.choose_editing(crate::vim::Editing::Vi);
+        assert!(
+            hint_row_at(&session, 120, 24).contains("INSERT"),
+            "{}",
+            hint_row_at(&session, 120, 24)
+        );
+
+        session.enter_vi_normal();
+        let hint = hint_row_at(&session, 120, 24);
+        assert!(hint.contains("NORMAL"), "{hint}");
+        assert!(!hint.contains("INSERT"), "both modes were drawn: {hint}");
+    }
+
+    /// The box everybody else has is in no mode, and a word standing there for somebody who never
+    /// asked for vi editing is a word they cannot account for.
+    #[test]
+    fn the_hint_line_says_nothing_about_a_box_that_edits_the_ordinary_way() {
+        let hint = hint_row_at(&Session::new("kernel-enforced"), 120, 24);
+        assert!(
+            !hint.contains("INSERT") && !hint.contains("NORMAL"),
+            "{hint}"
+        );
+    }
+
     /// The mode survives a terminal too narrow for everything, and the way to the bindings is what is
     /// given up: of the two, one changes what the next keystroke does and the other is a thing
     /// somebody learns once and can find again with `?`.
@@ -4985,10 +5040,31 @@ mod tests {
         session.type_char('?');
         let output = rendered_at(&session, 120, 40);
 
-        for (key, meaning) in SHORTCUTS {
+        for (key, meaning) in shortcuts(session.editing()) {
             assert!(output.contains(key), "{key} missing");
             assert!(output.contains(meaning), "{key} has no meaning on screen");
         }
+    }
+
+    /// The list is the one place a binding's meaning is written down, so it cannot go on saying that
+    /// Escape clears the line to somebody whose Escape takes the letters as commands. A list
+    /// advertising a binding that does something else is worse than no list.
+    #[test]
+    fn the_key_list_says_what_escape_does_in_the_box_it_is_drawn_over() {
+        let mut ordinary = Session::new("none");
+        ordinary.type_char('?');
+        let drawn = rendered_at(&ordinary, 120, 40);
+        assert!(drawn.contains("clear the line"), "{drawn}");
+
+        let mut vi = Session::new("none");
+        vi.choose_editing(crate::vim::Editing::Vi);
+        vi.type_char('?');
+        let drawn = rendered_at(&vi, 120, 40);
+        assert!(
+            !drawn.contains("clear the line"),
+            "the list told a vi box that escape clears the line: {drawn}"
+        );
+        assert!(drawn.contains("take letters as commands"), "{drawn}");
     }
 
     /// The moment a person hunts for a key is the moment a turn is going somewhere they did not
@@ -5005,7 +5081,7 @@ mod tests {
         session.type_char('?');
         let output = rendered_at(&session, 120, 40);
 
-        for (key, meaning) in SHORTCUTS {
+        for (key, meaning) in shortcuts(session.editing()) {
             assert!(output.contains(key), "{key} missing");
             assert!(output.contains(meaning), "{key} has no meaning on screen");
         }
@@ -5055,10 +5131,16 @@ mod tests {
     /// one row per binding would.
     #[test]
     fn the_shortcuts_use_fewer_rows_where_the_width_allows() {
-        let wide = shortcut_lines(200).len();
-        let narrow = shortcut_lines(40).len();
-        assert!(wide < narrow, "{wide} rows wide, {narrow} narrow");
-        assert_eq!(narrow, SHORTCUTS.len(), "a narrow terminal cut a binding");
+        for editing in crate::vim::Editing::ALL {
+            let wide = shortcut_lines(editing, 200).len();
+            let narrow = shortcut_lines(editing, 40).len();
+            assert!(wide < narrow, "{wide} rows wide, {narrow} narrow");
+            assert_eq!(
+                narrow,
+                shortcuts(editing).len(),
+                "a narrow terminal cut a binding"
+            );
+        }
     }
 
     /// No row may be wider than the terminal. A row that is wraps, which puts the list a row over
@@ -5067,13 +5149,15 @@ mod tests {
     /// go wrong.
     #[test]
     fn no_shortcut_row_runs_past_the_edge() {
-        for width in 0..=200u16 {
-            for line in shortcut_lines(width) {
-                let drawn = line.to_string();
-                assert!(
-                    drawn.chars().count() <= width as usize,
-                    "a row ran past {width}: {drawn}"
-                );
+        for editing in crate::vim::Editing::ALL {
+            for width in 0..=200u16 {
+                for line in shortcut_lines(editing, width) {
+                    let drawn = line.to_string();
+                    assert!(
+                        drawn.chars().count() <= width as usize,
+                        "a row ran past {width} editing {editing:?}: {drawn}"
+                    );
+                }
             }
         }
     }
@@ -5092,7 +5176,7 @@ mod tests {
     /// strings, so this is what keeps them from disagreeing about which key to press.
     #[test]
     fn the_hint_and_the_list_name_the_same_key() {
-        let key = SHORTCUTS
+        let key = shortcuts(crate::vim::Editing::Ordinary)
             .iter()
             .find(|(_, meaning)| *meaning == "this list")
             .map(|(key, _)| *key)

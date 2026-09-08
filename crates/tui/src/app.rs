@@ -788,6 +788,18 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         // Escape means "stop what is happening" before it means anything else, so a turn in
         // flight is cancelled first. The prompt comes back for editing rather than being lost.
         KeyCode::Esc if session.status == Status::Working => Action::Cancel,
+        // Then, for somebody editing the way vi does, it is how the letters become instructions. The
+        // line is untouched: throwing a paragraph away is Ctrl-C's job, and a key that did both would
+        // be one nobody could press safely. In NORMAL mode already it is claimed and does nothing,
+        // which is what it does in every vi.
+        //
+        // The guard asks the style rather than calling the method that changes the mode, so nothing
+        // here mutates the session while the arms are still being chosen between. Ctrl-`[` is the same
+        // request from a terminal that reports the modifier, and the shared ladder answers that one.
+        KeyCode::Esc if session.editing() == crate::vim::Editing::Vi => {
+            session.enter_vi_normal();
+            Action::Redraw
+        }
         // Then it discards a half-typed prompt, and an armed shell mode is something to abandon
         // even with no line behind it: the marker is on screen, and Backspace at that same caret
         // already backs out of it.
@@ -1068,6 +1080,20 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
         }
         KeyCode::End if ctrl => {
             session.scroll_down(u16::MAX);
+            Action::Redraw
+        }
+        // How the letters become instructions, for somebody editing the way vi does. The other
+        // spelling is Escape, which the idle ladder answers: a terminal asked to disambiguate reports
+        // this chord where another sends the byte Escape already is, and which arrives is the
+        // terminal's choice rather than the person's.
+        //
+        // In the shared ladder, so it works while a turn runs like everything else that only moves
+        // the caret. It is also the one spelling that can: Escape mid-turn stops the turn, which is a
+        // difference the box is allowed and this chord is not part of.
+        //
+        // Before the catch-all below, which would otherwise swallow it as an unclaimed control chord.
+        KeyCode::Char('[') if ctrl && session.editing() == crate::vim::Editing::Vi => {
+            session.enter_vi_normal();
             Action::Redraw
         }
         // Any other control combination is ignored rather than typed. Without this,
@@ -1721,6 +1747,8 @@ fn event_loop(
     // mid-session is describing the next one, and rules that changed halfway through a turn would
     // be the harder thing to explain. Every turn below is given these.
     let settings = bravebot_config::Settings::load();
+    // Settled before a key can be pressed, since this is what decides whether a letter is a letter.
+    session.adopt_editing(settings.editor_mode());
     let (permissions, rejected) = bravebot_agent::permissions::from_settings(
         &settings,
         bravebot_agent::home::directory().as_deref(),
@@ -5117,6 +5145,85 @@ mod tests {
         );
     }
 
+    /// A session editing vi's way. The choice is recorded nowhere, since a session that does not
+    /// persist reads no file and writes none.
+    fn editing_vis_way() -> Session {
+        let mut session = Session::new("none");
+        session.choose_editing(crate::vim::Editing::Vi);
+        session
+    }
+
+    /// The key that takes the letters as instructions must not also throw the paragraph away. Both
+    /// are one press of Escape in the box everybody has, so somebody switching to vi editing would
+    /// otherwise lose a prompt every time they reached for NORMAL mode, and the only way to find out
+    /// would be to have already lost one.
+    #[test]
+    fn escape_enters_normal_mode_without_discarding_the_line() {
+        let mut session = editing_vis_way();
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Redraw);
+
+        assert_eq!(
+            session.input(),
+            "half a thought",
+            "entering NORMAL mode discarded the line"
+        );
+        assert_eq!(session.vi_mode(), Some(crate::vim::Mode::Normal));
+    }
+
+    /// The other spelling of the same request. A terminal asked to disambiguate reports this chord
+    /// where another sends the byte Escape already is, and which arrives is the terminal's choice
+    /// rather than the person's: a binding answering one spelling reads as broken on the other machine.
+    #[test]
+    fn either_spelling_of_escape_enters_normal_mode() {
+        let mut session = editing_vis_way();
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, ctrl('[')), Action::Redraw);
+
+        assert_eq!(session.input(), "half a thought");
+        assert_eq!(session.vi_mode(), Some(crate::vim::Mode::Normal));
+    }
+
+    /// The chord means nothing for the box everybody has, and a key that quietly did something there
+    /// would be one nobody could account for. Ctrl chords are otherwise ignored rather than typed, so
+    /// what this pins is that nothing was typed either.
+    #[test]
+    fn the_chord_that_enters_normal_mode_does_nothing_to_the_ordinary_box() {
+        let mut session = Session::new("none");
+        for c in "half a thought".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(handle_key(&mut session, ctrl('[')), Action::None);
+
+        assert_eq!(session.input(), "half a thought");
+        assert_eq!(session.vi_mode(), None);
+    }
+
+    /// Escape stops the turn in flight before it means anything else, which is the one thing every
+    /// press of it has always done first. Entering a mode instead would leave the key that stops a
+    /// runaway turn doing nothing a person could see.
+    #[test]
+    fn escape_still_stops_a_turn_before_it_enters_normal_mode() {
+        let mut session = editing_vis_way();
+        type_line(&mut session, "a question");
+        handle_key(&mut session, key(KeyCode::Enter));
+        assert_eq!(session.status, Status::Working);
+
+        assert_eq!(handle_key(&mut session, key(KeyCode::Esc)), Action::Cancel);
+        assert_eq!(
+            session.vi_mode(),
+            Some(crate::vim::Mode::Insert),
+            "the press that stopped the turn also changed the mode"
+        );
+    }
+
     /// The prompt has to be able to leave the box. Ctrl-G is the one key that says so, and a
     /// control combination that falls through to the catch-all would type a stray 'g' instead.
     #[test]
@@ -6993,7 +7100,7 @@ mod tests {
         fn answered(session: &Session, action: Action) -> String {
             format!(
                 "{action:?} input={:?} caret={} scroll={} shell={} shortcuts={} trail={} \
-                 stashed={:?} scrolling={} queued={} browsing={} searching={}",
+                 stashed={:?} scrolling={} queued={} browsing={} searching={} vi={:?}",
                 session.input(),
                 session.caret(),
                 session.scroll,
@@ -7005,11 +7112,13 @@ mod tests {
                 session.queued.len(),
                 session.history.is_browsing(),
                 session.searching_history(),
+                session.vi_mode(),
             )
         }
 
-        let sent = |finished: bool, typed: &str| {
+        let sent = |finished: bool, editing: crate::vim::Editing, typed: &str| {
             let mut session = Session::new("none");
+            session.choose_editing(editing);
             type_line(&mut session, "first question");
             handle_key(&mut session, key(KeyCode::Enter));
             // The same transcript either way, so only the running turn differs.
@@ -7029,29 +7138,44 @@ mod tests {
             session
         };
 
-        for line in ["", "half a thought"] {
-            for pressed in every_key() {
-                if allowed_to_differ(pressed).is_some() {
+        // Both styles of editing, and in the vi one both of its modes. A key wired into one path and
+        // not the other is the bug this catches, and vi editing doubles the number of places to wire
+        // one: NORMAL mode gives every printable character a meaning of its own, so a letter answered
+        // by the idle path alone would be a letter that silently did nothing during a turn.
+        for editing in crate::vim::Editing::ALL {
+            for normal in [false, true] {
+                if normal && editing == crate::vim::Editing::Ordinary {
                     continue;
                 }
-                let mut idle = sent(true, line);
-                let mut working = sent(false, line);
-                assert_eq!(working.status, Status::Working);
-                assert_eq!(
-                    answered(&idle, Action::None),
-                    answered(&working, Action::None),
-                    "the two sessions differed before {pressed:?} was pressed"
-                );
+                for line in ["", "half a thought"] {
+                    for pressed in every_key() {
+                        if allowed_to_differ(pressed).is_some() {
+                            continue;
+                        }
+                        let mut idle = sent(true, editing, line);
+                        let mut working = sent(false, editing, line);
+                        if normal {
+                            idle.enter_vi_normal();
+                            working.enter_vi_normal();
+                        }
+                        assert_eq!(working.status, Status::Working);
+                        assert_eq!(
+                            answered(&idle, Action::None),
+                            answered(&working, Action::None),
+                            "the two sessions differed before {pressed:?} was pressed"
+                        );
 
-                let at_rest = handle_key(&mut idle, pressed);
-                let mid_turn = handle_key_while_working(&mut working, pressed);
+                        let at_rest = handle_key(&mut idle, pressed);
+                        let mid_turn = handle_key_while_working(&mut working, pressed);
 
-                assert_eq!(
-                    answered(&idle, at_rest),
-                    answered(&working, mid_turn),
-                    "{pressed:?} was answered differently while a turn was running, \
-                     over a line of {line:?}"
-                );
+                        assert_eq!(
+                            answered(&idle, at_rest),
+                            answered(&working, mid_turn),
+                            "{pressed:?} was answered differently while a turn was running, \
+                             over a line of {line:?}, editing {editing:?}"
+                        );
+                    }
+                }
             }
         }
     }

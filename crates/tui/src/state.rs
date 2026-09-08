@@ -613,6 +613,21 @@ pub struct Session {
     /// `input`, so putting the list up and taking it down again leaves nothing behind to delete.
     /// Opened only on an empty line, so it is never standing over a line it says nothing about.
     pub shortcuts: bool,
+    /// Which style of editing the box does: the ordinary one, or vi's.
+    ///
+    /// A choice about the person rather than about the session, so it is read from `~/.bravebot` at
+    /// startup and written back when one is made, the same as the model and the theme.
+    editing: crate::vim::Editing,
+    /// Which vi mode the box is in, where vi is the style.
+    ///
+    /// Every session opens in INSERT, where a typed character is a typed character. Opening in NORMAL
+    /// would mean the first sentence somebody typed went nowhere, and a box that swallows what is
+    /// typed into it is indistinguishable from one that has stopped working.
+    ///
+    /// Meaningless while the style is the ordinary one, and never read there. The two are separate
+    /// fields because the mode outlives a trip through the ordinary style and back: somebody who
+    /// turns vi editing off to paste something and on again is where they left off.
+    mode: crate::vim::Mode,
     pub status: Status,
     /// Whether the audit trail is shown alongside replies.
     pub show_trail: bool,
@@ -916,6 +931,10 @@ impl Session {
             stashed: None,
             shell: false,
             shortcuts: false,
+            // The box everybody has, until a settings file or a choice says otherwise. A session
+            // constructed by a test reads nothing from disk and edits the ordinary way.
+            editing: crate::vim::Editing::default(),
+            mode: crate::vim::Mode::default(),
             status: Status::Idle,
             show_trail: false,
             scroll: 0,
@@ -1710,6 +1729,15 @@ impl Session {
     /// refuses. Dropping the keys instead, which is what this used to do, meant a user typing
     /// during a slow turn watched their words go nowhere with nothing to say why.
     pub fn type_char(&mut self, c: char) {
+        // Before everything, including the two markers below. In NORMAL mode a letter is an
+        // instruction, and that is the whole of what the mode means: `!` and `?` there are vi's own
+        // keys rather than the ways shell mode and the key list are opened, and reading either as its
+        // marker would answer a press that was asking for something else. Both are a press of `i`
+        // away for somebody who wanted them.
+        if self.vi_normal() {
+            self.obey(c);
+            return;
+        }
         // `?` on an empty line puts the list of keys up rather than typing a character, and a second
         // press takes it down again. Only on an empty line, since a `?` in a sentence is the
         // punctuation somebody is asking a question with, and not in shell mode, where it is a glob
@@ -1759,6 +1787,124 @@ impl Session {
         // A command is one line by definition, and a reference ends at whitespace, so a newline
         // closes whatever was being offered rather than narrowing it.
         self.completion = 0;
+    }
+
+    /// Which style of editing the box does.
+    pub fn editing(&self) -> crate::vim::Editing {
+        self.editing
+    }
+
+    /// Settle the style of editing for this session, given what a settings file said.
+    ///
+    /// A choice the person made outranks the file, the same rule the model follows: a recorded choice
+    /// outlives the session that made it, and a file read afterwards would undo what somebody had just
+    /// asked for. With no choice recorded the file answers, and with neither it is the box everybody
+    /// has.
+    ///
+    /// A word the file spelled that names no style leaves the ordinary box. Nothing is said about it
+    /// here: a settings file is reported by `doctor`, and a session that refused to start over a
+    /// mistyped editing preference would be worse than one that ignores it.
+    ///
+    /// The recorded choice is read only for a session that persists, which is the rule every write
+    /// here follows: a test must not be handed the developer's own preference, or what the box does
+    /// under it would depend on the machine it ran on.
+    pub fn adopt_editing(&mut self, configured: Option<&str>) {
+        let chosen = self.persist.then(crate::store::load_editing).flatten();
+        self.editing = chosen
+            .or_else(|| configured.and_then(crate::vim::Editing::named))
+            .unwrap_or_default();
+    }
+
+    /// Record the style of editing the person chose, keeping it for later sessions.
+    ///
+    /// Written through to disk only for a session that persists, the same rule the model and the
+    /// effort level follow and for the same reason: a test must not rewrite the developer's own
+    /// choice.
+    ///
+    /// The mode comes back to INSERT whichever style was chosen, because the choice is made away from
+    /// the box: coming back to one that takes the next letter as an instruction is not what somebody
+    /// who has just turned vi editing on expects. It is also the only sound answer for the other
+    /// direction, NORMAL not being a state the ordinary box has.
+    pub fn choose_editing(&mut self, editing: crate::vim::Editing) {
+        if self.persist {
+            crate::store::save_editing(editing);
+        }
+        self.editing = editing;
+        self.mode = crate::vim::Mode::Insert;
+    }
+
+    /// Which vi mode the box is in, or `None` where vi is not the style.
+    ///
+    /// `None` rather than INSERT for the ordinary box, so nothing can draw a mode at somebody who
+    /// never asked for one.
+    pub fn vi_mode(&self) -> Option<crate::vim::Mode> {
+        match self.editing {
+            crate::vim::Editing::Vi => Some(self.mode),
+            crate::vim::Editing::Ordinary => None,
+        }
+    }
+
+    /// Whether a letter typed now is an instruction rather than a letter.
+    pub fn vi_normal(&self) -> bool {
+        self.vi_mode() == Some(crate::vim::Mode::Normal)
+    }
+
+    /// Take the letters as instructions, which is what Escape asks for.
+    ///
+    /// `false` where vi is not the style and nothing happened. Callers read the style themselves,
+    /// since a key press is chosen between several meanings and a call that mutates while that choice
+    /// is being made is one whose order of evaluation is load-bearing. The refusal is here as well
+    /// because it is the property worth holding whatever a caller does: the ordinary box has no
+    /// NORMAL mode to be put into, so nothing reachable can leave it in one.
+    pub fn enter_vi_normal(&mut self) -> bool {
+        if self.editing != crate::vim::Editing::Vi {
+            return false;
+        }
+        self.mode = crate::vim::Mode::Normal;
+        // Where vi leaves it. The caret in NORMAL mode sits on a character rather than between two,
+        // so the position one past the end of the line is not one it can hold, and Escape at the end
+        // of a line somebody has just typed lands on the last character they typed.
+        if self.caret == self.input.len() {
+            self.move_left();
+        }
+        true
+    }
+
+    /// Carry out the instruction a letter is in NORMAL mode.
+    ///
+    /// A letter vi does not use does nothing at all, which is the mode's whole bargain: the box is
+    /// not typing, so an instruction it does not recognise is not text to fall back on.
+    fn obey(&mut self, c: char) {
+        match crate::vim::command(c) {
+            crate::vim::Command::Insert(opening) => self.open_insert(opening),
+            crate::vim::Command::Nothing => {}
+        }
+    }
+
+    /// Take the letters as letters again, with the caret where the key asked for it.
+    fn open_insert(&mut self, opening: crate::vim::Opening) {
+        use crate::vim::Opening;
+
+        self.mode = crate::vim::Mode::Insert;
+        match opening {
+            Opening::Here => {}
+            Opening::LineStart => self.move_to_line_start(),
+            // Onto the position after the character the caret is on, which in INSERT mode is where
+            // the next thing typed lands. On an empty line there is nowhere to move and `a` is `i`.
+            Opening::After => self.move_right(),
+            Opening::LineEnd => self.move_to_line_end(),
+            Opening::LineBelow => {
+                self.move_to_line_end();
+                self.type_newline();
+            }
+            Opening::LineAbove => {
+                self.move_to_line_start();
+                self.type_newline();
+                // The newline went in before the caret, so the caret is now on the line that was
+                // there and the empty one is above it. Stepping back puts it on the empty one.
+                self.move_left();
+            }
+        }
     }
 
     /// The line being typed.
@@ -7554,5 +7700,184 @@ mod tests {
             1,
             "the picture did not survive the round trip"
         );
+    }
+
+    /// A session editing vi's way, with the choice recorded nowhere: `adopt_editing` reads the store
+    /// only for a session that persists, so this reads no file and writes none.
+    fn vi() -> Session {
+        let mut s = Session::new("none");
+        s.choose_editing(crate::vim::Editing::Vi);
+        s
+    }
+
+    /// Every session opens taking typed characters as typed characters. Opening in NORMAL would mean
+    /// the first sentence somebody wrote went nowhere, and a box that swallows what is typed into it
+    /// is indistinguishable from one that has stopped working.
+    #[test]
+    fn a_box_that_edits_vis_way_still_opens_taking_letters_as_letters() {
+        let mut s = vi();
+        for c in "hello".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.input, "hello");
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Insert));
+    }
+
+    /// The box everybody else has is in no mode at all, so nothing can draw one at somebody who never
+    /// asked for vi editing, and their Escape goes on discarding the line.
+    #[test]
+    fn the_ordinary_box_is_in_no_vi_mode_and_cannot_enter_one() {
+        let mut s = Session::new("none");
+        assert_eq!(s.vi_mode(), None);
+        assert!(
+            !s.enter_vi_normal(),
+            "the ordinary box was put into a vi mode"
+        );
+        assert_eq!(s.vi_mode(), None);
+    }
+
+    /// The whole of what the mode means: a letter is an instruction rather than a letter, and one vi
+    /// does not use does nothing at all. Falling through to the line would make NORMAL mode a place
+    /// where half the alphabet quietly edits the prompt.
+    #[test]
+    fn a_letter_typed_in_normal_mode_does_not_reach_the_line() {
+        let mut s = vi();
+        for c in "hello".chars() {
+            s.type_char(c);
+        }
+        s.enter_vi_normal();
+
+        s.type_char('z');
+        s.type_char('q');
+
+        assert_eq!(s.input, "hello", "a letter was typed in NORMAL mode");
+    }
+
+    /// The caret in NORMAL mode sits on a character rather than between two, so the position past the
+    /// end of the line is not one it can hold. Escape at the end of a line lands on the last character
+    /// typed, which is where every vi leaves it and where `x` then has something to delete.
+    #[test]
+    fn leaving_insert_mode_puts_the_caret_on_a_character() {
+        let mut s = vi();
+        for c in "hi".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.caret, 2);
+
+        s.enter_vi_normal();
+
+        assert_eq!(s.caret, 1, "the caret stayed past the end of the line");
+    }
+
+    /// `!` is one of vi's keys in NORMAL mode, not the way shell mode is armed. Reading it as the
+    /// marker would arm a mode from a press asking for something else, and there is no way back to a
+    /// prompt from a shell armed by accident except deleting past it.
+    #[test]
+    fn the_shell_marker_is_not_armed_from_normal_mode() {
+        let mut s = vi();
+        s.enter_vi_normal();
+
+        s.type_char('!');
+
+        assert!(!s.shell, "NORMAL mode armed shell mode");
+        assert_eq!(s.input, "", "the marker was typed into the line");
+    }
+
+    /// The list of keys is up on a press of `?`, and in NORMAL mode `?` is one of vi's own. A list
+    /// that came up here would answer a press that was asking to search backwards.
+    #[test]
+    fn the_key_list_is_not_opened_from_normal_mode() {
+        let mut s = vi();
+        s.enter_vi_normal();
+
+        s.type_char('?');
+
+        assert!(!s.shortcuts, "NORMAL mode put the list of keys up");
+    }
+
+    /// The six keys that open INSERT mode, each landing the caret where vi lands it. `i` before the
+    /// character the caret is on, and `a` after it, is the whole difference between the two.
+    #[test]
+    fn the_keys_that_open_insert_mode_land_the_caret_where_vi_does() {
+        let opened = |key: char, at: usize| {
+            let mut s = vi();
+            for c in "one two".chars() {
+                s.type_char(c);
+            }
+            s.enter_vi_normal();
+            s.caret = 4;
+            s.type_char(key);
+            assert_eq!(
+                s.vi_mode(),
+                Some(crate::vim::Mode::Insert),
+                "{key} did not open INSERT mode"
+            );
+            assert_eq!(s.caret, at, "{key} left the caret in the wrong place");
+        };
+
+        opened('i', 4);
+        opened('a', 5);
+        opened('I', 0);
+        opened('A', 7);
+    }
+
+    /// `o` opens a line below and `O` one above, with the caret on the new empty line either way.
+    /// Landing it on the line that was already there would leave somebody typing into the sentence
+    /// they had just asked to write beneath.
+    #[test]
+    fn opening_a_line_leaves_the_caret_on_the_new_one() {
+        let mut s = vi();
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        s.enter_vi_normal();
+        s.type_char('o');
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.input, "first\nsecond");
+
+        let mut s = vi();
+        for c in "second".chars() {
+            s.type_char(c);
+        }
+        s.enter_vi_normal();
+        s.type_char('O');
+        for c in "first".chars() {
+            s.type_char(c);
+        }
+        assert_eq!(s.input, "first\nsecond");
+    }
+
+    /// The choice is about the person and the mode is about the moment. Somebody who has just turned
+    /// vi editing on is not expecting the next letter to be an instruction, and NORMAL is not a state
+    /// the ordinary box has at all.
+    #[test]
+    fn choosing_a_style_of_editing_leaves_the_box_taking_letters() {
+        let mut s = vi();
+        s.enter_vi_normal();
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Normal));
+
+        s.choose_editing(crate::vim::Editing::Vi);
+
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Insert));
+    }
+
+    /// A settings file answers for somebody who has never chosen, and a word naming no style leaves
+    /// the box everybody has: a session that gave somebody vi editing on a typo would be one where
+    /// the letters stopped working for a reason they cannot see.
+    #[test]
+    fn a_configured_style_is_adopted_and_an_unknown_word_is_not() {
+        let mut s = Session::new("none");
+        s.adopt_editing(Some("vim"));
+        assert_eq!(s.editing(), crate::vim::Editing::Vi);
+
+        let mut s = Session::new("none");
+        s.adopt_editing(Some("modal"));
+        assert_eq!(s.editing(), crate::vim::Editing::Ordinary);
+
+        let mut s = Session::new("none");
+        s.adopt_editing(None);
+        assert_eq!(s.editing(), crate::vim::Editing::Ordinary);
     }
 }

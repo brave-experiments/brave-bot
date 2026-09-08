@@ -84,6 +84,13 @@ pub struct Settings {
     /// Separate from `env` because it is not a variable: nothing exports `model`, and folding it
     /// into that map would make it collide with a name someone's shell already uses.
     model: Option<String>,
+    /// What the top-level `editorMode` key named, if it named anything.
+    ///
+    /// The word as the file spelled it, not a mode. Which words name an editing style is a question
+    /// for the interface that does the editing, and this crate configures a backend: a name it does
+    /// not recognise has to reach the interface to be reported there rather than be dropped here as
+    /// though the file had said nothing.
+    editor_mode: Option<String>,
     providers: Vec<crate::provider::Provider>,
     layers: Vec<PathBuf>,
     contested: BTreeMap<String, PathBuf>,
@@ -196,17 +203,12 @@ impl Settings {
                 .collect(),
             _ => BTreeMap::new(),
         };
-        let model = match root.get("model") {
-            Some(serde_json::Value::String(name)) => Some(name.trim())
-                .filter(|name| !name.is_empty())
-                .map(str::to_string),
-            _ => None,
-        };
         Self {
             env,
             scrub: scrub_list(root),
             permissions: permission_lists(root),
-            model,
+            model: word(root, "model"),
+            editor_mode: word(root, "editorMode"),
             providers: crate::provider::Provider::all(root),
             layers: Vec::new(),
             contested: BTreeMap::new(),
@@ -226,12 +228,22 @@ impl Settings {
         self.model.as_deref()
     }
 
+    /// The editing style the settings in force asked for, if they asked for one.
+    ///
+    /// The word the file spelled, unrecognised words and all. A default rather than the style in
+    /// force: the interface records a choice that outlives the session making it, and that choice
+    /// wins. This is what answers for somebody who has never made one.
+    pub fn editor_mode(&self) -> Option<&str> {
+        self.editor_mode.as_deref()
+    }
+
     /// Whether anything was set at all.
     pub fn is_empty(&self) -> bool {
         self.env.is_empty()
             && self.scrub.is_empty()
             && self.permissions.is_empty()
             && self.model.is_none()
+            && self.editor_mode.is_none()
             && self.providers.is_empty()
     }
 
@@ -276,13 +288,14 @@ impl Settings {
     /// Every name the file set, for `doctor` to report.
     ///
     /// Names only. The values include credentials on some machines, and a diagnostic that prints
-    /// them is a diagnostic people paste into issues. `model` is among them so a file that sets
-    /// only that is not reported as setting nothing.
+    /// them is a diagnostic people paste into issues. The keys that are not variables are among them
+    /// so a file that sets only one of those is not reported as setting nothing.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.model
             .is_some()
             .then_some("model")
             .into_iter()
+            .chain(self.editor_mode.is_some().then_some("editorMode"))
             .chain(self.env.keys().map(String::as_str))
     }
 }
@@ -302,6 +315,20 @@ fn read(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
     let text = std::fs::read_to_string(path).ok()?;
     match serde_json::from_str(&text) {
         Ok(serde_json::Value::Object(root)) => Some(root),
+        _ => None,
+    }
+}
+
+/// A top-level key holding one word, or `None` where the file said nothing usable.
+///
+/// Strings only, on the footing everything else here reads them: a number or a boolean where a word
+/// belongs would have to be given a spelling nobody chose. Blank is absence rather than a choice of
+/// nothing, since a key set to `""` is how somebody comments one out without deleting the line.
+fn word(root: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    match root.get(key) {
+        Some(serde_json::Value::String(word)) => Some(word.trim())
+            .filter(|word| !word.is_empty())
+            .map(str::to_string),
         _ => None,
     }
 }
@@ -1013,6 +1040,53 @@ mod tests {
         let mut named = settings.permissions().additional_directories.clone();
         named.sort();
         assert_eq!(named, ["/one", "/two"]);
+    }
+
+    /// A style of editing is one choice, so it resolves the way every other single value does. The
+    /// word is handed on as the file spelled it: which words name a style is a question for the
+    /// interface that does the editing, and one this crate did not recognise has to reach it to be
+    /// reported rather than be dropped here as though the file had said nothing.
+    #[test]
+    fn a_style_of_editing_resolves_like_any_other_single_value() {
+        let settings = Layers::new("editing-override")
+            .global(r#"{"editorMode": "emacs"}"#)
+            .project(r#"{"editorMode": "vim"}"#)
+            .read();
+        assert_eq!(settings.editor_mode(), Some("vim"));
+
+        let settings = Layers::new("editing-survives")
+            .global(r#"{"editorMode": "vim"}"#)
+            .project(r#"{"model": "this-checkout"}"#)
+            .read();
+        assert_eq!(settings.editor_mode(), Some("vim"));
+
+        let settings = Layers::new("editing-unnamed")
+            .global(r#"{"model": "personal-choice"}"#)
+            .read();
+        assert_eq!(settings.editor_mode(), None);
+    }
+
+    /// Setting a key to nothing is how somebody comments one out without deleting the line, so a blank
+    /// is absence rather than a choice of nothing. Read as a choice, it would name no style anyway, but
+    /// `doctor` would report the file as having set something.
+    #[test]
+    fn a_blank_value_is_not_a_choice() {
+        assert_eq!(Settings::parse(r#"{"editorMode": ""}"#).editor_mode(), None);
+        assert_eq!(
+            Settings::parse(r#"{"editorMode": "   "}"#).editor_mode(),
+            None
+        );
+        assert!(Settings::parse(r#"{"editorMode": ""}"#).is_empty());
+    }
+
+    /// A file that sets only this is not a file that set nothing: `doctor` reports which names a layer
+    /// carried, and a person debugging why their box edits the way it does has to see it there.
+    #[test]
+    fn a_style_of_editing_is_among_the_names_reported() {
+        let settings = Settings::parse(r#"{"editorMode": "vim"}"#);
+        let reported: Vec<&str> = settings.names().collect();
+        assert_eq!(reported, ["editorMode"]);
+        assert!(!settings.is_empty());
     }
 
     /// A model is one choice rather than a list, so the closest layer that names one wins: a checkout
