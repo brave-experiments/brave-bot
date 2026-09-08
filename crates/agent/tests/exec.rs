@@ -499,19 +499,34 @@ fn a_pipeline_stopped_at_the_limit_still_returns_what_it_printed() {
     }
 
     let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
-    let started = std::time::Instant::now();
-    // Seconds rather than milliseconds, because the limit is wall clock and this asserts on what
-    // the stage managed to print before it ran out. A limit tight enough to feel quick is one a
-    // loaded machine can exhaust before `sh` reaches its first line, and the test then fails on
-    // load rather than on behaviour.
-    let ran = exec::run_within(
-        &pipeline,
-        &[script.canonicalize().unwrap()],
-        &scratch.path,
-        &Cancel::new(),
-        std::time::Duration::from_secs(3),
-    )
-    .expect("a pipeline that outstays the limit is stopped, not an error");
+
+    // The limit is found rather than named. What is under test is what a stop keeps, and that is
+    // a different question from how long a loaded machine takes to start a process and print a
+    // line: a fixed three seconds passed on an idle machine and failed during a compile, which
+    // is a test reporting the load rather than the behaviour.
+    //
+    // A deadline that arrived before the first line comes back with nothing on stdout, and that
+    // is the only outcome given more room. Every assertion below is the same whichever limit
+    // produced the run, so a stop that genuinely threw the output away fails them at every limit
+    // and this only spends longer arriving at the same answer.
+    let mut limit = std::time::Duration::from_secs(2);
+    let (ran, took) = loop {
+        let started = std::time::Instant::now();
+        let ran = exec::run_within(
+            &pipeline,
+            &[script.canonicalize().unwrap()],
+            &scratch.path,
+            &Cancel::new(),
+            limit,
+        )
+        .expect("a pipeline that outstays the limit is stopped, not an error");
+        let took = started.elapsed();
+
+        if !ran.stdout.trim().is_empty() || limit >= std::time::Duration::from_secs(16) {
+            break (ran, took);
+        }
+        limit *= 2;
+    };
 
     assert_eq!(
         ran.stdout.trim(),
@@ -523,8 +538,11 @@ fn a_pipeline_stopped_at_the_limit_still_returns_what_it_printed() {
         !ran.succeeded(),
         "a pipeline that had to be killed did not succeed"
     );
+    // Against the limit that ran rather than a fixed ten seconds, which was that same limit plus
+    // the drain grace and room to spare. The drain is what this is watching: a run that comes
+    // back long after its deadline is one that waited on a pipe somebody was still holding.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
+        took < limit + std::time::Duration::from_secs(7),
         "the drain outlived the pipeline it was draining"
     );
 }
