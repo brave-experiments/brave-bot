@@ -4,31 +4,55 @@ title: search
 status: normative
 governs:
   - crates/agent/src/glob.rs
+  - crates/agent/src/regex.rs
   - crates/agent/src/workspace.rs
 ---
 
 ## Scope
 
-Finding strings in the workspace. `pattern`, `directory` and `include` are routing; `case_sensitive`
-is a property of the call rather than of anything read. There are no content arguments. The result
-is the matching lines, or a reference.
+Finding lines in the workspace that match a pattern. `pattern`, `directory` and `include` are
+routing; `case_sensitive` is a property of the call rather than of anything read. There are no
+content arguments. The result is the matching lines, or a reference.
 
 ## Clauses
 
 <a id="SEARCH-1"></a>
-### SEARCH-1: the pattern is a literal substring, never a regular expression
+### SEARCH-1: the pattern is a regular expression, matched without backtracking
 
-**Why.** A backtracking pattern arriving through a turn is a denial-of-service vector. The
-`include` glob is matched by the same hand-written, non-backtracking matcher for the same reason.
+Supported: literals, `.`, `*`, `+`, `?`, `|`, `(...)`, `[...]` with ranges and negation, `\d`,
+`\w`, `\s` and their negations, `^`, `$`, `\b`, `\B`, and a backslash before a metacharacter to
+match it literally.
 
-`pattern` may be a list, and a line holding any of them matches. That is alternation, not a
-pattern language: every entry is still a literal matched with a substring test, so the guarantee
-above is untouched: the work is the sum of the patterns, never a power of the input.
+Counted repetition (`a{2,9}`) is absent and `{` is an ordinary character. Backreferences are
+absent. Captures are not extracted: a search reports the line, so whether the pattern matched is
+the whole question.
+
+`pattern` may be a list, and a line matching any of them matches. That is one more expression to
+try per line, so the work is the sum of the patterns rather than a power of anything.
+
+Case folding is done by the engine, never by lowercasing the pattern, which would rewrite `\D`,
+`\W` and `\S` into the classes they negate and invert what the search asked for.
+
+**Why.** A pattern arriving through a turn is attack surface, and the danger is catastrophic
+backtracking rather than regular expressions as such: `(a+)+$` costs exponential time on a
+backtracking engine and nothing unusual on one that does not backtrack. The engine simulates an
+NFA, advancing a set of states one character at a time, so matching costs the length of the line
+times the size of the pattern whatever the pattern is. Counted repetition is the one construct
+that would break that bound, because nesting two multiplies the states a short pattern expands
+to, and backreferences are not regular at all: matching one needs the backtracking this rules out.
+
+Hand-written rather than a dependency, for the reason the conventions give.
 
 Brace groups in `include` are **expanded before the walk**, not matched during it. Each alternative
 is an ordinary pattern applied once per path, so a group costs a multiple of the work rather than a
 power of it, and an expansion past the cap falls back to matching the pattern literally.
 
+`verified-by: bravebot_agent::regex::a_pattern_built_to_backtrack_catastrophically_still_returns_promptly`
+`verified-by: bravebot_agent::regex::a_pattern_past_the_length_cap_is_refused`
+`verified-by: bravebot_agent::regex::a_pattern_nested_past_the_depth_cap_is_refused`
+`verified-by: bravebot_agent::regex::a_brace_is_an_ordinary_character`
+`verified-by: bravebot_agent::regex::a_folded_pattern_keeps_a_negated_shorthand_negated`
+`verified-by: bravebot_agent::turn::a_search_for_a_regular_expression_finds_what_it_describes`
 `verified-by: bravebot_agent::glob::a_brace_group_matches_each_alternative`
 `verified-by: bravebot_agent::glob::an_oversized_expansion_falls_back_to_the_literal`
 `verified-by: bravebot_agent::glob::a_pathological_pattern_does_not_blow_up`
@@ -73,24 +97,24 @@ through it.
 `verified-by: bravebot_agent::workspace::a_capped_search_prefers_a_directorys_own_files`
 
 <a id="SEARCH-4"></a>
-### SEARCH-4: a search that found nothing for a pattern written as a regular expression says so
+### SEARCH-4: a pattern that will not compile is reported as such, never as an empty result
 
-Only where nothing was found, and only for a sequence that could not plausibly have been meant
-literally. A search that found its pattern is told nothing, and neither is an ordinary substring
-that happens to be absent.
+The pattern is compiled before any file is opened, and a failure names what is wrong with it.
 
-**Why.** Nothing found reads as proof the string is absent. For `drop.*file` it proves something
-much narrower, and a planner with no way to tell the two apart writes another one: whole rounds go
-on rephrasing a question that was never asked. The same reason a truncated search says it is
-truncated, for the answer that looks most like a complete one.
+**Why.** The two answers mean opposite things. Reported as nothing found, a syntax error reads as
+proof the tree holds no match, and a planner that believes that stops looking: whole rounds went
+on rephrasing patterns against a matcher that never ran them. This is the same reason a truncated
+search says it is truncated, for the answer that looks most like a complete one.
 
-The advice is decided from the pattern, which the planner proposed and the routing gate vouched
-for; the result decides only whether there was anything to advise about.
+Compiling first is also what keeps the report free of anything read: the pattern is routing the
+planner proposed, so saying why it will not compile discloses nothing about the workspace.
 
-`verified-by: bravebot_agent::turn::an_empty_search_for_a_pattern_written_as_a_regex_says_the_match_is_literal`
-`verified-by: bravebot_agent::turn::a_search_that_found_something_is_not_lectured_about_its_pattern`
-`verified-by: bravebot_agent::turn::an_empty_search_for_a_plain_substring_is_left_to_speak_for_itself`
-`verified-by: bravebot_agent::tools::only_a_sequence_that_could_not_be_meant_literally_reads_as_a_regex`
+`verified-by: bravebot_agent::turn::a_search_whose_pattern_cannot_be_compiled_says_why`
+`verified-by: bravebot_agent::regex::an_unclosed_group_is_reported_rather_than_guessed_at`
+`verified-by: bravebot_agent::regex::an_unclosed_class_is_reported`
+`verified-by: bravebot_agent::regex::a_repeat_with_nothing_before_it_is_reported`
+`verified-by: bravebot_agent::regex::a_dangling_escape_is_reported`
+`verified-by: bravebot_agent::regex::a_backwards_range_is_reported`
 
 <a id="SEARCH-5"></a>
 ### SEARCH-5: an empty result says whether anything was searched
@@ -106,9 +130,9 @@ groups were unsupported, got "(no matches)", retreated to `**/*.cc`, and answere
 wrong because the files it needed were the two extensions it had just dropped.
 
 Where the glob also leans on syntax the matcher does not have, the result says which, for the same
-reason [SEARCH-4](#SEARCH-4) names a pattern written as a regular expression and against the same
-failure. Advice is decided from the glob, which the planner proposed and the routing gate vouched
-for; the result decides only whether there was anything to advise about.
+reason [SEARCH-4](#SEARCH-4) reports a pattern that will not compile and against the same failure.
+Advice is decided from the glob, which the planner proposed and the routing gate vouched for; the
+result decides only whether there was anything to advise about.
 
 `verified-by: bravebot_agent::workspace::a_search_says_when_its_include_selected_no_files`
 `verified-by: bravebot_agent::workspace::an_include_may_use_a_brace_group`
@@ -128,6 +152,8 @@ finds the word it wanted and every other word ending in those letters, with noth
 to say so.
 
 `verified-by: bravebot_agent::workspace::a_search_can_ignore_case`
+`verified-by: bravebot_agent::regex::a_folded_pattern_matches_either_case`
+`verified-by: bravebot_agent::regex::folding_a_negated_class_widens_what_it_excludes`
 
 <a id="SEARCH-7"></a>
 ### SEARCH-7: vendored and generated directories are not walked

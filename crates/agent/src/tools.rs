@@ -239,17 +239,21 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
         ),
         Tool::function(
             "search",
-            "Find literal substrings in workspace files. Returns matching lines. Give every \
+            "Find regular expressions in workspace files. Returns matching lines. Give every \
              spelling you would otherwise search for one at a time: a list of patterns costs \
-             one call and matches a line holding any of them.",
+             one call and matches a line matching any of them.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
-                        "description": "Literal text to find. Not a regular expression. May be \
-                                        a list, in which case a line matches if it holds any \
-                                        of them: prefer one call with every spelling you want \
-                                        over one call each.",
+                        "description": "Regular expression to find. Supports ., *, +, ?, |, \
+                                        (), [], \\d, \\w, \\s, ^, $ and \\b. Counted \
+                                        repetition such as a{2,3} is not supported and { is \
+                                        an ordinary character. Escape a metacharacter with a \
+                                        backslash to match it literally. May be a list, in \
+                                        which case a line matches if it matches any of them: \
+                                        prefer one call with every spelling you want over one \
+                                        call each.",
                         "anyOf": [
                             {"type": "string"},
                             {"type": "array", "items": {"type": "string"}}
@@ -3039,35 +3043,12 @@ fn ask_user<S: Sink, C: Confirmer>(
     }
 }
 
-/// Whether a pattern was probably written as a regular expression.
-///
-/// Deliberately narrow. Every one of these is a sequence that means nothing on its own and a
-/// great deal to a regex engine, so a false positive costs a sentence of advice on a search that
-/// found nothing anyway, while a looser test would lecture somebody searching for `foo.rs` or
-/// `fn(`. Literal matching, of course: a pattern matcher to catch pattern matchers is exactly the
-/// dependency the conventions rule out.
-fn reads_as_a_regex(pattern: &str) -> bool {
-    const TELLS: [&str; 23] = [
-        ".*", ".+", ".?", ".{", "[^", "(?", // quantifiers and groups
-        "\\d", "\\w", "\\s", "\\b", // classes
-        // An escape before punctuation, which is the tell that actually shows up. Nobody writing
-        // a literal writes `attached\(\)` for `attached()`: the backslash is only there because
-        // the writer believed something was going to parse it. The letter escapes above are kept
-        // separate from these because `\n` and `\t` are ordinary things to look for in source.
-        "\\(", "\\)", "\\[", "\\]", "\\{", "\\}", "\\.", "\\*", "\\+", "\\?", "\\|", "\\^", "\\$",
-    ];
-    TELLS.iter().any(|tell| pattern.contains(tell))
-        || pattern.starts_with('^')
-        || pattern.ends_with('$')
-}
-
 /// Whether an `include` glob leans on syntax the matcher does not have.
 ///
-/// The sibling of [`reads_as_a_regex`], and it exists for a worse failure. A pattern the
-/// matcher cannot read selects no files, and a search over no files reports no matches, which
-/// is the same sentence a search that read the whole tree and found nothing prints. A real
-/// turn took that for proof and answered the question wrong: the glob it wanted was
-/// `**/*.{cc,h,mm}`, brace groups were not supported at the time, and it retreated to
+/// A pattern the matcher cannot read selects no files, and a search over no files reports no
+/// matches, which is the same sentence a search that read the whole tree and found nothing
+/// prints. A real turn took that for proof and answered the question wrong: the glob it wanted
+/// was `**/*.{cc,h,mm}`, brace groups were not supported at the time, and it retreated to
 /// `**/*.cc`, dropping the two extensions the answer was actually in.
 ///
 /// Braces are supported now. This is for what is still missing, and for the next thing to be
@@ -3202,16 +3183,9 @@ fn search<S: Sink>(
                 let proof = policy.authorise_display_release("whether a search hit a cap");
                 shaped.declassify(&proof)
             };
-            // Asked of the patterns alone, and only where the promote gate left them trusted,
-            // so this reads no content and needs no witness. Nothing here looks at the result:
-            // whether to say it is decided below, inside the render gate, from whether anything
-            // was found.
-            let looks_like_a_regex = patterns.iter().any(|pattern| {
-                pattern
-                    .clone()
-                    .into_trusted()
-                    .is_ok_and(|p| reads_as_a_regex(&p))
-            });
+            // Asked of the glob alone, and only where the promote gate left it trusted, so this
+            // reads no content and needs no witness. Nothing here looks at the result: whether to
+            // say it is decided below, inside the render gate, from whether anything was found.
             let bad_glob = include.as_ref().and_then(|include| {
                 include
                     .clone()
@@ -3228,7 +3202,7 @@ fn search<S: Sink>(
                     // answer. Or the include glob selected nothing, so nothing was read and
                     // the tree was never asked. Told apart here because a reader who cannot
                     // tell them apart takes a broken query for proof of absence.
-                    let mut empty = if had_include && found.considered == 0 {
+                    if had_include && found.considered == 0 {
                         let mut text = "(the include glob matched no files, so nothing was \
                                         searched; this says nothing about whether the pattern \
                                         is in the tree)"
@@ -3239,21 +3213,7 @@ fn search<S: Sink>(
                         text
                     } else {
                         "(no matches)".to_string()
-                    };
-                    // A literal search for a pattern written as a regular expression finds
-                    // nothing and reads as proof the string is absent. What it actually proves is
-                    // that nothing in the tree contains ".*", and a planner with no way to tell
-                    // the two apart writes another one: four rounds of a real turn went on
-                    // "drop.*file", "attached.*render" and "fn.*attached", each answered with
-                    // nothing, before it gave up.
-                    if looks_like_a_regex {
-                        empty.push_str(
-                            "\n\n(this pattern is matched literally, character for character, \
-                             and it holds characters that only mean anything in a regular \
-                             expression; search for a plain substring instead)",
-                        );
                     }
-                    empty
                 } else {
                     found
                         .matches
@@ -3303,50 +3263,6 @@ fn search<S: Sink>(
 
 #[cfg(test)]
 mod tests {
-
-    /// The advice costs a sentence on a search that found nothing anyway, so a false positive is
-    /// cheap. Lecturing somebody who searched for a filename or a call site is not: a test loose
-    /// enough to flag a bare dot or a bracket would fire on most of the searches that work.
-    #[test]
-    fn only_a_sequence_that_could_not_be_meant_literally_reads_as_a_regex() {
-        // Taken from a real session: four rounds went on these, each answered with nothing.
-        for pattern in [
-            r"attached\(\)",
-            r"\.attached\(",
-            r"Vec<\[u8\]>",
-            r"a\|b",
-            "drop.*file",
-            "fn.+attached",
-            "a.?b",
-            "x.{2}y",
-            "[^a]",
-            "(?i)name",
-            r"\d+",
-            r"\wfoo",
-            r"\s*",
-            r"\btoken",
-            "^fn main",
-            "attached$",
-        ] {
-            assert!(reads_as_a_regex(pattern), "{pattern} was not recognised");
-        }
-
-        for pattern in [
-            "foo.rs",
-            "fn(",
-            // Ordinary things to look for in source, escapes and all.
-            r"\n",
-            r"\t",
-            "a + b",
-            "Vec<String>",
-            "self.path",
-            "impl Reporter for",
-            "3 * 4",
-            "who? me",
-        ] {
-            assert!(!reads_as_a_regex(pattern), "{pattern} was flagged");
-        }
-    }
 
     /// A glob the matcher cannot read selects no files, and a search over no files reports no
     /// matches, which is the sentence a search that read the whole tree and found nothing

@@ -55,6 +55,8 @@ pub enum WorkspaceError {
     Binary { path: String },
     /// The attachment is larger than a request should carry.
     TooLarge { path: String, limit: usize },
+    /// The search pattern is not a regular expression this engine can match.
+    Pattern { detail: String },
 }
 
 impl fmt::Display for WorkspaceError {
@@ -79,6 +81,7 @@ impl fmt::Display for WorkspaceError {
                 "'{path}' is larger than the {} MiB an attachment may be",
                 limit / (1024 * 1024)
             ),
+            Self::Pattern { detail } => write!(f, "the search pattern is not usable: {detail}"),
         }
     }
 }
@@ -1318,24 +1321,20 @@ impl Workspace {
         ))
     }
 
-    /// Search file contents for a literal substring.
+    /// Find lines matching any of `patterns` in files beneath `directory`.
     ///
-    /// The pattern and directory are routing; the matches are untrusted-private, exactly
-    /// like a file read. Matching is a plain substring test rather than a regex: a
-    /// pattern is cheap to get wrong, and a catastrophically backtracking regex supplied
-    /// through a turn would be a denial-of-service vector.
-    /// Find lines containing any of `patterns` in files beneath `directory`.
+    /// The patterns and directory are routing; the matches are untrusted-private, exactly like a
+    /// file read.
     ///
     /// More than one pattern because the alternative is more than one call. A search is a
     /// round trip, and a round trip is the expensive part of a turn: the tool itself returns
     /// in milliseconds while the model it answers takes seconds to ask again. Looking for
     /// three spellings of the same identifier is one question, and it should cost one answer.
     ///
-    /// Alternation rather than a regular expression, so this stays what it says it is: every
-    /// pattern is a literal, matched with `contains`, and a line matching any of them matches.
-    /// That keeps the property a regex engine would give up, work proportional to the input
-    /// with no pattern able to make the search expensive, while covering the case that
-    /// actually sends a model round the loop again.
+    /// Every pattern is a regular expression, and a line matching any of them matches. The engine
+    /// in [`crate::regex`] simulates an NFA rather than backtracking, so the property alternation
+    /// was chosen to keep is kept anyway: the work is proportional to the input times the pattern,
+    /// and nothing arriving through a turn can make a search expensive.
     pub fn grep<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
@@ -1365,7 +1364,12 @@ impl Workspace {
             });
         }
 
-        let mut needles = Vec::with_capacity(patterns.len());
+        // Compiled once for the whole walk rather than per line, and before any file is opened so
+        // that an unusable pattern is reported as itself instead of as an empty result.
+        //
+        // Case is folded by the engine rather than by lowercasing the pattern, which would turn
+        // `\D`, `\W` and `\S` into the classes they negate and invert what was asked for.
+        let mut expressions = Vec::with_capacity(patterns.len());
         for pattern in patterns {
             let needle = pattern
                 .clone()
@@ -1380,14 +1384,14 @@ impl Workspace {
                     reason: "the search pattern was empty",
                 });
             }
-            // Folded once here rather than per line. `to_lowercase` is Unicode-aware and
-            // allocates, so doing it inside the match loop would put a per-line allocation on
-            // every file in the tree.
-            needles.push(if case_sensitive {
-                needle
+            let compiled = if case_sensitive {
+                crate::regex::Regex::compile(&needle)
             } else {
-                needle.to_lowercase()
-            });
+                crate::regex::Regex::compile_folded(&needle)
+            };
+            expressions.push(compiled.map_err(|e| WorkspaceError::Pattern {
+                detail: e.to_string(),
+            })?);
         }
 
         // Which files are searched is routing, exactly like the directory.
@@ -1456,15 +1460,7 @@ impl Workspace {
                 if matches.len() > MAX_MATCHES {
                     break;
                 }
-                let hit = if case_sensitive {
-                    needles.iter().any(|needle| line.contains(needle))
-                } else {
-                    // One allocation per line, and only on the case-insensitive path, which
-                    // is the one that asked for it.
-                    let folded = line.to_lowercase();
-                    needles.iter().any(|needle| folded.contains(needle))
-                };
-                if hit {
+                if expressions.iter().any(|pattern| pattern.matches(line)) {
                     let mut text = line.to_string();
                     truncate_on_char_boundary(&mut text, MAX_MATCH_LINE);
                     matches.push(Match {

@@ -21,6 +21,7 @@ pub mod permissions;
 pub mod preamble;
 pub mod processor;
 pub mod programs;
+pub mod regex;
 pub mod replace;
 pub mod report;
 pub mod scrub;
