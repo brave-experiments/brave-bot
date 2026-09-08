@@ -2389,8 +2389,10 @@ fn adopt_budget_for_current_model(session: &mut Session, config: &mut Config) {
     };
     if config.adopt_window(advertised_window(&models, session.model())) {
         session.note(t!(session_context_budget, budget = config.context_budget));
-        session.update_budget(config.context_budget, config.budget_is_guessed());
     }
+    // Outside the note, because a budget that did not move can still have stopped being one the
+    // endpoint advertised: nothing changed for compaction, and what the hint line may claim did.
+    session.update_budget(config.context_budget, config.budget_is_guessed());
     session.note_model_reads_effort(reads_effort(&models, session.model()));
 }
 
@@ -2441,8 +2443,8 @@ fn choose_model(
                 // a budget belongs to the model rather than to a turn.
                 if config.adopt_window(chosen.conversation_tokens) {
                     session.note(t!(session_context_budget, budget = config.context_budget));
-                    session.update_budget(config.context_budget, config.budget_is_guessed());
                 }
+                session.update_budget(config.context_budget, config.budget_is_guessed());
                 // Which service answers is said here as well as in the picker: the row that
                 // carried it is gone by the time the note is read, and the same slug reached
                 // through two services is two bills.

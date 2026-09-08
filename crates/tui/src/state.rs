@@ -5135,6 +5135,25 @@ mod tests {
         assert_eq!(s.fullness(), None);
     }
 
+    /// Picking a model the listing does not describe leaves the budget where it was and stops it
+    /// being a window anybody reported, so the figure has to start saying it is approximate even
+    /// though the arithmetic behind it did not move.
+    #[test]
+    fn a_budget_that_did_not_move_can_still_stop_being_one_anybody_advertised() {
+        let mut s = Session::new("none");
+        s.measured(20_000, 100_000, false);
+
+        s.update_budget(100_000, true);
+        assert_eq!(
+            s.occupancy(),
+            Occupancy::Measured {
+                used: 20_000,
+                budget: 100_000,
+                guessed: true,
+            }
+        );
+    }
+
     #[test]
     fn updating_budget_retains_token_count_with_new_capacity() {
         let mut s = Session::new("none");
