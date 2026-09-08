@@ -168,6 +168,13 @@ enum Entry {
         /// The string is the driver's own rendering of an argv a person endorsed, never anything a
         /// program printed, so it is safe to put back on a screen beside the output.
         from_command: Option<String>,
+        /// The media type, where this slot holds a picture rather than text.
+        ///
+        /// `Some` means the content is a `data:` URI and belongs in a request as a part rather
+        /// than in a message body. Chosen by the driver from a closed table of extensions, never
+        /// taken from a filename and never from anything read, so it decides nothing an attacker
+        /// steers: a slot cannot become a picture by containing something that looks like one.
+        picture: Option<String>,
     },
     Unread(Deferred),
 }
@@ -207,6 +214,14 @@ impl Entry {
         match self {
             Self::Read { from_command, .. } => from_command.as_deref(),
             // Nothing has run, so nothing printed this.
+            Self::Unread(_) => None,
+        }
+    }
+
+    fn picture(&self) -> Option<&str> {
+        match self {
+            Self::Read { picture, .. } => picture.as_deref(),
+            // Nothing has been read, so nothing is known about what it holds.
             Self::Unread(_) => None,
         }
     }
@@ -285,6 +300,27 @@ impl SlotStore {
     /// rendering of an argv a person endorsed, never a byte of what the program printed.
     pub fn command_of(&self, id: &SlotId) -> Option<&str> {
         self.slots.get(id).and_then(Entry::printed_by)
+    }
+
+    /// Record that a slot holds a picture of this media type.
+    pub(crate) fn mark_picture(&mut self, id: &SlotId, media: &str) {
+        if let Some(Entry::Read { picture, .. }) = self.slots.get_mut(id) {
+            *picture = Some(media.to_string());
+        }
+    }
+
+    /// The media type of the picture this slot holds, where it holds one.
+    ///
+    /// Metadata, and the driver's own: it comes from a closed table of extensions rather than from
+    /// the file, so asking this tells a caller nothing about the bytes beyond what kind of thing
+    /// the driver decided to read them as.
+    pub fn picture_of(&self, id: &SlotId) -> Option<&str> {
+        self.slots.get(id).and_then(Entry::picture)
+    }
+
+    /// Whether this slot holds a picture rather than text.
+    pub fn is_a_picture(&self, id: &SlotId) -> bool {
+        self.picture_of(id).is_some()
     }
 
     /// Record that one slot holds exactly what another does.
@@ -401,6 +437,7 @@ impl SlotStore {
                 path: Some(deferred.path),
                 home: Home::Anywhere,
                 from_command: None,
+                picture: None,
             },
         );
         Ok(measured)
@@ -488,6 +525,7 @@ impl SlotWriter<'_> {
                 verbatim: None,
                 home: Home::Anywhere,
                 from_command: None,
+                picture: None,
             },
         );
         Ok(())
@@ -525,6 +563,7 @@ impl SlotWriter<'_> {
                 verbatim: None,
                 home: Home::Anywhere,
                 from_command: None,
+                picture: None,
             },
         );
         Ok(measured)

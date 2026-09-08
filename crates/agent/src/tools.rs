@@ -52,10 +52,16 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
     let mut tools = vec![
         Tool::function(
             "read_file",
-            "Read a UTF-8 text file from the workspace. Returns its lines. Ask for the whole \
+            "Read a file from the workspace. Returns its lines. Ask for the whole \
              file: long ones come back one page at a time, and the result says so and gives the \
              offset to continue from. Name the file with path, or with path_ref where a listing \
-             gave you a reference instead of a name.",
+             gave you a reference instead of a name. \
+             \
+             A picture or a PDF (.png, .jpg, .gif, .webp, .pdf) comes back as a reference rather \
+             than as anything you can look at, whoever vouched for the directory it is in. Give \
+             that reference to spawn_processor with a question about it and the answer comes back \
+             the way any processor's does. That is how to check a screenshot or read a scanned \
+             page.",
             json!({
                 "type": "object",
                 "properties": {
@@ -728,6 +734,12 @@ pub struct Output {
     /// Recorded on the slot by the turn loop, since only a slot minted from a command may be
     /// offered to the user for reading.
     pub printed_by: Option<crate::report::Command>,
+    /// The media type, where what this produced is a picture.
+    ///
+    /// Recorded on the slot by the turn loop, and what makes a picture reach a processor as a part
+    /// rather than as a body. Its presence is also what forces a reference: a picture is never put
+    /// in the planner's context, whatever the label on the file it came from says.
+    pub picture: Option<String>,
     /// When the planner asked for the next tick of a self-paced loop.
     ///
     /// Travels back to whoever started the loop, which is the only thing that knows there is one.
@@ -923,6 +935,11 @@ struct Produced {
     printed_by: Option<crate::report::Command>,
     /// When the planner asked for the next tick of a self-paced loop.
     wakeup: Option<crate::turn::Wakeup>,
+    /// The media type, where what this produced is a picture.
+    ///
+    /// Recorded on the slot by the turn loop, and what makes a picture reach a processor as a part
+    /// rather than as a body. The driver's own, from a table of extensions.
+    picture: Option<String>,
     /// The name of a pipeline this call left running, where it started one.
     ///
     /// Reported so a person watching sees that something was started rather than run, which is a
@@ -958,6 +975,7 @@ impl Produced {
             usage: Usage::default(),
             inference: std::time::Duration::ZERO,
             printed_by: None,
+            picture: None,
             wakeup: None,
             background: None,
             delegate: Vec::new(),
@@ -977,6 +995,15 @@ impl Produced {
     /// Say that what this produced is workspace content, not the driver's words about it.
     fn of_content(mut self) -> Self {
         self.content = true;
+        self
+    }
+
+    /// Say what this produced is a picture, and the media type it is to be sent under.
+    ///
+    /// Its slot is marked, which is what lets a processor be given it as a part rather than as a
+    /// body. The planner is never shown it, whatever the label says.
+    fn of_a_picture(mut self, media: &str) -> Self {
+        self.picture = Some(media.to_string());
         self
     }
 
@@ -1322,6 +1349,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 usage: produced.usage,
                 inference: produced.inference,
                 printed_by: produced.printed_by,
+                picture: produced.picture,
                 wakeup: produced.wakeup,
                 delegate: produced.delegate,
             };
@@ -1378,6 +1406,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         usage: produced.usage,
         inference: produced.inference,
         printed_by: produced.printed_by,
+        picture: produced.picture,
         wakeup: produced.wakeup,
         delegate: produced.delegate,
     }
@@ -1407,6 +1436,7 @@ fn problem(text: impl Into<String>) -> Produced {
         usage: Usage::default(),
         inference: std::time::Duration::ZERO,
         printed_by: None,
+        picture: None,
         background: None,
         delegate: Vec::new(),
     }
@@ -1547,6 +1577,29 @@ fn read_file<S: Sink, C: Confirmer>(
             ),
             format!("nothing to read: {shown_path} already holds it"),
         );
+    }
+
+    // A picture, decided from the extension: the driver's own table, so nothing read chooses this.
+    //
+    // Handed back as a reference whatever the trust map says, unlike text. A processor may look at
+    // it and the planner may not, for the reason PASTE-2 gives: a picture in a planner's context
+    // may only be one a person put there themselves, and a screenshot with words in it is exactly
+    // the content this arrangement exists to keep out of it. So a vouched-for directory does not
+    // make a picture readable, and there is no trust question here to ask.
+    if let Some(media) = crate::workspace::media_for(&proposed_path) {
+        return match workspace.read_attachment(policy, &path, media) {
+            Ok(encoded) => {
+                let weight = workspace.survey(&proposed_path).unwrap_or(0);
+                Produced::new(
+                    encoded,
+                    shown_path,
+                    format!("{media}, {} KiB", weight.div_ceil(1024)),
+                )
+                .of_content()
+                .of_a_picture(media)
+            }
+            Err(e) => problem(format!("error: {e}")),
+        };
     }
 
     // A file the planner may not see need not be opened yet. Whether it may see it is a question

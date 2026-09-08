@@ -25,6 +25,38 @@
 use crate::label::Label;
 use crate::slot::SlotId;
 
+/// One piece of a processor's input.
+///
+/// A picture cannot be concatenated into a body, so an input is a sequence rather than a string:
+/// the runs of text and the pictures between them, in the order the slots were named. Assembled by
+/// [`crate::policy::Policy::compose_processor_input`], which is the only thing that builds one, and
+/// carried wrapped so the driver hands it to a request without reading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Piece {
+    /// A run of text: the documents, fenced, as they were before pictures existed.
+    Text(String),
+    /// A picture, as a `data:` URI and the media type to send it under.
+    ///
+    /// The media type is the driver's, from a closed table of extensions. Nothing read chooses it,
+    /// so this cannot be reached by a file containing something that looks like a picture.
+    Picture { media: String, data: String },
+}
+
+impl Piece {
+    /// The text of this piece, or `None` for a picture.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Picture { .. } => None,
+        }
+    }
+
+    /// Whether this piece is a picture.
+    pub fn is_a_picture(&self) -> bool {
+        matches!(self, Self::Picture { .. })
+    }
+}
+
 /// What the driver fixed about one processor before it ran.
 ///
 /// Only [`crate::policy::Policy::before_processor`] constructs one, and nothing here can widen

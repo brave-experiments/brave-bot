@@ -46,17 +46,10 @@ impl Dropped {
 
 /// Extensions carried as bytes, with the type to name in the URI.
 ///
-/// The set Claude Code takes. Deciding by extension rather than by sniffing the file: naming a
-/// type from the bytes would be a decision taken from content nobody has vouched for, and it would
-/// be taken here, in the driver.
-const ATTACHABLE: &[(&str, &str)] = &[
-    ("png", "image/png"),
-    ("jpg", "image/jpeg"),
-    ("jpeg", "image/jpeg"),
-    ("gif", "image/gif"),
-    ("webp", "image/webp"),
-    ("pdf", "application/pdf"),
-];
+/// The set Claude Code takes, and the same table `read_file` decides a picture by: a file dropped
+/// on the terminal and a file a processor is asked about are the same kinds of file, and a second
+/// list here would be a second answer waiting to disagree with that one.
+use bravebot_agent::workspace::ATTACHABLE;
 
 /// Extensions read as text, which is what the model wants of them anyway.
 const TEXTUAL: &[&str] = &[

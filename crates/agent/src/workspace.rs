@@ -23,6 +23,35 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Extensions carried as bytes, with the media type to name in the URI.
+///
+/// Decided by extension rather than by looking at the file. Naming a type from the bytes would be
+/// the driver deciding something from content nobody has vouched for, and the type ends up in a
+/// `data:` URI where it is routing.
+///
+/// One table, so a file dropped on the terminal and a file a processor is asked about are the same
+/// kinds of file. A second list would be a second answer waiting to disagree.
+pub const ATTACHABLE: &[(&str, &str)] = &[
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+    ("pdf", "application/pdf"),
+];
+
+/// The media type for `path`, where its extension names one this agent carries as bytes.
+///
+/// The extension is compared without regard to case, since `SHOT.PNG` is the same kind of file as
+/// `shot.png` and a person naming one means the picture either way.
+pub fn media_for(path: &str) -> Option<&'static str> {
+    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    ATTACHABLE
+        .iter()
+        .find(|(named, _)| *named == extension)
+        .map(|(_, media)| *media)
+}
+
 /// The most an attachment may weigh.
 ///
 /// The whole thing goes into the request and is re-sent on every later round, so this bounds a

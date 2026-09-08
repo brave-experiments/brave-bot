@@ -10889,3 +10889,111 @@ fn a_refused_background_run_starts_nothing() {
         "a refused background run started anyway"
     );
 }
+
+/// A 1x1 PNG, so a test can name a real picture without carrying a fixture file.
+fn a_png() -> Vec<u8> {
+    // The smallest valid PNG: signature, IHDR, one IDAT, IEND.
+    const BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(BASE64)
+        .expect("the fixture decodes")
+}
+
+/// The property images rest on. A screenshot carries whatever words are in it, so a planner that
+/// could look at one could be instructed by one: the bytes go to a slot and the planner is handed a
+/// reference, exactly as an untrusted file's text is.
+#[test]
+fn a_picture_is_never_shown_to_the_planner() {
+    let scratch = Scratch::new("picture-quarantined");
+    std::fs::write(scratch.path.join("shot.png"), a_png()).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"shot.png"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // The workspace is vouched for, so the file's *text* would have been readable. A picture is not.
+    let outcome = turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look at the screenshot"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+    assert!(outcome.clean, "no gate should have refused");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("iVBORw0KGgo"),
+        "the picture's bytes reached the planner's context: {second}"
+    );
+    assert!(
+        second.contains("ref:1"),
+        "the planner was not given a reference for the picture: {second}"
+    );
+    assert!(
+        second.contains("image/png"),
+        "the planner was not told what kind of thing it has: {second}"
+    );
+}
+
+/// The reference is usable, which is the whole point: a processor is handed the picture as a picture
+/// and answers a question about it. What it says is a reference too, so nothing about the image
+/// reaches the planner either way.
+#[test]
+fn a_processor_is_given_a_picture_as_a_picture() {
+    let scratch = Scratch::new("picture-processor");
+    std::fs::write(scratch.path.join("shot.png"), a_png()).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"shot.png"}"#),
+        tool_request(
+            "spawn_processor",
+            r#"{"reads":["ref:1"],"instruction":"what does this show?"}"#,
+        ),
+        processor_reply("a red square"),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("what is in the screenshot"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let bodies: Vec<String> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+    let carrying = bodies
+        .iter()
+        .find(|body| body.contains("iVBORw0KGgo"))
+        .expect("the picture reached nothing at all");
+
+    // Sent as a part with a data URI, which is what makes the model look at it rather than read
+    // base64 as words.
+    assert!(
+        carrying.contains("image_url") && carrying.contains("data:image/png;base64,"),
+        "the picture was not sent as a picture: {carrying}"
+    );
+    // And the thing it was sent to was the processor, which has no tools.
+    assert!(
+        !carrying.contains("read_file"),
+        "the request carrying the picture was offered tools, so it was not a processor"
+    );
+}

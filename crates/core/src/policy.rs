@@ -1609,9 +1609,50 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         content: &Labelled<String>,
         slots: &mut crate::slot::SlotStore,
     ) -> Gated<crate::reference::Presentation> {
+        self.present_inner(tool, slot, origin, content, slots, None)
+    }
+
+    /// [`Policy::present`], for content that is quarantined however it is labelled.
+    ///
+    /// A picture is the one thing this is for. The label on the file it came from says whether its
+    /// *text* could be read, and a picture has none: a screenshot carries whatever words are in it,
+    /// and those reaching a planner's context is what [`Policy::admit_pasted_image`] exists to keep
+    /// to pictures a person put there themselves. So a picture goes to a slot whatever the trust map
+    /// says about the directory it sits in, and a processor is the only thing that ever looks at one.
+    pub fn present_a_picture(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        origin: &str,
+        content: &Labelled<String>,
+        slots: &mut crate::slot::SlotStore,
+        media: &str,
+    ) -> Gated<crate::reference::Presentation> {
+        self.present_inner(tool, slot, origin, content, slots, Some(media))
+    }
+
+    fn present_inner(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        origin: &str,
+        content: &Labelled<String>,
+        slots: &mut crate::slot::SlotStore,
+        picture: Option<&str>,
+    ) -> Gated<crate::reference::Presentation> {
         let label = content.label();
 
-        if label.is_trusted() {
+        if picture.is_some() {
+            self.allow(
+                "present",
+                format!(
+                    "{tool}: {origin} is quarantined whatever its label, because the planner is \
+                     never shown a picture it did not receive from a person"
+                ),
+            );
+        }
+
+        if label.is_trusted() && picture.is_none() {
             self.allow(
                 "present",
                 format!("{tool}: {origin} is {label}, so the planner may read it"),
@@ -1650,9 +1691,23 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ),
         );
         // The planner has learned nothing but shape, so the context is not tainted by this.
-        Ok(crate::reference::Presentation::Quarantined(
-            crate::reference::Reference::new(slot, origin, measured.lines, measured.bytes, label),
-        ))
+        Ok(crate::reference::Presentation::Quarantined(match picture {
+            Some(media) => crate::reference::Reference::new(
+                slot,
+                origin,
+                measured.lines,
+                measured.bytes,
+                label,
+            )
+            .of_a_picture(media),
+            None => crate::reference::Reference::new(
+                slot,
+                origin,
+                measured.lines,
+                measured.bytes,
+                label,
+            ),
+        }))
     }
 
     /// Resolve a reference the planner supplied back into content, for an effect.
@@ -1991,8 +2046,13 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         &mut self,
         spec: &crate::processor::ProcessorSpec,
         slots: &crate::slot::SlotStore,
-    ) -> Gated<Labelled<String>> {
+    ) -> Gated<Labelled<Vec<crate::processor::Piece>>> {
+        let mut pieces: Vec<crate::processor::Piece> = Vec::new();
+        // Text runs are joined so a request holds one part per run rather than one per slot,
+        // which is the shape it had before pictures existed.
         let mut body = String::new();
+        let mut pictures = 0usize;
+
         for slot in spec.reads() {
             let content = slots.take_for_effect(slot).map_err(|e| Denial {
                 principle: Principle::Confinement,
@@ -2011,20 +2071,38 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 None => "",
             };
 
+            // A picture cannot be concatenated into a body: it goes in the request as a part of
+            // its own, so the run of text before it is closed off and it follows as a piece.
+            // Whether a slot is one is the driver's own metadata, never anything read.
+            if let Some(media) = slots.picture_of(slot) {
+                body.push_str(&format!("--- {slot}{role} is the picture below ---\n\n"));
+                pieces.push(crate::processor::Piece::Text(std::mem::take(&mut body)));
+                pieces.push(crate::processor::Piece::Picture {
+                    media: media.to_string(),
+                    data: content.declassify(&proof),
+                });
+                pictures += 1;
+                continue;
+            }
+
             body.push_str(&format!("--- begin {slot}{role} ---\n"));
             body.push_str(&content.declassify(&proof));
             body.push_str(&format!("\n--- end {slot} ---\n\n"));
         }
 
+        if !body.is_empty() {
+            pieces.push(crate::processor::Piece::Text(body));
+        }
+
         self.allow(
             "processor",
             format!(
-                "{}: input assembled from {} slot(s) inside the kernel",
+                "{}: input assembled from {} slot(s) inside the kernel, {pictures} of them pictures",
                 spec.id(),
                 spec.reads().len()
             ),
         );
-        Ok(Labelled::new(body, spec.out_label()))
+        Ok(Labelled::new(pieces, spec.out_label()))
     }
 
     /// Authorise handing a processor's input to the model call its spec describes.
@@ -2355,6 +2433,27 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         self.allow(
             "slot",
             format!("{slot} holds what `{command}` printed, so the user may choose to read it"),
+        );
+    }
+
+    /// Record that a slot holds a picture, and the media type it is to be sent as.
+    ///
+    /// The media type is the driver's, from a closed table of extensions. Nothing read decides it,
+    /// so a slot cannot become a picture by holding something that looks like one, and the label is
+    /// untouched: a picture is quarantined exactly as the file it came from was.
+    pub fn holds_a_picture(
+        &mut self,
+        slot: &SlotId,
+        media: &str,
+        slots: &mut crate::slot::SlotStore,
+    ) {
+        slots.mark_picture(slot, media);
+        self.allow(
+            "slot",
+            format!(
+                "{slot} holds a {media} picture, which a processor may look at and the planner \
+                 may not"
+            ),
         );
     }
 
@@ -3370,6 +3469,16 @@ mod tests {
         .unwrap()
     }
 
+    /// The text of a composed processor input, for a test that is about the fences rather than
+    /// about the shape of the request.
+    fn joined_text(pieces: Vec<crate::processor::Piece>) -> String {
+        pieces
+            .iter()
+            .filter_map(crate::processor::Piece::text)
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
     /// The point of deferring: naming a file costs nothing until something wants what is in it.
     #[test]
     fn a_deferred_slot_reads_nothing_until_something_needs_the_bytes() {
@@ -3698,7 +3807,7 @@ mod tests {
             .compose_processor_input(&spec, &slots)
             .expect("composed");
         let proof = Declassification::authorise("test");
-        let input = input.declassify(&proof);
+        let input = joined_text(input.declassify(&proof));
 
         assert!(
             input.contains("--- begin ref:2 (the document to answer about) ---"),
@@ -6552,7 +6661,8 @@ mod tests {
                 .compose_processor_input(&spec, &store)
                 .expect("input assembled");
 
-            let (text, label) = input.into_parts_for_decoding();
+            let (pieces, label) = input.into_parts_for_decoding();
+            let text = joined_text(pieces);
             assert!(text.contains("fetched from the web"));
             assert!(
                 !text.contains("read from the workspace"),

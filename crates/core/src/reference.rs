@@ -54,6 +54,12 @@ pub struct Reference {
     pub bytes: Option<usize>,
     /// The label the content carries.
     pub label: Label,
+    /// The media type, where this reference is a picture rather than text.
+    ///
+    /// A picture's shape is what kind of thing it is, not how many lines it has: a line count over
+    /// base64 says nothing anybody can use, and one was reported as "1 lines" for a whole
+    /// screenshot. Set by the driver from a table of extensions.
+    pub picture: Option<String>,
 }
 
 impl Reference {
@@ -71,7 +77,14 @@ impl Reference {
             lines: Some(lines),
             bytes: Some(bytes),
             label,
+            picture: None,
         }
+    }
+
+    /// Say this reference is a picture of this media type.
+    pub fn of_a_picture(mut self, media: impl Into<String>) -> Self {
+        self.picture = Some(media.into());
+        self
     }
 
     /// A reference to a file the slot has reserved but not read.
@@ -93,6 +106,7 @@ impl Reference {
             lines: None,
             bytes,
             label,
+            picture: None,
         }
     }
 
@@ -109,14 +123,27 @@ impl Reference {
         // that reading was broken.
         // The label brings its own brackets, so an entry with no measurements is not wrapped
         // in a second pair.
-        let shape = match (self.lines, self.bytes) {
-            (Some(lines), Some(bytes)) => format!("({lines} lines, {bytes} bytes, {})", self.label),
-            (Some(lines), None) => format!("({lines} lines, {})", self.label),
-            (None, Some(bytes)) => format!("({bytes} bytes, {})", self.label),
-            // Nothing but the label, which happens for an entry in a listing: how big the files
-            // in a directory are is the directory's business, and a planner that cannot tell two
-            // entries apart works on both, which is the right answer anyway.
-            (None, None) => self.label.to_string(),
+        //
+        // A picture says what kind of thing it is. Counting the lines of a base64 payload describes
+        // nothing a reader can act on, and a whole screenshot reported as "1 lines" reads as a file
+        // the planner has somehow already seen.
+        let shape = if let Some(media) = &self.picture {
+            match self.bytes {
+                Some(bytes) => format!("({media}, {bytes} bytes, {})", self.label),
+                None => format!("({media}, {})", self.label),
+            }
+        } else {
+            match (self.lines, self.bytes) {
+                (Some(lines), Some(bytes)) => {
+                    format!("({lines} lines, {bytes} bytes, {})", self.label)
+                }
+                (Some(lines), None) => format!("({lines} lines, {})", self.label),
+                (None, Some(bytes)) => format!("({bytes} bytes, {})", self.label),
+                // Nothing but the label, which happens for an entry in a listing: how big the files
+                // in a directory are is the directory's business, and a planner that cannot tell two
+                // entries apart works on both, which is the right answer anyway.
+                (None, None) => self.label.to_string(),
+            }
         };
 
         let next = match self.kind {

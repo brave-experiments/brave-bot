@@ -2072,6 +2072,17 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                                 conversation.quarantine(),
                             )
                             .map(Presentation::Quarantined),
+                        // A picture is quarantined whatever the trust map says about the directory
+                        // it sits in. The label speaks for a file's text, and a screenshot's words
+                        // reaching the planner is the thing being kept out.
+                        None if output.picture.is_some() => policy.present_a_picture(
+                            "tool_result",
+                            slot,
+                            &origin,
+                            &output.text,
+                            conversation.quarantine(),
+                            output.picture.as_deref().expect("just checked"),
+                        ),
                         None => policy.present(
                             "tool_result",
                             slot,
@@ -2150,6 +2161,16 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                                 policy.came_from_command(
                                     &reference.slot,
                                     &command.line,
+                                    conversation.quarantine(),
+                                );
+                            }
+                            // Recorded here, where the slot is minted, so a processor given this
+                            // reference is handed a picture rather than a wall of base64. The media
+                            // type is the driver's, from a table of extensions.
+                            if let Some(media) = &output.picture {
+                                policy.holds_a_picture(
+                                    &reference.slot,
+                                    media,
                                     conversation.quarantine(),
                                 );
                             }

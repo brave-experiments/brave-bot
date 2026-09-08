@@ -16,12 +16,12 @@
 //! the driver's own, and putting it in a subprocess would confine the wrong thing while leaving
 //! the model's output exactly as trusted as it was.
 
-use bravebot_aichat::protocol::{ChatRequest, Message, Usage};
+use bravebot_aichat::protocol::{ChatRequest, ImageUrl, Message, Part, Usage};
 use bravebot_aichat::{ChatError, Subscription};
 use bravebot_config::Config;
 use bravebot_core::event::Sink;
 use bravebot_core::policy::{Denial, Policy};
-use bravebot_core::processor::ProcessorSpec;
+use bravebot_core::processor::{Piece, ProcessorSpec};
 use bravebot_core::slot::SlotStore;
 use bravebot_core::value::Labelled;
 use bravebot_net::Egress;
@@ -196,10 +196,23 @@ pub fn run<S: Sink>(
     );
 
     let proof = policy.authorise_processor_input(spec);
-    let messages = vec![
-        Message::system(system),
-        Message::user(input.declassify(&proof)),
-    ];
+    // One part per piece, because a picture cannot be concatenated into a body. The pieces arrive
+    // in the order the slots were named and are turned into parts without being examined: nothing
+    // here reads a byte, and which of them is a picture was decided by the kernel from the
+    // driver's own metadata.
+    let parts: Vec<Part> = input
+        .declassify(&proof)
+        .into_iter()
+        .map(|piece| match piece {
+            Piece::Text(text) => Part::Text { text },
+            // The media type is already inside the data URI, which is where the endpoint reads
+            // it from.
+            Piece::Picture { media: _, data } => Part::ImageUrl {
+                image_url: ImageUrl { url: data },
+            },
+        })
+        .collect();
+    let messages = vec![Message::system(system), Message::user_parts(parts)];
 
     // No tools, deliberately and visibly: `ChatRequest::new` leaves the field empty and nothing
     // below adds to it.

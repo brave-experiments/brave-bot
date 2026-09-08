@@ -46,7 +46,9 @@ offset to continue from.
 <a id="READ-3"></a>
 ### READ-3: a file that is not text is reported as binary
 
-Never as a decoding error, which would read as a fault rather than as a fact about the file.
+Never as a decoding error, which would read as a fault rather than as a fact about the file. A
+picture is the exception and is [READ-5](#READ-5): there is something to do with one, so saying
+"binary" would be refusing a read that can be answered.
 
 `verified-by: bravebot_agent::workspace::a_binary_file_is_reported_as_binary`
 `verified-by: bravebot_agent::workspace::a_paged_read_of_a_binary_file_is_refused`
@@ -62,3 +64,34 @@ the planner's decisions from the user's.
 
 `verified-by: bravebot_core::policy::a_model_proposal_can_be_promoted_for_a_confined_read`
 `verified-by: bravebot_core::policy::a_read_and_a_write_leave_different_trails`
+
+<a id="READ-5"></a>
+### READ-5: a picture is quarantined whatever the trust map says, and only a processor looks at it
+
+A file whose extension names a picture or a PDF is read as bytes, encoded into a `data:` URI, and
+handed back as a reference. The planner is never shown one, and a vouched-for directory does not
+change that: what the trust map answers is whether a file's **text** may be read, and a picture has
+none.
+
+The reference says what kind of thing it is rather than how many lines it has, because a line count
+over base64 describes nothing a reader can act on. Given to `spawn_processor`, it reaches the
+processor as a picture in its own part of the request, so the model looks at it rather than reading
+base64 as words. The answer is quarantined like any other processor's, per
+[PROC-5](../processors.md#PROC-5).
+
+**Why the trust map does not decide this.** A screenshot carries whatever words are in it, and a
+picture reaching a planner's context is exactly what [PASTE-2](../pasting.md#PASTE-2) restricts to
+pictures a person put there themselves. That clause names the case directly: never an image a path
+in model output named. This is that path, so the picture goes where untrusted content goes, and the
+one component that may read untrusted content is the one that looks at it.
+
+**The media type is the driver's.** From a closed table of extensions, shared with the one a drop
+uses, never sniffed from the bytes. It ends up in the `data:` URI where it is routing, so deciding
+it from content would be deciding a destination from content. A file cannot become a picture by
+holding something that looks like one, and a picture cannot become text by being called `.txt`:
+either way the extension is what was decided from, and it is part of a path a person can read.
+
+`verified-by: bravebot_agent::turn::a_picture_is_never_shown_to_the_planner`
+`verified-by: bravebot_agent::turn::a_processor_is_given_a_picture_as_a_picture`
+`verified-by: bravebot_agent::workspace::the_media_type_comes_from_the_extension`
+`verified-by: bravebot_agent::workspace::a_file_that_names_no_picture_is_not_one`
