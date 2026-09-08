@@ -360,6 +360,20 @@ from escaping to arbitrary paths on the system.
 `verified-by: bravebot_tui::sessions::exporting_refuses_to_overwrite_an_existing_file`
 `verified-by: bravebot_tui::sessions::exporting_creates_intermediate_directories`
 
+<a id="SESSION-18"></a>
+### SESSION-18: an interactive session can be forked to explore an alternative path
+
+The `--fork` flag duplicates an existing session into a new session record with its own identifier,
+preserving the conversation transcript, spend history, and audit trail while resetting the start
+time and marking the title. Manifest runs plan their entire sequence and cannot be forked, matching
+the continuation rule in SESSION-10.
+
+**Why.** Exploring an alternative technical path from a shared prefix preserves the expensive
+context already built up without polluting the original session. Refusing manifest runs maintains
+the invariant that finished autonomous runs have a definite end.
+
+`verified-by: bravebot_tui::sessions::forking_a_manifest_session_is_refused`
+
 
 ## Known costs
 
