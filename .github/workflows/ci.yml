@@ -105,18 +105,15 @@ jobs:
       # Same Dockerfile the Makefile uses, so a local build and a CI build produce
       # the same artifact rather than diverging through a separate host toolchain.
       #
-      # Configuration is not baked in here. The workflow-level
-      # BRAVEBOT_ALLOW_UNCONFIGURED_BUILD covers forks, PRs, and tag checks alike;
-      # Jenkins bakes in credentials for binaries people install.
+      # No credentials are baked in. Every job here carries the permission to compile
+      # without them, which is what lets a fork or a pull request run this at all.
+      # The binaries people install are built and signed by Jenkins.
       - name: Build ${{ matrix.target }}
         run: |
           env_file="$(mktemp)"
           trap 'rm -f "$env_file"' EXIT
-          for name in SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
-                      BRAVEBOT_ALLOW_UNCONFIGURED_BUILD; do
-            eval "value=\$$name"
-            if [ -n "$value" ]; then printf 'export %s=%s\n' "$name" "$value" >> "$env_file"; fi
-          done
+          printf 'export BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=%s\n' \
+            "$BRAVEBOT_ALLOW_UNCONFIGURED_BUILD" > "$env_file"
           DOCKER_BUILDKIT=1 docker build -f Dockerfile.cross \
             -t bravebot-${{ matrix.name }} \
             --build-arg TARGET=${{ matrix.target }} \
