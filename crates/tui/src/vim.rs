@@ -145,6 +145,53 @@ pub enum Extent {
     ToLineEnd,
     /// The character under the caret: `x`, and `s` with a change.
     Character,
+    /// A thing the line is made of rather than a distance: `diw`, `da"`, `ci(`.
+    Object(Object),
+}
+
+/// A stretch named by what it is rather than by how far away its end is.
+///
+/// The reason these exist: `ci(` is what somebody means when they want the arguments replaced, and
+/// the alternative is counting characters to a closing bracket they can see perfectly well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Object {
+    /// What kind of thing.
+    pub kind: Kind,
+    /// Whether to take what surrounds it too: the blank after a word, or the brackets themselves.
+    /// `a` against `i`.
+    pub around: bool,
+}
+
+/// Which kind of thing a text object is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// `w`: a run of word characters, or a run of blanks where the caret is on one.
+    Word,
+    /// `W`: a run of anything that is not a blank, so a path or a flag is one thing.
+    Bigword,
+    /// A pair of delimiters and what lies between them, named by either of the pair.
+    Pair(char, char),
+}
+
+impl Kind {
+    /// The kind a character names as a text object, or `None` for one that names none.
+    ///
+    /// Either half of a pair names it, since `di(` and `di)` are the same request and nobody wants to
+    /// think about which one they typed.
+    pub fn named(c: char) -> Option<Kind> {
+        match c {
+            'w' => Some(Kind::Word),
+            'W' => Some(Kind::Bigword),
+            '"' => Some(Kind::Pair('"', '"')),
+            '\'' => Some(Kind::Pair('\'', '\'')),
+            '`' => Some(Kind::Pair('`', '`')),
+            '(' | ')' => Some(Kind::Pair('(', ')')),
+            '[' | ']' => Some(Kind::Pair('[', ']')),
+            '{' | '}' => Some(Kind::Pair('{', '}')),
+            '<' | '>' => Some(Kind::Pair('<', '>')),
+            _ => None,
+        }
+    }
 }
 
 /// Where a motion takes the caret.
@@ -241,6 +288,9 @@ pub enum Pending {
         forwards: bool,
         short: bool,
     },
+    /// An operator waiting for the kind of thing in `diw` or `ca"`, having already taken the `i` or
+    /// `a`.
+    OperateObject { operator: Operator, around: bool },
 }
 
 impl Pending {
@@ -271,6 +321,10 @@ impl Pending {
                     short,
                 })),
             ),
+            Pending::OperateObject { operator, around } => match Kind::named(c) {
+                Some(kind) => Command::Change(operator, Extent::Object(Object { kind, around })),
+                None => Command::Nothing,
+            },
             Pending::Operate(operator) => operated(operator, c),
         }
     }
@@ -295,6 +349,16 @@ fn operated(operator: Operator, c: char) -> Command {
         return Command::Change(operator, Extent::Line);
     }
     match c {
+        // `i` and `a` here are not the keys that open INSERT mode: after an operator they say the
+        // stretch is a thing rather than a distance, and the next press says which thing.
+        'i' => Command::Wait(Pending::OperateObject {
+            operator,
+            around: false,
+        }),
+        'a' => Command::Wait(Pending::OperateObject {
+            operator,
+            around: true,
+        }),
         'f' => Command::Wait(Pending::OperateToChar {
             operator,
             forwards: true,
@@ -593,6 +657,68 @@ mod tests {
         assert!(Motion::LineEnd.takes_what_it_lands_on());
         assert!(!Motion::WordRight.takes_what_it_lands_on());
         assert!(!Motion::WordLeft.takes_what_it_lands_on());
+    }
+
+    /// `i` and `a` after an operator are not the keys that open INSERT mode: they say the stretch is a
+    /// thing rather than a distance, and the next press says which thing.
+    #[test]
+    fn i_and_a_after_an_operator_name_a_text_object() {
+        let pending = |c: char| match Pending::Operate(Operator::Delete).then(c) {
+            Command::Wait(pending) => pending,
+            other => panic!("d{c} was {other:?} rather than a wait"),
+        };
+        assert_eq!(
+            pending('i').then('w'),
+            Command::Change(
+                Operator::Delete,
+                Extent::Object(Object {
+                    kind: Kind::Word,
+                    around: false
+                })
+            )
+        );
+        assert_eq!(
+            pending('a').then('w'),
+            Command::Change(
+                Operator::Delete,
+                Extent::Object(Object {
+                    kind: Kind::Word,
+                    around: true
+                })
+            )
+        );
+    }
+
+    /// Either half of a pair names it, since `di(` and `di)` are the same request and nobody wants to
+    /// have to think about which one they typed.
+    #[test]
+    fn either_half_of_a_pair_names_the_same_object() {
+        assert_eq!(Kind::named('('), Some(Kind::Pair('(', ')')));
+        assert_eq!(Kind::named(')'), Some(Kind::Pair('(', ')')));
+        assert_eq!(Kind::named('{'), Kind::named('}'));
+        assert_eq!(Kind::named('['), Kind::named(']'));
+    }
+
+    /// A quote is its own closing mark, which is why it is one kind with the same character twice
+    /// rather than a case of its own.
+    #[test]
+    fn a_quote_closes_itself() {
+        assert_eq!(Kind::named('"'), Some(Kind::Pair('"', '"')));
+        assert_eq!(Kind::named('\''), Some(Kind::Pair('\'', '\'')));
+    }
+
+    /// A key naming no kind of thing ends the wait rather than holding it open for a third press.
+    #[test]
+    fn a_key_naming_no_kind_of_object_means_nothing() {
+        assert_eq!(Kind::named('z'), None);
+        assert_eq!(
+            Pending::OperateObject {
+                operator: Operator::Delete,
+                around: false
+            }
+            .then('z'),
+            Command::Nothing
+        );
     }
 
     /// A yank reads without writing, which is why there is nothing for undo to put back after one and

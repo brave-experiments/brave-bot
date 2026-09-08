@@ -1061,3 +1061,50 @@ at, and no such position is inside a marker.
 `verified-by: bravebot_tui::state::the_repeat_key_does_the_last_change_again_at_the_caret`
 `verified-by: bravebot_tui::state::an_operator_takes_a_marker_whole`
 `verified-by: bravebot_tui::state::an_operator_that_takes_a_marker_takes_the_attachment_with_it`
+
+<a id="INPUT-29"></a>
+### INPUT-29: a text object is a stretch named by what it is
+
+After an operator, `i` and `a` say the stretch is a thing rather than a distance, and the next press
+says which thing: `w` a word, `W` a run of anything that is not a blank, and a quote or either half of
+a bracket pair for what lies between them. `i` takes what is inside and `a` takes what surrounds it
+too. All on the line the caret is on.
+
+A word object is the run the caret is in, and a run of blanks is a run, so the caret is always in
+something. `aw` takes the blanks after the word, or the ones before it where there are none after. A
+pair is the one enclosing the caret, or else the next one along the line. `a` over a quote pair takes
+the blanks in front of it and over a bracket pair does not.
+
+A key naming no kind of thing does nothing. A marker is taken whole or left alone.
+
+**Why.** `ci(` is what somebody means when they want the arguments replaced, and the alternative is
+counting characters to a closing bracket they can see perfectly well.
+
+The pair being the next one along, and not only the enclosing one, is what makes `ci(` work with the
+caret on the name in front of the bracket, which is where it usually is.
+
+Three classes of character rather than two, because `w` treats punctuation as a word of its own: in
+`src/main.rs` the slashes are part of neither name. `W` is the same machinery with punctuation folded
+in, which is the whole of the difference between the two and the reason a path is one object.
+
+The blank rules and the difference between a quote pair and a bracket pair were measured against vim
+rather than reasoned about. They are facts about what people's hands expect, and the bracket case is
+vim's own inconsistency: what a quote delimits reads as a word, so the blank beside it belongs to it,
+where a bracket follows the name it belongs to.
+
+The marker rule needs stating separately here because an object is found by reading the line, not by
+walking the caret's own positions like every other stretch. A marker is spelled with brackets and a
+digit, so `di[` named the brackets one is written with and left half of it standing for nothing.
+
+`verified-by: bravebot_tui::vim::i_and_a_after_an_operator_name_a_text_object`
+`verified-by: bravebot_tui::vim::either_half_of_a_pair_names_the_same_object`
+`verified-by: bravebot_tui::vim::a_quote_closes_itself`
+`verified-by: bravebot_tui::vim::a_key_naming_no_kind_of_object_means_nothing`
+`verified-by: bravebot_tui::state::a_word_is_a_text_object_with_and_without_the_blanks_around_it`
+`verified-by: bravebot_tui::state::a_bigword_is_everything_that_is_not_a_blank`
+`verified-by: bravebot_tui::state::a_pair_of_delimiters_is_a_text_object`
+`verified-by: bravebot_tui::state::a_pair_is_the_one_around_the_caret_or_the_next_one_along`
+`verified-by: bravebot_tui::state::a_pair_named_from_its_own_delimiter_is_that_pair`
+`verified-by: bravebot_tui::state::a_text_object_works_with_every_operator`
+`verified-by: bravebot_tui::state::a_pair_naming_no_kind_of_object_does_nothing`
+`verified-by: bravebot_tui::state::a_text_object_over_a_marker_takes_it_whole_or_not_at_all`

@@ -374,6 +374,19 @@ pub enum Offered {
     Shortcuts,
 }
 
+/// What kind of character one is, for working out where a word begins and ends.
+///
+/// Three kinds rather than two, because vi's `w` treats punctuation as a word of its own: in
+/// `src/main.rs` the slashes are not part of either name, which is what makes `diw` on one of them
+/// take the slash alone. `W` uses the same machinery with punctuation folded into `Word`, and that is
+/// the whole of the difference between the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Blank,
+    Word,
+    Punctuation,
+}
+
 /// What a yank or a delete took, and whether it was whole lines.
 ///
 /// The distinction is what `p` needs: a yanked word goes back beside the caret, and a yanked line goes
@@ -2063,11 +2076,32 @@ impl Session {
 
     /// The stretch of the line an extent names, as byte offsets, or `None` where it names nothing.
     ///
-    /// Worked out by moving the caret and reading where it lands, then putting it back. That is what
-    /// makes an operator obey the marker rules for free: the ends of the stretch are positions the
-    /// caret could rest at, so no stretch can begin or end inside a marker, and `dw` over one takes the
-    /// whole of it.
+    /// Mostly worked out by moving the caret and reading where it lands, then putting it back, which is
+    /// what makes those extents obey the marker rules for free: the ends are positions the caret could
+    /// rest at, so no stretch can begin or end inside a marker.
+    ///
+    /// A text object is the exception, since it is found by reading the line rather than by walking, and
+    /// a marker is spelled with brackets and a digit: `di[` on one named the brackets it is written with
+    /// and left `[]` standing for nothing. So every stretch is checked against the markers before it is
+    /// returned, once here rather than in each kind of object.
     fn stretch(&mut self, extent: crate::vim::Extent) -> Option<(usize, usize)> {
+        let (from, to) = self.stretch_unchecked(extent)?;
+        // Widened to whole markers rather than refused, so an object that reached into one takes it with
+        // what it was already taking. Refusing would leave `daw` over a marker doing nothing at all,
+        // where taking the marker is plainly what was asked for.
+        let from = self
+            .marker_spans()
+            .find(|(start, end)| *start < from && from < *end)
+            .map_or(from, |(start, _)| start);
+        let to = self
+            .marker_spans()
+            .find(|(start, end)| *start < to && to < *end)
+            .map_or(to, |(_, end)| end);
+        Some((from, to)).filter(|(from, to)| from < to)
+    }
+
+    /// The stretch an extent names, before the markers are taken into account.
+    fn stretch_unchecked(&mut self, extent: crate::vim::Extent) -> Option<(usize, usize)> {
         use crate::vim::Extent;
 
         let was = self.caret;
@@ -2109,9 +2143,192 @@ impl Session {
                     std::cmp::Ordering::Less => Some((landed, was)),
                 }
             }
+            Extent::Object(object) => self.object_span(object),
         };
         self.caret = was;
         span.filter(|(from, to)| from < to)
+    }
+
+    /// The stretch a text object names, on the line the caret is on.
+    ///
+    /// The line rather than the whole input, for the reason a jump to a character stays on its own
+    /// line: these keys are for the thing in front of you, and one that reached across a newline would
+    /// take part of a paragraph nobody was looking at.
+    fn object_span(&self, object: crate::vim::Object) -> Option<(usize, usize)> {
+        use crate::vim::Kind;
+
+        match object.kind {
+            Kind::Word => self.run_span(object.around, |c| {
+                if c.is_whitespace() {
+                    Class::Blank
+                } else if c.is_alphanumeric() || c == '_' {
+                    Class::Word
+                } else {
+                    Class::Punctuation
+                }
+            }),
+            // Anything but a blank is one thing, which is what makes a path or a flag a single object.
+            Kind::Bigword => self.run_span(object.around, |c| {
+                if c.is_whitespace() {
+                    Class::Blank
+                } else {
+                    Class::Word
+                }
+            }),
+            Kind::Pair(opens, closes) => self.pair_span(opens, closes, object.around),
+        }
+    }
+
+    /// The run of same-kind characters the caret is in, and the blanks after it where asked for.
+    ///
+    /// A run of blanks is itself a run, which is what makes `diw` on a space take the spaces: the caret
+    /// is in something, and the object is whatever it is in.
+    fn run_span(&self, around: bool, class: impl Fn(char) -> Class) -> Option<(usize, usize)> {
+        let (line_start, line_end) = self.caret_line();
+        let line = &self.input[line_start..line_end];
+        let at = self.caret.min(line_end) - line_start;
+        let here = class(line[at..].chars().next()?);
+
+        let from = line[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| class(*c) == here)
+            .last()
+            .map_or(at, |(index, _)| index);
+        let mut to = at
+            + line[at..]
+                .char_indices()
+                .take_while(|(_, c)| class(*c) == here)
+                .map(|(index, c)| index + c.len_utf8())
+                .last()
+                .unwrap_or(0);
+
+        // `aw` takes the blanks after the word as well, which is what makes it the whole word rather
+        // than the word alone: deleting one and leaving two spaces behind is not what was asked for.
+        if around {
+            let after = to
+                + line[to..]
+                    .char_indices()
+                    .take_while(|(_, c)| class(*c) == Class::Blank && here != Class::Blank)
+                    .map(|(index, c)| index + c.len_utf8())
+                    .last()
+                    .unwrap_or(0);
+            // Nothing after it, so the blanks before it are what `aw` takes instead: on the last word
+            // of a line, taking nothing extra would make `daw` the same as `diw`.
+            if after == to && here != Class::Blank {
+                let before = line[..from]
+                    .char_indices()
+                    .rev()
+                    .take_while(|(_, c)| class(*c) == Class::Blank)
+                    .last()
+                    .map_or(from, |(index, _)| index);
+                return Some((line_start + before, line_start + to));
+            }
+            to = after;
+        }
+        Some((line_start + from, line_start + to))
+    }
+
+    /// The stretch a pair of delimiters names, with or without the delimiters themselves.
+    ///
+    /// The pair the caret is inside, or else the next one along the line. That second half is what makes
+    /// `ci(` work with the caret on the name in front of the bracket, which is where it usually is.
+    fn pair_span(&self, opens: char, closes: char, around: bool) -> Option<(usize, usize)> {
+        let (line_start, line_end) = self.caret_line();
+        let line = &self.input[line_start..line_end];
+        let at = self.caret.min(line_end) - line_start;
+
+        let (from, to) = if opens == closes {
+            // A quote is its own closing mark, so there is no nesting to count and the pairs are the
+            // marks taken two at a time from the start of the line.
+            let marks: Vec<usize> = line
+                .char_indices()
+                .filter(|(_, c)| *c == opens)
+                .map(|(index, _)| index)
+                .collect();
+            marks
+                .chunks_exact(2)
+                .map(|pair| (pair[0], pair[1]))
+                .find(|(open, close)| at <= *close || at <= *open)?
+        } else {
+            // Counted rather than matched by position, so a bracket inside a bracket is the pair that
+            // encloses the caret rather than whichever one came first.
+            let enclosing = self.enclosing_pair(line, at, opens, closes);
+            match enclosing {
+                Some(pair) => pair,
+                None => self.next_pair(line, at, opens, closes)?,
+            }
+        };
+
+        if !around {
+            return Some((line_start + from + opens.len_utf8(), line_start + to));
+        }
+
+        // `a"` takes the blanks in front of the quotes and `a(` does not, which is vim's own
+        // inconsistency and measurably what it does. A quote has no shape of its own on the line, so
+        // what it delimits reads as a word and the blank beside it belongs to it; a bracket usually
+        // follows the name it belongs to, and taking the space would take part of that name's spacing.
+        let ends = to + closes.len_utf8();
+        let from = if opens == closes {
+            line[..from]
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| *c == ' ')
+                .last()
+                .map_or(from, |(index, _)| index)
+        } else {
+            from
+        };
+        Some((line_start + from, line_start + ends))
+    }
+
+    /// The innermost pair of delimiters the caret lies within, counting nesting.
+    fn enclosing_pair(
+        &self,
+        line: &str,
+        at: usize,
+        opens: char,
+        closes: char,
+    ) -> Option<(usize, usize)> {
+        let mut open_at = Vec::new();
+        for (index, c) in line.char_indices() {
+            if c == opens {
+                open_at.push(index);
+            } else if c == closes
+                && let Some(from) = open_at.pop()
+                && from <= at
+                && at <= index
+            {
+                return Some((from, index));
+            }
+        }
+        None
+    }
+
+    /// The first complete pair of delimiters beginning at or after the caret.
+    fn next_pair(
+        &self,
+        line: &str,
+        at: usize,
+        opens: char,
+        closes: char,
+    ) -> Option<(usize, usize)> {
+        let from = line[at..]
+            .char_indices()
+            .find(|(_, c)| *c == opens)
+            .map(|(index, _)| at + index)?;
+        let mut depth = 0usize;
+        for (index, c) in line[from..].char_indices() {
+            if c == opens {
+                depth += 1;
+            } else if c == closes {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((from, from + index));
+                }
+            }
+        }
+        None
     }
 
     /// Move the line the caret is on towards or away from the margin.
@@ -8825,6 +9042,118 @@ mod tests {
     fn the_repeat_key_does_the_last_change_again_at_the_caret() {
         assert_eq!(edited("one two three", 0, "dw."), "three");
         assert_eq!(edited("aaa", 0, "x."), "a");
+    }
+
+    /// A text object is a thing the line is made of rather than a distance, which is the whole reason
+    /// for them: `ci(` is what somebody means when they want the arguments replaced, and the
+    /// alternative is counting characters to a bracket they can see perfectly well.
+    ///
+    /// Every case here was measured against vim rather than reasoned about.
+    #[test]
+    fn a_word_is_a_text_object_with_and_without_the_blanks_around_it() {
+        assert_eq!(edited("one two three", 1, "diw"), " two three");
+        assert_eq!(edited("one two three", 1, "daw"), "two three");
+        // A run of blanks is a run too, so the caret is always in something.
+        assert_eq!(edited("one  two", 3, "diw"), "onetwo");
+        // The blanks come from before the word where there are none after it, or `daw` on the last word
+        // of a line would be `diw`.
+        assert_eq!(edited("one two three", 4, "daw"), "one three");
+        assert_eq!(edited("one two three", 9, "daw"), "one two");
+    }
+
+    /// `W` folds punctuation into the word, so a path or a flag is one thing. `w` does not, which is what
+    /// makes it useful on `src/main.rs`: the slashes are words of their own there.
+    #[test]
+    fn a_bigword_is_everything_that_is_not_a_blank() {
+        assert_eq!(edited("a/b c/d", 1, "diW"), " c/d");
+        assert_eq!(edited("a/b c/d", 1, "daW"), "c/d");
+        assert_eq!(edited("a/b c/d", 1, "diw"), "ab c/d");
+    }
+
+    /// Quotes and brackets, inside and around. Either half of a pair names it, since `di(` and `di)` are
+    /// the same request and nobody wants to think about which they typed.
+    #[test]
+    fn a_pair_of_delimiters_is_a_text_object() {
+        assert_eq!(edited("say \"hello there\" ok", 6, "di\""), "say \"\" ok");
+        assert_eq!(edited("say \"hello there\" ok", 6, "da\""), "say ok");
+        assert_eq!(edited("say 'a quote' ok", 6, "di'"), "say '' ok");
+        assert_eq!(edited("say 'a quote' ok", 6, "da'"), "say ok");
+        assert_eq!(edited("call(a, b) ok", 5, "di("), "call() ok");
+        assert_eq!(edited("call(a, b) ok", 5, "da("), "call ok");
+        assert_eq!(edited("call(a, b) ok", 5, "di)"), "call() ok");
+        assert_eq!(edited("x[1] ok", 2, "di["), "x[] ok");
+        assert_eq!(edited("a{b}c", 2, "di{"), "a{}c");
+    }
+
+    /// The pair the caret is inside, or else the next one along the line. The second half is what makes
+    /// `ci(` work with the caret on the name in front of the bracket, which is where it usually is.
+    #[test]
+    fn a_pair_is_the_one_around_the_caret_or_the_next_one_along() {
+        assert_eq!(edited("call(a, b) ok", 0, "di("), "call() ok");
+        assert_eq!(
+            edited("aaaaaaaa call(x) ok", 0, "di("),
+            "aaaaaaaa call() ok"
+        );
+        // Nested, where the pair is the one that encloses rather than whichever opened first.
+        assert_eq!(edited("f(g(x))", 4, "di("), "f(g())");
+        // Nothing to find, so the line is left alone rather than something nearby being taken.
+        assert_eq!(edited("call(x) then here", 14, "di("), "call(x) then here");
+    }
+
+    /// A pair with the caret on one of its own delimiters is that pair, not the next one: the caret is on
+    /// the thing being named.
+    #[test]
+    fn a_pair_named_from_its_own_delimiter_is_that_pair() {
+        assert_eq!(edited("call(a, b) ok", 4, "di("), "call() ok");
+        assert_eq!(edited("(a) then (b)", 4, "di("), "(a) then ()");
+    }
+
+    /// A text object composes with every operator, which is the point of it being an extent rather than a
+    /// binding: `y` and `c` take the same stretch `d` does.
+    #[test]
+    fn a_text_object_works_with_every_operator() {
+        assert_eq!(edited("one two three", 0, "cawX"), "Xtwo three");
+        assert_eq!(edited("one two", 0, "yiwp"), "oonene two");
+    }
+
+    /// A key that names no kind of thing ends the wait rather than holding it open, on the same footing
+    /// as every other pair that means nothing.
+    #[test]
+    fn a_pair_naming_no_kind_of_object_does_nothing() {
+        assert_eq!(edited("one two", 0, "diz"), "one two");
+        assert_eq!(edited("one two", 0, "dizw"), "one two");
+    }
+
+    /// A marker is spelled with brackets and a digit, so a text object naming brackets could reach
+    /// inside one. It takes the whole marker or none of it, as every operator does: half a marker
+    /// stands for nothing, and here the danger is that the object machinery searches the line's
+    /// characters rather than walking the caret's own positions.
+    #[test]
+    fn a_text_object_over_a_marker_takes_it_whole_or_not_at_all() {
+        for keys in ["di[", "da[", "diw", "daw", "diW", "daW"] {
+            let mut s = vi();
+            for c in "look at ".chars() {
+                s.type_char(c);
+            }
+            s.attach(picture(b"pixels"));
+            for c in " and say".chars() {
+                s.type_char(c);
+            }
+            let before = s.input.clone();
+            s.enter_vi_normal();
+            s.caret = before.find('[').expect("the marker is in the line");
+
+            for c in keys.chars() {
+                s.type_char(c);
+            }
+
+            let whole = !s.input.contains('[') && !s.input.contains(']');
+            assert!(
+                whole || s.input == before,
+                "{keys} left half a marker: {:?}",
+                s.input
+            );
+        }
     }
 
     /// A marker is one thing, so an operator takes the whole of it or none: half a marker stands for
