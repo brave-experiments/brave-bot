@@ -2396,12 +2396,38 @@ fn edit_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(Intent::Edit, Some(&current), &shown, None);
-            confirmed(
-                format!("edited {shown_path}: {occurrences} replacement(s)"),
-                note,
-            )
-            .with_changes(changes)
-            .marked_untrusted(!body_label.is_trusted())
+            let headline = format!("edited {shown_path}: {occurrences} replacement(s)");
+
+            // What the edit produced, not only that it produced something. A count of
+            // replacements is not a result a planner can check: one wrote eighteen files in a
+            // session on nothing but these lines, never saw a single one of them afterwards, and
+            // never compiled any of it either. The lines around the change answer the question it
+            // would otherwise have to spend a round asking.
+            //
+            // Shaped inside the kernel and handed over labelled, exactly as a read is, so
+            // `Policy::present` decides whether the planner sees it. Nothing is declassified here
+            // and no label is built by hand: the excerpt carries the label the edited body
+            // carries, which is the integrity of the context this edit was worked out in.
+            //
+            // Only where that label is trusted. A quarantined excerpt would take the confirmation
+            // down with it, and a planner that cannot be told its edit landed is worse off than
+            // one that is told only that. The file itself is always trusted by this point:
+            // `read_trusted_content` above refuses to locate a passage in anything else.
+            if body_label.is_trusted() {
+                let told = policy.render_in_place("edit_file", &body, |contents| {
+                    match crate::replace::changed_region(&current, &contents) {
+                        Some(excerpt) => format!("{headline}\n\n{excerpt}"),
+                        None => headline.clone(),
+                    }
+                });
+                Produced::new(told, "", note)
+                    .with_changes(changes)
+                    .marked_untrusted(false)
+            } else {
+                confirmed(headline, note)
+                    .with_changes(changes)
+                    .marked_untrusted(true)
+            }
         }
         Err(e) => problem(format!("error: {e}")),
     }

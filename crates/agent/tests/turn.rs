@@ -7532,6 +7532,61 @@ fn what_a_program_printed_does_not_reach_the_planner() {
     );
 }
 
+/// An edit comes back with the lines it produced, so the planner can see what it did.
+///
+/// A count of replacements is not a result anybody can check. One session edited eighteen files
+/// on nothing but those counts, never looked at any of them again, and never compiled the lot.
+#[test]
+fn an_edit_shows_the_lines_it_changed() {
+    let scratch = Scratch::new("edit-shows-lines");
+    std::fs::write(
+        scratch.path.join("notes.txt"),
+        "alpha\nbravo\ncharlie\ndelta\necho\n",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "edit_file",
+            r#"{"path":"notes.txt","old_text":"charlie","new_text":"CHARLIE"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Vouched for, because locating a passage in a file nobody vouched for is refused before an
+    // edit ever happens.
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("rename it"),
+        &mut RecordingConfirmer::approving(),
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("1 replacement(s)"),
+        "the confirmation went missing: {second}"
+    );
+    assert!(
+        second.contains("CHARLIE"),
+        "the planner was not shown the line it wrote: {second}"
+    );
+    assert!(
+        second.contains("bravo"),
+        "the planner was not shown the lines around it: {second}"
+    );
+}
+
 /// A quarantined run says how to see it, and how to stop being asked.
 ///
 /// The label is about who answered for the command, not about programs being unreadable, and a

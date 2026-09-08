@@ -91,9 +91,153 @@ pub fn replace(source: &str, old: &str, new: &str, all: bool) -> Result<Replaced
     }
 }
 
+/// How many unchanged lines are shown either side of what changed.
+const CONTEXT_LINES: usize = 3;
+
+/// The most lines an excerpt may run to before it is cut short.
+///
+/// A `replace_all` across a long file spans from its first change to its last, which can be the
+/// whole file. The point of the excerpt is to let a planner see what its edit did, and a planner
+/// that wanted the file back would have read it.
+const MAX_EXCERPT_LINES: usize = 40;
+
+/// The changed region of `after`, with a little of the text either side of it.
+///
+/// Computed by comparing rather than by locating the replacement: a deletion has no new text to
+/// find, an insertion's new text may appear elsewhere too, and `replace_all` changes several
+/// places at once. The common prefix and suffix of the two versions bound everything that moved,
+/// whichever of those happened.
+///
+/// Returns `None` where nothing differs, which `replace` refuses before ever reaching here.
+pub fn changed_region(before: &str, after: &str) -> Option<String> {
+    let old: Vec<&str> = before.lines().collect();
+    let new: Vec<&str> = after.lines().collect();
+
+    let head = old
+        .iter()
+        .zip(new.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Measured from the end, and never back past the common prefix: two files that differ only in
+    // length share a suffix that would otherwise overlap the head and count lines twice.
+    let tail = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(old.len().saturating_sub(head))
+        .min(new.len().saturating_sub(head));
+
+    if head == new.len() && old.len() == new.len() {
+        return None;
+    }
+
+    let from = head.saturating_sub(CONTEXT_LINES);
+    let to = (new.len() - tail + CONTEXT_LINES).min(new.len());
+
+    let mut lines: Vec<String> = new[from..to]
+        .iter()
+        .enumerate()
+        .map(|(at, line)| format!("{:>6}  {line}", from + at + 1))
+        .collect();
+
+    // Cut from the middle rather than the end: the last changed lines are as much a part of what
+    // happened as the first, and a reader who sees only the top cannot tell a finished edit from
+    // one that stopped halfway.
+    if lines.len() > MAX_EXCERPT_LINES {
+        let keep = MAX_EXCERPT_LINES / 2;
+        let dropped = lines.len() - keep * 2;
+        let end = lines.split_off(lines.len() - keep);
+        lines.truncate(keep);
+        lines.push(format!("         … {dropped} more lines …"));
+        lines.extend(end);
+    }
+
+    Some(lines.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_excerpt_shows_the_changed_line_with_its_neighbours() {
+        let before = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let after = "a\nb\nc\nD\ne\nf\ng\nh\n";
+        let shown = changed_region(before, after).expect("something changed");
+        assert!(
+            shown.contains("D"),
+            "the change is not in the excerpt: {shown}"
+        );
+        assert!(
+            shown.contains("a"),
+            "the lines before it are missing: {shown}"
+        );
+        assert!(
+            shown.contains("g"),
+            "the lines after it are missing: {shown}"
+        );
+        assert!(
+            shown.lines().all(|l| !l.contains(" h")),
+            "the excerpt ran past its context: {shown}"
+        );
+    }
+
+    #[test]
+    fn an_excerpt_carries_the_line_numbers_of_the_file_it_came_from() {
+        let before = "one\ntwo\nthree\nfour\nfive\n";
+        let after = "one\ntwo\nTHREE\nfour\nfive\n";
+        let shown = changed_region(before, after).expect("something changed");
+        let line = shown
+            .lines()
+            .find(|l| l.contains("THREE"))
+            .expect("the changed line is shown");
+        assert!(line.trim_start().starts_with("3 "), "wrong number: {line}");
+    }
+
+    #[test]
+    fn an_insertion_is_shown_even_though_nothing_was_removed() {
+        let before = "a\nb\n";
+        let after = "a\ninserted\nb\n";
+        let shown = changed_region(before, after).expect("something changed");
+        assert!(shown.contains("inserted"), "{shown}");
+    }
+
+    #[test]
+    fn a_deletion_is_shown_even_though_there_is_no_new_text_to_find() {
+        let before = "a\ngone\nb\n";
+        let after = "a\nb\n";
+        let shown = changed_region(before, after).expect("something changed");
+        assert!(shown.contains("a") && shown.contains("b"), "{shown}");
+        assert!(
+            !shown.contains("gone"),
+            "the removed line is still shown: {shown}"
+        );
+    }
+
+    #[test]
+    fn identical_text_has_no_changed_region() {
+        assert_eq!(changed_region("a\nb\n", "a\nb\n"), None);
+    }
+
+    #[test]
+    fn a_long_span_is_cut_in_the_middle_and_says_so() {
+        let before: String = (0..200).map(|n| format!("line {n}\n")).collect();
+        let after: String = (0..200).map(|n| format!("LINE {n}\n")).collect();
+        let shown = changed_region(&before, &after).expect("something changed");
+        assert!(
+            shown.contains("more lines"),
+            "the cut was not reported: {shown}"
+        );
+        assert!(
+            shown.lines().count() <= MAX_EXCERPT_LINES + 1,
+            "the excerpt was not cut: {} lines",
+            shown.lines().count()
+        );
+        assert!(shown.contains("LINE 0"), "the start is missing: {shown}");
+        assert!(shown.contains("LINE 199"), "the end is missing: {shown}");
+    }
 
     #[test]
     fn a_unique_match_is_replaced() {
