@@ -3159,10 +3159,12 @@ fn run_turn_animated(
         sink,
         fallback,
         fallback_programs,
-        config.context_budget,
-        config.budget_is_guessed(),
+        Occupied {
+            budget: config.context_budget,
+            guessed: config.budget_is_guessed(),
+            last_request_tokens: conversation.last_request_tokens(),
+        },
         asked,
-        conversation.last_request_tokens(),
     );
     Ok((conversation, trust, programs, events))
 }
@@ -3234,6 +3236,20 @@ struct Asked {
     comparable: bool,
 }
 
+/// What a finished turn is measured against, and what to fall back on where it reported nothing.
+///
+/// One value rather than three arguments because none of them says anything alone: a figure without
+/// the budget it is against is not a percentage, and a budget without knowing whether it was
+/// advertised or assumed is not one the hint line may state flatly.
+struct Occupied {
+    /// The budget the conversation is compacted at.
+    budget: u64,
+    /// Whether that budget is a guess rather than one somebody typed or the endpoint advertised.
+    guessed: bool,
+    /// What the last request the turn managed to send came to, or zero where it sent none.
+    last_request_tokens: u64,
+}
+
 /// Fold a finished turn into the session.
 fn fold_outcome(
     session: &mut Session,
@@ -3241,10 +3257,8 @@ fn fold_outcome(
     sink: Trail,
     fallback: TrustStore,
     fallback_programs: TrustedPrograms,
-    budget: u64,
-    budget_is_guessed: bool,
+    occupied: Occupied,
     asked: Asked,
-    last_request_tokens: u64,
 ) -> (TrustStore, TrustedPrograms) {
     match outcome {
         Ok(outcome) => {
@@ -3265,7 +3279,7 @@ fn fold_outcome(
             // What the turn's last request came to, against what it would be compacted at. Not
             // the same figure as the cost above: that adds every round together, this says how
             // full the context is now.
-            session.measured(outcome.context_tokens, budget, budget_is_guessed);
+            session.measured(outcome.context_tokens, occupied.budget, occupied.guessed);
 
             // What was asked for against what answered. The endpoint substitutes rather than
             // refusing: a premium model requested without a credential comes back as whatever the
@@ -3324,8 +3338,12 @@ fn fold_outcome(
             if let Some(last) = session.transcript.last_mut() {
                 last.trail = trail;
             }
-            if last_request_tokens > 0 {
-                session.measured(last_request_tokens, budget, budget_is_guessed);
+            if occupied.last_request_tokens > 0 {
+                session.measured(
+                    occupied.last_request_tokens,
+                    occupied.budget,
+                    occupied.guessed,
+                );
             }
             (fallback, fallback_programs)
         }
@@ -7755,10 +7773,12 @@ mod tests {
             sink,
             fallback,
             fallback_programs,
-            100_000,
-            false,
+            Occupied {
+                budget: 100_000,
+                guessed: false,
+                last_request_tokens: 45_000,
+            },
             asked,
-            45_000,
         );
 
         assert_eq!(
@@ -7789,10 +7809,12 @@ mod tests {
             sink,
             fallback,
             fallback_programs,
-            100_000,
-            false,
+            Occupied {
+                budget: 100_000,
+                guessed: false,
+                last_request_tokens: 0,
+            },
             asked,
-            0,
         );
 
         assert_eq!(session.occupancy(), crate::state::Occupancy::Unmeasured);
