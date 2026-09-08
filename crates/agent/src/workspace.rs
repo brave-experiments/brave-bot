@@ -30,6 +30,15 @@ use std::time::{Duration, Instant};
 /// which is what people attach.
 pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
+/// The most one turn may keep in memory so that it can be rewound.
+///
+/// Every file a turn writes costs what the file held beforehand, held until the turn after it,
+/// whether or not anybody rewinds. The files a turn writes are files somebody is working on, so
+/// the budget is set well past a tree of source and well short of what a checked-in archive or a
+/// build artefact would cost. Past it the path is still remembered, and a rewind says it did not
+/// go back rather than pretending it did.
+pub const MAX_REWIND_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(Debug)]
 pub enum WorkspaceError {
     /// The policy refused the operation.
@@ -130,8 +139,23 @@ pub struct Workspace {
 pub struct Backup {
     /// The file, resolved to an absolute path as the write resolved it.
     pub path: PathBuf,
-    /// What was there, or `None` where the write created the file.
-    pub was: Option<Vec<u8>>,
+    /// What was there.
+    pub was: Before,
+}
+
+/// What a path held before a turn wrote to it.
+///
+/// Three states rather than two. A file whose contents were not kept is not a file that was
+/// absent, and treating the two alike would have a rewind delete work it merely could not hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Before {
+    /// Nothing: the write created the file, so a rewind removes it.
+    Nothing,
+    /// These bytes.
+    Bytes(Vec<u8>),
+    /// Something, but not something this turn kept: past [`MAX_REWIND_BYTES`], or a file that
+    /// would not be read. The path is kept so a rewind can say it did not go back.
+    NotKept,
 }
 
 /// What changed when the working directory moved.
@@ -885,7 +909,29 @@ impl Workspace {
         if backups.iter().any(|backup| backup.path == resolved) {
             return;
         }
-        let was = std::fs::read(resolved).ok();
+
+        let held: usize = backups
+            .iter()
+            .map(|backup| match &backup.was {
+                Before::Bytes(bytes) => bytes.len(),
+                Before::Nothing | Before::NotKept => 0,
+            })
+            .sum();
+        let room = MAX_REWIND_BYTES.saturating_sub(held);
+
+        // Asked of the filesystem before reading, so a file past the budget costs nothing to
+        // find out about. A path that will not answer is read anyway and falls to the same test.
+        let was = match std::fs::metadata(resolved) {
+            // The write is creating the file, so rewinding means removing it again.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Before::Nothing,
+            Err(_) => Before::NotKept,
+            Ok(found) if found.len() as usize > room => Before::NotKept,
+            Ok(_) => match std::fs::read(resolved) {
+                Ok(bytes) if bytes.len() <= room => Before::Bytes(bytes),
+                _ => Before::NotKept,
+            },
+        };
+
         backups.push(Backup {
             path: resolved.to_path_buf(),
             was,
@@ -903,7 +949,8 @@ impl Workspace {
     /// Put back what a turn wrote over, and say which paths would not go back.
     ///
     /// A path whose file did not exist is removed again, and one already gone counts as removed:
-    /// the state asked for is the state that is there.
+    /// the state asked for is the state that is there. A path whose contents were past
+    /// [`MAX_REWIND_BYTES`] is refused without being touched, since what it held is not here.
     ///
     /// Every path is attempted rather than stopping at the first failure, and the ones that
     /// failed are returned rather than dropped. A rewind that reported a turn undone while a
@@ -913,11 +960,12 @@ impl Workspace {
         let mut refused = Vec::new();
         for backup in backups {
             let put_back = match backup.was {
-                Some(bytes) => std::fs::write(&backup.path, bytes),
-                None => match std::fs::remove_file(&backup.path) {
+                Before::Bytes(bytes) => std::fs::write(&backup.path, bytes),
+                Before::Nothing => match std::fs::remove_file(&backup.path) {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                     other => other,
                 },
+                Before::NotKept => Err(std::io::Error::other("what it held was not kept")),
             };
             if put_back.is_err() {
                 refused.push(backup.path);

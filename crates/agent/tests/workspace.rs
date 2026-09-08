@@ -2758,7 +2758,7 @@ fn taking_the_backups_leaves_the_next_turn_with_none() {
 /// is worse than not rewinding at all.
 #[test]
 fn a_rewind_names_the_paths_it_could_not_put_back() {
-    use bravebot_agent::workspace::Backup;
+    use bravebot_agent::workspace::{Backup, Before};
 
     let scratch = Scratch::new("rewind-refused");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
@@ -2770,7 +2770,7 @@ fn a_rewind_names_the_paths_it_could_not_put_back() {
 
     let refused = workspace.restore_backups(vec![Backup {
         path: blocked.clone(),
-        was: Some(b"whatever was there".to_vec()),
+        was: Before::Bytes(b"whatever was there".to_vec()),
     }]);
 
     assert_eq!(refused, vec![blocked]);
@@ -2780,15 +2780,58 @@ fn a_rewind_names_the_paths_it_could_not_put_back() {
 /// was asking for, so it is not a path anybody needs to go and look at.
 #[test]
 fn a_created_file_already_gone_is_not_reported_as_refused() {
-    use bravebot_agent::workspace::Backup;
+    use bravebot_agent::workspace::{Backup, Before};
 
     let scratch = Scratch::new("rewind-already-gone");
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
     let refused = workspace.restore_backups(vec![Backup {
         path: scratch.path.join("never-there.txt"),
-        was: None,
+        was: Before::Nothing,
     }]);
 
     assert!(refused.is_empty());
+}
+
+/// A turn that rewrote something enormous must not hold it in memory for the whole turn on the
+/// chance that somebody rewinds. What is remembered instead is that the path changed, so the
+/// rewind can say it did not go back rather than deleting a file it never held.
+#[test]
+fn a_file_past_the_rewind_budget_is_remembered_but_not_kept() {
+    use bravebot_agent::workspace::{Before, MAX_REWIND_BYTES};
+
+    let scratch = Scratch::new("rewind-budget");
+    let heavy = scratch.path.join("heavy.bin");
+    std::fs::write(&heavy, vec![b'x'; MAX_REWIND_BYTES + 1]).expect("write heavy");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    workspace
+        .write(
+            &mut policy,
+            &Labelled::trusted("heavy.bin".to_string()),
+            &Labelled::trusted("small".to_string()),
+        )
+        .expect("write succeeds");
+
+    let backups = workspace.take_backups();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].was, Before::NotKept);
+
+    let refused = workspace.restore_backups(backups);
+
+    assert_eq!(refused, vec![heavy.canonicalize().unwrap()]);
+    assert_eq!(
+        std::fs::read_to_string(&heavy).unwrap(),
+        "small",
+        "a file whose contents were never kept is left alone, not deleted"
+    );
 }
