@@ -1825,7 +1825,8 @@ fn event_loop(
             }
             Action::Undo => {
                 if let Some(snapshot) = session.previous_turn.take() {
-                    workspace.restore_backups(std::mem::take(&mut session.last_turn_backups));
+                    let refused =
+                        workspace.restore_backups(std::mem::take(&mut session.last_turn_backups));
 
                     conversation = bravebot_agent::Conversation::restored(snapshot.conversation);
                     session.turns = snapshot.turns;
@@ -1860,7 +1861,18 @@ fn event_loop(
                             },
                         );
                     }
-                    session.note(t!(session_last_turn_undone));
+                    // Named rather than counted. A person who has to go and put a file back by
+                    // hand needs to know which one, and a count sends them looking.
+                    if refused.is_empty() {
+                        session.note(t!(session_last_turn_undone));
+                    } else {
+                        let paths = refused
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        session.note(t!(session_last_turn_undone_partly, paths = paths));
+                    }
                 } else {
                     session.note(t!(session_nothing_to_undo));
                 }

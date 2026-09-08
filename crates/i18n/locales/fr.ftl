@@ -542,6 +542,8 @@ session-rename-needs-a-name = /rename demande un nom, comme /rename le bug de l'
 session-rename-needs-something = /rename demande un nom qui contienne quelque chose
 session-cleared = effacée : une nouvelle session, la précédente restant reprenable
 session-last-turn-undone = session rembobinée d'un tour
+session-last-turn-undone-partly =
+    session rembobinée d'un tour, mais ces fichiers gardent ce qu'il a écrit : { $paths }
 session-nothing-to-undo = rien à annuler dans cette session
 session-exported = transcription exportée vers { $path }
 session-export-failed = impossible d'exporter la transcription : { $problem }

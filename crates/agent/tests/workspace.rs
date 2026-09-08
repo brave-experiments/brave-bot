@@ -2640,7 +2640,11 @@ fn a_rewind_puts_back_what_a_turn_overwrote() {
         )
         .expect("write succeeds");
 
-    workspace.restore_backups(workspace.take_backups());
+    assert!(
+        workspace
+            .restore_backups(workspace.take_backups())
+            .is_empty()
+    );
 
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
@@ -2673,7 +2677,11 @@ fn a_rewind_removes_a_file_the_turn_created() {
         )
         .expect("write succeeds");
 
-    workspace.restore_backups(workspace.take_backups());
+    assert!(
+        workspace
+            .restore_backups(workspace.take_backups())
+            .is_empty()
+    );
 
     assert!(!scratch.path.join("new.txt").exists());
 }
@@ -2705,7 +2713,11 @@ fn a_path_written_twice_in_a_turn_rewinds_to_before_the_first_write() {
             .expect("write succeeds");
     }
 
-    workspace.restore_backups(workspace.take_backups());
+    assert!(
+        workspace
+            .restore_backups(workspace.take_backups())
+            .is_empty()
+    );
 
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
@@ -2739,4 +2751,44 @@ fn taking_the_backups_leaves_the_next_turn_with_none() {
 
     assert_eq!(workspace.take_backups().len(), 1);
     assert!(workspace.take_backups().is_empty());
+}
+
+/// A rewind that could not put a file back must say so. Reporting a turn undone while a file
+/// still holds that turn's work leaves the transcript describing a tree that is not there, which
+/// is worse than not rewinding at all.
+#[test]
+fn a_rewind_names_the_paths_it_could_not_put_back() {
+    use bravebot_agent::workspace::Backup;
+
+    let scratch = Scratch::new("rewind-refused");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // A directory can be neither written over nor removed as a file, on any platform and as any
+    // user, which is what makes the failure worth asserting on.
+    let blocked = scratch.path.join("in-the-way");
+    std::fs::create_dir(&blocked).expect("create");
+
+    let refused = workspace.restore_backups(vec![Backup {
+        path: blocked.clone(),
+        was: Some(b"whatever was there".to_vec()),
+    }]);
+
+    assert_eq!(refused, vec![blocked]);
+}
+
+/// A file the turn created and something else then deleted is already in the state the rewind
+/// was asking for, so it is not a path anybody needs to go and look at.
+#[test]
+fn a_created_file_already_gone_is_not_reported_as_refused() {
+    use bravebot_agent::workspace::Backup;
+
+    let scratch = Scratch::new("rewind-already-gone");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let refused = workspace.restore_backups(vec![Backup {
+        path: scratch.path.join("never-there.txt"),
+        was: None,
+    }]);
+
+    assert!(refused.is_empty());
 }
