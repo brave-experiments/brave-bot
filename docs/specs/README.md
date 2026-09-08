@@ -59,6 +59,7 @@ the routing-versus-content split they share.
 | [tools/read-file.md](tools/read-file.md) | `READ` | 5 | `read_file` |
 | [tools/list-files.md](tools/list-files.md) | `LIST` | 5 | `list_files` |
 | [tools/search.md](tools/search.md) | `SEARCH` | 7 | `search` |
+| [tools/lsp.md](tools/lsp.md) | `LSP` | 9 | `lsp` |
 | [tools/write-file.md](tools/write-file.md) | `WRITE` | 4 | `write_file` |
 | [tools/edit-file.md](tools/edit-file.md) | `EDIT` | 3 | `edit_file` |
 | [tools/spawn-processor.md](tools/spawn-processor.md) | `SPAWN` | 3 | `spawn_processor` |

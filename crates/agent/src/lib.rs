@@ -14,6 +14,7 @@ pub mod diff;
 pub mod exec;
 pub mod glob;
 pub mod home;
+pub mod lsp;
 pub mod manifest;
 pub mod mode;
 pub mod permission_mode;

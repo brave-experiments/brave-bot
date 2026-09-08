@@ -1,0 +1,14 @@
+[package]
+name = "bravebot-lsp"
+description = "Language server client: positions in, locations out, and nothing the file wrote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bravebot-core = { path = "../core" }
+bravebot-sandbox = { path = "../sandbox" }
+serde = { workspace = true }
+serde_json = { workspace = true }

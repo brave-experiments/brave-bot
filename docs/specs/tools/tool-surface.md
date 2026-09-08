@@ -24,6 +24,7 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 | [`read_file`](read-file.md) | `path`, `path_ref`, `offset`, `limit` | none | the lines, or a reference |
 | [`list_files`](list-files.md) | `directory`, `pattern`, `depth` | none | the paths, or a reference per entry |
 | [`search`](search.md) | `pattern`, `directory`, `include` | none | matching lines, or a reference |
+| [`lsp`](lsp.md) | `operation`, `path`, `line`, `character` | none | locations, with their text shown or referenced |
 | [`write_file`](write-file.md) | `path`, `path_ref`, `contents_ref` | `contents` | confirmation |
 | [`edit_file`](edit-file.md) | `path`, `path_ref`, `replace_all` | `old_text`, `new_text` | confirmation |
 | [`spawn_processor`](spawn-processor.md) | `reads`, `about` | `instruction` | a reference |
@@ -39,6 +40,12 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 
 Reads return content when it is trusted and a reference when it is not. Writes are silent or shown
 according to the trust map.
+
+`lsp` is the one tool whose result is split across both footings rather than being one or the other:
+a location is structure and is reported whatever the trust map says, while the text at that location
+is content and is quarantined when it is untrusted. [LSP-3](lsp.md#LSP-3) is where that is settled,
+and it is the only place in these specs where a path reaches the planner without having been
+vouched for.
 
 `spawn_agent`'s `task` and `each` are the content arguments that may not be untrusted. It decides no
 destination, so it is not routing, but it becomes a second planner's prompt rather than a payload

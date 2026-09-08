@@ -37,6 +37,7 @@ use bravebot_core::todo::{self, Item, List, Status};
 use bravebot_core::value::Labelled;
 use serde_json::{Value, json};
 
+use crate::lsp::LanguageServers;
 use crate::workspace::{Listing, Page, Workspace};
 
 /// The statuses the schema advertises, taken from the kernel so the two cannot drift.
@@ -283,6 +284,63 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     }
                 },
                 "required": ["pattern"]
+            }),
+        ),
+        Tool::function(
+            "lsp",
+            "Ask a language server about a symbol: where it is defined, what refers to it, what \
+             implements it, what calls it. Use this instead of search when the question is about \
+             a symbol rather than about text, because a search for a name finds every comment \
+             and string that mentions it while this finds the declaration the compiler agrees \
+             on. Give the position of the symbol you are asking about, taken from a line you \
+             were already shown by a search or a read; nothing here works out where a name is \
+             for you. Answers with the places it found, one per line. Where a definition is in \
+             a dependency rather than in this project the line says so, and read_file will not \
+             open it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "description": "Which question to ask.",
+                        "enum": [
+                            "goToDefinition",
+                            "findReferences",
+                            "hover",
+                            "documentSymbol",
+                            "workspaceSymbol",
+                            "goToImplementation",
+                            "incomingCalls",
+                            "outgoingCalls"
+                        ]
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path to the file holding the symbol, \
+                                        e.g. src/main.rs. Required for every operation but \
+                                        workspaceSymbol."
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-based line of the symbol, as a search or a read \
+                                        reported it. A line that no longer holds the symbol \
+                                        answers with nothing rather than failing.",
+                        "minimum": 1
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "1-based column of the symbol on that line. Point at the \
+                                        name itself rather than at the start of the line.",
+                        "minimum": 1
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "The name to look for. Only for workspaceSymbol, which \
+                                        searches the whole project rather than starting from a \
+                                        position."
+                    }
+                },
+                "required": ["operation"]
             }),
         ),
         Tool::function(
@@ -652,6 +710,10 @@ pub fn for_delegate(capabilities: &bravebot_core::capability::CapabilitySet) -> 
             "write_file" | "edit_file" => capabilities.contains(Capability::FileWrite),
             "run" | "read_output" | "job_output" => capabilities.contains(Capability::ShellExec),
             "fetch_url" => capabilities.contains(Capability::WebFetch),
+            // LSP-9: asking a server is its own grant, so a delegate holding file reads has not
+            // thereby been given one. Named rather than left to the catch-all below, which would
+            // hand it over with `FileRead`.
+            "lsp" => capabilities.contains(Capability::LanguageServer),
             _ => capabilities.contains(Capability::FileRead),
         })
         .collect()
@@ -792,6 +854,13 @@ pub struct Tools<'a> {
     /// than one, because the depth is what bounds the whole tree and a bound that rests on the
     /// tool list alone rests on the model reading it.
     pub delegated: bool,
+    /// The language servers this session has started, or `None` where the host offers none.
+    ///
+    /// Held across calls rather than per call because indexing is the whole cost of a server, and
+    /// paying it per question would make this slower than the search it replaces. `None` for a
+    /// host that cannot confine a subprocess: LSP-5 is MCP-3 applied here, so no confinement means
+    /// no process, and the tool answers by saying so.
+    pub servers: Option<&'a mut LanguageServers>,
     /// How many delegates this turn has spawned, which is what numbers the next one.
     ///
     /// Held by the turn rather than counted here, because a delegate is numbered once for the
@@ -1124,6 +1193,7 @@ fn target_key(tool: &str) -> Option<&'static str> {
         "read_file" | "write_file" | "edit_file" => Some("path"),
         "list_files" => Some("directory"),
         "search" => Some("pattern"),
+        "lsp" => Some("path"),
         "load_skill" => Some("name"),
         "fetch_url" => Some("url"),
         "job_output" => Some("job"),
@@ -1365,6 +1435,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "read_file" => read_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
+        "lsp" => lsp(policy, tools, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
         "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
@@ -3553,6 +3624,168 @@ fn patterns_in(arguments: &Value) -> Vec<Labelled<String>> {
     }
 }
 
+/// Ask a language server about a symbol.
+///
+/// The two halves of the answer take different roads out of here, which is [LSP-3]:
+///
+/// - The **locations** are written into a line by the driver, from a path and two integers it read
+///   off the server's index. That line is the driver's own words, so it is trusted, the same footing
+///   a line count or an exit status reaches the planner on. Nothing a file wrote is in it.
+/// - The **text**, where an operation reports any, keeps the label of the file it came from. So a
+///   hover over a vouched-for file is shown and a hover over `vendor/` comes back as a reference,
+///   with the locations listed either way.
+///
+/// [LSP-3]: ../../../docs/specs/tools/lsp.md
+fn lsp<S: Sink>(policy: &mut Policy<'_, S>, tools: &mut Tools<'_>, arguments: &Value) -> Produced {
+    let Some(named) = argument(arguments, "operation") else {
+        return problem("error: 'operation' is required");
+    };
+
+    // The operation is routing: it decides what the server is asked. Promoted like any other
+    // proposal, then matched against the closed set, so a name off the list is refused here rather
+    // than forwarded on the chance a server understands it.
+    let operation = match policy.promote_confined_read("lsp", "operation", &named) {
+        Ok(promoted) => match promoted.clone().into_trusted() {
+            Ok(name) => match bravebot_lsp::Operation::parse(&name) {
+                Some(operation) => operation,
+                None => {
+                    return problem(format!(
+                        "refused: {}",
+                        bravebot_lsp::LspError::UnknownOperation { named: name }
+                    ));
+                }
+            },
+            Err(_) => return problem("refused: the operation was not trusted"),
+        },
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+
+    // A position is two integers the planner states. Nothing reads the file to work one out, which
+    // is what keeps this tool clear of LABEL-5: a position derived by scanning bytes would be a
+    // decision taken from content.
+    let line = arguments
+        .get("line")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let character = arguments
+        .get("character")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+
+    // `workspaceSymbol` ranges over the tree instead of starting from a position, so it is the one
+    // operation with no path to promote.
+    let query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let relative = if operation.needs_position() {
+        let Some(proposed) = argument(arguments, "path") else {
+            return problem(format!(
+                "error: 'path' is required for {}",
+                operation.as_str()
+            ));
+        };
+        let promoted = match policy.promote_confined_read("lsp", "path", &proposed) {
+            Ok(promoted) => promoted,
+            Err(denial) => return problem(format!("refused: {denial}")),
+        };
+        let named = match promoted.clone().into_trusted() {
+            Ok(named) => named,
+            Err(_) => return problem("refused: the path was not trusted"),
+        };
+        // A deny rule covering the file covers asking a server about it too: the answer quotes
+        // where things are in it, so this is a read.
+        if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &named) {
+            return problem(refusal);
+        }
+        named
+    } else {
+        String::new()
+    };
+
+    let Some(servers) = tools.servers.as_deref_mut() else {
+        // LSP-5, and it is not a fault: a host that cannot confine a subprocess does not get to run
+        // one, and saying so is better than an answer nobody could trust.
+        return problem(
+            "refused: no language server can be started here, because this platform offers no \
+             way to confine one. Use search and read_file instead.",
+        );
+    };
+
+    // The server is given the path it can open, which is the resolved one. What the planner is
+    // shown is rendered back against the root by the lsp module.
+    let root = servers.root().to_path_buf();
+    let absolute = if relative.is_empty() {
+        String::new()
+    } else {
+        root.join(&relative).to_string_lossy().into_owned()
+    };
+
+    let answer = match servers.ask(
+        policy,
+        &bravebot_lsp::Question {
+            operation,
+            path: &absolute,
+            line,
+            character,
+            query: query.as_deref(),
+        },
+    ) {
+        Ok(answer) => answer,
+        // LSP-6: every one of these says which failure it was, and none of them reads as a
+        // statement about the code. A planner told "no references" deletes a function.
+        Err(error) => return problem(format!("refused: {error}")),
+    };
+
+    let described = crate::lsp::describe(operation, &answer, &root);
+    let found = answer.locations.len();
+
+    // The text is the half that is content, so it keeps the label of the file it came from and the
+    // kernel decides whether the planner sees it. Where there is none, the result is the driver's
+    // own words about where things are, which is trusted.
+    let text = match crate::lsp::text_of(policy, &answer, &absolute) {
+        Some(Ok(text)) => Some(text),
+        Some(Err(denial)) => return problem(format!("refused: {denial}")),
+        None => None,
+    };
+
+    let note = format!(
+        "{}{}",
+        tally(found, "location", "locations"),
+        if answer.partial {
+            ", still indexing"
+        } else {
+            ""
+        }
+    );
+
+    match text {
+        // Hover text exists, so the result carries it and is labelled by its file. The locations go
+        // in front of it: they are structure, and a reader who cannot see the text can still act on
+        // them.
+        Some(text) => {
+            let untrusted = !text.label().is_trusted();
+            let combined =
+                policy.render_in_place("lsp", &text, |text| format!("{described}\n\n{text}"));
+            let mut produced = Produced::new(combined, relative, note);
+            produced.content = true;
+            produced.untrusted = untrusted;
+            produced.incomplete = answer.partial;
+            produced
+        }
+        // Locations only, which is every operation but hover. The line is the driver's, composed
+        // from structure, so there is nothing here to quarantine.
+        None => {
+            let mut produced = Produced::new(Labelled::trusted(described), relative, note);
+            produced.incomplete = answer.partial;
+            produced
+        }
+    }
+}
+
 fn search<S: Sink>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -3815,6 +4048,7 @@ mod tests {
                 "edit_file",
                 "todo_write",
                 "search",
+                "lsp",
                 "spawn_processor",
                 "load_skill",
                 "ask_user",

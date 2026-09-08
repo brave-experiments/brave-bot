@@ -659,6 +659,7 @@ pub(crate) fn verb_for(tool: &str) -> &'static str {
         "read_file" => t!(verb_read_file),
         "list_files" => t!(verb_list_files),
         "search" => t!(verb_search),
+        "lsp" => t!(verb_lsp),
         "write_file" => t!(verb_write_file),
         "edit_file" => t!(verb_edit_file),
         "todo_write" => t!(verb_todo_write),

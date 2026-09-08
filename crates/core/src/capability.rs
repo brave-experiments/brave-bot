@@ -37,6 +37,17 @@ pub enum Capability {
     /// Call a tool on an MCP server. Output is untrusted; confidentiality depends on
     /// the server, so this label is the conservative floor and a server may raise it.
     McpCall,
+    /// Ask a language server where a symbol is. Separate from [`Capability::FileRead`]
+    /// because they are not the same act: a read opens one named file, while a server
+    /// reads the whole tree and the dependency sources beside it and keeps a process
+    /// alive doing so. A set that could not tell those apart could not describe the
+    /// narrower one.
+    ///
+    /// Output is untrusted and private, exactly as a file read is: what a server reports
+    /// was computed from files that may contain anything. That the *locations* in it are
+    /// reportable anyway is LSP-3's separate argument about structure, made where the
+    /// answer is rendered rather than by a label here.
+    LanguageServer,
 }
 
 impl Capability {
@@ -45,8 +56,12 @@ impl Capability {
     /// `None` for pure effects, which produce no observation to label.
     pub fn output_label(self) -> Option<Label> {
         match self {
-            // Workspace content is ours (private) and may contain anything (untrusted).
-            Self::FileRead | Self::GitRead => Some(Label::untrusted_private()),
+            // Workspace content is ours (private) and may contain anything (untrusted). A
+            // language server's answer was computed from that same content, so it arrives on
+            // the same footing.
+            Self::FileRead | Self::GitRead | Self::LanguageServer => {
+                Some(Label::untrusted_private())
+            }
             // Remote content is attacker-influenceable but not confidential to us.
             Self::WebFetch | Self::McpCall => Some(Label::untrusted_public()),
             // Effects produce no labelled observation.
@@ -81,6 +96,7 @@ impl Capability {
             Self::GitWrite => "git_write",
             Self::WebFetch => "web_fetch",
             Self::McpCall => "mcp_call",
+            Self::LanguageServer => "language_server",
         }
     }
 }
@@ -168,6 +184,7 @@ mod tests {
             Capability::WebFetch,
             Capability::McpCall,
             Capability::ShellExec,
+            Capability::LanguageServer,
         ] {
             let label = c.output_label().expect("observation must have a label");
             assert!(!label.is_trusted(), "{c} output must not be trusted");
@@ -186,6 +203,7 @@ mod tests {
             Capability::GitWrite,
             Capability::WebFetch,
             Capability::McpCall,
+            Capability::LanguageServer,
         ] {
             if let Some(label) = c.output_label() {
                 assert_ne!(
@@ -195,6 +213,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// LSP-9, and the trap this capability could have fallen into. A location reaching the planner
+    /// is LSP-3's argument about structure, made where the answer is rendered. It must not be
+    /// reached by labelling the capability's output routing-safe, which would make every byte a
+    /// server reported into something that can choose a destination.
+    #[test]
+    fn the_lsp_capability_produces_no_routing_safe_output() {
+        let label = Capability::LanguageServer
+            .output_label()
+            .expect("a language server produces an observation");
+        assert_ne!(label, Label::trusted_public());
+        assert!(!label.is_trusted());
+        // On the same footing as a file read, because it was computed from the same files.
+        assert_eq!(label, Capability::FileRead.output_label().unwrap());
+    }
+
+    /// LSP-9: asking a server is not the same act as reading a file, so one grant is not the other.
+    #[test]
+    fn a_language_server_grant_is_separate_from_a_file_read() {
+        let reads_only = CapabilitySet::from_iter([Capability::FileRead]);
+        assert!(reads_only.token_for(Capability::LanguageServer).is_none());
+
+        let asks_only = CapabilitySet::from_iter([Capability::LanguageServer]);
+        assert!(asks_only.token_for(Capability::FileRead).is_none());
     }
 
     #[test]

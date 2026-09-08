@@ -730,6 +730,9 @@ opening-invitation = Ask a question about this workspace.
 verb-read-file = Read
 verb-list-files = List
 verb-search = Search
+# A question put to a language server rather than to the files: "Look up" reads as asking
+# something that knows the code, where "Search" reads as looking through it.
+verb-lsp = Look up
 verb-write-file = Write
 verb-edit-file = Update
 verb-todo-write = Plan

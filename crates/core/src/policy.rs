@@ -3454,6 +3454,7 @@ mod tests {
             Capability::FileWrite,
             Capability::ShellExec,
             Capability::WebFetch,
+            Capability::LanguageServer,
         ]
         .into_iter()
         .collect()
@@ -5760,6 +5761,65 @@ mod tests {
             .expect("observes");
         assert_eq!(label.integrity, Integrity::Trusted);
         assert_eq!(policy.context_integrity(), Integrity::Trusted);
+    }
+
+    /// LSP-3, the half that makes the tool useful. A language server's answer about a file nobody
+    /// vouched for is labelled untrusted like any other observation of it, and that label is what
+    /// governs the *text*. The location is structure and is reported anyway, which is the clause's
+    /// separate argument: a path and two integers were read off an index and have nowhere for prose
+    /// to sit.
+    ///
+    /// Pinned here because the labelling is the kernel's, and the thing worth proving is that
+    /// reporting a location does not require the label to be trusted.
+    #[test]
+    fn a_location_from_an_untrusted_file_is_still_reportable() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "look up"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        // Nobody vouched for this path, so what a server read out of it is untrusted.
+        let label = policy
+            .observe_path(Capability::LanguageServer, "vendor/lib.rs")
+            .expect("observes");
+        assert_eq!(label.integrity, Integrity::Untrusted);
+
+        // And the planner's own context is unharmed by our having asked: the bytes were never
+        // shown, exactly as for a quarantined read.
+        assert_eq!(policy.context_integrity(), Integrity::Trusted);
+    }
+
+    /// LSP-3's limit, which matters more than its grant. A location may be *said*; it may not be
+    /// *used*. Nothing about a server having reported a path makes it routing, so a path that came
+    /// back from a query is on precisely the footing it would have had if the planner had guessed
+    /// it: proposed, and gated.
+    #[test]
+    fn a_location_is_not_routing_for_a_later_effect() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "look up"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        // A path as it would arrive from a server's answer: not the user's word, not the planner's
+        // own words coming back, so it carries no better label than anything else observed.
+        let from_the_server =
+            Labelled::new("src/generated.rs".to_string(), Label::untrusted_private());
+
+        // As routing for an effect it is refused, which is the property. If this ever passes, a
+        // file could choose where a write lands by arranging what a server reports.
+        let refused = policy.before_action("write_file", "path", Role::Routing, &from_the_server);
+        assert!(
+            refused.is_err(),
+            "a location must not be usable as a destination"
+        );
     }
 
     #[test]

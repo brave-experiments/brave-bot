@@ -105,7 +105,9 @@ dependencies = [
  "bravebot-config",
  "bravebot-core",
  "bravebot-i18n",
+ "bravebot-lsp",
  "bravebot-net",
+ "bravebot-sandbox",
  "bravebot-skus",
  "rustix",
  "serde",
@@ -165,6 +167,16 @@ version = "0.4.0"
 [[package]]
 name = "bravebot-i18n"
 version = "0.4.0"
+
+[[package]]
+name = "bravebot-lsp"
+version = "0.4.0"
+dependencies = [
+ "bravebot-core",
+ "bravebot-sandbox",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "bravebot-mcp"
