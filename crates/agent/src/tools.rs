@@ -52,10 +52,10 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
     let mut tools = vec![
         Tool::function(
             "read_file",
-            "Read a UTF-8 text file from the workspace. Returns its lines. Long files come \
-             back one page at a time; the result says so and gives the offset to continue \
-             from. Name the file with path, or with path_ref where a listing gave you a \
-             reference instead of a name.",
+            "Read a UTF-8 text file from the workspace. Returns its lines. Ask for the whole \
+             file: long ones come back one page at a time, and the result says so and gives the \
+             offset to continue from. Name the file with path, or with path_ref where a listing \
+             gave you a reference instead of a name.",
             json!({
                 "type": "object",
                 "properties": {
@@ -79,8 +79,12 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum lines to return. Capped so one read cannot \
-                                        fill the conversation."
+                        "description": "Maximum lines to return, capped so one read cannot \
+                                        fill the conversation. Omit it and you get the file \
+                                        up to that cap, which is what you want almost always: \
+                                        this is for stepping through something long, not for \
+                                        sampling something short, and several windows of one \
+                                        file cost more than the file did."
                     }
                 },
                 "required": []

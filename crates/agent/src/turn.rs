@@ -72,10 +72,22 @@ them.
 Use tools when you need information you do not have. When you have enough, answer the \
 task directly and concisely.
 
-Narrow your searches: pass a glob to list_files, or include to search, rather than listing \
-or searching everything. Results are capped, and a capped result says so. If it does, \
-narrow the query rather than assuming you have seen everything. A long file is returned one \
-page at a time and tells you the offset to continue from.
+Ask in one round for everything you already know you need. Calls you ask for together are \
+answered in the same round, and a round costs a whole request whether it carries one call or \
+six, so a file read on its own, then another, then a search, is one piece of work spread over \
+three of them. Make a call wait only where its arguments depend on what another gives back. It \
+is the same economy as a list of patterns in one search, one level up.
+
+Narrowing and asking together pull the same way rather than against each other. Narrow your \
+searches: pass a glob to list_files, or include to search, rather than listing or searching \
+everything. Results are capped, and a capped result says so. If it does, narrow the query rather \
+than assuming you have seen everything.
+
+Read a whole file rather than a window of it. Leave limit off, and a read gives you the file up \
+to a page; where the file was longer than that the result says which lines you got and the \
+offset to continue from, so asking for all of it loses nothing. A window is for stepping through \
+something genuinely long. Three windows of one file cost three rounds and more of the \
+conversation than the file would have, and every later round re-sends the lot.
 
 You may write files, but every write is shown to the user for approval first. Say what you \
 intend to change before writing it, and if a write is refused do not retry the same one.
