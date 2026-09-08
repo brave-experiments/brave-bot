@@ -28,6 +28,16 @@ use protocol::{ChatChunk, ChatRequest, ChatResponse, STREAM_DONE, SseDecoder, St
 use std::fmt;
 use std::time::Duration;
 
+/// Header that tells Brave's endpoint which product is calling.
+const BRAVE_PRODUCT_HEADER: &str = "Brave-Product";
+const BRAVE_PRODUCT: &str = "brave-bot";
+
+/// Mark a request as coming from brave-bot so Brave's endpoint serves this product's roster and
+/// routing rather than Leo's.
+fn as_brave_bot(request: Request) -> Request {
+    request.header(BRAVE_PRODUCT_HEADER, BRAVE_PRODUCT)
+}
+
 #[derive(Debug)]
 pub enum ChatError {
     /// The request could not be serialised.
@@ -94,7 +104,7 @@ pub struct Completion {
     /// an injected instruction put there.
     pub content: Labelled<String>,
     /// The model reported by the server, which may differ from the one requested:
-    /// unrecognised names are reset to automatic, and some entries resolve randomly
+    /// unrecognised names are reset to [`bravebot_config::DEFAULT_MODEL`], and some entries resolve randomly
     /// within a weighted ensemble.
     pub model: String,
     /// Tools the model asked to call. Empty when it answered directly.
@@ -290,10 +300,12 @@ impl<'a> AichatClient<'a> {
             bravebot_signing::sign(self.config.signing_key.expose(), &self.config.key_id, &body);
         let (url, credential) = self.route()?;
 
-        let mut http = Request::post(url, body)
-            .header("content-type", "application/json")
-            .header("digest", &headers.digest)
-            .header("authorization", &headers.authorization);
+        let mut http = as_brave_bot(
+            Request::post(url, body)
+                .header("content-type", "application/json")
+                .header("digest", &headers.digest)
+                .header("authorization", &headers.authorization),
+        );
         if let Some(credential) = credential {
             http = http.header(
                 "cookie",
@@ -645,6 +657,7 @@ fn backoff(failures: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bravebot_config::DEFAULT_MODEL;
     use protocol::Message;
 
     fn config() -> Config {
@@ -746,6 +759,7 @@ mod tests {
         );
         assert_eq!(header(&http, "authorization"), Some("Bearer a-token"));
         assert_eq!(header(&http, "digest"), None);
+        assert_eq!(header(&http, "Brave-Product"), None);
     }
 
     /// Nothing changes for Brave's endpoint, which is every existing request. A gateway is additive,
@@ -755,7 +769,7 @@ mod tests {
         let config = config();
         let egress = Egress::new();
         let http = AichatClient::new(&config, &egress)
-            .prepare(&request("automatic"))
+            .prepare(&request(DEFAULT_MODEL))
             .expect("prepared");
 
         assert_eq!(
@@ -767,6 +781,7 @@ mod tests {
             header(&http, "authorization").is_some_and(|value| !value.starts_with("Bearer ")),
             "a signed request does not bearer-authenticate"
         );
+        assert_eq!(header(&http, "Brave-Product"), Some("brave-bot"));
     }
 
     /// The escape hatch the block exists for: a gateway's routing controls are its own invention, so

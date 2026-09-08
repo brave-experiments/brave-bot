@@ -7,6 +7,7 @@
 use bravebot_agent::Workspace;
 use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, PastedImage, ROUNDS_BEFORE_WRITING, Task};
 use bravebot_config::Config;
+use bravebot_config::DEFAULT_MODEL;
 use bravebot_core::event::{Event, RecordingSink};
 use bravebot_core::label::Label;
 use serde_json::json;
@@ -6761,7 +6762,7 @@ fn without_a_choice_the_configured_default_is_requested() {
 
     let body = received.recv().expect("request body");
     assert!(
-        body.contains(r#""model":"automatic""#),
+        body.contains(&format!(r#""model":"{DEFAULT_MODEL}""#)),
         "the default was not requested: {body}"
     );
 }

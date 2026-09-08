@@ -364,6 +364,7 @@ fn gateway_client<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bravebot_config::DEFAULT_MODEL;
     use bravebot_config::env_var;
 
     fn aichat_only(key: &str) -> Option<String> {
@@ -427,7 +428,7 @@ mod tests {
         let config = with_a_gateway();
         let egress = Egress::new();
         assert!(matches!(
-            Backend::select(&config, &egress, "automatic"),
+            Backend::select(&config, &egress, DEFAULT_MODEL),
             Backend::Aichat { .. }
         ));
         assert!(matches!(
@@ -482,7 +483,7 @@ mod tests {
         let config = Config::from_lookup(aichat_only).expect("configured");
         let egress = Egress::new();
         assert!(matches!(
-            Backend::select(&config, &egress, "automatic"),
+            Backend::select(&config, &egress, DEFAULT_MODEL),
             Backend::Aichat { .. }
         ));
     }
@@ -503,7 +504,7 @@ mod tests {
     /// for a service the turn was never going to touch.
     #[test]
     fn a_brave_model_never_needs_an_aws_sign_in() {
-        for model in ["automatic", "claude-3-sonnet"] {
+        for model in [DEFAULT_MODEL, "claude-3-sonnet"] {
             assert!(
                 !Backend::needs_sign_in(&both_backends(), model),
                 "{model} asked for a sign-in"
@@ -516,7 +517,7 @@ mod tests {
     #[test]
     fn without_bedrock_configured_nothing_needs_a_sign_in() {
         let config = Config::from_lookup(aichat_only).expect("configured");
-        assert!(!Backend::needs_sign_in(&config, "automatic"));
+        assert!(!Backend::needs_sign_in(&config, DEFAULT_MODEL));
         assert!(!Backend::needs_sign_in(&config, "opus-arn"));
     }
 
@@ -527,7 +528,7 @@ mod tests {
     fn signing_in_for_a_model_no_aws_account_serves_does_nothing() {
         let config = Config::from_lookup(aichat_only).expect("configured");
         let mut said = Vec::new();
-        assert!(Backend::sign_in_if_needed(&config, "automatic", |line| said.push(line)).is_ok());
+        assert!(Backend::sign_in_if_needed(&config, DEFAULT_MODEL, |line| said.push(line)).is_ok());
         assert!(
             Backend::sign_in_if_needed(&both_backends(), "claude-3-sonnet", |line| said.push(line))
                 .is_ok()
@@ -562,7 +563,7 @@ mod tests {
     #[test]
     fn a_brave_model_still_reaches_aichat_while_bedrock_is_configured() {
         let egress = Egress::new();
-        for model in ["automatic", "claude-3-sonnet"] {
+        for model in [DEFAULT_MODEL, "claude-3-sonnet"] {
             assert!(
                 matches!(
                     Backend::select(&both_backends(), &egress, model),

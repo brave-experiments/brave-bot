@@ -7,6 +7,7 @@ governs:
   - crates/bedrock/src/credentials.rs
   - crates/tui/src/app.rs
   - crates/config/src/bedrock.rs
+  - crates/config/src/lib.rs
   - crates/aichat/src/lib.rs
   - crates/aichat/src/models.rs
   - crates/config/src/provider.rs
@@ -262,8 +263,8 @@ where a Brave name reaches a service it cannot sign for.
 configuration is built without touching the network, and a one-shot run never asks for that listing:
 only the interactive picker does. Resolving a word against it would put a round trip in front of every
 one-shot run to expand one word, and would fail with no network where it currently succeeds. The cost
-is that the service owns those names, and a renamed one is reset by the endpoint to `automatic`, which
-is where somebody with no `model` key already starts.
+is that the service owns those names, and a renamed one is reset by the endpoint to
+`automatic-brave-bot`, which is where somebody with no `model` key already starts.
 
 `verified-by: bravebot_config::lib::a_tier_alias_resolves_to_the_model_that_tier_names`
 `verified-by: bravebot_config::lib::a_tier_alias_without_bedrock_resolves_against_the_brave_roster`
@@ -645,7 +646,61 @@ knowing where to put a value for one tool is knowing it for the other.
 `verified-by: bravebot_config::settings::an_override_reports_the_name_and_the_file_and_never_the_value`
 `verified-by: bravebot_config::lib::the_environment_outranks_the_settings_file`
 
+
+<a id="BACKEND-25"></a>
+### BACKEND-25: a request to Brave's endpoint says which product is asking
+
+Every request to the aichat endpoint Brave runs carries `Brave-Product: brave-bot`, both the one
+asking for a reply and the one asking what models exist. The endpoint answers a listing curated for
+this product, and resolves that product's own automatic entry. Nothing decides whether to send the
+header: it is a literal on the one path that builds a request to that endpoint.
+
+A gateway is sent no such header, and neither is a gateway's roster request. What a third-party
+service is sent is the shape it documents, and a header naming a product it has never heard of is
+this system telling it something it cannot act on.
+
+**Why.** The endpoint serves Leo as well, whose roster is chosen for a chat assistant. A good
+fraction of it cannot call tools at all, and choosing one of those produces an agent that can read
+and write nothing, which is the promise BACKEND-5 makes about a name on the list. Asking as a product
+is what makes that promise keepable without this code carrying a hand-written list of which models
+are suitable, since a list compiled in here goes stale the moment the roster changes and the service
+is the thing that knows.
+
+`verified-by: bravebot_aichat::lib::a_request_without_a_gateway_is_still_signed`
+`verified-by: bravebot_aichat::lib::a_gateway_request_goes_to_the_configured_host_with_a_bearer_token`
+`verified-by: bravebot_aichat::client::the_model_listing_is_fetched_from_the_models_path`
+
+
+<a id="BACKEND-26"></a>
+### BACKEND-26: the automatic entry names this product, and Leo's name resolves to it
+
+The name requested when nobody has chosen a model is `automatic-brave-bot`. Where a settings file,
+an exported variable or a choice recorded earlier says `automatic`, that name resolves to
+`automatic-brave-bot` before it reaches a request. Every other name is used as written, under
+BACKEND-12.
+
+**Why.** `automatic` is Leo's triage entry and routes by a policy chosen for a chat assistant, so the
+two words name different behaviour rather than the same behaviour twice. A recorded choice outlives
+the version that made it and a settings file is copied between machines, so the older name is in
+circulation and reaching the endpoint. Left alone it is not refused: it selects the other product's
+routing, which is a working request that quietly is not what this agent asked for.
+
+**Note.** The resolution is one-way, so `automatic` cannot be requested. Reaching Leo's routing
+deliberately is not something the picker offers, that entry not being on this product's roster.
+
+`verified-by: bravebot_config::lib::the_legacy_automatic_name_becomes_the_brave_bot_default`
+`verified-by: bravebot_tui::store::the_legacy_automatic_name_is_rewritten_on_read`
+`verified-by: bravebot_aichat::models::automatic_is_offered_once_even_if_the_server_lists_it_too`
+`verified-by: bravebot_agent::turn::without_a_choice_the_configured_default_is_requested`
+
 ## Known costs
+
+- **Which models a product is served is the service's decision, and this holds no copy of it.** The
+  roster is whatever the endpoint returns for `brave-bot`, so a model becoming unsuitable for agentic
+  work is a change nothing here would notice, and one wrongly dropped from the curated set is a model
+  a person cannot pick however well it would have worked. The alternative is a list of names compiled
+  in, which BACKEND-12 already declines for the tier words and for the same reason: the service owns
+  the names, and a copy here is a copy that goes stale.
 
 - **A layer a checkout carries is trusted as far as the person's own file is.** A `.bravebot`
   directory arrives with whatever produced the checkout, so a `settings.json` in one can name the host

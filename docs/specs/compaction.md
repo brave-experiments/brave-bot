@@ -155,8 +155,9 @@ a fallback rather than the usual case: see COMPACT-9.
 ### COMPACT-9: the budget is the window the endpoint advertises, where it advertises one
 
 `GET /v1/models` reports a figure per model, and it is used as the budget for whichever model the
-person chose. The default only stands in: for `automatic`, whose model is resolved per request so no
-one window describes it, and for an entry that reports nothing. A budget set by hand outranks both.
+person chose. The default only stands in: for `automatic-brave-bot`, whose model is resolved per
+request so no one window describes it, and for an entry that reports nothing. A budget set by hand
+outranks both.
 A figure the endpoint advertises is believed even where it is small, and never raised toward
 something more comfortable.
 

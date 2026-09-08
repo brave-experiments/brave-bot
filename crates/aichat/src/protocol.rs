@@ -753,13 +753,14 @@ pub const STREAM_DONE: &str = "[DONE]";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bravebot_config::DEFAULT_MODEL;
 
     #[test]
     fn a_request_serialises_to_the_expected_shape() {
-        let request = ChatRequest::new("automatic", vec![Message::user("hello")]);
+        let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hello")]);
         let json = serde_json::to_value(&request).unwrap();
 
-        assert_eq!(json["model"], "automatic");
+        assert_eq!(json["model"], DEFAULT_MODEL);
         assert_eq!(json["messages"][0]["role"], "user");
         assert_eq!(json["messages"][0]["content"], "hello");
         // Omitted rather than sent as null, since the server has its own default.
@@ -770,14 +771,14 @@ mod tests {
     /// would change every request on every endpoint that has never seen it.
     #[test]
     fn a_request_nobody_asked_a_level_of_mentions_no_effort() {
-        let request = ChatRequest::new("automatic", vec![Message::user("hello")]);
+        let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hello")]);
         let json = serde_json::to_value(&request).unwrap();
         assert!(json.get("reasoning_effort").is_none());
     }
 
     #[test]
     fn a_level_is_sent_in_the_name_this_protocol_gives_the_field() {
-        let request = ChatRequest::new("automatic", vec![Message::user("hello")])
+        let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hello")])
             .with_effort(Some(Effort::Xhigh));
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["reasoning_effort"], "xhigh");
@@ -809,7 +810,7 @@ mod tests {
     #[test]
     fn roles_serialise_lowercase() {
         let request = ChatRequest::new(
-            "automatic",
+            DEFAULT_MODEL,
             vec![
                 Message::system("be brief"),
                 Message::user("hi"),
@@ -910,7 +911,7 @@ mod tests {
         /// the live one.
         #[test]
         fn a_streamed_request_also_asks_for_usage() {
-            let request = ChatRequest::new("automatic", vec![Message::user("hi")]).streamed();
+            let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]).streamed();
             let json = serde_json::to_value(&request).unwrap();
             assert_eq!(json["stream"], true);
             assert_eq!(json["stream_options"]["include_usage"], true);
@@ -919,7 +920,7 @@ mod tests {
         /// And an unstreamed one sends neither, since the server has its own default.
         #[test]
         fn an_unstreamed_request_mentions_neither() {
-            let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+            let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
             let json = serde_json::to_value(&request).unwrap();
             assert!(json.get("stream").is_none());
             assert!(json.get("stream_options").is_none());
@@ -1191,7 +1192,7 @@ mod tests {
 
     #[test]
     fn tools_serialise_in_the_openai_function_shape() {
-        let request = ChatRequest::new("automatic", vec![Message::user("hi")]).with_tools(vec![
+        let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]).with_tools(vec![
             Tool::function(
                 "read_file",
                 "read a file",
@@ -1207,7 +1208,7 @@ mod tests {
     /// An empty tool list is omitted rather than sent, since some servers reject [].
     #[test]
     fn an_empty_tool_list_is_omitted() {
-        let request = ChatRequest::new("automatic", vec![Message::user("hi")]).with_tools(vec![]);
+        let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]).with_tools(vec![]);
         let json = serde_json::to_value(&request).unwrap();
         assert!(json.get("tools").is_none());
     }
