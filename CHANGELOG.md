@@ -1,22 +1,22 @@
 ## [0.5.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.5.0)
 
- - Added `fetch_url`, so a turn can read a page or an issue behind an error. The body never reaches the planner, a person approves the one URL, and a redirect off the approved host is refused.
- - Added a language server tool, so a turn can ask where a symbol is defined, what references it, what a hover says, the symbols in a file or across the workspace, an implementation, and which functions call which. The server runs with your own access once you agree to it, and its index is cached under `~/.bravebot` so a later session does not wait for it again.
- - Added vi editing of the prompt: two modes, the motions, the operators, text objects such as `ci(`, and visual mode with the selection drawn while it is being chosen. The box everybody has is unchanged unless the style is chosen.
- - Added `/config`, a panel over the transcript for a preference about the interface, starting with whether the prompt edits the way vi does.
- - Added background commands to `run`, which starts a pipeline, hands back a job name, and reads what it has printed since the last look through `job_output`, so a turn can start a server and then talk to it.
- - Added regular expressions to `search`, matched without backtracking, so a pattern is answered rather than quietly treated as a literal and reported as absent.
- - Added reading a picture: a screenshot or a scanned page is handed to a processor that can look at it, while the planner gets only a reference saying what kind of thing it is.
- - Added `.bravebot/settings.json` and `settings.local.json` beside the work, resolved per name over the global file, and `bravebot doctor` now names which file a value came from where more than one sets it.
- - Added the changed lines to what an edit reports, with the line numbers they came from, so a turn can check what it produced instead of a count of replacements.
- - Added a line telling you when a turn wrote files and ran nothing, so a diff that was never built is not mistaken for a checked one, and the turn is asked once whether any of it runs.
- - Added a nudge to a turn that has read for eight rounds without writing anything, so work that is settled is written down while there is still a turn left to change.
- - Added npm publication of `@brave/bravebot`, so `npm install -g @brave/bravebot` installs a release, with the binary verified against its published checksum.
- - Changed the model list to the subset this agent is offered, and the default to `automatic-brave-bot`. The older `automatic` still resolves to it. ([#129](https://github.com/brave-experiments/brave-bot/issues/129))
- - Changed a turn to be told where it is working: the directory, the platform, the shell, whether the tree is a checkout, and today's date, so it no longer spends two prompts running `pwd` to find out.
- - Improved the wait before a reply on Bedrock by telling the service which part of a request it has already read, rather than paying for a whole conversation again every round.
- - Improved how much a turn gets done per round: calls that do not depend on each other are asked together, and a read with no window returns the file up to a page instead of thirty lines at a time.
- - Fixed a quarantined command result not saying what would show it, which left a turn concluding the shell was a dead end and reading files one at a time. It now names reading the output this turn, vouching for the command, and reading a file directly.
+ - Added code navigation through a language server: jump to a definition, find references, read a hover, list the symbols in a file or the workspace, and follow a call in either direction. The server runs with your access once you allow it, and its index is cached so later sessions start fast.
+ - Added fetching a URL, so an agent can read a doc page or the issue behind an error. It asks before each one, and the page is quarantined: a page telling it to ignore its instructions is talking to nobody.
+ - Added vi editing in the prompt box, with the modes, motions, operators, text objects like `ci(`, and visual mode drawn as you select. Turn it on in `/config`; the box is otherwise unchanged.
+ - Added background commands, so an agent can start a server and then use it. `run` hands back a job name and `job_output` reads what it has printed since the last look.
+ - Added regular expressions to search. A pattern is now matched as one instead of being treated as literal text and reported as no matches.
+ - Added reading images. A screenshot or scanned page is now readable, though only a component with no tools looks at it.
+ - Added npm as a way to install: `npm install -g @brave/bravebot`. The binary is checked against its published checksum.
+ - Added `/config`, a panel for interface preferences, starting with vi editing.
+ - Added project settings: `.bravebot/settings.json` and `settings.local.json` beside your work now layer over the global file, and `bravebot doctor` names which file a value came from.
+ - Added the changed lines to what an edit reports, so an agent can see what it wrote instead of a count of replacements.
+ - Added a warning when a turn edited files and ran nothing, so an unbuilt diff is not mistaken for a checked one. The agent is also asked once whether any of it runs.
+ - Added a nudge to an agent that has read for eight rounds without writing anything, so settled work lands while the turn is still going.
+ - Changed the model list to the ones this agent is offered, and the default to `automatic-brave-bot`. `automatic` still resolves to it. ([#129](https://github.com/brave-experiments/brave-bot/issues/129))
+ - Changed the prompt to state the working directory, platform, shell, whether the tree is a checkout, and the date, so an agent stops running `pwd` to find out.
+ - Improved speed on Bedrock by telling the service which part of a request it has already read, instead of paying full price for the whole conversation every round.
+ - Improved how much gets done per round: independent calls go out together, and a read with no line range returns the file up to a page instead of thirty lines at a time.
+ - Fixed quarantined command output looking like a dead end, which left agents reading files one at a time. It now says how to see the output, vouch for the command, or read the file directly.
 
 ## [0.4.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.4.0)
 
