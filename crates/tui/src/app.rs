@@ -1903,9 +1903,15 @@ fn event_loop(
                 needs_draw = true;
             }
             Action::AddDirectory(directory) => {
+                // The snapshot holds a trust map without this directory's rule in it, while the
+                // directory itself would stay open.
+                session.close_rewind_window();
                 add_directory(&mut session, &mut workspace, &mut trust, &directory);
             }
             Action::ChangeDirectory(directory) => {
+                // The record moves with the working directory, so the snapshot describes a
+                // session that is no longer written where it was.
+                session.close_rewind_window();
                 if change_directory(&mut session, &mut workspace, &mut trust, &directory)
                     && session.turns > 0
                 {
@@ -1935,6 +1941,8 @@ fn event_loop(
                 }
             }
             Action::Rename(name) => {
+                // The snapshot holds the name the session had before it was renamed.
+                session.close_rewind_window();
                 if name.is_empty() {
                     session.note(t!(session_rename_needs_a_name));
                 } else if stored.rename(&name) {
@@ -1970,6 +1978,8 @@ fn event_loop(
                 needs_draw = true;
             }
             Action::Compact => {
+                // The snapshot holds the conversation as it was before it was shortened.
+                session.close_rewind_window();
                 let events;
                 (conversation, events) =
                     compact_animated(terminal, &mut session, config, conversation, &trust)?;
@@ -2088,7 +2098,8 @@ fn event_loop(
                 }
             }
             Action::Run(line) => {
-                session.previous_turn = None;
+                // The command is in the conversation, and the workspace never saw what it wrote.
+                session.close_rewind_window();
                 let events =
                     run_command(terminal, &mut session, &workspace, &line, &mut conversation)?;
                 // Saved like a turn, and for the same reason: the command is in the conversation

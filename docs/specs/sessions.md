@@ -398,8 +398,11 @@ not, and a rewind treats it as a path that will not go back rather than as a fil
 there. A path that will not go back is named on the line that reports the rewind, and the rest of
 the rewind still happens.
 
-One turn is as far back as it goes, and the window closes when the next turn begins. `/clear`
-closes it too, and so does a shell-mode command, which the workspace does not see.
+One turn is as far back as it goes, and the window closes when the next turn begins. Anything
+else that changes the session outside a turn closes it as well: `/clear`, `/compact`, `/rename`,
+`/add-dir`, `/cd`, and a shell-mode command, whose writes the workspace never saw. `/undo` then
+says there is nothing left to undo rather than rewinding to a snapshot that describes a different
+session.
 
 **Why.** A turn that went wrong is the case with no clean recovery: `git checkout` takes the
 user's own uncommitted work with it, and `/clear` throws away the context that was worth keeping.
@@ -419,6 +422,7 @@ until the turn after it.
 `verified-by: bravebot_agent::workspace::a_file_past_the_rewind_budget_is_remembered_but_not_kept`
 `verified-by: bravebot_tui::sessions::truncating_an_audit_log_removes_events_from_undone_turns`
 `verified-by: bravebot_tui::state::clearing_drops_the_transcript_and_what_it_spent`
+`verified-by: bravebot_tui::state::closing_the_rewind_window_leaves_nothing_to_rewind_to`
 
 
 ## Known costs
