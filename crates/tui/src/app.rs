@@ -97,6 +97,9 @@ const EXIT_COMMAND: &str = "/exit";
 /// The line that writes the transcript as a markdown file.
 const EXPORT_COMMAND: &str = "/export";
 
+/// The line that rewinds the conversation and restores files changed in the last turn.
+const UNDO_COMMAND: &str = "/undo";
+
 /// One command, and what it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Command {
@@ -113,7 +116,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 12] {
+pub fn commands() -> [Command; 13] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -169,6 +172,11 @@ pub fn commands() -> [Command; 12] {
             name: EXPORT_COMMAND,
             argument: "[path]",
             description: t!(command_export),
+        },
+        Command {
+            name: UNDO_COMMAND,
+            argument: "",
+            description: t!(command_undo),
         },
         Command {
             name: EXIT_COMMAND,
@@ -254,8 +262,10 @@ pub enum Action {
     /// Put the transcript in front of the user in their editor. Needs the terminal, which the
     /// loop owns, and gives the session nothing back.
     Show,
-    /// Write the transcript to a markdown file, at the path the line named or a default one.
+    /// Export the session transcript to a markdown file.
     Export(Option<String>),
+    /// Undo the last turn. Needs the workspace and conversation.
+    Undo,
     Quit,
 }
 
@@ -851,7 +861,15 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
                 .expect("the guard just matched")
                 .to_string();
             session.clear_input();
-            Action::Export(Some(path).filter(|p| !p.is_empty()))
+            if path.is_empty() {
+                Action::Export(None)
+            } else {
+                Action::Export(Some(path))
+            }
+        }
+        KeyCode::Enter if session.input().trim() == UNDO_COMMAND => {
+            session.clear_input();
+            Action::Undo
         }
         KeyCode::Enter if argument_to(session.input(), ADD_DIR_COMMAND).is_some() => {
             let directory = argument_to(session.input(), ADD_DIR_COMMAND)
@@ -1793,15 +1811,58 @@ fn event_loop(
             }
             Action::Export(path) => {
                 let markdown = crate::render::as_markdown(&session, stored.title());
-                let written = crate::sessions::export(
+                let exported_path = crate::sessions::export(
                     workspace.root(),
                     stored.id(),
                     path.as_deref(),
                     &markdown,
                 );
-                match written {
-                    Ok(at) => session.note(t!(session_exported, path = at.display().to_string())),
+                match exported_path {
+                    Ok(p) => session.note(t!(session_exported, path = p.display().to_string())),
                     Err(e) => session.note(t!(session_export_failed, problem = e.to_string())),
+                }
+                needs_draw = true;
+            }
+            Action::Undo => {
+                if let Some(snapshot) = session.previous_turn.take() {
+                    workspace.restore_backups(std::mem::take(&mut session.last_turn_backups));
+
+                    conversation = bravebot_agent::Conversation::restored(snapshot.conversation);
+                    session.turns = snapshot.turns;
+                    session.tokens = snapshot.tokens;
+                    session.restore_spend(snapshot.tokens, snapshot.spend);
+                    session.restore_timing(snapshot.timing);
+                    session.written = 0;
+                    session.finished = None;
+                    trust = snapshot.trust;
+                    programs = snapshot.programs;
+
+                    session.transcript.truncate(snapshot.transcript_len);
+                    stored.truncate_audit(session.turns + 1);
+
+                    if snapshot.turns == 0 && !snapshot.was_wrote {
+                        stored.discard_unwritten();
+                    } else {
+                        stored.save(
+                            &snapshot.title,
+                            crate::sessions::Standing {
+                                conversation: &conversation.snapshot(),
+                                turns: session.turns,
+                                tokens: session.tokens,
+                                spend: session.spend_by_turn(),
+                                timing: session.timing_by_turn(),
+                                model: session.served_model(),
+                                todos: &session.todos_by_turn(),
+                                trust: &trust,
+                                programs: &programs,
+                                directories: workspace.added_directories(),
+                                manifest: None,
+                            },
+                        );
+                    }
+                    session.note(t!(session_last_turn_undone));
+                } else {
+                    session.note(t!(session_nothing_to_undo));
                 }
                 needs_draw = true;
             }
@@ -1953,6 +2014,20 @@ fn event_loop(
                 // press that nobody is there to make.
                 let mut sending = Some(prompt);
                 while let Some(prompt) = sending {
+                    session.previous_turn = Some(crate::state::TurnSnapshot {
+                        conversation: conversation.snapshot(),
+                        turns: session.turns,
+                        tokens: session.tokens,
+                        spend: session.spend_by_turn().clone(),
+                        timing: session.timing_by_turn().clone(),
+                        trust: trust.clone(),
+                        programs: programs.clone(),
+                        transcript_len: session.transcript.len(),
+                        title: stored.title().to_string(),
+                        was_wrote: stored.resumable().is_some(),
+                    });
+                    let _ = workspace.take_backups();
+
                     // Both are threaded through: a turn that writes untrusted data into a trusted
                     // path records that, and the next turn must honour it, and a turn that has been
                     // had is a turn the next one can be asked about.
@@ -1968,6 +2043,8 @@ fn event_loop(
                         programs,
                         &permissions,
                     )?;
+
+                    session.last_turn_backups = workspace.take_backups();
 
                     // Written after each turn rather than at the end, because the end may never
                     // come: the session worth resuming is the one whose machine slept and never
@@ -1999,6 +2076,7 @@ fn event_loop(
                 }
             }
             Action::Run(line) => {
+                session.previous_turn = None;
                 let events =
                     run_command(terminal, &mut session, &workspace, &line, &mut conversation)?;
                 // Saved like a turn, and for the same reason: the command is in the conversation

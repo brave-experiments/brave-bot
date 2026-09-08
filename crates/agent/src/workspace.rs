@@ -20,6 +20,7 @@ use bravebot_core::policy::{Denial, Policy};
 use bravebot_core::value::Labelled;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The most an attachment may weigh.
@@ -113,6 +114,24 @@ pub struct Workspace {
     /// A field rather than a constant so a test can reach the cap without writing a hundred
     /// thousand files, and so a host on a slow filesystem can say so.
     search_files: usize,
+    /// What the files this turn has written held before it wrote to them.
+    ///
+    /// Behind a lock and a handle because a workspace is cloned into the turn that uses it, and a
+    /// rewind has to see what that copy wrote. Nothing here is read: the bytes are carried back to
+    /// the path they came from and never inspected.
+    backups: Arc<Mutex<Vec<Backup>>>,
+}
+
+/// What a path held before a turn wrote to it.
+///
+/// Carried, never read. The driver hands the bytes back to the path they came from and has no
+/// business looking at them on the way.
+#[derive(Debug, Clone)]
+pub struct Backup {
+    /// The file, resolved to an absolute path as the write resolved it.
+    pub path: PathBuf,
+    /// What was there, or `None` where the write created the file.
+    pub was: Option<Vec<u8>>,
 }
 
 /// What changed when the working directory moved.
@@ -146,6 +165,7 @@ impl Workspace {
             root: canonical,
             added: Vec::new(),
             search_files: MAX_SEARCH_FILES,
+            backups: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -788,6 +808,7 @@ impl Workspace {
             })?;
 
         let resolved = self.resolve(&relative)?;
+        self.record_backup(&resolved);
 
         let proof = policy.authorise_content_release("file_write", "contents");
         let body = contents.clone().declassify(&proof);
@@ -842,12 +863,57 @@ impl Workspace {
             })?;
         }
 
+        self.record_backup(&resolved);
+
         std::fs::write(&resolved, body).map_err(|e| WorkspaceError::Io {
             path: relative,
             detail: e.to_string(),
         })?;
 
         Ok(resolved)
+    }
+
+    /// Keep what a path holds before this turn overwrites it.
+    ///
+    /// The first write of a turn is the one worth keeping: a path written twice was already
+    /// changed by the first, so the second write's contents are this turn's doing and rewinding
+    /// to them would leave the turn half undone.
+    fn record_backup(&self, resolved: &Path) {
+        let Ok(mut backups) = self.backups.lock() else {
+            return;
+        };
+        if backups.iter().any(|backup| backup.path == resolved) {
+            return;
+        }
+        let was = std::fs::read(resolved).ok();
+        backups.push(Backup {
+            path: resolved.to_path_buf(),
+            was,
+        });
+    }
+
+    /// What this turn has written so far, clearing it so the next turn starts with none.
+    pub fn take_backups(&self) -> Vec<Backup> {
+        let Ok(mut guard) = self.backups.lock() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut *guard)
+    }
+
+    /// Put back what a turn wrote over.
+    ///
+    /// A path whose file did not exist is removed again.
+    pub fn restore_backups(&self, backups: Vec<Backup>) {
+        for backup in backups {
+            match backup.was {
+                Some(bytes) => {
+                    let _ = std::fs::write(&backup.path, bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&backup.path);
+                }
+            }
+        }
     }
 }
 

@@ -654,6 +654,48 @@ impl Handle {
         });
     }
 
+    /// Drop what the turns from `from_turn` on decided.
+    ///
+    /// A rewound turn's gates decided about a turn that is no longer in the conversation, and a
+    /// trail that still holds them describes a session nobody can read back. A line the file was
+    /// not written by this program is kept rather than dropped: an unreadable trail is somebody
+    /// else's to explain, and quietly deleting it would be the wrong answer to it.
+    pub fn truncate_audit(&self, from_turn: usize) {
+        let Some(directory) = self.directory() else {
+            return;
+        };
+        let path = directory.join(format!("{}.audit.jsonl", self.id));
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let mut kept = String::new();
+        for line in contents.lines() {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
+                && let Some(turn) = entry["turn"].as_u64()
+                && turn as usize >= from_turn
+            {
+                continue;
+            }
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        let _ = write_secure(&path, kept.as_bytes());
+    }
+
+    /// Remove what this session wrote, for a rewind that went back past its first turn.
+    ///
+    /// A record of a session with no turns in it is a session nobody can resume into anything,
+    /// and leaving one behind would put an empty row in the list for every rewind. The handle
+    /// goes back to being unwritten, so the next turn names the session after its own prompt.
+    pub fn discard_unwritten(&mut self) {
+        if let Some(directory) = self.directory() {
+            let _ = std::fs::remove_file(directory.join(format!("{}.json", self.id)));
+            let _ = std::fs::remove_file(directory.join(format!("{}.audit.jsonl", self.id)));
+        }
+        self.wrote = false;
+        self.title.clear();
+    }
+
     /// The directory to write into, made on first use.
     fn directory(&self) -> Option<PathBuf> {
         // Asked before the directory is resolved, not after: creating it is itself a write, and an
@@ -1647,6 +1689,37 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
 
         assert!(fork(&root, "manifest-sess").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn truncating_an_audit_log_removes_events_from_undone_turns() {
+        let root = std::env::temp_dir().join("bravebot-audit-truncate");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+
+        let handle = Handle::begin(&root);
+        let stamped = crate::audit::Stamped {
+            at: 1,
+            event: bravebot_core::event::Event::GatePassed {
+                gate: "file_read",
+                detail: "secret.txt".to_string(),
+            },
+        };
+
+        handle.append_audit(1, std::slice::from_ref(&stamped));
+        handle.append_audit(2, &[stamped]);
+
+        let audit_before = audit_of(&root, handle.id());
+        assert_eq!(audit_before.len(), 2);
+
+        handle.truncate_audit(2);
+
+        let audit_after = audit_of(&root, handle.id());
+        assert_eq!(audit_after.len(), 1);
+        assert!(audit_after.contains_key(&1));
+        assert!(!audit_after.contains_key(&2));
 
         let _ = std::fs::remove_dir_all(&root);
     }

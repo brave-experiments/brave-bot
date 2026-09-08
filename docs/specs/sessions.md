@@ -374,6 +374,32 @@ the invariant that finished autonomous runs have a definite end.
 
 `verified-by: bravebot_tui::sessions::forking_a_manifest_session_is_refused`
 
+<a id="SESSION-19"></a>
+### SESSION-19: the last turn can be rewound, on disk and in the conversation together
+
+`/undo` puts the session back where it stood before the most recent turn. Every path that turn
+wrote through a file tool goes back to what it held first, and one the turn created is removed.
+The conversation returns to its pre-turn snapshot, and with it the turn count, the spend, the
+timing, the trust map, the trusted programs, and the transcript. The turn's audit lines are
+dropped, since they decided about a turn that is no longer in the conversation. A rewind that
+goes back past the session's first turn removes its record rather than leaving one with nothing
+in it.
+
+One turn is as far back as it goes, and the window closes when the next turn begins. `/clear`
+closes it too, and so does a shell-mode command, which the workspace does not see.
+
+**Why.** A turn that went wrong is the case with no clean recovery: `git checkout` takes the
+user's own uncommitted work with it, and `/clear` throws away the context that was worth keeping.
+Disk and conversation move together because either one alone leaves the transcript describing a
+tree that is not there, which is worse than neither.
+
+`verified-by: bravebot_agent::workspace::a_rewind_puts_back_what_a_turn_overwrote`
+`verified-by: bravebot_agent::workspace::a_rewind_removes_a_file_the_turn_created`
+`verified-by: bravebot_agent::workspace::a_path_written_twice_in_a_turn_rewinds_to_before_the_first_write`
+`verified-by: bravebot_agent::workspace::taking_the_backups_leaves_the_next_turn_with_none`
+`verified-by: bravebot_tui::sessions::truncating_an_audit_log_removes_events_from_undone_turns`
+`verified-by: bravebot_tui::state::clearing_drops_the_transcript_and_what_it_spent`
+
 
 ## Known costs
 
@@ -386,3 +412,13 @@ the invariant that finished autonomous runs have a definite end.
   The record does hold the true path, so the fix is to filter on it. `two_directories_do_not_share_a_key`
   does not cover this: it compares `/a/one` with `/a/two`, which differ before the mapping is
   applied.
+
+- **A rewind sees file-tool writes and nothing else.** The backups are taken inside the workspace,
+  so a turn that changed a file by running a program instead (`run`, per [run.md](tools/run.md))
+  leaves nothing to put back. `/undo` still reports one turn rewound, and the conversation is,
+  but that program's changes stay on disk. Covering them would mean snapshotting the tree around
+  every command rather than around every write, which is a different and much larger mechanism.
+
+- **A rewind overwrites edits made since the turn.** What goes back is what the path held before
+  the turn wrote to it, so a file the user edited themselves in between loses that edit. Nothing
+  compares the file against what the turn left there, and nothing asks first.
