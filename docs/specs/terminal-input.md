@@ -410,8 +410,8 @@ row runs past the edge: a row that wrapped would put the list a row over the hei
 and push the hint line off the screen.
 
 The hint line carries what the session is doing (the mode in force where it is not asking, the
-trail, how full the context is, the key that opens the delegates where the session has spawned any)
-and then `? for shortcuts`. It lists no other binding of its own, and it does not report the
+trail, how full the context is and on what footing it knows that, INPUT-22, the key that opens the
+delegates where the session has spawned any) and then `? for shortcuts`. It lists no other binding of its own, and it does not report the
 confinement. The trail key is named only **once a turn has left a trail to look at**: a trail is
 recorded when the turn it belongs to ends, so before then the line would be offering a press that
 changes nothing on screen.
@@ -756,3 +756,53 @@ reaches for it before reading anything.
 `verified-by: bravebot_tui::app::the_mode_can_be_changed_while_a_turn_runs`
 `verified-by: bravebot_agent::permission_mode::the_key_cycles_three_modes_without_the_flag`
 `verified-by: bravebot_agent::permission_mode::a_session_started_in_bypass_can_cycle_out_of_it`
+
+
+<a id="INPUT-22"></a>
+### INPUT-22: the context reading says which of three things the session knows
+
+A session that has measured a request states how full the context is, as a percentage of the budget
+the conversation is compacted at, capped at a hundred. A conversation shortened underneath that
+figure says it was compacted rather than a percentage, because the number it held describes an
+exchange that is not the one on screen. A session that has measured nothing says nothing.
+
+**A percentage against a budget nobody advertised is marked as approximate.** The budget is a
+window the endpoint reported for the model in force, a figure somebody set by hand, or a default
+standing in for both. The default is a number chosen to be safe against models it knows nothing
+about, so a reading against it is drawn with a mark saying it is one.
+
+**A measurement is taken wherever one exists, not only where a turn ended well.** A session resumed
+from disk opens with what the last request of the session it read came to. A turn that failed after
+sending a request reports what that request came to. A turn that sent nothing leaves the reading
+where it was, which for a session that has sent nothing at all is absent.
+
+**Why.** This reading is what a person uses to decide whether to compact, and it is the only
+account of the size of a conversation that exists here: the server reports what a request cost and
+never what it had room for, and there is no tokeniser to count with. Three states drawn as one
+blank line make the figure look intermittent, and a figure that comes and goes is one people stop
+reading.
+
+The mark on a guessed budget is the difference between two readings of a hundred per cent that ask
+for opposite things. Against a window the endpoint stated, it means shorten the conversation.
+Against the default, it may only mean the default is too small for the model in force, and the
+answer is to set the budget rather than to compact.
+
+`verified-by: bravebot_tui::state::how_full_the_context_is_comes_back_as_a_percentage`
+`verified-by: bravebot_tui::state::a_request_past_the_budget_reads_as_full_rather_than_more_than_full`
+`verified-by: bravebot_tui::state::a_context_measured_at_nothing_is_a_context_nobody_has_measured`
+`verified-by: bravebot_tui::state::a_compacted_session_reports_compacted_occupancy`
+`verified-by: bravebot_tui::state::updating_budget_retains_token_count_with_new_capacity`
+`verified-by: bravebot_tui::state::a_budget_that_did_not_move_can_still_stop_being_one_anybody_advertised`
+`verified-by: bravebot_tui::state::clearing_a_session_forgets_how_full_the_old_one_was`
+`verified-by: bravebot_tui::render::the_hint_line_says_how_full_the_context_is`
+`verified-by: bravebot_tui::render::the_hint_line_marks_a_guessed_budget`
+`verified-by: bravebot_tui::render::the_hint_line_reports_a_compacted_context`
+`verified-by: bravebot_tui::render::the_hint_line_says_nothing_about_an_unmeasured_context`
+`verified-by: bravebot_tui::app::a_failed_turn_measures_context_if_requests_were_sent`
+`verified-by: bravebot_tui::app::a_failed_turn_with_no_requests_sent_remains_unmeasured`
+`verified-by: bravebot_agent::conversation::a_restored_conversation_remembers_what_its_last_request_came_to`
+`verified-by: bravebot_agent::conversation::compacting_forgets_a_measurement_of_the_conversation_it_replaced`
+`verified-by: bravebot_config::lib::a_default_budget_is_marked_as_guessed`
+`verified-by: bravebot_config::lib::an_advertised_budget_is_not_marked_as_guessed`
+`verified-by: bravebot_config::lib::a_budget_set_by_hand_is_not_marked_as_guessed`
+`verified-by: bravebot_config::lib::a_window_nobody_advertised_leaves_an_adopted_budget_standing_and_marks_it_guessed`
