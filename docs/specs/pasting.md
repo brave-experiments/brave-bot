@@ -38,16 +38,29 @@ a second reason to trust it.
 ### PASTE-1: a long paste folds to a marker, and the words are what get sent
 
 More than a couple of lines folds to `[Pasted text #2 +40 lines]`, counting the lines a person
-would count. The words around it are left alone, the text is put back before the turn is built, and
-a short paste lands whole. A paste into a command line is never folded. A paste ending in a newline
-does not send.
+would count. The words around it are left alone, and a short paste lands whole. A paste into a
+command line is never folded. A paste ending in a newline does not send.
+
+The words are put back where the line leaves the box, so the request, the transcript and the
+history all hold the paste itself. The marker goes no further than the box: a prompt coming back
+for editing after a stop comes back behind it.
 
 **Why.** A stack trace would otherwise push the reply being read off the screen. Nothing is hidden:
 what is about to be sent is what the prompt says, and deleting the marker drops the words.
 
+**Why the marker stops at the box.** It is a handle on text that only the session holding it can
+put back. In the transcript it makes the conversation claim something the planner was never given.
+In the history it comes back in a later session naming nothing, and the placeholder is sent in
+place of everything the person pasted, with nothing on the screen to say so.
+
 `verified-by: bravebot_tui::state::a_folded_paste_counts_the_lines_a_person_would_count`
 `verified-by: bravebot_tui::state::a_folded_paste_leaves_the_words_around_it_alone`
-`verified-by: bravebot_tui::state::a_folded_paste_is_put_back_before_the_turn_is_built`
+`verified-by: bravebot_tui::state::a_folded_paste_is_put_back_where_the_line_leaves_the_box`
+`verified-by: bravebot_tui::state::the_transcript_shows_the_words_a_folded_paste_stood_for`
+`verified-by: bravebot_tui::state::a_folded_paste_is_remembered_as_the_words_it_stood_for`
+`verified-by: bravebot_tui::state::a_paste_queued_behind_a_turn_is_remembered_as_its_words`
+`verified-by: bravebot_tui::state::a_recalled_prompt_carries_the_words_that_were_pasted_into_it`
+`verified-by: bravebot_tui::state::a_stopped_turn_puts_a_folded_paste_back_behind_its_marker`
 `verified-by: bravebot_tui::state::a_short_paste_lands_in_the_box_whole`
 `verified-by: bravebot_tui::state::a_paste_into_a_command_line_is_never_folded`
 `verified-by: bravebot_tui::render::a_folded_paste_keeps_its_lines_off_the_screen`

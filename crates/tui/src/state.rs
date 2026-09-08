@@ -2315,14 +2315,28 @@ impl Session {
     /// drop that paste, and one who copied a marker to somewhere else in the line meant the words
     /// twice.
     ///
-    /// Called where the turn is built and nowhere else. The session keeps the folded line
-    /// throughout, so the box, the transcript, the history and a cancelled turn coming back all
-    /// say what the user was looking at, and only the thing that talks to the model is given the
-    /// words.
+    /// Called where the line leaves the box, so the words are what is sent, what the transcript
+    /// keeps and what the history remembers. The box is the only place a marker belongs: it is
+    /// there to keep a stack trace from taking the screen while somebody is typing around it, and
+    /// a marker that outlived the line would be a handle on words this session is the only one
+    /// holding.
     pub fn unfolded(&self, line: &str) -> String {
         let mut line = line.to_string();
         for pasted in &self.pasted_text {
             line = line.replace(&pasted.marker, &pasted.text);
+        }
+        line
+    }
+
+    /// A line with every paste in it put back behind the marker that stood for it.
+    ///
+    /// The inverse, for a line coming back to the box after a turn was stopped. What returns is
+    /// the line as it was typed, because the box is where a long paste takes the screen and
+    /// somebody who has just stopped a turn is about to edit the prompt, not read it.
+    pub fn folded(&self, line: &str) -> String {
+        let mut line = line.to_string();
+        for pasted in &self.pasted_text {
+            line = line.replace(&pasted.text, &pasted.marker);
         }
         line
     }
@@ -2580,7 +2594,10 @@ impl Session {
         // Only where the box is empty. A user who typed while the turn ran meant those words,
         // and putting the old prompt over the top of them would lose the newer of the two.
         if self.input.trim().is_empty() {
-            self.set_input(prompt);
+            // Back the way it was typed. A paste that returned as its words would fill the box
+            // somebody is about to edit with the stack trace they folded away in the first place.
+            let returning = self.folded(&prompt.into());
+            self.set_input(returning);
             // The pictures come back with the words. A line that returned without them would
             // return carrying markers that name nothing, and the user has no way to tell.
             self.pasted = std::mem::take(&mut self.sent_pasted);
@@ -2779,19 +2796,22 @@ impl Session {
     /// Clears the field and records the prompt in the transcript, so the display reflects
     /// the submission even before a reply arrives.
     ///
+    /// A folded paste is put back to its words here, which is where the line stops being
+    /// something being typed and becomes something that was sent.
     pub fn submit(&mut self) -> Option<String> {
         if self.status != Status::Idle {
             return None;
         }
-        let prompt = self.input.trim().to_string();
-        if prompt.is_empty() {
+        let typed = self.input.trim().to_string();
+        if typed.is_empty() {
             return None;
         }
-        // Settled here, from the line as it was sent. Everything still named goes; a marker the
-        // user deleted is an attachment they took off, and it goes nowhere. Pictures settle the
-        // same way and at the same moment, since a marker rubbed out means the same thing whether
-        // the thing behind it was dropped or pasted.
-        let taken = self.take_line(&prompt);
+        let prompt = self.unfolded(&typed);
+        // Settled from the line as it was typed, since that is where the markers are. Everything
+        // still named goes; a marker the user deleted is an attachment they took off, and it goes
+        // nowhere. Pictures settle the same way and at the same moment, since a marker rubbed out
+        // means the same thing whether the thing behind it was dropped or pasted.
+        let taken = self.take_line(&typed);
         // Recorded here rather than in `begin_turn`, because a queued prompt was recorded when it
         // was queued: from the person's side that is when they sent it.
         self.remember(&prompt);
@@ -2810,13 +2830,14 @@ impl Session {
         if self.status != Status::Working {
             return false;
         }
-        let prompt = self.input.trim().to_string();
-        if prompt.is_empty() {
+        let typed = self.input.trim().to_string();
+        if typed.is_empty() {
             return false;
         }
         // Resolved before the line is taken, because taking it clears what the markers stand for.
-        let resolved = self.resolved(&prompt);
-        let (attached, pasted) = self.take_line(&prompt);
+        let resolved = self.resolved(&typed);
+        let prompt = self.unfolded(&typed);
+        let (attached, pasted) = self.take_line(&typed);
         self.remember(&prompt);
         // Into the turn's reach the moment it is typed, rather than when the turn next asks. The
         // turn asks between rounds and a round can be a long wait; put there now, the line is
@@ -5001,7 +5022,7 @@ mod tests {
     /// Folding is a way of drawing a long line, not a way of sending one: the planner is given
     /// what pasting into the box has always given it.
     #[test]
-    fn a_folded_paste_is_put_back_before_the_turn_is_built() {
+    fn a_folded_paste_is_put_back_where_the_line_leaves_the_box() {
         let mut s = session();
         for c in "what is ".chars() {
             s.type_char(c);
@@ -5009,8 +5030,67 @@ mod tests {
         s.paste_text("one\ntwo\nthree\n");
 
         let prompt = s.submit().expect("submitted");
-        assert_eq!(prompt, "what is [Pasted text #1 +3 lines]");
-        assert_eq!(s.unfolded(&prompt), "what is one\ntwo\nthree\n");
+        assert_eq!(prompt, "what is one\ntwo\nthree\n");
+    }
+
+    /// The scrollback is the record of what was said, and what was said is the paste. A marker
+    /// left in it has the conversation claim something the planner was never given.
+    #[test]
+    fn the_transcript_shows_the_words_a_folded_paste_stood_for() {
+        let mut s = session();
+        for c in "look at ".chars() {
+            s.type_char(c);
+        }
+        s.paste_text("one\ntwo\nthree\n");
+        s.submit().expect("submitted");
+
+        let entry = s
+            .transcript
+            .last()
+            .expect("the prompt is in the transcript");
+        assert_eq!(entry.speaker, Speaker::User);
+        assert_eq!(entry.text, "look at one\ntwo\nthree\n");
+    }
+
+    /// A marker is a handle on text only the session holding it can put back. Remembered as one,
+    /// a prompt comes back in a later session naming nothing, and the placeholder is sent in
+    /// place of everything the person pasted with nothing on the screen to say so.
+    #[test]
+    fn a_folded_paste_is_remembered_as_the_words_it_stood_for() {
+        let mut s = session();
+        s.paste_text("one\ntwo\nthree\n");
+        s.submit().expect("submitted");
+
+        let entry = s.history.entries().last().expect("an entry");
+        assert_eq!(entry.prompt, "one\ntwo\nthree\n");
+    }
+
+    /// A prompt sent while a turn runs has been sent, so it is remembered as the words too.
+    #[test]
+    fn a_paste_queued_behind_a_turn_is_remembered_as_its_words() {
+        let mut s = session();
+        s.type_char('x');
+        s.submit().expect("submitted");
+        s.paste_text("one\ntwo\nthree\n");
+        assert!(s.queue(), "the prompt was not queued");
+
+        let entry = s.history.entries().last().expect("an entry");
+        assert_eq!(entry.prompt, "one\ntwo\nthree\n");
+    }
+
+    /// A prompt coming back for editing comes back as it was typed. Returned as its words, the
+    /// stack trace somebody folded away fills the box they are about to edit.
+    #[test]
+    fn a_stopped_turn_puts_a_folded_paste_back_behind_its_marker() {
+        let mut s = session();
+        for c in "what is ".chars() {
+            s.type_char(c);
+        }
+        s.paste_text("one\ntwo\nthree\n");
+        let prompt = s.submit().expect("submitted");
+
+        s.restore(prompt);
+        assert_eq!(s.input, "what is [Pasted text #1 +3 lines]");
     }
 
     /// Deleting the marker is the only way a user has to take a paste back, so it has to be the
@@ -5027,7 +5107,7 @@ mod tests {
         }
 
         let prompt = s.submit().expect("submitted");
-        assert_eq!(s.unfolded(&prompt), "never mind");
+        assert_eq!(prompt, "never mind");
     }
 
     /// A command runs exactly as it is written, so a paste into shell mode is never folded: a
@@ -5053,19 +5133,19 @@ mod tests {
         assert_eq!(s.input, "[Image #1][Pasted text #2 +3 lines]");
     }
 
-    /// A prompt recalled out of the history comes back with its marker in it. A marker naming
-    /// nothing would send the placeholder in place of everything the user pasted, and there is
-    /// nothing on the screen that would tell them it had.
+    /// A prompt recalled out of the history comes back as the words themselves, which is what
+    /// makes it recallable at all: the marker it was typed behind stands for text that only the
+    /// session holding it could put back.
     #[test]
-    fn a_recalled_prompt_still_names_what_was_pasted_into_it() {
+    fn a_recalled_prompt_carries_the_words_that_were_pasted_into_it() {
         let mut s = session();
         s.paste_text("one\ntwo\nthree\n");
-        let first = s.submit().expect("submitted");
+        s.submit().expect("submitted");
         s.complete("three lines", Vec::new(), 0);
 
-        s.set_input(first);
-        let again = s.submit().expect("submitted");
-        assert_eq!(s.unfolded(&again), "one\ntwo\nthree\n");
+        s.recall_older();
+        assert_eq!(s.input, "one\ntwo\nthree\n");
+        assert_eq!(s.submit().expect("submitted"), "one\ntwo\nthree");
     }
 
     /// A line with no marker in it is nobody's paste, and putting one back must not rewrite words

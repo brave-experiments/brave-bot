@@ -2987,15 +2987,6 @@ fn run_turn_animated(
     // are cheap handles; Egress builds its own connection pool.
     let worker_config = config.clone();
     let worker_workspace = workspace.clone();
-    // Every file named with `@` becomes context, which a turn treats as trusted: the user typed the
-    // path and their keystroke is what vouches for it, exactly as `--file` does on the command
-    // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
-    // sent and the files that came with it cannot disagree.
-    // A long paste sits in the line behind a marker, and this is where the marker is put back to
-    // the words it stands for. Folding one is a way of drawing a line, not a way of sending one:
-    // the planner is given what pasting into the box has always given it, and everything the user
-    // looks at keeps the short form.
-    let sent = session.unfolded(prompt);
     // No round limit: the person reading this screen is the bound, and a stop reaches a turn
     // mid-round. A number here would only interrupt work that was going fine.
     // Which tick of a loop this is, where it is one at all. A prompt the person typed in the
@@ -3005,7 +2996,7 @@ fn run_turn_animated(
     // the same one: the person may press the key while this turn runs, and the two halves reading it
     // at different moments is how they would come to disagree.
     let permission_mode = session.permission_mode();
-    let mut task = Task::new(&sent)
+    let mut task = Task::new(prompt)
         .with_rounds(None)
         .with_home(bravebot_agent::home::directory())
         .with_model(session.model().map(str::to_string))
@@ -3013,7 +3004,11 @@ fn run_turn_animated(
         .with_permissions(permissions.clone())
         .with_permission_mode(permission_mode)
         .ticking(tick);
-    for file in crate::entries::referenced(&sent) {
+    // Every file named with `@` becomes context, which a turn treats as trusted: the user typed the
+    // path and their keystroke is what vouches for it, exactly as `--file` does on the command
+    // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
+    // sent and the files that came with it cannot disagree.
+    for file in crate::entries::referenced(prompt) {
         task = task.with_file(file);
     }
     // Dropped files, read back out of the line the same way and for the same reason: a marker the

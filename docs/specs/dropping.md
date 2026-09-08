@@ -140,8 +140,7 @@ trusted slot for one to arrive in. What the planner is given instead is the file
 such recourse and resolves to a sentence saying a picture was pasted and cannot be shown.
 
 Only what talks to the model sees this. The box, the transcript and the history keep the marker,
-exactly as a folded paste keeps its own marker, because that is what was on the person's screen.
-See [pasting.md](pasting.md).
+because that is what was on the person's screen.
 
 **Why.** Dropping a file mid-turn is telling the agent which file to look at, and a name is enough
 for that: the planner reads it and goes to the file through the same gate it reads any other file
