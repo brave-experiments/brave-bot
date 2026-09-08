@@ -655,11 +655,11 @@ pub struct Output {
     /// charged to tool execution, and a turn that did most of its work in processors would read as
     /// one that ran a very slow subprocess.
     pub inference: std::time::Duration,
-    /// The command whose output this is, where a run produced it.
+    /// The command whose output this is and how it ended, where a run produced it.
     ///
     /// Recorded on the slot by the turn loop, since only a slot minted from a command may be
     /// offered to the user for reading.
-    pub printed_by: Option<String>,
+    pub printed_by: Option<crate::report::Command>,
     /// When the planner asked for the next tick of a self-paced loop.
     ///
     /// Travels back to whoever started the loop, which is the only thing that knows there is one.
@@ -770,11 +770,11 @@ struct Produced {
     usage: Usage,
     /// How long the tool waited on the model. Only a processor waits.
     inference: std::time::Duration,
-    /// The command whose output this is, where a run produced it.
+    /// The command whose output this is and how it ended, where a run produced it.
     ///
     /// Recorded on the slot by the turn loop, because only a slot minted from a command may be
     /// offered to the user for reading.
-    printed_by: Option<String>,
+    printed_by: Option<crate::report::Command>,
     /// When the planner asked for the next tick of a self-paced loop.
     wakeup: Option<crate::turn::Wakeup>,
     /// The delegates the kernel has approved and nobody has started yet.
@@ -2430,16 +2430,11 @@ fn run<S: Sink, C: Confirmer>(
 
             // Said in the driver's own words, from the exit codes and the clock, which are
             // structure rather than content: nothing here reads a byte of what the program
-            // printed. The stopped case is named first because it explains the missing codes
-            // that would otherwise be reported as steps killed for no stated reason.
+            // printed.
             let outcome = if let Some(after) = ran.stopped {
-                format!(
-                    "still running after {} seconds, so it was stopped; \
-                     what it printed first is here",
-                    after.as_secs()
-                )
+                crate::report::Outcome::Stopped(after)
             } else if ran.ended_well {
-                "succeeded".to_string()
+                crate::report::Outcome::Succeeded
             } else {
                 let failed: Vec<String> = ran
                     .failures()
@@ -2449,10 +2444,10 @@ fn run<S: Sink, C: Confirmer>(
                         None => format!("step {at} was killed"),
                     })
                     .collect();
-                failed.join(", ")
+                crate::report::Outcome::Failed(failed.join(", "))
             };
             let lines = text.lines().count();
-            let note = format!("{outcome}, {}", tally(lines, "line", "lines"));
+            let note = format!("{}, {}", outcome.summary(), tally(lines, "line", "lines"));
 
             let mut produced = Produced::new(
                 Labelled::new(text, label),
@@ -2466,8 +2461,11 @@ fn run<S: Sink, C: Confirmer>(
             // attacker wrote.
             produced.untrusted = !label.is_trusted();
             // What the slot will be told it came from, so the user can be asked to read it later
-            // and can see which command they are reading.
-            produced.printed_by = Some(displayed.clone());
+            // and can see which command they are reading, beside how it went.
+            produced.printed_by = Some(crate::report::Command {
+                line: displayed.clone(),
+                outcome,
+            });
             produced
         }
         // A run that produced nothing still says what happened. The plan is safe to repeat back:

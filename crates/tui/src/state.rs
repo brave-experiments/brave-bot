@@ -107,6 +107,8 @@ pub struct Output {
     pub total: usize,
     /// Whether the planner was allowed to read it.
     pub read_by_the_planner: bool,
+    /// How the command ended, as the driver said it from the exit codes and the clock.
+    pub outcome: bravebot_agent::report::Outcome,
 }
 
 /// Something the delegate view can open.
@@ -1434,6 +1436,7 @@ impl Session {
             lines: printed.lines,
             total: printed.total,
             read_by_the_planner: printed.read_by_the_planner,
+            outcome: printed.outcome,
         });
     }
 
@@ -4134,6 +4137,7 @@ mod tests {
                 lines: vec!["first".to_string(), "second".to_string()],
                 total: 2,
                 read_by_the_planner: read,
+                outcome: bravebot_agent::report::Outcome::Succeeded,
             });
         }
 

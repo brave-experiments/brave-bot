@@ -667,12 +667,17 @@ fn draw_output(frame: &mut Frame, session: &Session, output: &Output) -> Laid {
                 ),
                 Span::styled(format!("  {standing}"), Style::default().fg(colour)),
             ]),
-            // The command, which a person endorsed, so it is the driver's own record of what ran
-            // rather than something read out of a file.
-            Line::from(Span::styled(
-                format!("  {}", one_line(&output.command)),
-                dim(),
-            )),
+            // The command and how it ended, both the driver's own record of what ran rather than
+            // anything read out of what it printed. How it ended is here as well as on the row
+            // because a view opened on a long log shows its last lines, and the verdict of a build
+            // is not always in them.
+            Line::from(vec![
+                Span::styled(format!("  {}", one_line(&output.command)), dim()),
+                Span::styled(
+                    format!("  {}", output.outcome.summary()),
+                    Style::default().fg(mark_for(&output.outcome).1),
+                ),
+            ]),
         ]),
         areas[0],
     );
@@ -1054,21 +1059,30 @@ fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'s
     }
 }
 
-/// One row for what a command printed.
+/// How wide the word saying whether the planner read a command's output is drawn, so the counts
+/// beside it still line up down the right edge.
+const STANDING_COLUMN: usize = 8;
+
+/// One row for what a command printed: how the run ended, what ran, whether the planner read it,
+/// and how much it printed.
 ///
-/// The glyph says the thing a person cannot work out from the bytes and the thing the whole design
-/// turns on: whether the planner read this or was kept from it.
+/// The glyph says how it ended, in the same three marks a delegate's row uses, because a row that
+/// gives only the line count leaves a person unable to tell the build that passed from the one
+/// that failed. Whether the planner read the output is beside the count, in a word:
+/// it is the thing the whole design turns on, and a second glyph competing with the first says it
+/// to nobody who has not been told what the glyphs mean.
 fn output_row(output: &Output, highlighted: bool, width: usize) -> Line<'static> {
-    let (mark, colour) = if output.read_by_the_planner {
-        ("▸", theme::ok())
+    let (mark, colour) = mark_for(&output.outcome);
+    let (standing, standing_colour) = if output.read_by_the_planner {
+        (t!(watching_row_read), theme::ok())
     } else {
-        ("▪", theme::running())
+        (t!(watching_row_kept), theme::running())
     };
 
     let name = t!(watching_list_command);
     let count = t!(watching_lines, count = output.total);
 
-    let spent = 4 + NAME_COLUMN + count.chars().count() + 4;
+    let spent = 4 + NAME_COLUMN + STANDING_COLUMN + count.chars().count() + 6;
     let room = width.saturating_sub(spent);
     let command = one_line(&output.command);
     let command = if command.chars().count() > room {
@@ -1082,14 +1096,15 @@ fn output_row(output: &Output, highlighted: bool, width: usize) -> Line<'static>
         command + &" ".repeat(padding)
     };
 
-    let (mark_style, name_style, detail) = if highlighted {
+    let (mark_style, name_style, detail, standing_style) = if highlighted {
         let on_bar = Style::default().fg(theme::on_primary());
-        (on_bar, on_bar.add_modifier(Modifier::BOLD), on_bar)
+        (on_bar, on_bar.add_modifier(Modifier::BOLD), on_bar, on_bar)
     } else {
         (
             Style::default().fg(colour),
             Style::default().fg(theme::text()),
             dim(),
+            Style::default().fg(standing_colour),
         )
     };
 
@@ -1097,11 +1112,27 @@ fn output_row(output: &Output, highlighted: bool, width: usize) -> Line<'static>
         Span::styled(format!("  {mark} "), mark_style),
         Span::styled(format!("{name:<NAME_COLUMN$}"), name_style),
         Span::styled(format!("{command}  "), detail),
+        Span::styled(format!("{standing:<STANDING_COLUMN$}  "), standing_style),
         Span::styled(count, detail),
     ]);
     match highlighted {
         true => line.style(Style::default().bg(theme::brand_primary())),
         false => line,
+    }
+}
+
+/// The mark and the colour for how a command ended.
+///
+/// A run stopped at the wall-clock limit keeps the mark and the colour of one still working,
+/// because that is what it was doing when it was stopped: a server told to serve a page prints as
+/// it goes and never exits, and drawing that as a failure would say something about the program
+/// that is not true.
+fn mark_for(outcome: &bravebot_agent::report::Outcome) -> (&'static str, ratatui::style::Color) {
+    use bravebot_agent::report::Outcome;
+    match outcome {
+        Outcome::Succeeded => ("✓", theme::ok()),
+        Outcome::Failed(_) => ("✗", theme::fail()),
+        Outcome::Stopped(_) => ("●", theme::running()),
     }
 }
 
@@ -2742,6 +2773,16 @@ mod tests {
                 .join("\n")
         }
 
+        /// The one panel row that names `command`, so an assertion about one row is not answered
+        /// by another.
+        fn row_naming(panel: &str, command: &str) -> String {
+            panel
+                .lines()
+                .find(|row| row.contains(command))
+                .unwrap_or_else(|| panic!("{command} was not drawn: {panel}"))
+                .to_string()
+        }
+
         /// A delegate beginning, numbered the way the driver numbers them.
         fn spawn(session: &mut Session, kind: &'static str, task: &str) -> DelegateId {
             let id = DelegateId::nth(session.delegates().len() as u32 + 1);
@@ -2814,11 +2855,30 @@ mod tests {
         }
 
         fn ran(session: &mut Session, command: &str, read: bool, lines: &[&str], total: usize) {
+            printed(
+                session,
+                command,
+                read,
+                lines,
+                total,
+                bravebot_agent::report::Outcome::Succeeded,
+            );
+        }
+
+        fn printed(
+            session: &mut Session,
+            command: &str,
+            read: bool,
+            lines: &[&str],
+            total: usize,
+            outcome: bravebot_agent::report::Outcome,
+        ) {
             session.command_printed(bravebot_agent::report::Printed {
                 command: command.to_string(),
                 lines: lines.iter().map(|line| (*line).to_string()).collect(),
                 total,
                 read_by_the_planner: read,
+                outcome,
             });
         }
 
@@ -2919,6 +2979,88 @@ mod tests {
             assert!(
                 rendered(&session).contains("more lines were printed"),
                 "the view did not say what it left out"
+            );
+        }
+
+        /// A row that gives only the line count leaves a person unable to tell the build that
+        /// passed from the one that failed, and unable to tell either from a run still going: the
+        /// mark a delegate's row uses for that is the one this needs.
+        #[test]
+        fn a_command_row_says_how_the_run_ended() {
+            let mut session = Session::new("kernel-enforced");
+            spawn(&mut session, "reader", "find the parser");
+            printed(
+                &mut session,
+                "cargo build",
+                true,
+                &["ok"],
+                1,
+                bravebot_agent::report::Outcome::Succeeded,
+            );
+            printed(
+                &mut session,
+                "cargo test",
+                true,
+                &["ok"],
+                1,
+                bravebot_agent::report::Outcome::Failed("step 1 exited 101".to_string()),
+            );
+            session.watch();
+
+            let panel = listed(&session, 90, 24);
+            let row = |command: &str| row_naming(&panel, command);
+            assert!(
+                row("cargo build").contains('✓'),
+                "a command that succeeded was not marked as one: {}",
+                row("cargo build")
+            );
+            assert!(
+                row("cargo test").contains('✗'),
+                "a command that failed was not marked as one: {}",
+                row("cargo test")
+            );
+        }
+
+        /// A view opened on a long log draws its last lines, and the verdict of a build is not
+        /// always in them.
+        #[test]
+        fn a_commands_view_says_how_the_run_ended() {
+            let mut session = Session::new("kernel-enforced");
+            printed(
+                &mut session,
+                "cargo test",
+                true,
+                &["a line"],
+                1,
+                bravebot_agent::report::Outcome::Failed("step 1 exited 101".to_string()),
+            );
+            session.watch();
+            assert!(
+                rendered(&session).contains("step 1 exited 101"),
+                "the view did not say how the run ended"
+            );
+        }
+
+        /// Whether the planner read what a command printed is the thing the whole design turns
+        /// on, and the list is where somebody scanning several runs would look for it.
+        #[test]
+        fn a_command_row_says_whether_the_planner_read_it() {
+            let mut session = Session::new("kernel-enforced");
+            ran(&mut session, "cargo build", true, &["ok"], 1);
+            ran(&mut session, "cat notes", false, &["a line"], 1);
+            session.watch();
+
+            let panel = listed(&session, 90, 24);
+            let row = |command: &str| row_naming(&panel, command);
+            assert!(
+                row("cargo build").contains("read") && !row("cargo build").contains("not read"),
+                "a row the planner read was not drawn as one: {}",
+                row("cargo build")
+            );
+            assert!(
+                row("cat notes").contains("not read"),
+                "a row the planner was kept from was not drawn as one: {}",
+                row("cat notes")
             );
         }
 
@@ -4727,6 +4869,7 @@ mod tests {
             lines: vec!["first".to_string()],
             total: 1,
             read_by_the_planner: false,
+            outcome: bravebot_agent::report::Outcome::Succeeded,
         });
 
         let hint = hint_row_at(&session, 120, 24);

@@ -221,6 +221,41 @@ pub struct Shown {
     pub lines: usize,
 }
 
+/// How a command ended, said from the exit codes and the clock.
+///
+/// Structure rather than content: nothing here was read out of a byte the program printed, so it
+/// may be drawn on a row and told to the planner alike.
+///
+/// Three cases and not a boolean, because a run stopped at the wall-clock limit is neither of the
+/// other two. A server told to serve a page serves it, prints as it goes and never exits, and
+/// reporting that as a failure would be wrong. See [tools/run.md](../../../docs/specs/tools/run.md)
+/// RUN-11.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every stage exited zero, or a line with branches did what it was told.
+    Succeeded,
+    /// A stage exited non-zero or was killed, named as the driver names them.
+    Failed(String),
+    /// It outstayed the limit and was stopped, with what it had run for by then.
+    Stopped(std::time::Duration),
+}
+
+impl Outcome {
+    /// The driver's few words about how it ended, for the line the person watching reads.
+    pub fn summary(&self) -> String {
+        match self {
+            // Named first among the branches that produce this, because it explains the missing
+            // codes that would otherwise be reported as steps killed for no stated reason.
+            Self::Stopped(after) => format!(
+                "still running after {} seconds, so it was stopped; what it printed first is here",
+                after.as_secs()
+            ),
+            Self::Succeeded => "succeeded".to_string(),
+            Self::Failed(detail) => detail.clone(),
+        }
+    }
+}
+
 /// What a command printed, kept whole enough for a person to open.
 ///
 /// Sent for every run, whichever way the label went. What the planner may read decides what
@@ -241,6 +276,23 @@ pub struct Printed {
     /// The one thing a person cannot work out from the bytes, and the thing the whole design
     /// turns on: the same output either reached a model's context or did not.
     pub read_by_the_planner: bool,
+    /// How the command ended.
+    ///
+    /// The other thing a person cannot work out from the bytes: a build that printed twelve lines
+    /// and failed prints much the same twelve lines when it passes.
+    pub outcome: Outcome,
+}
+
+/// The command a result came from, and how it ended.
+///
+/// The two travel together because a run is reported by both: the person watching is shown the
+/// line they endorsed beside how it went, and the slot the output lands in records the same line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Command {
+    /// The command, as the plan the person endorsed showed it.
+    pub line: String,
+    /// How it ended.
+    pub outcome: Outcome,
 }
 
 /// What a delegate handed back, in the shape the person may read it.

@@ -293,6 +293,8 @@ watching-lines = { $count ->
 watching-output-head = ce que cette commande a affiché
 watching-output-read = le modèle a lu ceci
 watching-output-kept = le modèle n'a pas lu ceci
+watching-row-read = lu
+watching-row-kept = non lu
 watching-output-more = { $count ->
     [one] 1 ligne de plus a été affichée et n'est pas conservée
    *[other] { $count } lignes de plus ont été affichées et ne sont pas conservées

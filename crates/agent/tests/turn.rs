@@ -9950,4 +9950,9 @@ fn what_a_command_printed_reaches_the_person_watching() {
         !printed.read_by_the_planner,
         "output the planner was kept from was reported as read"
     );
+    assert_eq!(
+        printed.outcome,
+        bravebot_agent::report::Outcome::Succeeded,
+        "the row does not say how the run ended"
+    );
 }

@@ -291,6 +291,10 @@ watching-lines = { $count ->
 watching-output-head = what this command printed
 watching-output-read = the model has read this
 watching-output-kept = the model has not read this
+# Short enough to stand in a column beside a command line. The whole sentence is in the header of
+# the view the row opens.
+watching-row-read = read
+watching-row-kept = not read
 watching-output-more = { $count ->
     [one] 1 more line was printed and is not kept
    *[other] { $count } more lines were printed and are not kept

@@ -342,6 +342,7 @@ when things happened would move the row under them every time a command finished
 `verified-by: bravebot_tui::state::the_list_holds_delegates_and_commands_together`
 `verified-by: bravebot_tui::state::a_rows_place_in_the_list_does_not_move_when_the_next_command_runs`
 `verified-by: bravebot_tui::state::a_command_row_keeps_whether_the_planner_read_it`
+`verified-by: bravebot_tui::render::a_command_row_says_whether_the_planner_read_it`
 `verified-by: bravebot_tui::state::stepping_through_the_list_reaches_a_command_after_a_delegate`
 `verified-by: bravebot_tui::render::opening_a_command_shows_what_it_printed`
 `verified-by: bravebot_tui::render::output_the_planner_was_kept_from_is_marked_on_every_row`
@@ -362,6 +363,30 @@ planner read something is the one thing about it that cannot be worked out from 
 
 `verified-by: bravebot_tui::render::the_view_says_which_kind_of_thing_it_is_showing`
 `verified-by: bravebot_tui::render::the_view_says_whether_the_model_read_what_a_command_printed`
+
+<a id="WATCH-17"></a>
+### WATCH-17: a command's row and its view say how the run ended
+
+The row carries a mark for it, in the same three marks a delegate's row uses: one for a run whose
+every stage exited zero, one for a run a stage failed, and the mark of work still going for a run
+stopped at the wall-clock limit. The view says it in the driver's words, beside the command, which
+for a failure names the step and its code.
+
+It is said from the exit codes and the clock, and never from a byte the program printed.
+
+**Why.** A row that gives only the line count leaves a person unable to tell the build that
+passed from the one that failed, and unable to tell either from a run still going: twelve lines of
+a failing build look much like twelve lines of a passing one. The view says it as well as the row
+because a view opened on a long log draws its last lines, and the verdict is not always in them.
+
+**Why the mark of work still going, for a run that was stopped.** That is what it was doing. A
+server told to serve a page prints as it goes and never exits, so [tools/run.md](tools/run.md)
+RUN-11 has the limit end the run rather than fail it, and a cross beside it would say something
+about the program that is not true.
+
+`verified-by: bravebot_tui::render::a_command_row_says_how_the_run_ended`
+`verified-by: bravebot_tui::render::a_commands_view_says_how_the_run_ended`
+`verified-by: bravebot_agent::turn::what_a_command_printed_reaches_the_person_watching`
 
 ## Known costs
 

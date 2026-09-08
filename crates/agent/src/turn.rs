@@ -2031,10 +2031,11 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             KEPT_WIDTH,
                         );
                         reporter.printed(crate::report::Printed {
-                            command: command.clone(),
+                            command: command.line.clone(),
                             lines,
                             total,
                             read_by_the_planner: matches!(presented, Presentation::Visible(_)),
+                            outcome: command.outcome.clone(),
                         });
                     }
 
@@ -2060,7 +2061,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             if let Some(command) = &output.printed_by {
                                 policy.came_from_command(
                                     &reference.slot,
-                                    command,
+                                    &command.line,
                                     conversation.quarantine(),
                                 );
                             }
