@@ -1085,6 +1085,19 @@ mod tests {
         assert_eq!(conversation.compaction_boundary(), None);
     }
 
+    /// A session picked up tomorrow is as full as the one that was put down, and the figure saying
+    /// so is the server's, taken once and never recomputable here. Dropped on the way to disk, the
+    /// only way back to it is to spend a turn finding out.
+    #[test]
+    fn a_restored_conversation_remembers_what_its_last_request_came_to() {
+        let mut conversation = four_exchanges();
+        conversation.measured(90_000);
+
+        let restored = Conversation::restored(conversation.snapshot());
+
+        assert_eq!(restored.last_request_tokens(), 90_000);
+    }
+
     /// The figure said how large the conversation was before it was shortened. Kept, it would
     /// have the next turn open by trying to compact again on the strength of a measurement of
     /// something that no longer exists.
