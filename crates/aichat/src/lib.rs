@@ -316,7 +316,7 @@ impl<'a> AichatClient<'a> {
         loop {
             match self.complete_once(policy, request) {
                 Err(error) if worth_another_attempt(attempt, &error) => {
-                    std::thread::sleep(backoff(attempt));
+                    std::thread::sleep(wait_before_retry(attempt, &error));
                     attempt += 1;
                 }
                 result => return result,
@@ -394,7 +394,7 @@ impl<'a> AichatClient<'a> {
                         counted_by_server: false,
                         attempt,
                     });
-                    if !self.wait(backoff(attempt - 1)) {
+                    if !self.wait(wait_before_retry(attempt - 1, &error)) {
                         return Err(ChatError::Cancelled);
                     }
                 }
@@ -604,8 +604,19 @@ pub struct Progress<'a> {
 /// looking, and a machine coming back from sleep needs a moment before its network works.
 const ATTEMPTS: u32 = 3;
 
+/// How many times a 429/503 is retried before giving up.
+///
+/// Longer than [`ATTEMPTS`]: an open circuit or rate limit names a pause measured in tens of
+/// seconds, and three short backoffs would stop before the server was ready. Thirty with a
+/// sixty-second `Retry-After` is half an hour of waiting, which is the same order of patience
+/// the cluster wait-init already spends on the same backends.
+const OVERLOAD_ATTEMPTS: u32 = 30;
+
 /// How long to wait after the first failure. Doubled for each attempt after that.
 const BACKOFF: Duration = Duration::from_secs(1);
+
+/// Cap on a server-named pause, so a mis-set header cannot hold a turn open forever.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 
 /// How often a reply that has not started arriving looks up to see whether it should stop.
 ///
@@ -625,7 +636,7 @@ const CHUNKS_AHEAD: usize = 16;
 /// connection. A reply that arrived and would not decode is not a connection problem, and
 /// asking for it again would produce the same thing.
 fn worth_another_attempt(attempt: u32, error: &ChatError) -> bool {
-    if attempt >= ATTEMPTS {
+    if attempt >= max_attempts(error) {
         return false;
     }
     match error {
@@ -638,8 +649,28 @@ fn worth_another_attempt(attempt: u32, error: &ChatError) -> bool {
     }
 }
 
+fn max_attempts(error: &ChatError) -> u32 {
+    match error {
+        ChatError::Egress(bravebot_net::EgressError::Status {
+            status: 429 | 503, ..
+        }) => OVERLOAD_ATTEMPTS,
+        _ => ATTEMPTS,
+    }
+}
+
 fn backoff(failures: u32) -> Duration {
     BACKOFF * 2u32.pow(failures - 1)
+}
+
+/// Pause before a retry: the server's `Retry-After` when it named one, otherwise exponential backoff.
+fn wait_before_retry(failures: u32, error: &ChatError) -> Duration {
+    match error {
+        ChatError::Egress(e) => match e.retry_after() {
+            Some(pause) => pause.min(MAX_RETRY_AFTER).max(Duration::from_secs(1)),
+            None => backoff(failures),
+        },
+        _ => backoff(failures),
+    }
 }
 
 #[cfg(test)]
@@ -837,5 +868,49 @@ mod tests {
         let body = body(&http);
         let keys: Vec<&String> = body.as_object().expect("an object").keys().collect();
         assert_eq!(keys, ["messages", "model"]);
+    }
+
+    #[test]
+    fn a_circuit_breaker_is_retried_longer_than_a_dropped_connection() {
+        let overload = ChatError::Egress(bravebot_net::EgressError::Status {
+            url: "http://vllm-guard:8080/v1/chat/completions".into(),
+            status: 503,
+            retry_after: Some(60),
+        });
+        let dropped = ChatError::Egress(bravebot_net::EgressError::Transport {
+            url: "http://vllm-guard:8080/v1/chat/completions".into(),
+            detail: "connection reset".into(),
+            transient: true,
+        });
+
+        assert_eq!(max_attempts(&overload), OVERLOAD_ATTEMPTS);
+        assert_eq!(max_attempts(&dropped), ATTEMPTS);
+        assert!(worth_another_attempt(3, &overload));
+        assert!(!worth_another_attempt(3, &dropped));
+    }
+
+    #[test]
+    fn a_named_retry_after_is_waited_instead_of_inventing_a_shorter_backoff() {
+        let error = ChatError::Egress(bravebot_net::EgressError::Status {
+            url: "http://example.invalid".into(),
+            status: 503,
+            retry_after: Some(60),
+        });
+        assert_eq!(wait_before_retry(1, &error), Duration::from_secs(60));
+
+        let capped = ChatError::Egress(bravebot_net::EgressError::Status {
+            url: "http://example.invalid".into(),
+            status: 503,
+            retry_after: Some(600),
+        });
+        assert_eq!(wait_before_retry(1, &capped), MAX_RETRY_AFTER);
+
+        let unnamed = ChatError::Egress(bravebot_net::EgressError::Status {
+            url: "http://example.invalid".into(),
+            status: 503,
+            retry_after: None,
+        });
+        assert_eq!(wait_before_retry(1, &unnamed), Duration::from_secs(1));
+        assert_eq!(wait_before_retry(2, &unnamed), Duration::from_secs(2));
     }
 }

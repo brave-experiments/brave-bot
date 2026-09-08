@@ -31,6 +31,8 @@ help:
 	@echo "  make linux-arm64    Linux aarch64"
 	@echo "  make windows-amd64  Windows x86_64"
 	@echo "  make windows-arm64  Windows aarch64"
+	@echo "  make docker-image          Optional CLI runtime image (linux/amd64)"
+	@echo "  make docker-worker-image   Optional S3 worker image (contrib/worker)"
 	@echo
 	@echo "Releasing:"
 	@echo "  make bump-version BUMP=bugfix|minor|major   Set the next version"
@@ -265,6 +267,33 @@ github-release:
 clean:
 	cargo clean
 	rm -rf dist
+
+# Optional runtime image: CLI cross-compiled to linux/amd64. --platform sets
+# TARGETPLATFORM for the final stage; BUILDPLATFORM stays the host so rustc is
+# not emulated on Apple Silicon.
+.PHONY: docker-image
+docker-image:
+	set -e; \
+	env_file="$$(mktemp)"; trap 'rm -f "$$env_file"' EXIT INT TERM; \
+	for name in $(BUILD_ENV); do \
+		eval "value=\$$$$name"; \
+		if [ -n "$$value" ]; then printf 'export %s=%s\n' "$$name" "$$value" >> "$$env_file"; fi; \
+	done; \
+	DOCKER_BUILDKIT=1 docker build -f Dockerfile.runtime \
+		--platform linux/amd64 \
+		--build-arg TARGET=x86_64-unknown-linux-gnu \
+		--secret id=bravebot_env,src="$$env_file" \
+		-t $(BINARY):$(VERSION) \
+		-t $(BINARY):latest .
+
+# Optional worker image (contrib/worker): CLI + aws-cli + S3 sync loop
+.PHONY: docker-worker-image
+docker-worker-image: docker-image
+	docker build -f contrib/worker/Dockerfile \
+		--platform linux/amd64 \
+		--build-arg BASE_IMAGE=$(BINARY):$(VERSION) \
+		-t $(BINARY)-worker:$(VERSION) \
+		-t $(BINARY)-worker:latest .
 
 # Configuration reaches the build as a BuildKit secret rather than a build argument,
 # which would record the signing key in the image metadata. The temporary file is

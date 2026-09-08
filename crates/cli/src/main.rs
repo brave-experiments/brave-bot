@@ -396,6 +396,11 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     // Both modes take the same arguments and return the same outcome. The whole of the
     // difference is inside: one asks the model what to do next after every result, the other
     // asked once, before there were any.
+    //
+    // Bypass trusts the workspace the same way the interactive opening prompt would: otherwise
+    // every read and shell line is quarantined and an unattended run cannot see its own inputs.
+    let trust = bravebot_tui::trust_prompt::answered_by(permission_mode)
+        .unwrap_or_else(TrustStore::new);
     let outcome = match mode {
         Mode::Turn => turn::run_cancellable(
             &config,
@@ -405,7 +410,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             &mut confirmer,
             &mut reporter,
             &mut sink,
-            TrustStore::new(),
+            trust.clone(),
             &Cancel::new(),
         ),
         Mode::Manifest => bravebot_agent::manifest::run(
@@ -416,7 +421,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             &mut confirmer,
             &mut reporter,
             &mut sink,
-            TrustStore::new(),
+            trust,
             &Cancel::new(),
         ),
     };

@@ -93,7 +93,15 @@ pub enum EgressError {
         transient: bool,
     },
     /// The server returned a non-success status.
-    Status { url: String, status: u16 },
+    ///
+    /// `retry_after` is the server's own pause, when it sent one: a circuit breaker naming sixty
+    /// seconds is worth waiting, and inventing a shorter backoff would only burn the remaining
+    /// attempts before the server was ready.
+    Status {
+        url: String,
+        status: u16,
+        retry_after: Option<u64>,
+    },
     /// The caller asked to stop while the request was still being waited on.
     Stopped { url: String },
 }
@@ -112,7 +120,14 @@ impl fmt::Display for EgressError {
             Self::Transport { url, detail, .. } => {
                 write!(f, "request to {url} failed: {detail}")
             }
-            Self::Status { url, status } => write!(f, "{url} returned HTTP {status}"),
+            Self::Status {
+                url,
+                status,
+                retry_after,
+            } => match retry_after {
+                Some(secs) => write!(f, "{url} returned HTTP {status} (retry after {secs}s)"),
+                None => write!(f, "{url} returned HTTP {status}"),
+            },
             Self::Stopped { url } => write!(f, "the request to {url} was stopped"),
         }
     }
@@ -135,6 +150,17 @@ impl EgressError {
             // The one error that says the reply is not wanted. Sending it again would be
             // answering a request somebody withdrew.
             | Self::Stopped { .. } => false,
+        }
+    }
+
+    /// How long the server asked the client to wait before trying again, when it said.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Status {
+                retry_after: Some(secs),
+                ..
+            } => Some(std::time::Duration::from_secs(*secs)),
+            _ => None,
         }
     }
 }
@@ -318,6 +344,9 @@ impl Egress {
             // Redirects are handled here so each hop can be revalidated; letting the
             // client follow them silently would defeat the gate.
             .max_redirects(0)
+            // Non-2xx must arrive as a response: Retry-After and the status live on it, and
+            // turning them into Err(StatusCode) would lose both before the caller can wait.
+            .http_status_as_error(false)
             .timeout_resolve(Some(timeouts.resolve))
             .timeout_connect(Some(timeouts.connect))
             .timeout_send_request(Some(timeouts.send))
@@ -405,11 +434,10 @@ impl Egress {
             require_http_scheme(&url)?;
             policy.before_network(&url)?;
 
-            let response = match cancel {
+            let (status, location, content_type, retry_after, reader) = match cancel {
                 Some(cancel) => self.send_watching(request, &url, cancel)?,
                 None => send(&self.agent, request, &url)?,
             };
-            let status = response.0;
 
             if is_redirect(status) {
                 if hops >= MAX_REDIRECTS {
@@ -417,9 +445,9 @@ impl Egress {
                         url: request.url.clone(),
                     });
                 }
-                let location = response
-                    .1
-                    .ok_or_else(|| EgressError::MissingLocation { url: url.clone() })?;
+                let location = location.ok_or_else(|| EgressError::MissingLocation {
+                    url: url.clone(),
+                })?;
                 // Resolved against the current URL so a relative Location is checked
                 // as the absolute URL it will actually resolve to.
                 url = resolve(&url, &location)?;
@@ -428,10 +456,14 @@ impl Egress {
             }
 
             if !(200..300).contains(&status) {
-                return Err(EgressError::Status { url, status });
+                return Err(EgressError::Status {
+                    url,
+                    status,
+                    retry_after,
+                });
             }
 
-            return Ok((status, response.2, url, response.3));
+            return Ok((status, content_type, url, reader));
         }
     }
 
@@ -483,11 +515,12 @@ impl Egress {
     }
 }
 
-/// What one hop answers with: status, location, content-type, and the body reader.
+/// What one hop answers with: status, location, content-type, Retry-After seconds, and the body reader.
 type Sent = (
     u16,
     Option<String>,
     Option<String>,
+    Option<u64>,
     Box<dyn std::io::Read + Send>,
 );
 
@@ -541,17 +574,27 @@ fn send(agent: &ureq::Agent, request: &Request, url: &str) -> Result<Sent, Egres
     };
     let location = header("location");
     let content_type = header("content-type");
+    let retry_after = header("retry-after").and_then(|value| parse_retry_after(&value));
 
     Ok((
         status,
         location,
         content_type,
+        retry_after,
         Box::new(response.into_body().into_reader()),
     ))
 }
 
 /// How often a thread waiting on a reply looks at whether the caller has stopped.
 const STOP_CHECK: Duration = Duration::from_millis(50);
+
+/// Integer seconds from a `Retry-After` header, when the value is that form.
+///
+/// HTTP also allows an HTTP-date; those are ignored here rather than parsed, because the servers
+/// this client talks to name a pause in seconds and a wrong date would invent a wait.
+fn parse_retry_after(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
+}
 
 /// Whether a failure to send or to read the reply is worth another attempt.
 ///
@@ -562,6 +605,9 @@ fn is_transient_call(error: &ureq::Error) -> bool {
     match error {
         ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => true,
         ureq::Error::Io(e) => is_transient_io(e),
+        // Belt for callers that leave http_status_as_error on: a 503 here has no Retry-After,
+        // but it is still worth another attempt rather than a hard stop.
+        ureq::Error::StatusCode(status) => RETRYABLE_STATUSES.contains(status),
         _ => false,
     }
 }
@@ -692,6 +738,7 @@ mod tests {
             EgressError::Status {
                 url: "https://example.com".into(),
                 status,
+                retry_after: None,
             }
             .is_transient()
         };
@@ -702,6 +749,38 @@ mod tests {
         assert!(!at(400));
         assert!(!at(401));
         assert!(!at(404));
+    }
+
+    #[test]
+    fn retry_after_is_read_as_integer_seconds() {
+        assert_eq!(parse_retry_after("60"), Some(60));
+        assert_eq!(parse_retry_after(" 5 "), Some(5));
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after(""), None);
+    }
+
+    #[test]
+    fn retry_after_is_exposed_only_for_status_errors() {
+        let with = EgressError::Status {
+            url: "https://example.com".into(),
+            status: 503,
+            retry_after: Some(60),
+        };
+        assert_eq!(with.retry_after(), Some(std::time::Duration::from_secs(60)));
+
+        let without = EgressError::Status {
+            url: "https://example.com".into(),
+            status: 503,
+            retry_after: None,
+        };
+        assert_eq!(without.retry_after(), None);
+
+        let transport = EgressError::Transport {
+            url: "https://example.com".into(),
+            detail: "http status: 503".into(),
+            transient: true,
+        };
+        assert_eq!(transport.retry_after(), None);
     }
 
     #[test]

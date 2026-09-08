@@ -1,0 +1,45 @@
+# Optional runtime image: the bravebot CLI in a minimal linux/amd64 container.
+#
+# Build with: docker build --platform linux/amd64 -f Dockerfile.runtime …
+# BUILDPLATFORM stays the host (so zig/rustc are not under qemu on Apple Silicon);
+# TARGETPLATFORM is linux/amd64 for the final image EKS pulls.
+#
+# Run a one-shot task (mount a workspace):
+#   docker run --rm -v "$PWD:/workspace" -w /workspace --platform linux/amd64 bravebot:0.4.0 \
+#     --dangerously-skip-permissions -p "evaluate this model and summarise your findings"
+
+ARG TARGET=x86_64-unknown-linux-gnu
+
+FROM --platform=$BUILDPLATFORM ghcr.io/rust-cross/cargo-zigbuild:0.23.0 AS builder
+ARG TARGET
+
+WORKDIR /src
+COPY . .
+
+RUN --mount=type=secret,id=bravebot_env,target=/run/secrets/bravebot_env \
+    rustup target add "$TARGET" \
+    && if [ -f /run/secrets/bravebot_env ]; then . /run/secrets/bravebot_env; fi \
+    && cargo zigbuild --release --locked --target "$TARGET" \
+       --config profile.release.strip=false
+
+RUN mkdir -p /out \
+    && cp "/src/target/${TARGET}/release/bravebot" /out/bravebot \
+    && chmod +x /out/bravebot
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 bravebot \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/bravebot bravebot \
+    && mkdir -p /workspace \
+    && chown -R bravebot:bravebot /workspace
+
+COPY --from=builder /out/bravebot /usr/local/bin/bravebot
+
+USER bravebot
+ENV HOME=/home/bravebot
+WORKDIR /workspace
+
+ENTRYPOINT ["bravebot"]
