@@ -5,7 +5,10 @@
 //! contents try to redirect the turn cannot do so.
 
 use bravebot_agent::Workspace;
-use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, PastedImage, ROUNDS_BEFORE_WRITING, Task};
+use bravebot_agent::turn::{
+    self, MAX_TOOL_ROUNDS, PastedImage, ROUNDS_AFTER_WRITING_BEFORE_RUNNING, ROUNDS_BEFORE_WRITING,
+    Task,
+};
 use bravebot_config::Config;
 use bravebot_config::DEFAULT_MODEL;
 use bravebot_core::event::{Event, RecordingSink};
@@ -5503,6 +5506,134 @@ fn a_processors_output_cannot_be_a_destination() {
         std::fs::read_to_string(scratch.path.join("game.js")).unwrap(),
         "const SPEED = 100;\n",
         "the file was written from a reference that names no file"
+    );
+}
+
+/// A turn that changed files and ran nothing is asked about it, once, and the person is told.
+///
+/// The turn this is for edited eighteen files, ran no command at all, and was stopped with none of
+/// it compiled. Nothing in the summary said so, and the diff looked exactly like a checked one.
+#[test]
+fn a_turn_that_writes_without_running_is_asked_about_it() {
+    let scratch = Scratch::new("wrote-never-ran");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut replies = vec![tool_request(
+        "write_file",
+        r#"{"path":"notes.txt","contents":"first slice"}"#,
+    )];
+    // Past the point where the question makes sense, plus one more round to see it said once.
+    replies.extend(
+        (0..ROUNDS_AFTER_WRITING_BEFORE_RUNNING + 1)
+            .map(|_| tool_request("list_files", r#"{"directory":"."}"#)),
+    );
+    replies.push(reply_with("done"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("add a toggle"),
+        &mut RecordingConfirmer::approving(),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn finishes");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    let asked = bodies
+        .iter()
+        .position(|body| body.contains("nothing has been run"))
+        .expect("the planner was never asked whether any of it runs");
+    assert_eq!(
+        asked,
+        ROUNDS_AFTER_WRITING_BEFORE_RUNNING + 1,
+        "the question came on the wrong round"
+    );
+
+    let last = bodies.last().expect("a last request");
+    assert_eq!(
+        last.matches("nothing has been run").count(),
+        1,
+        "the question was asked more than once: {last}"
+    );
+    assert!(
+        last.contains("spawn_agent"),
+        "the planner was not pointed at a checker for a long log: {last}"
+    );
+
+    assert!(
+        reporter
+            .narration
+            .iter()
+            .any(|said| said.contains("no command was run")),
+        "the person was not told the change was never built: {:?}",
+        reporter.narration
+    );
+}
+
+/// A turn that ran something is left alone, and the person is told nothing.
+#[test]
+fn a_turn_that_wrote_and_ran_is_not_asked_about_it() {
+    let scratch = Scratch::new("wrote-and-ran");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut replies = vec![
+        tool_request(
+            "write_file",
+            r#"{"path":"notes.txt","contents":"first slice"}"#,
+        ),
+        tool_request("run", r#"{"command":"echo built"}"#),
+    ];
+    replies.extend(
+        (0..ROUNDS_AFTER_WRITING_BEFORE_RUNNING + 1)
+            .map(|_| tool_request("list_files", r#"{"directory":"."}"#)),
+    );
+    replies.push(reply_with("done"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("add a toggle"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn finishes");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    assert!(
+        !bodies
+            .iter()
+            .any(|body| body.contains("nothing has been run")),
+        "a turn that ran a command was asked why it had not"
+    );
+    assert!(
+        !reporter
+            .narration
+            .iter()
+            .any(|said| said.contains("no command was run")),
+        "the person was told a built change was unbuilt: {:?}",
+        reporter.narration
     );
 }
 

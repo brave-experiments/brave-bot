@@ -1159,6 +1159,18 @@ pub(crate) fn writes_a_file(name: &str) -> bool {
     matches!(strip_namespace(name), "write_file" | "edit_file")
 }
 
+/// Whether a call by this name runs a program.
+pub(crate) fn runs_a_program(name: &str) -> bool {
+    strip_namespace(name) == "run"
+}
+
+/// Whether this set of tools can run a program at all.
+pub(crate) fn offer_runs(offered: &[Tool]) -> bool {
+    offered
+        .iter()
+        .any(|tool| runs_a_program(&tool.function.name))
+}
+
 /// Whether this set of tools can change a file at all.
 ///
 /// A run offered no write tool cannot be told to write something: a reader delegate is doing

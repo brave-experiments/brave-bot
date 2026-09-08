@@ -8,8 +8,8 @@ governs:
 
 ## Scope
 
-How long a turn may go on, what happens when it does not stop, and what it is told when it goes on
-without producing anything.
+How long a turn may go on, what happens when it does not stop, and what is said when it goes on
+without producing anything or ends without checking anything.
 
 ## Clauses
 
@@ -77,3 +77,21 @@ tried to deliver, and telling it to start delivering would answer something nobo
 
 `verified-by: bravebot_agent::turn::a_turn_that_writes_nothing_for_long_enough_is_told_so`
 `verified-by: bravebot_agent::turn::a_turn_that_has_written_is_not_told_to_write`
+
+<a id="TURN-4"></a>
+### TURN-4: a turn that changed files and ran nothing says so, to both parties
+
+Where a run is possible, files have changed and no program has been run, the planner is asked once
+whether any of it runs, a set number of rounds after its first write, and pointed at a checker
+delegate for a long log. When the turn ends in that state the person is told plainly that nothing
+was built or tested.
+
+**Two audiences, two moments.** The planner can still act, so it is asked while the turn is going;
+the person is about to act on a diff, so they are told at the end. Neither is a reproach: plenty of
+turns have nothing to build, and both lines say what happened rather than what should have.
+
+**Counted from the write.** Before a file changes there is nothing to run, so a turn that spends
+twenty rounds reading is not asked about a build it has no reason to have done.
+
+`verified-by: bravebot_agent::turn::a_turn_that_writes_without_running_is_asked_about_it`
+`verified-by: bravebot_agent::turn::a_turn_that_wrote_and_ran_is_not_asked_about_it`

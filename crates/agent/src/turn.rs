@@ -335,6 +335,18 @@ pub const MAX_TOOL_ROUNDS: usize = 200;
 /// Eight is past honest orientation on a large repository and well short of a plan.
 pub const ROUNDS_BEFORE_WRITING: usize = 8;
 
+/// How many rounds a turn may go on after its first write before the driver asks whether any of it
+/// has been run.
+///
+/// Counted from the write rather than from the start of the turn, because before that there is
+/// nothing to build. Six is long enough to finish a change that spans a few files and short enough
+/// to leave a turn in which to fix what the build says.
+///
+/// The failure is a turn that edits eighteen files, runs nothing, and is stopped by the person
+/// watching with none of it compiled. Nothing in it was wrong except that nobody had checked, and
+/// the planner is the only party that can.
+pub const ROUNDS_AFTER_WRITING_BEFORE_RUNNING: usize = 6;
+
 /// How the driver introduces itself when it takes the tools away.
 ///
 /// Marked so the message reads as the system speaking rather than as the user changing their
@@ -1571,9 +1583,15 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // something nobody asked.
     let mut wrote = false;
     let mut said_nothing_written = false;
+    // The round the first write was asked for, which is where the question of whether any of it
+    // runs starts to make sense, and whether a program has been run since the turn began.
+    let mut wrote_at: Option<usize> = None;
+    let mut ran = false;
+    let mut said_nothing_run = false;
     // Whether a write is possible at all here, which a run offered no write tool cannot be
     // nudged into. Read once: the offer does not change while the turn runs.
     let may_write = tools::offer_writes(&offered);
+    let may_run = tools::offer_runs(&offered);
     // Whether the planner may ask for another round of tools. Cleared once, when the budget
     // runs out, so the last request goes out with none offered and the turn ends with an answer
     // rather than with the driver's apology.
@@ -1847,7 +1865,11 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                 .iter()
                 .map(|c| c.function.name.clone())
                 .collect();
-            wrote = wrote || requested.iter().any(|name| tools::writes_a_file(name));
+            if !wrote && requested.iter().any(|name| tools::writes_a_file(name)) {
+                wrote = true;
+                wrote_at = Some(steps);
+            }
+            ran = ran || requested.iter().any(|name| tools::runs_a_program(name));
 
             let spoken = {
                 let (text, _) = completion.content.clone().into_parts_for_decoding();
@@ -2331,6 +2353,31 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                      change, carry on."
                 )));
             }
+
+            // The other half of the same problem. A change nobody built is a guess about whether
+            // it builds, and the turn that edited eighteen files without compiling one of them
+            // did not decide against building: it never got there, and the person watching could
+            // not tell that from the summary.
+            //
+            // Counted from the write, since before that there is nothing to run, and said once
+            // for the reason the line above is. A delegate is named because this is the case it
+            // exists for: a build log is long, what is wanted from it is one sentence, and a
+            // checker reads the one and reports the other.
+            if may_run
+                && wrote
+                && !ran
+                && !said_nothing_run
+                && wrote_at.is_some_and(|at| steps >= at + ROUNDS_AFTER_WRITING_BEFORE_RUNNING)
+            {
+                said_nothing_run = true;
+                conversation.push(Message::user(format!(
+                    "{TOOL_BUDGET_SPENT} Files have changed this turn and nothing has been run. \
+                     A change that has not been built is a guess about whether it builds, so find \
+                     how this project builds and tests, and run that. Where the log is long and \
+                     what you want from it is which test failed, hand it to a checker with \
+                     spawn_agent instead. If there is nothing here to build, carry on."
+                )));
+            }
         };
         Ok::<_, TurnError>(completion)
     })?;
@@ -2370,6 +2417,18 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // approved run may have added to the programs.
     let trust = policy.trust().clone();
     let programs = policy.programs().clone();
+
+    // Said to the person, not to the planner, which has answered and gone. They are the one about
+    // to act on a diff, and nothing else in the summary distinguishes a change that was compiled
+    // from one that was never tried. Not a reproach: plenty of turns have nothing to build, and
+    // this says what happened rather than what should have.
+    if wrote && !ran {
+        reporter.narration(
+            "files changed this turn and no command was run, so none of it has been \
+             built or tested"
+                .to_string(),
+        );
+    }
 
     // Read last, so everything the turn did is inside it, including the presentation just above.
     spent.wall = began.elapsed();

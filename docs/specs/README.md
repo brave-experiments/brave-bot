@@ -18,7 +18,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [permissions.md](permissions.md) | `PERM` | 12 | rules written in advance about what to ask about and what to refuse |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |
 | [delegation.md](delegation.md) | `DELEGATE` | 17 | a second planner, narrower than the first, and what crosses back from one |
-| [turns.md](turns.md) | `TURN` | 3 | how long a turn may go on, what happens when it does not stop, and what it is told when it goes on without producing anything |
+| [turns.md](turns.md) | `TURN` | 4 | how long a turn may go on, what happens when it does not stop, and what is said when it produces nothing or checks nothing |
 | [prompting.md](prompting.md) | `PROMPT` | 10 | every moment the system stops and puts something to a human, and what an answer grants |
 | [permission-modes.md](permission-modes.md) | `MODE` | 10 | a standing answer to those prompts: accepting edits, planning, or asking about nothing at all |
 | [naming-files.md](naming-files.md) | `NAME` | 7 | writing `@path` in a prompt: what it puts into the turn and what it vouches for |
