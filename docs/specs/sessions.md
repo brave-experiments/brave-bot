@@ -344,20 +344,28 @@ any local account on multi-user machines and shared hosts.
 `verified-by: bravebot_tui::sessions::pre_existing_session_files_and_directories_are_tightened_on_write`
 
 <a id="SESSION-17"></a>
-### SESSION-17: a session transcript can be exported to markdown within the project root
+### SESSION-17: a transcript can be written out as markdown, inside the working directory
 
-The `/export` command formats the recounted transcript as a markdown document and writes it to
-a file within the project directory. The destination path is confined strictly to the project
-root, refusing traversal (`..`) or root/drive components, and existing files are not overwritten
-unasked. The exported file is written with restricted permissions.
+`/export` writes the recounted transcript to a markdown file, at the path named on the line or at
+`bravebot-export-<id>.md`. The path is confined to the working directory the way a workspace write
+is: `..`, a root and a drive prefix are refused, and containment is then tested against the
+canonical path of the deepest directory that exists, so a path leading through a symlink out of
+the tree is refused as well. Anything already at the path is refused rather than replaced, a
+symlink whose target is missing included. Missing parent directories are created. The file is
+written mode 0600, as SESSION-16 writes the record it came from.
 
-**Why.** A person owns their transcript and may need it in a bug report, documentation, or code
-review without reading internal JSON state. Confining writes to the workspace root stops an export
-from escaping to arbitrary paths on the system.
+**Why.** The transcript belongs to the person who had the conversation, which
+[compaction.md](compaction.md) says in as many words, and without this the only way to exercise
+that is to read the record's JSON out of the state directory. The path is typed on the same line
+as the command, so it gets the confinement any other path from that line would get; a transcript
+carries whatever the session read, and an export that could be steered to an arbitrary path would
+be a way to write it anywhere.
 
 `verified-by: bravebot_tui::sessions::exporting_a_transcript_is_confined_to_the_project_root`
 `verified-by: bravebot_tui::sessions::exporting_refuses_traversal_components`
+`verified-by: bravebot_tui::sessions::exporting_refuses_a_path_through_a_symlinked_directory`
 `verified-by: bravebot_tui::sessions::exporting_refuses_to_overwrite_an_existing_file`
+`verified-by: bravebot_tui::sessions::exporting_refuses_a_path_that_is_a_dangling_symlink`
 `verified-by: bravebot_tui::sessions::exporting_creates_intermediate_directories`
 
 <a id="SESSION-18"></a>
