@@ -12,7 +12,7 @@ help:
 	@echo "bravebot $(VERSION)"
 	@echo
 	@echo "Development:"
-	@echo "  make init           Configure bravebot, Claude Code and Codex; install hooks"
+	@echo "  make init           Configure bravebot, Claude Code, Codex and Cursor; install hooks"
 	@echo "  make hooks          Point git at the checked-in pre-commit hook"
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"

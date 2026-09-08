@@ -3,14 +3,16 @@
 
 The source of truth is `agents/`: versioned, reviewed, and named for no particular
 vendor. No tool reads it. Claude Code discovers skills, slash commands and subagents
-under `.claude/`; Codex discovers skills under `.agents/skills`; and bravebot discovers
-skills under `.bravebot/skills` and its instructions from `AGENTS.md` at the workspace
+under `.claude/`; Codex discovers skills under `.agents/skills`; Cursor discovers skills
+and subagents under `.cursor/`; and bravebot discovers skills under `.bravebot/skills`.
+Codex, Cursor and bravebot read their instructions from `AGENTS.md` at the workspace
 root. This script bridges them by creating one symlink per entry, so a skill is written
 once and every tool sees it:
 
     .claude/skills/<name>    ->  agents/skills/<name>
     .agents/skills/<name>    ->  agents/skills/<name>
     .bravebot/skills/<name>  ->  agents/skills/<name>
+    .cursor/skills/<name>    ->  agents/skills/<name>
     .claude/CLAUDE.md        ->  agents/AGENTS.md
     AGENTS.md                ->  agents/AGENTS.md
 
@@ -49,12 +51,16 @@ _IS_WINDOWS = os.name == 'nt'
 # One source directory fans out to one link per child, rather than linking the directory
 # itself, so a discovery dir can also hold entries this repo does not own.
 #
-# bravebot and Codex read skills only. Slash commands and subagents in this tree are
-# Claude Code concepts, so a `commands/` or `agents/` directory has nowhere else to go.
+# bravebot and Codex read skills only. Cursor also reads subagents, but it dropped slash
+# commands in favour of skills, so `commands/` links into `.claude/` alone.
+#
+# Cursor reads `.agents/skills` and `.claude/agents` as compatibility paths, so its own
+# paths are listed too: they are what it documents, they win a name conflict against the
+# compatibility ones, and support here should not rest on shims Cursor may retire.
 _FANOUT = [
-    ('skills', ['.claude/skills', '.agents/skills', '.bravebot/skills']),
+    ('skills', ['.claude/skills', '.agents/skills', '.bravebot/skills', '.cursor/skills']),
     ('commands', ['.claude/commands']),
-    ('agents', ['.claude/agents']),
+    ('agents', ['.claude/agents', '.cursor/agents']),
 ]
 
 # The one instructions file, under the name each tool looks for. bravebot and Codex read
