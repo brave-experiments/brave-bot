@@ -1,3 +1,21 @@
+## [0.4.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.4.0)
+
+ - Added a command line to `run`, with pipes, `&&`, `||`, `;`, redirections and brace, glob and tilde expansion, compiled here rather than handed to a shell and put in front of you as a plan naming every file it would write.
+ - Added shift-tab, which cycles a session between asking about every write, accepting edits, planning, and bypassing, and draws the mode in force under the prompt.
+ - Added `--dangerously-skip-permissions`, which answers a write, a run, a command's output and vouching for a quarantined file without asking, while deny rules from the settings file still refuse.
+ - Added `/undo`, which puts the session back where it stood before the most recent turn: the files that turn wrote, the conversation, and the turn count, spend and trust map that went with it. ([#91](https://github.com/brave-experiments/brave-bot/issues/91))
+ - Added `bravebot --fork <id>`, which copies a session into one with its own id and opens it, so a second approach starts from the part of the conversation worth keeping. ([#98](https://github.com/brave-experiments/brave-bot/issues/98))
+ - Added `/export`, which writes the conversation out as a markdown file under the working directory, named on the line or after the session id. ([#98](https://github.com/brave-experiments/brave-bot/issues/98))
+ - Added every command a turn ran to the ctrl-l list, after the delegates, so what a program printed is readable even where the planner was kept from it.
+ - Added `CLAUDE.md` and `.claude/CLAUDE.md` as places a project's instructions are read from where `AGENTS.md` is absent, with a file short enough to be nothing but a pointer followed to the document it names.
+ - Changed search to reach a hundred thousand files rather than two thousand, skip vendored dependencies, and accept several patterns at once along with a case-insensitive flag.
+ - Fixed session records, temporary files and audit trails under `~/.bravebot` being created with the process umask, which left whole conversations readable by anyone with an account on the machine. ([#86](https://github.com/brave-experiments/brave-bot/issues/86))
+ - Fixed switching to a model the endpoint does not describe raising the context budget back to the default, which left it above the window actually in force so compaction never ran.
+ - Fixed the Windows builds, which failed to compile the credential store; saving a credential there is refused rather than done without the file protection Unix gets. ([#115](https://github.com/brave-experiments/brave-bot/issues/115))
+ - Fixed Escape and ctrl-c cancelling the turn behind the delegate view or the prompt search instead of closing the view they were pressed in.
+ - Fixed the context reading on the hint line going blank after a resume, a compaction or a failed turn, and marked a reading as approximate where the budget is one no model advertised. ([#69](https://github.com/brave-experiments/brave-bot/issues/69))
+ - Fixed brace groups in a search pattern being matched literally rather than expanded, which returned no matches in the same words as a search that read the whole tree and found nothing.
+
 ## [0.3.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.3.0)
 
  - Added ctrl-l, which opens the list of delegates a session has run, so you can watch one working or read what it did afterwards.
