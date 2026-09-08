@@ -23,6 +23,11 @@ pub enum Mode {
     Insert,
     /// Taking the letters as instructions.
     Normal,
+    /// Marking out a stretch for the next instruction to act on.
+    ///
+    /// Line-wise where the flag says so, which is `V` against `v`: the selection is then whole lines
+    /// however far along one either end happens to sit.
+    Visual { lines: bool },
 }
 
 impl Mode {
@@ -35,7 +40,17 @@ impl Mode {
         match self {
             Mode::Insert => "INSERT",
             Mode::Normal => "NORMAL",
+            Mode::Visual { lines: false } => "VISUAL",
+            Mode::Visual { lines: true } => "VISUAL LINE",
         }
+    }
+
+    /// Whether a letter typed now is an instruction rather than a letter.
+    ///
+    /// Both modes that are not INSERT, so the one guard covers them: the difference between NORMAL and
+    /// VISUAL is what an instruction acts on, not whether a letter is one.
+    pub fn takes_instructions(self) -> bool {
+        !matches!(self, Mode::Insert)
     }
 }
 
@@ -99,12 +114,31 @@ pub enum Command {
     Paste { before: bool },
     /// Join this line and the one below into one, which is `J`.
     Join,
+    /// Mark out a stretch for the next instruction, character-wise or line-wise: `v` and `V`.
+    Select { lines: bool },
+    /// Swap which end of the selection the caret is at, which is `o`.
+    SwapEnds,
+    /// Replace every character of the selection with one, which is `r` once its character arrives.
+    Replace(char),
+    /// Change the case of the selection: `~` swaps it, `u` lowers and `U` raises.
+    Case(Case),
     /// The key means nothing in this mode, and nothing at all should happen.
     ///
     /// Not "fall through to the ordinary bindings": a letter that vi does not use is a letter that
     /// does nothing, and typing it into the line would be the box acting on an instruction it did
     /// not understand.
     Nothing,
+}
+
+/// What happens to the case of a selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Case {
+    /// `~`: each letter becomes the other case.
+    Swapped,
+    /// `u`: every letter lower.
+    Lower,
+    /// `U`: every letter upper.
+    Upper,
 }
 
 /// What is done to a stretch of the line.
@@ -147,6 +181,8 @@ pub enum Extent {
     Character,
     /// A thing the line is made of rather than a distance: `diw`, `da"`, `ci(`.
     Object(Object),
+    /// What VISUAL mode has marked out, which is the whole of what an operator there acts on.
+    Selection,
 }
 
 /// A stretch named by what it is rather than by how far away its end is.
@@ -219,6 +255,8 @@ pub enum Motion {
     InputEnd,
     /// `f`, `F`, `t`, `T` once their character has arrived, and `;` and `,` repeating one.
     ToChar(Find),
+    /// A text object, which in VISUAL mode is a stretch to select rather than one to act on.
+    Object(Object),
 }
 
 impl Motion {
@@ -235,7 +273,9 @@ impl Motion {
             Motion::WordEnd | Motion::LineEnd => true,
             // `f` lands on the character and takes it; `t` stops one short and takes that one.
             Motion::ToChar(find) => find.forwards,
-            Motion::Left
+            // An object names both its ends, so there is no character beyond it to take or leave.
+            Motion::Object(_)
+            | Motion::Left
             | Motion::Right
             | Motion::WordRight
             | Motion::WordLeft
@@ -279,6 +319,10 @@ pub enum Pending {
     Find { forwards: bool, short: bool },
     /// `g`, which means nothing alone and `gg` with the second press.
     G,
+    /// `r` in VISUAL mode, waiting for the character every selected one becomes.
+    ReplaceWith,
+    /// `i` or `a` in VISUAL mode, waiting for the kind of thing to select.
+    SelectObject { around: bool },
     /// An operator waiting for the stretch to act on: the motion in `dw`, or the doubled letter in
     /// `dd`.
     Operate(Operator),
@@ -326,6 +370,13 @@ impl Pending {
                 None => Command::Nothing,
             },
             Pending::Operate(operator) => operated(operator, c),
+            Pending::ReplaceWith => Command::Replace(c),
+            Pending::SelectObject { around } => match Kind::named(c) {
+                // The selection becomes the object, which is what makes `vi(` and `ci(` reach the same
+                // stretch by two routes: one shows it first.
+                Some(kind) => Command::Move(Motion::Object(Object { kind, around })),
+                None => Command::Nothing,
+            },
         }
     }
 }
@@ -470,7 +521,58 @@ pub fn command(c: char) -> Command {
         'J' => Command::Join,
         'u' => Command::Undo,
         '.' => Command::Again,
+        // Marking a stretch out before saying what to do with it, which is the other way round from an
+        // operator and the reason to have both: the selection is on the screen while it is chosen.
+        'v' => Command::Select { lines: false },
+        'V' => Command::Select { lines: true },
         _ => Command::Nothing,
+    }
+}
+
+/// What a key press in VISUAL mode means.
+///
+/// The stretch is already marked out, so an operator needs no extent and acts on the selection: `d` is
+/// the whole instruction where in NORMAL mode it is half of one. Motions extend the selection instead
+/// of moving a bare caret, and a few keys exist only here.
+///
+/// A separate table rather than a flag threaded through the other one, because the two modes disagree
+/// about what most of the letters mean. `u` lowers the case of a selection where in NORMAL mode it
+/// undoes, and one function answering both would be a column of conditions.
+pub fn visual_command(c: char) -> Command {
+    match c {
+        // An operator with nothing to wait for. `x` is `d` and `s` is `c`, which is what vi does: with
+        // a selection on the screen the distinction those keys draw in NORMAL mode has nothing left to
+        // draw.
+        'd' | 'x' => Command::Change(Operator::Delete, Extent::Selection),
+        'c' | 's' => Command::Change(Operator::Change, Extent::Selection),
+        'y' => Command::Change(Operator::Yank, Extent::Selection),
+        '>' => Command::Change(Operator::Indent, Extent::Selection),
+        '<' => Command::Change(Operator::Dedent, Extent::Selection),
+        'p' => Command::Paste { before: false },
+        'J' => Command::Join,
+        'r' => Command::Wait(Pending::ReplaceWith),
+        '~' => Command::Case(Case::Swapped),
+        // Not undo, which is what these letters mean in NORMAL mode: with a selection on the screen
+        // they are what to do to it.
+        'u' => Command::Case(Case::Lower),
+        'U' => Command::Case(Case::Upper),
+        'o' => Command::SwapEnds,
+        // A text object selects rather than being acted on, so `vi(` shows the stretch that `ci(` would
+        // have taken.
+        'i' => Command::Wait(Pending::SelectObject { around: false }),
+        'a' => Command::Wait(Pending::SelectObject { around: true }),
+        // Toggling between the two kinds, and leaving where the press repeats the mode already in force.
+        // Which of those it is depends on the mode, so the caller decides and this only says the key was
+        // one of them.
+        'v' => Command::Select { lines: false },
+        'V' => Command::Select { lines: true },
+        // Everything else means what it means in NORMAL mode, which is nearly all of the motions. A key
+        // that is not a motion there is not one here either, and the `Nothing` it returns is the answer.
+        _ => match command(c) {
+            Command::Move(motion) => Command::Move(motion),
+            Command::Wait(pending) => Command::Wait(pending),
+            _ => Command::Nothing,
+        },
     }
 }
 
@@ -719,6 +821,96 @@ mod tests {
             .then('z'),
             Command::Nothing
         );
+    }
+
+    /// With a stretch already marked out an operator needs no extent and acts on the selection: `d` is
+    /// the whole instruction where in NORMAL mode it is half of one.
+    #[test]
+    fn an_operator_in_visual_mode_acts_on_the_selection() {
+        assert_eq!(
+            visual_command('d'),
+            Command::Change(Operator::Delete, Extent::Selection)
+        );
+        assert_eq!(
+            visual_command('y'),
+            Command::Change(Operator::Yank, Extent::Selection)
+        );
+        // `x` is `d` and `s` is `c` here: with a selection on the screen, the distinction those keys
+        // draw in NORMAL mode has nothing left to draw.
+        assert_eq!(visual_command('x'), visual_command('d'));
+        assert_eq!(visual_command('s'), visual_command('c'));
+    }
+
+    /// The two modes disagree about what several letters mean, which is why each reads its own table.
+    /// `u` is the plainest case: it lowers the case of a selection and undoes without one.
+    #[test]
+    fn the_letters_the_two_modes_disagree_about() {
+        assert_eq!(command('u'), Command::Undo);
+        assert_eq!(visual_command('u'), Command::Case(Case::Lower));
+        assert_eq!(visual_command('U'), Command::Case(Case::Upper));
+        assert_eq!(visual_command('~'), Command::Case(Case::Swapped));
+        assert_eq!(command('o'), Command::Insert(Opening::LineBelow));
+        assert_eq!(visual_command('o'), Command::SwapEnds);
+    }
+
+    /// Nearly every motion means the same thing in both, so the visual table falls through to the other
+    /// rather than restating them: a motion added to one would otherwise be missing from the other.
+    #[test]
+    fn the_motions_mean_the_same_thing_in_both_modes() {
+        for c in ['h', 'l', 'w', 'e', 'b', '0', '$', '^', 'G'] {
+            assert_eq!(
+                visual_command(c),
+                command(c),
+                "{c} differed between the modes"
+            );
+        }
+        assert_eq!(visual_command('z'), Command::Nothing);
+    }
+
+    /// A text object selects rather than being acted on, so `vi(` shows the stretch `ci(` would take.
+    #[test]
+    fn a_text_object_in_visual_mode_selects() {
+        let pending = match visual_command('i') {
+            Command::Wait(pending) => pending,
+            other => panic!("i was {other:?} rather than a wait"),
+        };
+        assert_eq!(
+            pending.then('w'),
+            Command::Move(Motion::Object(Object {
+                kind: Kind::Word,
+                around: false
+            }))
+        );
+    }
+
+    /// `r` needs the character every selected one becomes, so it waits as the jump keys do.
+    #[test]
+    fn replacing_a_selection_waits_for_the_character() {
+        assert_eq!(visual_command('r'), Command::Wait(Pending::ReplaceWith));
+        assert_eq!(Pending::ReplaceWith.then('z'), Command::Replace('z'));
+    }
+
+    /// An object names both its ends, so unlike a motion there is no character beyond it to take or
+    /// leave and the inclusive question does not arise.
+    #[test]
+    fn an_object_has_no_character_beyond_it() {
+        assert!(
+            !Motion::Object(Object {
+                kind: Kind::Word,
+                around: false
+            })
+            .takes_what_it_lands_on()
+        );
+    }
+
+    /// Both modes that are not INSERT take a letter as an instruction, so one guard covers them: what
+    /// differs between NORMAL and VISUAL is what an instruction acts on.
+    #[test]
+    fn every_mode_but_insert_takes_letters_as_instructions() {
+        assert!(!Mode::Insert.takes_instructions());
+        assert!(Mode::Normal.takes_instructions());
+        assert!(Mode::Visual { lines: false }.takes_instructions());
+        assert!(Mode::Visual { lines: true }.takes_instructions());
     }
 
     /// A yank reads without writing, which is why there is nothing for undo to put back after one and

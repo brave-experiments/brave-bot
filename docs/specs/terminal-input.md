@@ -650,6 +650,17 @@ flight, which is aimed at something else entirely and costs the answer being wri
   behind a `tmux` or `screen` configured to keep flow control, or an ssh session that does, the key
   can be taken before it arrives, and then it does nothing here. Nothing is lost when that happens,
   since the line stays in the box.
+- **A selection is one stretch of the line and never a column of it.** Vi's block-wise selection,
+  which reaches the same columns of several rows, has no equivalent here: what `v` and `V` mark out
+  runs from one position to another (INPUT-30). The cost is a person's muscle memory for one chord,
+  and it buys a selection that is a pair of offsets rather than a rectangle every operator would have
+  to understand separately. A box ten rows tall holding one prompt is also not where somebody edits
+  columns of a table.
+- **Vi's editing is what this box does with the keys, not what vi does with a file.** There is one
+  register rather than named ones, undo is a single step (INPUT-28), counts do not prefix a command,
+  and there is no `:` line. Each of those is machinery for a file being edited over an afternoon,
+  where this is a prompt being written over a minute, and every one of them is a key that does nothing
+  rather than one that does something unexpected.
 
 <a id="INPUT-19"></a>
 ### INPUT-19: Ctrl-R searches every prompt sent, and what is chosen goes into the box
@@ -1108,3 +1119,60 @@ digit, so `di[` named the brackets one is written with and left half of it stand
 `verified-by: bravebot_tui::state::a_text_object_works_with_every_operator`
 `verified-by: bravebot_tui::state::a_pair_naming_no_kind_of_object_does_nothing`
 `verified-by: bravebot_tui::state::a_text_object_over_a_marker_takes_it_whole_or_not_at_all`
+
+<a id="INPUT-30"></a>
+### INPUT-30: a stretch can be marked out first, and it is drawn while it is chosen
+
+`v` marks out a stretch character-wise and `V` line-wise. Both ends cover the character they sit on, so
+the stretch is never empty. Motions move the end the caret is at, `o` puts the caret at the other end,
+and a text object becomes the selection.
+
+An operator there needs no extent and acts on the selection: `x` is `d` and `s` is `c`, having nothing
+left to distinguish. `r` replaces every selected character with one, and `~`, `u` and `U` change the
+case. A line-wise selection goes into the register as lines.
+
+The key that opened the mode closes it, the other of the two changes which kind is in force, and
+Escape abandons the selection. Every operator ends it.
+
+**The whole marked stretch is drawn**, on every row it crosses, and the caret is not drawn within it.
+
+A selection holding a marker is not replaced character by character: that press does nothing.
+
+**Why.** Marking a stretch out and then saying what to do with it is the other way round from an
+operator, and the reason to have both is that the stretch is on the screen while it is being chosen.
+Which makes drawing it the whole point rather than a decoration: the next key acts on it, and a person
+who cannot see which stretch is guessing. A caret drawn inside a reversed block says nothing, so the
+selection takes its place.
+
+`u` meaning lower-case here and undo without a selection is why each mode reads its own table. The
+motions fall through to the other table rather than being restated, or a motion added to one would be
+missing from the other.
+
+Every operator ending the selection is what stops the next press acting on a stretch again for reasons
+nothing on the screen explains. Escape abandoning it is the same rule from the other side.
+
+A marker is not a run of characters to overwrite, and replacing the text either side while leaving it
+standing would be a line nobody could read.
+
+Block-wise selection is a known cost rather than a clause.
+
+`verified-by: bravebot_tui::vim::an_operator_in_visual_mode_acts_on_the_selection`
+`verified-by: bravebot_tui::vim::the_letters_the_two_modes_disagree_about`
+`verified-by: bravebot_tui::vim::the_motions_mean_the_same_thing_in_both_modes`
+`verified-by: bravebot_tui::vim::a_text_object_in_visual_mode_selects`
+`verified-by: bravebot_tui::vim::replacing_a_selection_waits_for_the_character`
+`verified-by: bravebot_tui::vim::an_object_has_no_character_beyond_it`
+`verified-by: bravebot_tui::vim::every_mode_but_insert_takes_letters_as_instructions`
+`verified-by: bravebot_tui::state::a_selection_is_marked_out_and_then_acted_on`
+`verified-by: bravebot_tui::state::a_selection_covers_the_character_it_opened_on`
+`verified-by: bravebot_tui::state::the_line_wise_selection_takes_whole_lines`
+`verified-by: bravebot_tui::state::the_case_keys_act_on_the_selection`
+`verified-by: bravebot_tui::state::swapping_the_ends_moves_the_other_one`
+`verified-by: bravebot_tui::state::a_motion_or_an_object_extends_the_selection`
+`verified-by: bravebot_tui::state::the_selection_key_opens_and_closes_and_changes_kind`
+`verified-by: bravebot_tui::state::escape_abandons_the_selection`
+`verified-by: bravebot_tui::state::an_operator_ends_the_selection`
+`verified-by: bravebot_tui::state::replacing_a_selection_holding_a_marker_leaves_it_alone`
+`verified-by: bravebot_tui::render::the_selection_is_drawn_over_the_whole_stretch`
+`verified-by: bravebot_tui::render::a_selection_across_rows_is_drawn_on_all_of_them`
+`verified-by: bravebot_tui::render::the_ordinary_box_draws_no_selection`

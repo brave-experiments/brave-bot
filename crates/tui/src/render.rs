@@ -2073,6 +2073,7 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
     let visible = (area.height as usize).saturating_sub(2).max(1);
     let (first, rows) = wrapped.window(visible);
     let marker = session.marker_at_caret();
+    let selection = session.vi_selection();
 
     // Shell mode is coloured throughout rather than only in the marker, because the whole line
     // means something different: it goes to a shell instead of the model, and that is worth more
@@ -2094,6 +2095,18 @@ fn draw_input(frame: &mut Frame, area: Rect, session: &Session) {
                 lead_for(index, session.shell),
                 Style::default().fg(colour),
             )];
+            // A selection is drawn before the caret is, and instead of it: the whole marked stretch is
+            // reversed, so the caret within it would be a block inside a block and say nothing. Every
+            // row it crosses is covered, since a selection over a paragraph is what `V` is for.
+            //
+            // Drawn at all because a selection nobody can see is the failure this mode has: the next
+            // key acts on a stretch, and a person who cannot see which one is guessing.
+            if let Some((at, through)) =
+                selection.and_then(|span| covered(row, wrapped.starts[index], span))
+            {
+                spans.extend(caret_spans(row, at, through, colour));
+                return Line::from(spans);
+            }
             // A marker is one thing to the caret, so the caret covers the whole of it rather than
             // the one character it happens to start with. The span is located in the line, not in
             // the row, because the wrap is free to put a long marker across two of them.
@@ -5987,6 +6000,52 @@ mod tests {
         session.move_left();
 
         assert_eq!(caret_cells(&session, 22, 12), "[Pasted text #1 +4 lines]");
+    }
+
+    /// A selection nobody can see is the failure this mode has: the next key acts on a stretch, and a
+    /// person who cannot see which one is guessing. The whole of it is drawn rather than the caret
+    /// within it, which inside a reversed block would say nothing.
+    #[test]
+    fn the_selection_is_drawn_over_the_whole_stretch() {
+        let mut session = Session::new("test");
+        session.choose_editing(crate::vim::Editing::Vi);
+        for c in "one two".chars() {
+            session.type_char(c);
+        }
+        session.enter_vi_normal();
+        session.type_char('0');
+        session.type_char('v');
+        session.type_char('w');
+
+        assert_eq!(caret_cells(&session, 40, 12), "one t");
+    }
+
+    /// A selection over a paragraph is what the line-wise mode is for, so every row it crosses is
+    /// covered: one row highlighted and the rest looking like ordinary words would say the stretch
+    /// stopped where the wrap did.
+    #[test]
+    fn a_selection_across_rows_is_drawn_on_all_of_them() {
+        let mut session = Session::new("test");
+        session.choose_editing(crate::vim::Editing::Vi);
+        session.paste_text("one\ntwo");
+        session.enter_vi_normal();
+        session.type_char('g');
+        session.type_char('g');
+        session.type_char('V');
+        session.type_char('G');
+
+        assert_eq!(caret_cells(&session, 40, 12), "onetwo");
+    }
+
+    /// The box everybody else has marks nothing out, so nothing is drawn reversed but the caret.
+    #[test]
+    fn the_ordinary_box_draws_no_selection() {
+        let mut session = Session::new("test");
+        for c in "one two".chars() {
+            session.type_char(c);
+        }
+
+        assert_eq!(caret_cells(&session, 40, 12), " ");
     }
 
     /// The bug: text past the right edge used to be clipped, cursor included, which looked like

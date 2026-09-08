@@ -679,6 +679,12 @@ pub struct Session {
     /// Remembered because `;` and `,` mean nothing on their own: they say "that again", and there is
     /// nothing else on the session that says what "that" was.
     last_find: Option<crate::vim::Find>,
+    /// The end of the selection the caret is not at, while VISUAL mode is open.
+    ///
+    /// The caret is the other end, so the two together are the stretch and a motion moves one of them.
+    /// `None` outside VISUAL mode, since a selection nobody can see is a stretch the next operator would
+    /// act on for reasons the person has no way to account for.
+    anchor: Option<usize>,
     /// What the last yank or delete took, for the keys that put it back.
     ///
     /// Vi's unnamed register, and the only one: the named ones are a filing system, and a box holding
@@ -1004,6 +1010,7 @@ impl Session {
             mode: crate::vim::Mode::default(),
             half_typed: None,
             last_find: None,
+            anchor: None,
             register: None,
             last_change: None,
             before_last_change: None,
@@ -1917,8 +1924,43 @@ impl Session {
     }
 
     /// Whether a letter typed now is an instruction rather than a letter.
+    ///
+    /// True in VISUAL mode as well as NORMAL: the difference between the two is what an instruction acts
+    /// on, not whether a letter is one.
     pub fn vi_normal(&self) -> bool {
-        self.vi_mode() == Some(crate::vim::Mode::Normal)
+        self.vi_mode()
+            .is_some_and(crate::vim::Mode::takes_instructions)
+    }
+
+    /// The stretch VISUAL mode has marked out, as byte offsets, or `None` where it is not open.
+    ///
+    /// Both ends inclusive of the characters they sit on, which is what vi shows and what makes `v` then
+    /// `d` take two characters rather than one. Whole lines in the line-wise mode however far along a
+    /// line either end happens to sit.
+    pub fn vi_selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.anchor?;
+        let lines = matches!(
+            self.vi_mode(),
+            Some(crate::vim::Mode::Visual { lines: true })
+        );
+        let (from, to) = (anchor.min(self.caret), anchor.max(self.caret));
+        if lines {
+            let starts = self.input[..from].rfind('\n').map_or(0, |at| at + 1);
+            let ends = self.input[to..]
+                .find('\n')
+                .map_or(self.input.len(), |at| to + at);
+            return Some((starts, ends));
+        }
+        // The character the far end sits on is part of the selection, so the stretch runs past it.
+        Some((from, self.past(to)))
+    }
+
+    /// The position just past the character at `at`, or `at` itself at the end of the input.
+    fn past(&self, at: usize) -> usize {
+        match self.input[at..].chars().next() {
+            Some(c) => at + c.len_utf8(),
+            None => at,
+        }
     }
 
     /// Take the letters as instructions, which is what Escape asks for.
@@ -1933,6 +1975,9 @@ impl Session {
             return false;
         }
         self.mode = crate::vim::Mode::Normal;
+        // The selection goes with the mode that showed it. Escape out of VISUAL mode abandons the
+        // stretch, so what the next operator acts on is what the caret is on and nothing invisible.
+        self.anchor = None;
         // Where vi leaves it. The caret in NORMAL mode sits on a character rather than between two,
         // so the position one past the end of the line is not one it can hold, and Escape at the end
         // of a line somebody has just typed lands on the last character they typed.
@@ -1961,7 +2006,14 @@ impl Session {
             self.jump_to_char(repeated);
             return;
         }
-        self.carry_out(crate::vim::command(c));
+        // The two modes disagree about what most of the letters mean, so each reads its own table: `u`
+        // lowers the case of a selection where in NORMAL mode it undoes.
+        let command = if self.anchor.is_some() {
+            crate::vim::visual_command(c)
+        } else {
+            crate::vim::command(c)
+        };
+        self.carry_out(command);
     }
 
     /// Act on an instruction that has everything it needs.
@@ -1981,6 +2033,10 @@ impl Session {
             }
             Command::Paste { before } => self.put_the_register_back(before),
             Command::Join => self.join_the_line_below(),
+            Command::Select { lines } => self.select(lines),
+            Command::SwapEnds => self.swap_the_ends_of_the_selection(),
+            Command::Replace(c) => self.replace_the_selection_with(c),
+            Command::Case(case) => self.change_the_case_of_the_selection(case),
             Command::Nothing => {}
         }
     }
@@ -2004,7 +2060,14 @@ impl Session {
             self.completion = 0;
         }
 
-        let whole_lines = extent == crate::vim::Extent::Line;
+        // A line-wise selection is whole lines as much as `dd` is, so the newline is handled the same way
+        // and what goes into the register goes back as a line.
+        let whole_lines = extent == crate::vim::Extent::Line
+            || (extent == crate::vim::Extent::Selection
+                && matches!(
+                    self.vi_mode(),
+                    Some(crate::vim::Mode::Visual { lines: true })
+                ));
         self.register = Some(Yanked {
             text: self.input[from..to].to_string(),
             lines: whole_lines,
@@ -2042,6 +2105,12 @@ impl Session {
             Operator::Indent | Operator::Dedent => {
                 self.shift_the_line(operator == Operator::Indent)
             }
+        }
+        // Every operator ends the selection, the stretch it named having been acted on. A change has
+        // already put the box into INSERT mode, so only the others go back to NORMAL.
+        if self.anchor.take().is_some() && operator != Operator::Change {
+            self.mode = crate::vim::Mode::Normal;
+            self.step_back_off_the_end();
         }
     }
 
@@ -2144,6 +2213,7 @@ impl Session {
                 }
             }
             Extent::Object(object) => self.object_span(object),
+            Extent::Selection => self.vi_selection(),
         };
         self.caret = was;
         span.filter(|(from, to)| from < to)
@@ -2426,6 +2496,104 @@ impl Session {
         self.caret = end;
     }
 
+    /// Open VISUAL mode, or change which kind it is, or leave it.
+    ///
+    /// One key both ways, read against the mode already in force: the press that opens the mode is the
+    /// press that closes it, so there is nothing to remember about which was which. `v` while `V` is in
+    /// force changes the kind rather than leaving, which is what vi does and what somebody who pressed
+    /// the wrong one of the two wants.
+    fn select(&mut self, lines: bool) {
+        match self.vi_mode() {
+            Some(crate::vim::Mode::Visual { lines: already }) if already == lines => {
+                self.mode = crate::vim::Mode::Normal;
+                self.anchor = None;
+            }
+            Some(crate::vim::Mode::Visual { .. }) => self.mode = crate::vim::Mode::Visual { lines },
+            _ => {
+                self.mode = crate::vim::Mode::Visual { lines };
+                // Both ends at the caret, so a selection just opened covers the character it is on and
+                // is never empty: an operator pressed straight away acts on something.
+                self.anchor = Some(self.caret);
+            }
+        }
+    }
+
+    /// Put the caret at the other end of the selection, which is what `o` asks for.
+    ///
+    /// The end being moved is the one the caret is at, so this is how the other end is adjusted without
+    /// starting the selection again.
+    fn swap_the_ends_of_the_selection(&mut self) {
+        if let Some(anchor) = self.anchor {
+            self.anchor = Some(self.caret);
+            self.caret = anchor;
+        }
+    }
+
+    /// Replace every character of the selection with one, which is what `r` asks for.
+    ///
+    /// A marker is not a run of characters to overwrite, so a selection holding one is left alone rather
+    /// than turned into a row of `x` where a picture was. Refused whole rather than in part: replacing
+    /// the text either side and leaving the marker would be a line nobody could read.
+    fn replace_the_selection_with(&mut self, c: char) {
+        let Some((from, to)) = self.vi_selection() else {
+            return;
+        };
+        if self
+            .marker_spans()
+            .any(|(start, end)| start < to && from < end)
+        {
+            self.leave_visual_mode();
+            return;
+        }
+        self.before_last_change = Some((self.input.clone(), self.caret));
+        self.history.leave();
+        self.completion = 0;
+
+        let replaced: String = self.input[from..to]
+            .chars()
+            .map(|was| if was == '\n' { was } else { c })
+            .collect();
+        self.input.replace_range(from..to, &replaced);
+        self.caret = from;
+        self.leave_visual_mode();
+    }
+
+    /// Change the case of the selection, which is what `~`, `u` and `U` ask for there.
+    fn change_the_case_of_the_selection(&mut self, case: crate::vim::Case) {
+        use crate::vim::Case;
+
+        let Some((from, to)) = self.vi_selection() else {
+            return;
+        };
+        self.before_last_change = Some((self.input.clone(), self.caret));
+        self.history.leave();
+        self.completion = 0;
+
+        let changed: String = self.input[from..to]
+            .chars()
+            .map(|c| match case {
+                Case::Lower => c.to_lowercase().next().unwrap_or(c),
+                Case::Upper => c.to_uppercase().next().unwrap_or(c),
+                Case::Swapped if c.is_lowercase() => c.to_uppercase().next().unwrap_or(c),
+                Case::Swapped => c.to_lowercase().next().unwrap_or(c),
+            })
+            .collect();
+        self.input.replace_range(from..to, &changed);
+        self.caret = from;
+        self.leave_visual_mode();
+    }
+
+    /// Back to NORMAL mode with no selection, which is where every operator leaves VISUAL mode.
+    ///
+    /// The stretch has been acted on, so a selection left standing would be one the next press acted on
+    /// again for reasons nothing on the screen explains.
+    fn leave_visual_mode(&mut self) {
+        if self.anchor.take().is_some() {
+            self.mode = crate::vim::Mode::Normal;
+            self.step_back_off_the_end();
+        }
+    }
+
     /// Put the line back as it stood before the last change.
     ///
     /// Nothing where no change has been made. One step rather than a stack, on the same footing as the
@@ -2515,6 +2683,21 @@ impl Session {
             Motion::ToChar(find) => {
                 self.last_find = Some(find);
                 self.jump_to_char(find);
+            }
+            // Both ends of the object, which in VISUAL mode is what selects it: the anchor takes the near
+            // end and the caret the far one. On the object's last character rather than past it, since
+            // the selection covers the character each end sits on and one past would take a character
+            // the object does not include.
+            Motion::Object(object) => {
+                if let Some((from, to)) = self.object_span(object) {
+                    if self.anchor.is_some() {
+                        self.anchor = Some(from);
+                    }
+                    self.caret = self.input[..to]
+                        .chars()
+                        .next_back()
+                        .map_or(to, |c| to - c.len_utf8());
+                }
             }
         }
     }
@@ -9154,6 +9337,145 @@ mod tests {
                 s.input
             );
         }
+    }
+
+    /// A stretch marked out before saying what to do with it, which is the other way round from an
+    /// operator and the reason to have both: the selection is on the screen while it is being chosen.
+    /// Both ends cover the character they sit on, so `v` then `l` then `d` takes two characters.
+    ///
+    /// Every case here was measured against vim.
+    #[test]
+    fn a_selection_is_marked_out_and_then_acted_on() {
+        assert_eq!(edited("one two", 0, "vld"), "e two");
+        assert_eq!(edited("one two", 0, "vlcX"), "Xe two");
+        assert_eq!(edited("one two", 0, "vlyp"), "oonne two");
+        assert_eq!(edited("one two", 0, "vlrz"), "zze two");
+        // `x` is `d` and `s` is `c` here: with a selection on the screen, the distinction those keys
+        // draw in NORMAL mode has nothing left to draw.
+        assert_eq!(edited("one two", 0, "vlx"), "e two");
+    }
+
+    /// A selection just opened covers the character the caret is on, so it is never empty and an
+    /// operator pressed straight away acts on something.
+    #[test]
+    fn a_selection_covers_the_character_it_opened_on() {
+        assert_eq!(edited("one two", 0, "vd"), "ne two");
+        assert_eq!(edited("one two", 0, "vy"), "one two");
+    }
+
+    /// `V` selects whole lines however far along one either end sits, which is what makes it worth
+    /// having beside `v` in a box that holds a paragraph.
+    #[test]
+    fn the_line_wise_selection_takes_whole_lines() {
+        assert_eq!(edited("one\ntwo", 1, "Vd"), "two");
+        assert_eq!(edited("one\ntwo\nthree", 5, "Vd"), "one\nthree");
+    }
+
+    /// The keys that change case, which mean this only here: `u` in NORMAL mode undoes.
+    #[test]
+    fn the_case_keys_act_on_the_selection() {
+        assert_eq!(edited("one two", 0, "vl~"), "ONe two");
+        assert_eq!(edited("one two", 0, "vlU"), "ONe two");
+        assert_eq!(edited("ONE TWO", 0, "vlu"), "onE TWO");
+    }
+
+    /// `o` puts the caret at the other end, which is how the end that is not being moved gets adjusted
+    /// without starting the selection again.
+    #[test]
+    fn swapping_the_ends_moves_the_other_one() {
+        assert_eq!(edited("one two three", 4, "vllold"), "one t three");
+    }
+
+    /// A motion extends the selection rather than moving a bare caret, and a text object selects rather
+    /// than being acted on, so `vi(` shows the stretch `ci(` would have taken.
+    #[test]
+    fn a_motion_or_an_object_extends_the_selection() {
+        assert_eq!(edited("one two", 0, "vwd"), "wo");
+        assert_eq!(edited("one two", 0, "viwd"), " two");
+        assert_eq!(edited("call(a, b) ok", 5, "vi(d"), "call() ok");
+    }
+
+    /// One key both ways, read against the mode in force: the press that opens the mode closes it, so
+    /// there is nothing to remember about which was which. The other of the two changes the kind rather
+    /// than leaving, which is what somebody who pressed the wrong one wants.
+    #[test]
+    fn the_selection_key_opens_and_closes_and_changes_kind() {
+        let mut s = normal("one\ntwo", 0);
+        s.type_char('v');
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Visual { lines: false }));
+
+        s.type_char('V');
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Visual { lines: true }));
+
+        s.type_char('V');
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Normal));
+        assert_eq!(s.vi_selection(), None);
+    }
+
+    /// Escape abandons the selection, so what the next operator acts on is what the caret is on and
+    /// never a stretch that is no longer drawn.
+    #[test]
+    fn escape_abandons_the_selection() {
+        let mut s = normal("one two", 0);
+        s.type_char('v');
+        s.type_char('l');
+        s.enter_vi_normal();
+
+        assert_eq!(s.vi_selection(), None);
+        assert_eq!(s.vi_mode(), Some(crate::vim::Mode::Normal));
+        s.type_char('d');
+        s.type_char('l');
+        // The caret is where the selection left it, so `dl` from there takes one character. The stretch
+        // that was abandoned would have taken two.
+        assert_eq!(
+            s.input, "oe two",
+            "the abandoned selection was still acted on"
+        );
+    }
+
+    /// Every operator ends the selection, the stretch having been acted on. One left standing would be
+    /// acted on again by the next press for reasons nothing on the screen explains.
+    #[test]
+    fn an_operator_ends_the_selection() {
+        for keys in ["d", "y", "x", ">", "~", "rz"] {
+            let mut s = normal("one two", 0);
+            s.type_char('v');
+            s.type_char('l');
+            for c in keys.chars() {
+                s.type_char(c);
+            }
+            assert_eq!(s.vi_selection(), None, "{keys} left the selection standing");
+            assert_eq!(
+                s.vi_mode(),
+                Some(crate::vim::Mode::Normal),
+                "{keys} left VISUAL mode open"
+            );
+        }
+    }
+
+    /// A marker is not a run of characters to overwrite, so a selection holding one is left alone rather
+    /// than turned into a row of the same letter where a picture was. Refused whole: replacing the text
+    /// either side and leaving the marker would be a line nobody could read.
+    #[test]
+    fn replacing_a_selection_holding_a_marker_leaves_it_alone() {
+        let mut s = vi();
+        for c in "look ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        let before = s.input.clone();
+        s.enter_vi_normal();
+        s.caret = 0;
+
+        s.type_char('v');
+        s.type_char('$');
+        s.type_char('r');
+        s.type_char('z');
+
+        assert_eq!(
+            s.input, before,
+            "a marker was overwritten character by character"
+        );
     }
 
     /// A marker is one thing, so an operator takes the whole of it or none: half a marker stands for

@@ -7258,13 +7258,19 @@ mod tests {
             session
         };
 
-        // Both styles of editing, and in the vi one both of its modes. A key wired into one path and
-        // not the other is the bug this catches, and vi editing doubles the number of places to wire
-        // one: NORMAL mode gives every printable character a meaning of its own, so a letter answered
-        // by the idle path alone would be a letter that silently did nothing during a turn.
+        // Both styles of editing, and in the vi one every mode it has. A key wired into one path and
+        // not the other is the bug this catches, and vi editing multiplies the places to wire one:
+        // each mode gives every printable character a meaning of its own, so a letter answered by the
+        // idle path alone would be a letter that silently did nothing during a turn.
+        let modes = [
+            None,
+            Some(crate::vim::Mode::Normal),
+            Some(crate::vim::Mode::Visual { lines: false }),
+            Some(crate::vim::Mode::Visual { lines: true }),
+        ];
         for editing in crate::vim::Editing::ALL {
-            for normal in [false, true] {
-                if normal && editing == crate::vim::Editing::Ordinary {
+            for mode in modes {
+                if mode.is_some() != (editing == crate::vim::Editing::Vi) {
                     continue;
                 }
                 for line in ["", "half a thought"] {
@@ -7274,9 +7280,17 @@ mod tests {
                         }
                         let mut idle = sent(true, editing, line);
                         let mut working = sent(false, editing, line);
-                        if normal {
-                            idle.enter_vi_normal();
-                            working.enter_vi_normal();
+                        for session in [&mut idle, &mut working] {
+                            match mode {
+                                None => {}
+                                Some(crate::vim::Mode::Visual { lines }) => {
+                                    session.enter_vi_normal();
+                                    session.type_char(if lines { 'V' } else { 'v' });
+                                }
+                                Some(_) => {
+                                    session.enter_vi_normal();
+                                }
+                            }
                         }
                         assert_eq!(working.status, Status::Working);
                         assert_eq!(
@@ -7292,7 +7306,7 @@ mod tests {
                             answered(&idle, at_rest),
                             answered(&working, mid_turn),
                             "{pressed:?} was answered differently while a turn was running, \
-                             over a line of {line:?}, editing {editing:?}"
+                             over a line of {line:?}, editing {editing:?} in {mode:?}"
                         );
                     }
                 }
