@@ -1175,7 +1175,10 @@ impl Session {
         // away, which is neither what was asked for nor recognisable as a mistake.
         self.looping = None;
         // The delegates went with the transcript that held them, so the mode standing over one
-        // is standing over nothing.
+        // is standing over nothing. What the commands printed is kept beside the transcript rather
+        // than in it, so it is dropped here by name: a conversation nobody remembers leaving its
+        // commands openable is the one case the view could show work from a session that is gone.
+        self.outputs.clear();
         self.watching = None;
         self.held_view = None;
     }
@@ -4251,9 +4254,14 @@ mod tests {
         fn clearing_forgets_the_delegates() {
             let mut session = Session::new("none");
             spawn(&mut session, "reader", "find the parser");
+            ran(&mut session, "cargo test", false);
             session.clear();
 
             assert!(session.delegates().is_empty());
+            assert!(
+                session.watchable().is_empty(),
+                "a command from the forgotten conversation is still openable"
+            );
         }
     }
 

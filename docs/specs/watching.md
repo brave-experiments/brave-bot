@@ -271,8 +271,8 @@ foot, reads as two things to press. The line that is always drawn is the one to 
 
 A delegate's lines go to a screen and stop there. The planner that asked is told the report and
 nothing else, and no delegate is part of the record a session is resumed from, so a resumed
-session has no delegates in it. Starting a new conversation forgets them, and the mode standing
-over one closes with them.
+session has no delegates in it. Starting a new conversation forgets them and what the commands
+printed, and the mode standing over any of it closes with them.
 
 **Why.** A screen is not a context. The person owns the directory and may see what their agent
 did in it; what must not happen is those lines reaching a planner's context by any route. A
@@ -281,7 +281,7 @@ record read back into a later turn is such a route, which is why nothing here is
 `verified-by: bravebot_agent::turn::what_a_delegate_read_never_reaches_the_planner_that_asked`
 `verified-by: bravebot_tui::state::clearing_forgets_the_delegates`
 `verified-by: bravebot_tui::state::clearing_closes_the_view_over_a_delegate`
-`verified-by: by-construction (a session's record is built from the conversation, which holds the turn's messages; a delegate's lines are held only by the interface and nothing writes them)`
+`verified-by: by-construction (a session's record is built from the conversation, which holds the turn's messages; a delegate's lines and what a command printed are held only by the interface and nothing writes them)`
 
 <a id="WATCH-13"></a>
 ### WATCH-13: a report the planner may not read is drawn in the marked block
