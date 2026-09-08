@@ -10,6 +10,7 @@ OpenCode. Brave has always shipped user agents, and this one is the user's agent
 - Nothing hidden: what it read and what it decided are on the screen.
 - Developed completely in the open.
 - No lock-in: other providers and models, settings on your own machine.
+- The power of a shell without the risk: command lines are compiled into the trust model rather than handed to one.
 
 ## Getting started
 
