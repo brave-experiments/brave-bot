@@ -34,7 +34,7 @@ help:
 	@echo
 	@echo "Releasing:"
 	@echo "  make bump-version BUMP=bugfix|minor|major   Set the next version"
-	@echo "  make github-release                         Tag it; Jenkins publishes signed assets"
+	@echo "  make github-release                         Tag it; Jenkins and npm publish are later"
 	@echo
 	@echo "  make clean          Remove build output"
 
@@ -229,11 +229,13 @@ const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); \
 if (!process.env.V) { throw new Error("version not passed through"); } \
 pkg.version = process.env.V; \
 fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");'; \
-	echo "bumped $$current -> $$next (Cargo.toml, Cargo.lock, package.json)"; \
+	BRAVEBOT_INSTALL_SKIP_DOWNLOAD=1 npm install --package-lock-only --ignore-scripts >/dev/null; \
+	echo "bumped $$current -> $$next (Cargo.toml, Cargo.lock, package.json, package-lock.json)"; \
 	echo "commit this, then run: make github-release"
 
-# Tags the current version and pushes it. GitHub Actions runs CI on the tag; Jenkins
-# (brave-bot-build with UPLOAD and RELEASE) builds, signs, and publishes the assets.
+# Tags the current version and pushes it. GitHub Actions runs CI on the tag.
+# Signed assets and the npm package are published later, each by hand: Jenkins
+# (brave-bot-build with UPLOAD and RELEASE), then Actions → Publish npm.
 .PHONY: github-release
 github-release:
 	@set -eu; \
@@ -266,7 +268,8 @@ github-release:
 	git tag -a -m "bravebot $(TAG)" "$(TAG)"; \
 	git push origin "$(TAG)"; \
 	echo "pushed $(TAG); GitHub Actions will run CI on the tag"; \
-	echo "publish signed assets with Jenkins job brave-bot-build (UPLOAD and RELEASE)"; \
+	echo "publish signed assets later with Jenkins job brave-bot-build (UPLOAD and RELEASE)"; \
+	echo "then publish npm: gh workflow run publish-npm.yml --ref $(TAG) -f tag=$(TAG)"; \
 	echo "watch CI with: gh run watch --repo brave-experiments/brave-bot"
 
 .PHONY: clean

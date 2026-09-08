@@ -5,8 +5,10 @@ status: normative
 governs:
   - Makefile
   - .github/workflows/ci.yml
+  - .github/workflows/publish-npm.yml
   - npm/scripts/postinstall.js
   - package.json
+  - package-lock.json
 ---
 
 ## Scope
@@ -20,10 +22,12 @@ published asset, and the checks along it.
 
 GitHub Actions compiles and tests. It does not create a GitHub release. Signed, configured
 binaries are built and published by the Jenkins job `brave-bot-build` in the devops repository.
+The npm package is published afterwards, from a manually dispatched GitHub Actions workflow,
+once that release exists.
 
 Nothing here is pinned by a Rust test. The rules below are enforced by a refusal in the tagging
-path or the Jenkins publish path rather than by anything the test suite can execute, so each
-clause says in brackets what makes it hold.
+path, the Jenkins publish path, or the npm publish workflow rather than by anything the test
+suite can execute, so each clause says in brackets what makes it hold.
 
 ## Clauses
 
@@ -53,11 +57,12 @@ removes that point, and makes a mistyped bump irreversible in the same breath.
 `verified-by: by-construction (the bump target writes files and prints the next step, and contains no git command)`
 
 <a id="RELEASE-3"></a>
-### RELEASE-3: GitHub Actions does not publish a release
+### RELEASE-3: GitHub Actions does not publish a GitHub release
 
 No branch push, no pull request, no tag push, and no manually dispatched GitHub Actions run
-creates a GitHub release or attaches binaries people install. Publication happens in Jenkins,
-when `brave-bot-build` is run with `UPLOAD` and `RELEASE`.
+creates a GitHub release or attaches binaries people install. Publication of those assets
+happens in Jenkins, when `brave-bot-build` is run with `UPLOAD` and `RELEASE`. The npm package
+is a later step, specified below, and is not a GitHub release.
 
 **Why.** GitHub Actions cannot codesign Darwin or Authenticode-sign Windows. If it published,
 the public assets would be unsigned until a later overwrite, and a tag re-push would put those
@@ -89,7 +94,7 @@ disagrees with the tree it built.
 a release whose name is not the version in the tree is a release whose assets the installer
 looks for under a name that was never uploaded.
 
-`verified-by: by-construction (the tagging path sets the tag from Cargo.toml after checking package.json, and a Jenkins RELEASE refuses unless that tag already names the commit it checked out and package.json states the same version, then names the GitHub release from Cargo.toml)`
+`verified-by: by-construction (the tagging path sets the tag from Cargo.toml after checking package.json, a Jenkins RELEASE refuses unless that tag already names the commit it checked out and package.json states the same version, then names the GitHub release from Cargo.toml, and the npm publish refuses unless the tag is v plus the same version in both files)`
 
 <a id="RELEASE-6"></a>
 ### RELEASE-6: a published binary carries the configuration it needs to run
@@ -145,6 +150,48 @@ Linux.
 
 `verified-by: by-construction (the install step hashes what it downloaded, compares it against the published value, and exits without writing on a mismatch)`
 
+<a id="RELEASE-10"></a>
+### RELEASE-10: the npm package is published by hand, after that version's GitHub release exists
+
+A branch push, a pull request, and a tag push do not publish to the registry. Someone dispatches
+`publish-npm.yml` with the version tag after Jenkins has created the GitHub release of that name.
+A dispatch whose tag is not `v` plus the version in the tree, or whose GitHub release is missing
+any platform asset or checksum, is refused rather than publishing a wrapper whose installer has
+nothing to fetch.
+
+**Why.** The installer derives the download from the version it was published with. Publishing
+the wrapper first makes every install fail until the assets exist, which reads as the tool being
+broken. Jenkins is started by hand, days later if need be, so npm publish is the same kind of
+step: it happens when somebody chooses, not when the tag lands. Publishing from a branch puts
+an unreviewed version on the registry.
+
+`verified-by: by-construction (publish-npm.yml runs only on workflow_dispatch, checks out the given tag, refuses unless that tag is v plus the version in both files, and refuses unless each named asset and its checksum are on the GitHub release)`
+
+<a id="RELEASE-11"></a>
+### RELEASE-11: the registry authenticates the workflow, not a stored token
+
+The publish job proves itself with a short-lived OIDC identity for this workflow in this
+repository, and sets no long-lived npm credential. The package it publishes carries provenance
+for that run.
+
+**Why.** A token in GitHub secrets is a credential that publishes if it leaks, and it outlives
+the run that needed it. OIDC binds the publish to this file on this repository, so a different
+workflow, or the same workflow in a fork, cannot use it.
+
+`verified-by: by-construction (the publish job grants id-token: write, sets no NPM_TOKEN or NODE_AUTH_TOKEN, and calls npm publish --access public --provenance)`
+
+<a id="RELEASE-12"></a>
+### RELEASE-12: the npm lockfile is committed, CI installs from it, and it is linted
+
+An install in CI uses the committed lockfile rather than resolving anew, and a lockfile that
+pulls from somewhere other than the npm registry, or over http, fails that job.
+
+**Why.** The published tarball is this repository's wrapper scripts. A dependency that appeared
+only at install time would be bytes nobody reviewed, and the first place that would show up is
+the pipeline that publishes.
+
+`verified-by: by-construction (package-lock.json is in the tree, both workflows run npm ci --ignore-scripts, and lockfile-lint refuses hosts other than npm and non-https URLs)`
+
 ## Known costs
 
 - **Nothing here is pinned by a test.** Every clause is by-construction, which means a refusal can
@@ -176,7 +223,13 @@ Linux.
   replace an existing release, so a retry after a successful publish, or after a hand-made
   release of the same tag, stops before upload.
 
-- **The npm package is not published.** RELEASE-1 and RELEASE-5 already require the npm manifest to
-  agree with the version that is tagged and released, and the installer already resolves assets
-  from a published release, so the packaging half is specified and exercised while publication
-  is not. What is unproven is the registry step itself.
+- **The trusted publisher is configured on npmjs.com, not here.** OIDC will refuse until that
+  record names this repository and `publish-npm.yml` exactly. A mismatch looks like a 404 from
+  the registry. Enabling 2FA on maintainer npm accounts is also outside this tree.
+
+- **A second npm publish of the same version fails at the registry.** Dispatching before Jenkins
+  has created the GitHub release fails the asset check instead. A delayed Jenkins run does not
+  start npm publish on its own.
+
+- **OIDC trusted publishing does not support Jenkins.** That is why this one publication step
+  is in GitHub Actions while the signed binaries stay in Jenkins.
