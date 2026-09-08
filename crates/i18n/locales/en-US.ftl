@@ -216,6 +216,12 @@ effort-hint-medium = less thinking, where that holds up
 effort-hint-high = the usual amount, for work needing care
 effort-hint-xhigh = more thinking, for code and long runs
 effort-hint-max = the most thinking, cost aside
+# Choosing how the input box edits text. The style names are the words the setting is spelled with, so
+# they are not translated; only what each one is for is.
+config-picker-title = editor mode
+config-picker-keys = ↑↓ choose  ·  Enter select  ·  Esc keep current
+config-editing-hint-ordinary = arrows and the readline chords
+config-editing-hint-vi = modal editing, with hjkl and the operators
 picker-premium = premium
 # The heading over the models Brave's own endpoint serves. Named rather than left blank, because a
 # list whose other sections name a service reads as though the unlabelled rows came from nowhere.
@@ -579,6 +585,7 @@ command-status = Report this session, what it may touch, and what it has spent
 command-model = Choose which model to think with
 command-theme = Choose which theme paints the interface
 command-effort = Choose how hard to think before answering
+command-config = Choose how the input box edits text
 command-add-dir = Open another directory, and trust it for this session
 command-cd = Work in another directory from now on, and trust it for this session
 command-rename = Call this conversation something else
@@ -631,6 +638,8 @@ session-context-budget = compacting above { $budget } tokens, as this model adve
 session-models-unavailable = could not list models: { $problem }
 session-theme-set = theme { $theme }
 session-no-such-theme = no theme named { $theme }; try /theme for the list
+session-editing-vi = editing the way vi does; esc for commands, i to type
+session-editing-ordinary = editing with the arrows and the readline chords
 session-effort-set = thinking at { $effort }
 session-effort-unset = thinking as the service decides
 session-no-such-effort = no effort level named { $effort }; try /effort for the list

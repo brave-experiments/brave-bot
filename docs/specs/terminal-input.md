@@ -9,6 +9,7 @@ governs:
   - crates/tui/src/editor.rs
   - crates/tui/src/history_search.rs
   - crates/tui/src/vim.rs
+  - crates/tui/src/config_prompt.rs
 ---
 
 ## Scope
@@ -828,6 +829,11 @@ every directory. A choice they made outranks a settings file, the file answers f
 never made one, and with neither the box is the ordinary one. A configured word naming no style
 leaves the ordinary box and stops nothing from starting.
 
+**A choice is made from a panel `/config` opens**, over the transcript, listing the styles with what
+each one means and marking the one in force. Enter takes the row under the cursor and says so on the
+transcript; Escape leaves the style alone. Whichever style is chosen, the box comes back taking
+letters as letters.
+
 Vi editing has two modes over the same line. INSERT is the box everybody has, where a typed
 character lands at the caret. NORMAL takes a letter as an instruction, and a letter it has no
 instruction for does nothing at all rather than being typed. Every session opens in INSERT.
@@ -860,6 +866,13 @@ would find out by reading the line rather than by pressing the key.
 `verified-by: bravebot_config::settings::a_style_of_editing_resolves_like_any_other_single_value`
 `verified-by: bravebot_config::settings::a_blank_value_is_not_a_choice`
 `verified-by: bravebot_config::settings::a_style_of_editing_is_among_the_names_reported`
+`verified-by: bravebot_tui::config_prompt::the_picker_opens_on_the_style_in_force`
+`verified-by: bravebot_tui::config_prompt::the_style_in_force_is_marked_wherever_the_cursor_is`
+`verified-by: bravebot_tui::config_prompt::the_cursor_stops_at_the_ends_of_the_list`
+`verified-by: bravebot_tui::config_prompt::escape_and_ctrl_c_leave_the_style_alone`
+`verified-by: bravebot_tui::config_prompt::the_arrows_and_vis_own_keys_walk_the_list`
+`verified-by: bravebot_tui::config_prompt::enter_takes_the_row_under_the_cursor`
+`verified-by: bravebot_tui::config_prompt::every_row_says_what_it_means`
 
 <a id="INPUT-24"></a>
 ### INPUT-24: Escape takes the letters as instructions, and takes nothing else

@@ -67,6 +67,7 @@ stay a question. Prefix matching would have made `/add-dirs are useful` open a d
 `verified-by: bravebot_tui::app::a_prompt_containing_the_theme_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_longer_word_starting_with_theme_is_a_prompt`
 `verified-by: bravebot_tui::app::a_prompt_containing_the_effort_command_is_still_a_prompt`
+`verified-by: bravebot_tui::app::a_prompt_containing_the_config_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_longer_word_starting_with_effort_is_a_prompt`
 `verified-by: bravebot_tui::app::a_prompt_containing_the_rename_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_prompt_containing_the_exit_command_is_still_a_prompt`
@@ -113,6 +114,7 @@ the network to list models. Neither sends the typed line.
 `verified-by: bravebot_tui::app::typing_the_theme_command_opens_the_picker`
 `verified-by: bravebot_tui::app::the_theme_command_carries_its_name`
 `verified-by: bravebot_tui::app::typing_the_effort_command_opens_the_picker`
+`verified-by: bravebot_tui::app::typing_the_config_command_opens_the_panel`
 `verified-by: bravebot_tui::app::the_effort_command_carries_its_level`
 `verified-by: bravebot_tui::app::typing_the_exit_command_quits`
 `verified-by: bravebot_tui::app::the_loop_command_sends_what_is_left_after_the_interval`
@@ -150,6 +152,7 @@ leaving the rest advertising something that no longer works, which a person disc
 it.
 
 `verified-by: bravebot_tui::app::compacting_is_offered_while_a_command_is_being_typed`
+`verified-by: bravebot_tui::app::the_config_command_is_offered_like_every_other`
 `verified-by: bravebot_tui::render::a_slash_offers_every_command_and_what_it_does`
 
 

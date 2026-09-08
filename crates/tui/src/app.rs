@@ -70,6 +70,9 @@ const THEME_COMMAND: &str = "/theme";
 /// The line that opens the effort picker, or takes a level named after the word.
 const EFFORT_COMMAND: &str = "/effort";
 
+/// The line that opens the panel of preferences about the interface itself.
+const CONFIG_COMMAND: &str = "/config";
+
 /// The line that opens another directory, taking the path to open as its argument.
 const ADD_DIR_COMMAND: &str = "/add-dir";
 
@@ -116,7 +119,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 13] {
+pub fn commands() -> [Command; 14] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -137,6 +140,11 @@ pub fn commands() -> [Command; 13] {
             name: EFFORT_COMMAND,
             argument: "[level]",
             description: t!(command_effort),
+        },
+        Command {
+            name: CONFIG_COMMAND,
+            argument: "",
+            description: t!(command_config),
         },
         Command {
             name: ADD_DIR_COMMAND,
@@ -243,6 +251,8 @@ pub enum Action {
     ChooseEffort,
     /// Take a level by name without opening the picker.
     SetEffort(String),
+    /// Ask how the box should edit. Needs the terminal, so the loop runs it.
+    ChooseEditing,
     /// Open another directory. Needs the workspace and the trust map, which the loop owns.
     AddDirectory(String),
     /// Work somewhere else from now on. Needs the workspace, the trust map and the session
@@ -890,6 +900,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             } else {
                 Action::SetEffort(level)
             }
+        }
+        KeyCode::Enter if session.input().trim() == CONFIG_COMMAND => {
+            session.clear_input();
+            Action::ChooseEditing
         }
         KeyCode::Enter if session.input().trim() == STATUS_COMMAND => {
             session.clear_input();
@@ -1971,6 +1985,10 @@ fn event_loop(
                 set_effort(&mut session, &level);
                 needs_draw = true;
             }
+            Action::ChooseEditing => {
+                choose_editing(terminal, &mut session);
+                needs_draw = true;
+            }
             Action::AddDirectory(directory) => {
                 // The snapshot holds a trust map without this directory's rule in it, while the
                 // directory itself would stay open.
@@ -2688,6 +2706,22 @@ fn choose_effort(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session:
         session.choose_effort(row.0);
         session.note(said_of(row.0));
         say_if_unread(session);
+    }
+}
+
+/// Open the panel of preferences and keep what the person chose.
+fn choose_editing(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, session: &mut Session) {
+    if let Some(row) = crate::config_prompt::choose(terminal, session.editing(), |frame| {
+        render::draw(frame, session);
+    }) {
+        session.choose_editing(row.0);
+        // Said out loud, because the choice changes what the next keystroke does and the box gives no
+        // other sign of it until a letter has already gone somewhere unexpected. The mode beneath the
+        // box says which vi mode is in force, and this says the style was chosen at all.
+        session.note(match row.0 {
+            crate::vim::Editing::Vi => t!(session_editing_vi),
+            crate::vim::Editing::Ordinary => t!(session_editing_ordinary),
+        });
     }
 }
 
@@ -5903,6 +5937,55 @@ mod tests {
         assert_eq!(session.status, Status::Idle, "a turn began");
     }
 
+    /// A command, not a prompt: asking how the box edits must not also ask the planner about it.
+    #[test]
+    fn typing_the_config_command_opens_the_panel() {
+        let mut session = Session::new("none");
+        for c in CONFIG_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::ChooseEditing
+        );
+        assert!(session.input().is_empty(), "the command stayed on the line");
+        assert!(
+            session.transcript.is_empty(),
+            "the command was sent as a prompt"
+        );
+        assert_eq!(session.status, Status::Idle, "a turn began");
+    }
+
+    /// Only the bare word. "what does /config change" is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_config_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        type_line(&mut session, "what does /config change");
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /config change".to_string())
+        );
+    }
+
+    /// The command is on the list `/` offers, since a panel nobody can find is a panel nobody has.
+    #[test]
+    fn the_config_command_is_offered_like_every_other() {
+        assert!(
+            commands()
+                .iter()
+                .any(|command| command.name == CONFIG_COMMAND),
+            "the command is not on the list"
+        );
+        assert!(
+            completions("/con")
+                .iter()
+                .any(|command| command.name == CONFIG_COMMAND),
+            "the command does not complete"
+        );
+    }
+
     /// Only the bare word. "why is /effort high" is a thing to say to the planner.
     #[test]
     fn a_prompt_containing_the_effort_command_is_still_a_prompt() {
@@ -6615,9 +6698,13 @@ mod tests {
         }
         handle_key(&mut session, key(KeyCode::Char('c')));
 
+        // The first command that still matches, whichever it is: the property is where the cursor
+        // lands, and naming one command would make the test fail the next time one is added.
+        let first = completions("/c").first().map(|command| command.name);
+        assert!(first.is_some(), "nothing matched, so this proves nothing");
         assert_eq!(
             session.highlighted_completion().map(|c| c.name),
-            Some(CD_COMMAND),
+            first,
             "the cursor did not return to the top of what now matches"
         );
     }

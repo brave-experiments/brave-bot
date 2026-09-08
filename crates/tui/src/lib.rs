@@ -8,6 +8,7 @@ pub mod app;
 pub mod ask;
 pub mod audit;
 pub mod clipboard;
+pub mod config_prompt;
 pub mod confirm;
 pub mod dropped;
 pub mod editor;
