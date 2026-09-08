@@ -1070,10 +1070,16 @@ fn new_id() -> String {
     id
 }
 
-/// Export a session transcript to a markdown file within the project root.
+/// Write a transcript into the working directory, at `requested_path` or a name of its own.
 ///
-/// Confined strictly to the workspace root: any path containing `..`, root, or drive components
-/// is refused to prevent path traversal. If the target file already exists, it is not overwritten.
+/// Confined the way a workspace write is, and for the same reason: the path is typed on a line
+/// that also accepts `/export ../../.ssh/authorized_keys`. `..`, a root and a drive prefix are
+/// refused lexically, and then containment is tested against the canonical path of the deepest
+/// directory that exists, which is what catches a symlink pointing out of the tree.
+///
+/// Anything already at the path is refused rather than replaced, a dangling symlink included:
+/// following one would write outside the tree past every check above, and a person naming a path
+/// that is already taken meant a different path.
 pub fn export(
     project: &Path,
     session_id: &str,
@@ -1082,8 +1088,8 @@ pub fn export(
 ) -> std::io::Result<PathBuf> {
     let relative = match requested_path.map(str::trim).filter(|s| !s.is_empty()) {
         Some(custom) => {
-            let p = Path::new(custom);
-            for component in p.components() {
+            let named = Path::new(custom);
+            for component in named.components() {
                 match component {
                     std::path::Component::ParentDir => {
                         return Err(std::io::Error::new(
@@ -1100,16 +1106,34 @@ pub fn export(
                     std::path::Component::CurDir | std::path::Component::Normal(_) => {}
                 }
             }
-            p.to_path_buf()
+            named.to_path_buf()
         }
         None => PathBuf::from(format!("bravebot-export-{session_id}.md")),
     };
 
     let target = project.join(&relative);
-    if target.exists() {
+
+    // `exists` follows a symlink and so reports nothing for one whose target is missing, which is
+    // exactly the case that would escape.
+    if target.symlink_metadata().is_ok() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             format!("'{}' already exists", relative.display()),
+        ));
+    }
+
+    let root = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
+    let inside = target
+        .ancestors()
+        .skip(1)
+        .find_map(|ancestor| ancestor.canonicalize().ok())
+        .is_some_and(|ancestor| ancestor.starts_with(&root));
+    if !inside {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "path must stay inside the project directory",
         ));
     }
 
@@ -1722,5 +1746,48 @@ mod tests {
         assert!(!audit_after.contains_key(&2));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The lexical check on `..` says nothing about where a directory inside the tree actually
+    /// leads, and a symlink is how a path with no `..` in it lands outside the project.
+    #[test]
+    #[cfg(unix)]
+    fn exporting_refuses_a_path_through_a_symlinked_directory() {
+        let root = std::env::temp_dir().join("bravebot-export-test-symlink-dir");
+        let outside = std::env::temp_dir().join("bravebot-export-test-symlink-dir-outside");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&root).expect("create");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        std::os::unix::fs::symlink(&outside, root.join("escape")).expect("symlink");
+
+        let refused = export(&root, "test-id", Some("escape/transcript.md"), "# Evil");
+
+        assert!(refused.is_err(), "a symlinked directory is not the project");
+        assert!(!outside.join("transcript.md").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A symlink whose target does not exist reports nothing to `exists`, so a check written in
+    /// those terms both misses that the path is taken and follows it out of the tree on the write.
+    #[test]
+    #[cfg(unix)]
+    fn exporting_refuses_a_path_that_is_a_dangling_symlink() {
+        let root = std::env::temp_dir().join("bravebot-export-test-symlink-file");
+        let outside = std::env::temp_dir().join("bravebot-export-test-symlink-file-outside");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside);
+        std::fs::create_dir_all(&root).expect("create");
+        std::os::unix::fs::symlink(&outside, root.join("transcript.md")).expect("symlink");
+
+        let refused = export(&root, "test-id", Some("transcript.md"), "# Evil");
+
+        assert!(refused.is_err(), "a path already taken is not written over");
+        assert!(!outside.exists(), "nothing was written through the symlink");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside);
     }
 }
