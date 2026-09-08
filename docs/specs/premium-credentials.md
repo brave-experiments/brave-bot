@@ -173,8 +173,8 @@ either. A pane too narrow for the wordmark still reports both.
 
 Where the server reports using a model other than the one requested, both are shown: the choice that
 was made and the model that actually answered. Said once when it starts happening rather than every
-turn. `automatic` resolving to a concrete model is not a substitution, since that is the server
-choosing per request, which is what `automatic` means.
+turn. `automatic-brave-bot` resolving to a concrete model is not a substitution, since that is the
+server choosing per request, which is what the automatic entry means.
 
 **Why.** Every build that knows a premium host would otherwise report itself as premium, which is a
 fact about compilation and not about any request. A session reported "premium configured" while ten
