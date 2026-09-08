@@ -1712,6 +1712,72 @@ pub fn as_text(session: &Session) -> String {
         .join("\n")
 }
 
+/// The transcript as a markdown document, for exporting to a file.
+///
+/// Recounts the conversation (user prompts, model replies, tool calls) with headings.
+pub fn as_markdown(session: &Session, title: &str) -> String {
+    let mut out = String::new();
+
+    let display_title = if title.trim().is_empty() {
+        "Untitled Session"
+    } else {
+        title.trim()
+    };
+    out.push_str(&format!("# {display_title}\n\n"));
+
+    for entry in &session.transcript {
+        match entry.speaker {
+            crate::state::Speaker::User => {
+                out.push_str("## User\n\n");
+                out.push_str(&entry.text);
+                out.push_str("\n\n");
+            }
+            crate::state::Speaker::Assistant => {
+                if !entry.text.trim().is_empty() {
+                    out.push_str("## Assistant\n\n");
+                    out.push_str(&entry.text);
+                    out.push_str("\n\n");
+                }
+            }
+            crate::state::Speaker::Tool => {
+                out.push_str(&format!("*Ran: `{}`*\n\n", entry.text.trim()));
+            }
+            crate::state::Speaker::Shell => {
+                out.push_str("## Shell Command\n\n");
+                out.push_str(&format!("`{}`\n\n", entry.text.trim()));
+            }
+            crate::state::Speaker::Output => {
+                let fence = if entry.text.contains("```") {
+                    "````"
+                } else {
+                    "```"
+                };
+                out.push_str("## Shell Output\n\n");
+                out.push_str(&format!("{fence}\n{}\n{fence}\n\n", entry.text.trim()));
+            }
+            crate::state::Speaker::Delegate => {
+                if let Some(delegate) = &entry.delegate {
+                    out.push_str(&format!("## Delegate {}\n\n", delegate.id));
+                    out.push_str(&format!("{}\n\n", delegate.task.trim()));
+                    if let Some(note) = &delegate.note {
+                        out.push_str(&format!("{}\n\n", note.trim()));
+                    }
+                }
+            }
+            crate::state::Speaker::System => {}
+        }
+
+        if let Some(shown) = &entry.shown {
+            out.push_str(&format!(
+                "> *Quarantined: {} ({})*\n\n",
+                shown.origin, shown.label
+            ));
+        }
+    }
+
+    out
+}
+
 /// Lay the transcript out again at the size the last frame used.
 ///
 /// What a key needs in order to jump: the rows a search matched, at the width they were matched

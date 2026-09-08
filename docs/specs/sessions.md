@@ -343,6 +343,23 @@ any local account on multi-user machines and shared hosts.
 `verified-by: bravebot_tui::sessions::session_records_and_audit_trails_are_written_mode_0600`
 `verified-by: bravebot_tui::sessions::pre_existing_session_files_and_directories_are_tightened_on_write`
 
+<a id="SESSION-17"></a>
+### SESSION-17: a session transcript can be exported to markdown within the project root
+
+The `/export` command formats the recounted transcript as a markdown document and writes it to
+a file within the project directory. The destination path is confined strictly to the project
+root, refusing traversal (`..`) or root/drive components, and existing files are not overwritten
+unasked. The exported file is written with restricted permissions.
+
+**Why.** A person owns their transcript and may need it in a bug report, documentation, or code
+review without reading internal JSON state. Confining writes to the workspace root stops an export
+from escaping to arbitrary paths on the system.
+
+`verified-by: bravebot_tui::sessions::exporting_a_transcript_is_confined_to_the_project_root`
+`verified-by: bravebot_tui::sessions::exporting_refuses_traversal_components`
+`verified-by: bravebot_tui::sessions::exporting_refuses_to_overwrite_an_existing_file`
+`verified-by: bravebot_tui::sessions::exporting_creates_intermediate_directories`
+
 
 ## Known costs
 

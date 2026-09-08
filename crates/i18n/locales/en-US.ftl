@@ -562,6 +562,7 @@ command-rename = Call this conversation something else
 command-compact = Summarise the conversation so far, keeping the recent part
 command-clear = Start a new session here, keeping this one resumable
 command-loop = Send a prompt again and again, on your interval or at a pace each turn sets
+command-export = Export the session transcript to a markdown file
 command-exit = Leave
 
 
@@ -572,6 +573,8 @@ session-renamed = renamed to { $title }
 session-rename-needs-a-name = /rename needs a name, as in /rename the parser bug
 session-rename-needs-something = /rename needs a name with something in it
 session-cleared = cleared: a new session, with the previous one still resumable
+session-exported = exported transcript to { $path }
+session-export-failed = could not export transcript: { $problem }
 session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/notes
 session-directory-added = added { $directory }, and trusting it for this session
 session-cd-needs-a-path = /cd needs a directory, as in /cd ~/projects/other

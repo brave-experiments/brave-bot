@@ -1028,6 +1028,57 @@ fn new_id() -> String {
     id
 }
 
+/// Export a session transcript to a markdown file within the project root.
+///
+/// Confined strictly to the workspace root: any path containing `..`, root, or drive components
+/// is refused to prevent path traversal. If the target file already exists, it is not overwritten.
+pub fn export(
+    project: &Path,
+    session_id: &str,
+    requested_path: Option<&str>,
+    content: &str,
+) -> std::io::Result<PathBuf> {
+    let relative = match requested_path.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(custom) => {
+            let p = Path::new(custom);
+            for component in p.components() {
+                match component {
+                    std::path::Component::ParentDir => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "path must not contain '..' components",
+                        ));
+                    }
+                    std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "path must be relative to the project directory",
+                        ));
+                    }
+                    std::path::Component::CurDir | std::path::Component::Normal(_) => {}
+                }
+            }
+            p.to_path_buf()
+        }
+        None => PathBuf::from(format!("bravebot-export-{session_id}.md")),
+    };
+
+    let target = project.join(&relative);
+    if target.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("'{}' already exists", relative.display()),
+        ));
+    }
+
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    write_secure(&target, content.as_bytes())?;
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1460,6 +1511,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create scratch");
         assert_eq!(branch_of(&root), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exporting_a_transcript_is_confined_to_the_project_root() {
+        let root = std::env::temp_dir().join("bravebot-export-test-confined");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+
+        let exported = export(&root, "test-id", None, "# Hello").expect("export");
+        assert!(exported.starts_with(&root));
+        assert!(exported.exists());
+        let content = std::fs::read_to_string(&exported).expect("read");
+        assert_eq!(content, "# Hello");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exporting_refuses_traversal_components() {
+        let root = std::env::temp_dir().join("bravebot-export-test-traversal");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+
+        let err = export(&root, "test-id", Some("../escape.md"), "# Evil");
+        assert!(err.is_err());
+
+        #[cfg(unix)]
+        {
+            let err_abs = export(&root, "test-id", Some("/tmp/escape.md"), "# Evil");
+            assert!(err_abs.is_err());
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exporting_refuses_to_overwrite_an_existing_file() {
+        let root = std::env::temp_dir().join("bravebot-export-test-overwrite");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+
+        let target = root.join("transcript.md");
+        std::fs::write(&target, "existing").expect("write");
+
+        let err = export(&root, "test-id", Some("transcript.md"), "# New");
+        assert!(err.is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "existing");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exporting_creates_intermediate_directories() {
+        let root = std::env::temp_dir().join("bravebot-export-test-subdirs");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create");
+
+        let exported = export(
+            &root,
+            "test-id",
+            Some("nested/deep/transcript.md"),
+            "# Content",
+        )
+        .expect("export nested");
+        assert!(exported.exists());
+        assert_eq!(std::fs::read_to_string(&exported).unwrap(), "# Content");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

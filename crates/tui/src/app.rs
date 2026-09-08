@@ -94,6 +94,9 @@ const LOOP_COMMAND: &str = "/loop";
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
 
+/// The line that writes the transcript as a markdown file.
+const EXPORT_COMMAND: &str = "/export";
+
 /// One command, and what it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Command {
@@ -110,7 +113,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 11] {
+pub fn commands() -> [Command; 12] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -161,6 +164,11 @@ pub fn commands() -> [Command; 11] {
             name: LOOP_COMMAND,
             argument: "[interval] <prompt>",
             description: t!(command_loop),
+        },
+        Command {
+            name: EXPORT_COMMAND,
+            argument: "[path]",
+            description: t!(command_export),
         },
         Command {
             name: EXIT_COMMAND,
@@ -246,6 +254,8 @@ pub enum Action {
     /// Put the transcript in front of the user in their editor. Needs the terminal, which the
     /// loop owns, and gives the session nothing back.
     Show,
+    /// Write the transcript to a markdown file, at the path the line named or a default one.
+    Export(Option<String>),
     Quit,
 }
 
@@ -835,6 +845,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input().trim() == CLEAR_COMMAND => {
             session.clear_input();
             Action::Clear
+        }
+        KeyCode::Enter if argument_to(session.input(), EXPORT_COMMAND).is_some() => {
+            let path = argument_to(session.input(), EXPORT_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            Action::Export(Some(path).filter(|p| !p.is_empty()))
         }
         KeyCode::Enter if argument_to(session.input(), ADD_DIR_COMMAND).is_some() => {
             let directory = argument_to(session.input(), ADD_DIR_COMMAND)
@@ -1772,6 +1789,20 @@ fn event_loop(
             Action::Paste => take_from_clipboard(&mut session, crate::clipboard::paste()),
             Action::Edit => {
                 edit_prompt(terminal, &mut session)?;
+                needs_draw = true;
+            }
+            Action::Export(path) => {
+                let markdown = crate::render::as_markdown(&session, stored.title());
+                let written = crate::sessions::export(
+                    workspace.root(),
+                    stored.id(),
+                    path.as_deref(),
+                    &markdown,
+                );
+                match written {
+                    Ok(at) => session.note(t!(session_exported, path = at.display().to_string())),
+                    Err(e) => session.note(t!(session_export_failed, problem = e.to_string())),
+                }
                 needs_draw = true;
             }
             Action::Show => {
