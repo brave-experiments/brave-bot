@@ -189,11 +189,33 @@ it said, rather than deciding beforehand that running things is too expensive to
 
 /// What a turn somebody is watching is told, and a delegate is not.
 ///
-/// Both paragraphs about the task list and all three about asking. A delegate has neither tool:
+/// Both paragraphs about the task list and all four about asking. A delegate has neither tool:
 /// its task came from a planner rather than from the person, so a question about it asks somebody
 /// to arbitrate something they never set up, and the list on the screen belongs to the turn they
 /// are actually watching.
+///
+/// It opens on working in slices, which is here rather than in [`PLANNING`] because it is about
+/// somebody watching. A delegate reports once and is read once; a turn a person is watching is
+/// stopped, redirected and resumed, and what survives all three is what was written down. A
+/// planner that maps the whole repository before it changes anything has nothing to show for an
+/// interrupt, which is the ordinary way a person finds out a turn went wrong. Saying it in
+/// [`PLANNING`] would also tell a reader delegate, which cannot write at all, that the change is
+/// its answer.
 const FOR_A_PERSON: &str = "\n\n\
+Where the task is to change something, the change is the answer: the files edited, not an account \
+of what to edit. You will not have the whole picture before you start, and waiting for it is how a \
+turn ends with nothing on disk. Work in slices: find out what the next change needs, make that \
+change, then go back for the next. A part you have settled is written now rather than held until \
+the rest is understood, because a person who stops a turn halfway keeps what was written and loses \
+everything that was only planned.
+
+Decide what you can decide. A choice with a conventional answer is yours to make: take the one a \
+careful colleague would take, say in a line what you took, and carry on. Scope inside what was \
+asked for, naming, which of two equivalent shapes to use, what to do with a detail nobody \
+mentioned: those are decisions, not questions, and a person who wanted to make them would have \
+said so. Telling them afterwards costs a sentence; asking first costs them a round trip and \
+usually returns the answer you already had.
+
 Do not ask the user anything you could find out. A path, a filename, whether a program is \
 installed, what an app is called, which version something is: those are things to go and look at \
 with list_files, search, read_file or run. Asking for one is asking a person to do your work, and \
@@ -201,13 +223,20 @@ they usually know less precisely than the filesystem does. Reading costs you not
 quarantined result does not stop you asking a question afterwards, so look first and ask about \
 what is left.
 
-What is worth asking about is what looking cannot settle: which of two approaches they want, \
-whether something is in scope, which of two plausible files they meant when both exist. If you \
-find yourself writing a question whose answer is somewhere on this machine, go and read it \
-instead.
+What is left worth asking is what looking cannot settle and a default cannot carry: a fork where \
+the two readings lead to materially different work and the wrong one throws that work away, or a \
+step that is expensive to undo. Which of two plausible files they meant, when both exist and \
+editing the wrong one is a mess, is such a question. Whether they would prefer a restart or a live \
+toggle, when either is defensible and one is ordinary, is not. If you find yourself writing a \
+question whose answer is somewhere on this machine, go and read it instead; if you find yourself \
+writing one you could answer yourself, answer it and say what you assumed.
+
+Do everything the answer cannot change before you ask, so a question arrives with the work that \
+did not depend on it already done rather than instead of it.
 
 When you do ask, use ask_user. One call carries up to four questions and they are put one at a \
-time, so ask everything the plan turns on at once rather than a question per turn. Give each a \
+time, so ask together everything the plan really does turn on. Four is a ceiling, not a quota: \
+one question that decides something beats four whose answers you could have written yourself. Give each a \
 header of two or three words: it is the tag the user reads to tell one question from the next. \
 Put the choices in the options list, not in the question text, since only the options are shown \
 as choices. Set multiple to true whenever the answer could be more than one of them. The user can \
@@ -270,6 +299,19 @@ person can already see on the screen, and stays in the conversation being re-sen
 /// This was 40 and applied everywhere, which interrupted real work in a large repository. See
 /// [`Task::rounds`] for the interactive case, which is unbounded.
 pub const MAX_TOOL_ROUNDS: usize = 200;
+
+/// How many rounds of tools may go by with nothing written before the driver mentions it.
+///
+/// A bound on a different futility from [`MAX_TOOL_ROUNDS`]: not a turn that never ends, but one
+/// that ends having only understood. A planner that reads the whole repository before it changes
+/// anything is doing real work, and it still leaves nothing behind when the person stops it,
+/// which is the ordinary way somebody finds out a turn has gone wrong. The prompt asks for slices;
+/// this is what notices that the prompt did not take, and it says so once rather than governing.
+///
+/// Fifteen because it is past honest orientation and short of a session. The turn that produced
+/// this had everything it needed for its first three files by round fifteen and read for
+/// twenty-five more.
+pub const ROUNDS_BEFORE_WRITING: usize = 15;
 
 /// How the driver introduces itself when it takes the tools away.
 ///
@@ -1488,6 +1530,15 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     };
 
     let mut steps = 0;
+    // Whether anything has been written this turn, and whether the driver has already said it
+    // has not. A requested write counts rather than a completed one: a write the user refused is
+    // a planner that tried to deliver, and telling it to start delivering would be answering
+    // something nobody asked.
+    let mut wrote = false;
+    let mut said_nothing_written = false;
+    // Whether a write is possible at all here, which a run offered no write tool cannot be
+    // nudged into. Read once: the offer does not change while the turn runs.
+    let may_write = tools::offer_writes(&offered);
     // Whether the planner may ask for another round of tools. Cleared once, when the budget
     // runs out, so the last request goes out with none offered and the turn ends with an answer
     // rather than with the driver's apology.
@@ -1757,6 +1808,8 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                 .iter()
                 .map(|c| c.function.name.clone())
                 .collect();
+            wrote = wrote || requested.iter().any(|name| tools::writes_a_file(name));
+
             let spoken = {
                 let (text, _) = completion.content.clone().into_parts_for_decoding();
                 policy.label_model_output("chat", text)
@@ -2169,6 +2222,29 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                 policy.admit_interjection(said.chars().count());
                 reporter.interjected(said.clone());
                 conversation.push(Message::user(said));
+            }
+
+            // Said after the round's results and any interjection, which is where a message from
+            // the driver belongs: the planner reads what its calls returned, then what it is being
+            // told about them. Between the calls and their results it would break the pairing.
+            //
+            // Once per turn. A planner that has been told and carried on reading has either
+            // decided it has nothing to write yet, which is allowed, or is not going to be talked
+            // out of it, and repeating the line every round would spend a request each time to say
+            // something already in the conversation.
+            //
+            // Conditional in its wording rather than in its firing. The driver cannot tell a task
+            // that asks for a change from one that asks a question, and it must not try: what it
+            // knows is that rounds have gone by and nothing was written, and the planner is the
+            // one that knows whether that is wrong.
+            if may_write && !wrote && !said_nothing_written && steps >= ROUNDS_BEFORE_WRITING {
+                said_nothing_written = true;
+                conversation.push(Message::user(format!(
+                    "{TOOL_BUDGET_SPENT} That is {steps} rounds of tools and nothing written yet. \
+                     If the task asks for a change and any part of it is settled, write that part \
+                     now and keep looking only for the parts that are not. If it asks for no \
+                     change, carry on."
+                )));
             }
         };
         Ok::<_, TurnError>(completion)

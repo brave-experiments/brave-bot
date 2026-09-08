@@ -888,6 +888,25 @@ impl Produced {
     }
 }
 
+/// Whether a call by this name changes a file.
+///
+/// The two write tools named in one place, so the driver can ask the question without knowing
+/// which they are. Asked of a name the planner sent, so the namespace some models put in front
+/// comes off first, exactly as it does before the call is dispatched.
+pub(crate) fn writes_a_file(name: &str) -> bool {
+    matches!(strip_namespace(name), "write_file" | "edit_file")
+}
+
+/// Whether this set of tools can change a file at all.
+///
+/// A run offered no write tool cannot be told to write something: a reader delegate is doing
+/// exactly what it was built to do by never writing.
+pub(crate) fn offer_writes(offered: &[Tool]) -> bool {
+    offered
+        .iter()
+        .any(|tool| writes_a_file(&tool.function.name))
+}
+
 /// A tool name without the group some models put in front of it.
 ///
 /// Only the one prefix, and only where something is left after it: this is for a name that means

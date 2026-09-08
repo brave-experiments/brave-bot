@@ -5,7 +5,7 @@
 //! contents try to redirect the turn cannot do so.
 
 use bravebot_agent::Workspace;
-use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, PastedImage, Task};
+use bravebot_agent::turn::{self, MAX_TOOL_ROUNDS, PastedImage, ROUNDS_BEFORE_WRITING, Task};
 use bravebot_config::Config;
 use bravebot_core::event::{Event, RecordingSink};
 use bravebot_core::label::Label;
@@ -5501,6 +5501,102 @@ fn a_processors_output_cannot_be_a_destination() {
         std::fs::read_to_string(scratch.path.join("game.js")).unwrap(),
         "const SPEED = 100;\n",
         "the file was written from a reference that names no file"
+    );
+}
+
+/// A turn that has read for a long time and written nothing is told so, once.
+///
+/// The failure this is for produced nothing at all: fourteen minutes of reading, a plan the
+/// planner had settled by the halfway mark, and no file on disk when the person stopped it. The
+/// prompt asks for slices; this is the part that notices the prompt did not take.
+///
+/// The line goes in the conversation, so every later request carries it. What is under test is
+/// that it was said once, which is a count inside the last body rather than a count of bodies.
+#[test]
+fn a_turn_that_writes_nothing_for_long_enough_is_told_so() {
+    let scratch = Scratch::new("no-writes");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // One round past the threshold, so there are two requests after it fires and a line repeated
+    // per round would show up as two.
+    let mut replies: Vec<String> = (0..ROUNDS_BEFORE_WRITING + 1)
+        .map(|_| tool_request("list_files", r#"{"directory":"."}"#))
+        .collect();
+    replies.push(reply_with("here is what I found"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("add a toggle"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("the turn finishes");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    let fired = bodies
+        .iter()
+        .position(|body| body.contains("nothing written yet"))
+        .expect("the planner was never told it had written nothing");
+    assert_eq!(
+        fired, ROUNDS_BEFORE_WRITING,
+        "the line came on the wrong round"
+    );
+
+    let last = bodies.last().expect("a last request");
+    assert_eq!(
+        last.matches("nothing written yet").count(),
+        1,
+        "the line was said more than once: {last}"
+    );
+}
+
+/// A turn that has written something is left alone, however long it goes on afterwards.
+///
+/// The write is what the line asks for, so a planner that has already delivered a slice and gone
+/// back to reading is doing exactly what it was told. Asked for on the first round and then read
+/// past the threshold, which is the shape the prompt describes.
+#[test]
+fn a_turn_that_has_written_is_not_told_to_write() {
+    let scratch = Scratch::new("wrote-early");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut replies = vec![tool_request(
+        "write_file",
+        r#"{"path":"notes.txt","contents":"first slice"}"#,
+    )];
+    replies.extend(
+        (0..ROUNDS_BEFORE_WRITING + 1).map(|_| tool_request("list_files", r#"{"directory":"."}"#)),
+    );
+    replies.push(reply_with("done"));
+
+    let (endpoint, received) = serve_sequence(replies);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("add a toggle"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("the turn finishes");
+
+    let bodies: Vec<String> = received.try_iter().collect();
+    assert!(
+        !bodies
+            .iter()
+            .any(|body| body.contains("nothing written yet")),
+        "a turn that wrote on its first round was told it had written nothing"
     );
 }
 

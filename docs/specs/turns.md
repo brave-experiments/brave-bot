@@ -8,7 +8,8 @@ governs:
 
 ## Scope
 
-How long a turn may go on, and what happens when it does not stop.
+How long a turn may go on, what happens when it does not stop, and what it is told when it goes on
+without producing anything.
 
 ## Clauses
 
@@ -47,3 +48,27 @@ repository.
 
 `verified-by: bravebot_agent::turn::an_unbounded_turn_is_never_made_to_answer`
 `verified-by: bravebot_agent::turn::a_turn_that_keeps_calling_tools_is_made_to_answer`
+
+<a id="TURN-3"></a>
+### TURN-3: a turn that has written nothing for long enough is told so
+
+Where a write is possible and none has been asked for after a set number of rounds, the driver
+says so once, at the end of a round, and the turn carries on with its tools. The line is a nudge,
+not a bound: nothing is taken away, nothing is refused, and a planner that keeps reading keeps
+reading.
+
+**A different futility from [TURN-1](#TURN-1).** That one is about a turn which never ends. This
+one is about a turn which ends having only understood: a planner that maps a repository before
+changing anything is doing real work, and it still leaves nothing behind when somebody stops it,
+which is the ordinary way a person finds out a turn went wrong.
+
+**Said once, and conditionally worded.** Repeating it every round spends a request to say what is
+already in the conversation. The driver cannot tell a task that asks for a change from one that
+asks a question, and must not try: it knows only that rounds have gone by with nothing written,
+so the line says what to do if a change was wanted and to carry on if it was not.
+
+**A requested write counts, not a completed one.** A write the user refused is a planner that
+tried to deliver, and telling it to start delivering would answer something nobody asked.
+
+`verified-by: bravebot_agent::turn::a_turn_that_writes_nothing_for_long_enough_is_told_so`
+`verified-by: bravebot_agent::turn::a_turn_that_has_written_is_not_told_to_write`
