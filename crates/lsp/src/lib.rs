@@ -53,6 +53,8 @@ pub enum LspError {
     Denied(Denial),
     /// This file's language has no server in the table.
     NoServerFor { path: String },
+    /// A whole-tree query was asked before any server was running, so there is nothing to ask.
+    NoServerForQuery,
     /// The server for this language is not installed.
     NoBinary {
         language: server::Language,
@@ -97,6 +99,12 @@ impl fmt::Display for LspError {
                 language.as_str()
             ),
             Self::Denied(denial) => write!(f, "{denial}"),
+            Self::NoServerForQuery => write!(
+                f,
+                "workspaceSymbol searches a language server's index and no server is running yet, \
+                 so this question was not asked of one; ask about a symbol in a file first, which \
+                 starts the server for that file's language, then this will search it"
+            ),
             Self::NoServerFor { path } => write!(
                 f,
                 "no language server is configured for {path}, so this question was not asked of \
@@ -159,6 +167,7 @@ impl LspError {
         matches!(
             self,
             Self::NoServerFor { .. }
+                | Self::NoServerForQuery
                 | Self::NoBinary { .. }
                 | Self::Start { .. }
                 | Self::Refused { .. }

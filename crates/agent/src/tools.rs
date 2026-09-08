@@ -336,8 +336,9 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     "query": {
                         "type": "string",
                         "description": "The name to look for. Only for workspaceSymbol, which \
-                                        searches the whole project rather than starting from a \
-                                        position."
+                                        searches a language server's index rather than starting \
+                                        from a position, and so needs a server already running: \
+                                        ask about a symbol in a file of that language first."
                     }
                 },
                 "required": ["operation"]

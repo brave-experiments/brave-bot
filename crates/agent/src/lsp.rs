@@ -43,13 +43,24 @@ impl std::fmt::Debug for LanguageServers {
     }
 }
 
-/// Resolve a server's name to the file it names, on `$PATH`.
+/// Resolve a server's name to the file on `$PATH` that answers to that name.
 ///
-/// A function rather than a closure so it can be a `fn` pointer. The working directory passed is the
-/// process's own, which matters not at all here: every name in the table is bare, so the
-/// `has_separator` branch that would use it is never taken.
+/// Deliberately **not** [`crate::programs::resolve`], which canonicalises: that is right for `run`,
+/// where RUN-8 says an approval must not follow a name onto a different binary, and wrong here. A
+/// multi-call binary dispatches on the name it was invoked as, and `~/.cargo/bin/rust-analyzer` is a
+/// symlink to `rustup`: canonicalised, the exec runs `rustup` with no arguments, which prints its
+/// usage and exits. So the link is kept and the name is what runs.
+///
+/// The two rules do not conflict, because the thing being approved differs. `run` approves a program
+/// somebody read off a prompt, and a symlink could point it elsewhere. Here the program is chosen
+/// from a fixed table in this repository and the person approves *a language server for a language*,
+/// so following the link would answer a question nobody asked.
 fn resolve_program(program: &str) -> Option<PathBuf> {
-    crate::programs::resolve(program, Path::new("."))
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 impl LanguageServers {

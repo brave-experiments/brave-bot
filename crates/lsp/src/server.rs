@@ -741,9 +741,23 @@ impl Servers {
             .before_capability(Capability::LanguageServer)
             .map_err(LspError::Denied)?;
 
-        let language = Language::for_path(question.path).ok_or_else(|| LspError::NoServerFor {
-            path: question.path.to_string(),
-        })?;
+        // Which server to ask. Every operation but `workspaceSymbol` starts from a file, so the file
+        // decides; `workspaceSymbol` ranges over the tree and names none, so it goes to whichever
+        // server is already running. That is deliberate rather than a fallback: starting a server on
+        // a query with no file in it would mean guessing at the language from a symbol name.
+        let language = match Language::for_path(question.path) {
+            Some(language) => language,
+            None if !question.operation.needs_position() => *self
+                .running
+                .keys()
+                .next()
+                .ok_or(LspError::NoServerForQuery)?,
+            None => {
+                return Err(LspError::NoServerFor {
+                    path: question.path.to_string(),
+                });
+            }
+        };
 
         if !self.running.contains_key(&language) {
             let (program, _) = language.server();
@@ -950,6 +964,51 @@ mod tests {
                 "the cache must not be reported anywhere a caller could read it: {debug}"
             );
         }
+    }
+
+    /// A whole-tree query names no file, so it cannot decide a language and must not be answered by
+    /// guessing one from the symbol's name.
+    #[test]
+    fn a_query_with_no_file_is_told_no_server_is_running() {
+        let mut servers = Servers::new(root(), None, |_| None, false, Vec::new());
+        let mut sink = bravebot_core::event::RecordingSink::new();
+        let mut routing = bravebot_core::policy::Routing::new();
+        routing.insert_trusted("task", "look up");
+        let mut policy = Policy::begin(
+            routing,
+            bravebot_core::policy::ReleasePlan::new(),
+            bravebot_core::capability::CapabilitySet::from_iter([Capability::LanguageServer]),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let error = servers
+            .ask(
+                &mut policy,
+                &Question {
+                    operation: Operation::WorkspaceSymbol,
+                    path: "",
+                    line: 1,
+                    character: 1,
+                    query: Some("Capability"),
+                },
+                &mut |_| true,
+            )
+            .expect_err("nothing is running, so there is nothing to search");
+
+        // It must say that no server was asked, and must not read as a fact about the code. And it
+        // must not be the sentence about a *file* having no server, since no file was named.
+        let said = error.to_string();
+        assert!(error.is_absence_of_a_server());
+        assert!(said.contains("no server is running"), "{said}");
+        assert!(
+            !said.contains("no language server is configured for "),
+            "{said}"
+        );
+        assert!(
+            said.contains("ask about a symbol in a file first"),
+            "{said}"
+        );
     }
 
     /// LSP-5: which servers run the ecosystem's build tooling, since that is what the prompt says.
