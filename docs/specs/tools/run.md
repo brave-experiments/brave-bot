@@ -274,6 +274,27 @@ where it also cannot tell success from failure.
 `verified-by: bravebot_agent::turn::the_planner_is_told_how_a_run_it_may_read_ended`
 `verified-by: bravebot_agent::turn::the_planner_is_told_how_a_run_it_may_not_read_ended`
 
+<a id="RUN-14"></a>
+### RUN-14: a quarantined result says what would lift the quarantine
+
+Where the output could not be shown, the planner is also told that a person vouching for every
+stage of the exact command makes it visible, and that a file is read with `read_file`. Only where a
+command produced the result: a quarantined read carries no advice about vouching for a command
+nobody ran.
+
+**Why.** [RUN-4](#RUN-4) is about who answered for the command, not about programs being
+unreadable, and a planner that reads it the second way stops running them. One did: told once that
+`sed` on a source file could not be shown to it, it spent the rest of a session reading files
+singly through `read_file` and never asked the user to vouch for anything, which cost it the
+batching it had been using and cost them a turn that produced nothing. The same sentence was added
+to a quarantined *read* for the same reason, and the run path never got it.
+
+**This changes no label.** What is said is what [RUN-7](#RUN-7) already provides for, and saying it
+is not inferring it: the planner still cannot vouch for anything, and a person still answers.
+
+`verified-by: bravebot_agent::turn::a_quarantined_run_says_what_would_make_it_visible`
+`verified-by: bravebot_agent::turn::a_quarantined_read_says_nothing_about_vouching_for_a_command`
+
 ## Open questions
 ## Open questions
 

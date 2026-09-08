@@ -7516,6 +7516,87 @@ fn what_a_program_printed_does_not_reach_the_planner() {
     );
 }
 
+/// A quarantined run says what would make the next one visible.
+///
+/// The label is about who answered for the command, not about programs being unreadable, and a
+/// planner that reads it the second way stops running them: told once that `sed` on a source file
+/// could not be shown to it, one spent the rest of a session reading files singly through
+/// `read_file` and never asked the user to vouch for anything. So the result says both halves,
+/// what would lift it and what to use for a file.
+#[test]
+fn a_quarantined_run_says_what_would_make_it_visible() {
+    let scratch = Scratch::new("run-quarantine-says-why");
+    std::fs::write(scratch.path.join("notes.txt"), "some lines\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cat notes.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("vouched for every stage"),
+        "the planner was not told what would make a run visible: {second}"
+    );
+    assert!(
+        second.contains("read_file"),
+        "the planner was not pointed at the tool that reads a file visibly: {second}"
+    );
+}
+
+/// A result that no command produced says nothing about vouching, which would be advice about a
+/// tool the planner did not call.
+#[test]
+fn a_quarantined_read_says_nothing_about_vouching_for_a_command() {
+    let scratch = Scratch::new("read-quarantine-no-vouching");
+    std::fs::write(scratch.path.join("notes.txt"), "some lines\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"notes.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // The workspace is not vouched for, so the read is quarantined the way an unvouched read is.
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read it"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        !second.contains("vouched for every stage"),
+        "a read was given advice about vouching for a command: {second}"
+    );
+}
+
 /// A line with a pipe in it compiles into the steps it names, and the person is asked about the
 /// plan rather than about the text. Filtering at the source is the whole point of the notation.
 #[test]

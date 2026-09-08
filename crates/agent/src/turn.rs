@@ -197,7 +197,15 @@ tidiness pass afterwards.
 Vouching is what makes this cheap. The first run of a command asks the user, and they may answer \
 in a way that vouches for it; from then on that exact command runs without asking and its output \
 comes back to you as text rather than as a reference. So ask to run the build once and read what \
-it said, rather than deciding beforehand that running things is too expensive to be worth it.";
+it said, rather than deciding beforehand that running things is too expensive to be worth it.
+
+Read files with read_file, not through a program. A read names one path, and the trust map \
+answers for that path, so the lines come back visible where the user vouched for it. A command is \
+only a command that ran: whatever cat, sed or grep printed could have come from anywhere those \
+programs can reach, and nothing here can tell which, so it is quarantined until a person vouches \
+for the exact line. That is the whole of the difference, and it is not a verdict on the shell. \
+Where you want four files, ask for four reads in one round rather than one program to print them \
+all: you get the same bytes visibly, and each one gated on its own.";
 
 /// What a turn somebody is watching is told, and a delegate is not.
 ///
@@ -2184,8 +2192,29 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             } else {
                                 String::new()
                             };
+                            // What would make this one visible, for a run and only for a run.
+                            // Without it the quarantine reads as a fact about running programs,
+                            // and a planner told once that a command it ran cannot be shown to it
+                            // stops running commands: it spent the rest of a session reading files
+                            // one at a time through read_file, having concluded that the shell was
+                            // a dead end. It is not one. The label is about who answered for the
+                            // command, and a person can answer for it.
+                            //
+                            // From `printed_by` rather than the tool's name, which is the same
+                            // condition the provenance above is recorded under: a result carries a
+                            // command when a command produced it.
+                            let vouching = if output.printed_by.is_some() {
+                                "\n\nThis is about the command rather than about what it \
+                                 printed: output comes back as text once a person has vouched \
+                                 for every stage of the exact command. Where a run is worth \
+                                 repeating, say what it would tell you and let them decide. To \
+                                 read a file, use read_file, which names one path and comes back \
+                                 visible where the trust map allows it."
+                            } else {
+                                ""
+                            };
                             format!(
-                                "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{ended}{}{capped}",
+                                "{TOOL_RESULT_PREFIX}{} could not be shown to you.\n\n{ended}{}{capped}{vouching}",
                                 output.tool,
                                 reference.describe()
                             )
