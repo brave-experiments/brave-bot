@@ -1211,6 +1211,17 @@ impl Session {
     ///
     /// Deliberately not touching the input line, so a prompt half-typed when the user cleared is
     /// still there to send.
+    /// Give up the rewind the last turn left available.
+    ///
+    /// A snapshot describes the session as it stood before the last turn, so anything that
+    /// changes the session outside a turn leaves it describing something else. Rewinding to a
+    /// stale snapshot would undo that change as well, silently and under a line saying one turn
+    /// was rewound.
+    pub fn close_rewind_window(&mut self) {
+        self.previous_turn = None;
+        self.last_turn_backups.clear();
+    }
+
     pub fn clear(&mut self) {
         self.transcript.clear();
         self.turns = 0;
@@ -1227,8 +1238,7 @@ impl Session {
         self.selection = None;
         self.copied = None;
         self.finished = None;
-        self.last_turn_backups.clear();
-        self.previous_turn = None;
+        self.close_rewind_window();
         // A standing condition is worth saying once per session, and this is now a new one: the
         // reason a skill was left out applies to the next turn as much as it did to the last.
         self.said.clear();
@@ -5552,6 +5562,35 @@ mod tests {
 
     /// No choice means the configured default applies, which is not the same as choosing a model
     /// named "": the turn has to be able to tell those apart.
+    /// A snapshot describes the session as it stood before the last turn. Once something other
+    /// than a turn has changed the session, rewinding to it would undo that change too, under a
+    /// line saying one turn was rewound.
+    #[test]
+    fn closing_the_rewind_window_leaves_nothing_to_rewind_to() {
+        let mut s = session();
+        s.previous_turn = Some(TurnSnapshot {
+            conversation: bravebot_agent::Conversation::new().snapshot(),
+            turns: 1,
+            tokens: 10,
+            spend: std::collections::BTreeMap::new(),
+            timing: std::collections::BTreeMap::new(),
+            trust: bravebot_core::trust::TrustStore::new(),
+            programs: bravebot_core::programs::TrustedPrograms::default(),
+            transcript_len: 0,
+            title: "a session".to_string(),
+            was_wrote: true,
+        });
+        s.last_turn_backups.push(bravebot_agent::workspace::Backup {
+            path: std::path::PathBuf::from("/tmp/whatever"),
+            was: bravebot_agent::workspace::Before::Nothing,
+        });
+
+        s.close_rewind_window();
+
+        assert!(s.previous_turn.is_none());
+        assert!(s.last_turn_backups.is_empty());
+    }
+
     /// Clearing drops the exchange, which is the whole point: a fresh context.
     #[test]
     fn clearing_drops_the_transcript_and_what_it_spent() {
