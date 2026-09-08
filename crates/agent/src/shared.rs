@@ -23,7 +23,9 @@
 use crate::confirm::{
     Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
-use crate::report::{Activity, DelegateId, Delegation, Landing, Phase, Reported, Reporter, Shown};
+use crate::report::{
+    Activity, DelegateId, Delegation, Landing, Phase, Printed, Reported, Reporter, Shown,
+};
 use bravebot_core::ask::{Answer, Asking};
 use bravebot_core::event::{Event, Sink};
 use bravebot_core::todo::Row;
@@ -131,6 +133,7 @@ impl<T: Reporter + ?Sized> Reporter for Borrowed<'_, '_, T> {
         fn streaming(&mut self, text: String);
         fn notice(&mut self, text: String);
         fn quarantined(&mut self, shown: Shown);
+        fn printed(&mut self, output: Printed);
         fn landed(&mut self, landing: Landing);
         fn tool_started(&mut self, activity: Activity);
         fn tool_finished(&mut self, activity: Activity);

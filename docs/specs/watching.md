@@ -329,6 +329,7 @@ the same reason a delegate has a view, so it is the same list rather than a seco
 **Why after the delegates.** A row's place is what somebody steps through, and a list ordered by
 when things happened would move the row under them every time a command finished.
 
+`verified-by: bravebot_agent::turn::what_a_command_printed_reaches_the_person_watching`
 `verified-by: bravebot_tui::state::a_command_this_session_ran_is_something_the_view_can_open`
 `verified-by: bravebot_tui::state::the_list_holds_delegates_and_commands_together`
 `verified-by: bravebot_tui::state::a_rows_place_in_the_list_does_not_move_when_the_next_command_runs`

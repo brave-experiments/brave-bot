@@ -494,6 +494,8 @@ pub struct RecordingReporter {
     pub notices: Vec<String>,
     /// Quarantined content released for the screen.
     pub shown: Vec<Shown>,
+    /// What each command printed, in the order they ran.
+    pub printed: Vec<Printed>,
     /// Where each result went.
     pub landed: Vec<Landing>,
     /// Everything the person said mid-turn, in the order it reached the planner.
@@ -543,6 +545,10 @@ impl Reporter for RecordingReporter {
 
     fn quarantined(&mut self, shown: Shown) {
         self.shown.push(shown);
+    }
+
+    fn printed(&mut self, output: Printed) {
+        self.printed.push(output);
     }
 
     fn landed(&mut self, landing: Landing) {

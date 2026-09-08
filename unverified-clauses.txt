@@ -1,0 +1,36 @@
+# Spec clauses whose verified-by value is none.
+# Source: docs/specs/**/*.md, one line per clause, as path:CLAUSE-ID: heading.
+# Withdrawn clauses carry no verified-by line at all and are not listed.
+# Total: 31 clauses across 19 specs.
+
+docs/specs/cli.md:CLI-6: a failure exits non-zero
+docs/specs/incognito.md:INCOG-7: importing a subscription is refused rather than silently skipped
+docs/specs/labels.md:LABEL-6: minting a witness is not permission to inspect
+docs/specs/layering.md:LAYER-2: `bravebot-core` and `bravebot-agent` are both the driver
+docs/specs/naming-files.md:NAME-3: the rule outlives the read
+docs/specs/pasting.md:PASTE-3: the media type is the driver's, never the content's
+docs/specs/pasting.md:PASTE-4: the picture is inlined, never linked
+docs/specs/pasting.md:PASTE-5: a paste does not lower context integrity
+docs/specs/pasting.md:PASTE-9: a pasted picture is kept with the session and comes back on resume
+docs/specs/processors.md:PROC-6: an answer is for one document, and belongs only where the planner said
+docs/specs/processors.md:PROC-9: the confinement is the capability set, not an operating system boundary
+docs/specs/routing.md:ROUTE-7: before adding a tool, ask what its routing field is
+docs/specs/sessions.md:SESSION-2: nothing untrusted is ever written down
+docs/specs/shell-mode.md:SHELL-4: only a line a human typed
+docs/specs/shell-mode.md:SHELL-5: the planner gets no shell tool, ever
+docs/specs/trace.md:TRACE-2: the trail holds no content
+docs/specs/trust-map.md:TRUST-8: a quarantined read offers the same rule, at the moment it bites
+docs/specs/tools/command-line.md:CMDLINE-5: a redirection target is a write destination and takes the write gates
+docs/specs/tools/command-line.md:CMDLINE-8: a plan may prove its output's label from what it read
+docs/specs/tools/command-line.md:CMDLINE-9: a read-proven plan does not prompt
+docs/specs/tools/command-line.md:CMDLINE-10: output comes back as text whenever the planner may read it
+docs/specs/tools/command-line.md:CMDLINE-11: output is bounded, and what was dropped is said
+docs/specs/tools/command-line.md:CMDLINE-12: the working directory persists across calls, and shell state does not
+docs/specs/tools/command-line.md:CMDLINE-13: a call may name its own deadline, under a ceiling
+docs/specs/tools/command-line.md:CMDLINE-14: a call may run in the background, and its finish wakes the turn
+docs/specs/tools/list-files.md:LIST-3: the glob is literal and the matcher does not backtrack
+docs/specs/tools/load-skill.md:LOAD-2: a name close to a real one is refused, not guessed at
+docs/specs/tools/run.md:RUN-10: the vouched-for list is not an allowlist and must never become one
+docs/specs/tools/search.md:SEARCH-2: a result touching several files is trusted only if every one of them is
+docs/specs/tools/todo-write.md:TODO-1: there is no routing, because nothing is touched
+docs/specs/tools/tool-surface.md:TOOL-2: before adding a tool, ask what its routing field is

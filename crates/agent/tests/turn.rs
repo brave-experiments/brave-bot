@@ -9903,3 +9903,51 @@ fn a_fan_out_past_the_ceiling_is_refused_and_starts_nothing() {
         reporter.lines()
     );
 }
+
+/// The transcript has room for a preview and a count, and a person who owns the directory is
+/// entitled to the rest. Every report the turn makes goes through the shim that lends one reporter
+/// to the turn and its delegates, so a report that shim does not carry reaches no screen at all.
+#[test]
+fn what_a_command_printed_reaches_the_person_watching() {
+    let scratch = Scratch::new("run-printed");
+    std::fs::write(scratch.path.join("secret.txt"), "SENTINEL-XYZZY\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cat secret.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let printed = reporter
+        .printed
+        .first()
+        .expect("what the command printed reached nobody");
+    assert!(
+        printed.command.ends_with("cat secret.txt"),
+        "the row does not say which command printed it: {}",
+        printed.command
+    );
+    assert_eq!(printed.lines, ["SENTINEL-XYZZY"]);
+    assert!(
+        !printed.read_by_the_planner,
+        "output the planner was kept from was reported as read"
+    );
+}
