@@ -72,21 +72,20 @@ esac
 # one. `/model` in the interface picks from what GET /v1/models lists and that
 # choice wins, so this is the fallback rather than the setting.
 #
-# "automatic" lets the server triage per request, and is what an unrecognised
-# name is reset to anyway.
+# "automatic-brave-bot" lets the server triage per request for this agent, and is what an
+# unrecognised name is reset to anyway. Leo uses "automatic" for a different routing policy.
 #
 # Exported here, so it outranks a "model" key in ~/.bravebot/settings.json.
 # Comment this line out to let that file decide, which is what a released binary
 # does: there the settings key outranks the value baked in at build time.
 #
 # The model requested is not necessarily the model used: some entries are
-# weighted ensembles that resolve randomly, and "automatic" itself picks per
-# request, observed selecting both claude-4-haiku and qwen-14b-instruct for
-# identical prompts. Trust the model reported in the response, which `--trace`
+# weighted ensembles that resolve randomly, and "automatic-brave-bot" itself picks per
+# request. Trust the model reported in the response, which `--trace`
 # prints.
 #
 # Non-premium callers get a metered daily allowance of premium-tier automatic
 # selections; once spent, requesting a premium model returns 403 error 40301. Free
 # models such as llama-3-8b-instruct always work. GET /v1/models reports which is
-# which in an "access" field.
-export BRAVE_AI_CHAT_DEFAULT_MODEL="automatic"
+# which in an "access" field when called with Brave-Product: brave-bot.
+export BRAVE_AI_CHAT_DEFAULT_MODEL="automatic-brave-bot"

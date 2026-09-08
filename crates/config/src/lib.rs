@@ -24,12 +24,26 @@ pub mod provider;
 
 include!(concat!(env!("OUT_DIR"), "/baked.rs"));
 
-/// The server treats an unrecognised model as `automatic`, so that is also our
-/// default rather than pinning a name that may silently stop existing.
+/// The server treats an unrecognised model as [`DEFAULT_MODEL`], so that is also our default rather
+/// than pinning a name that may silently stop existing.
 ///
-/// Not offered by `GET /v1/models`, which lists concrete models only, so a picker showing the
-/// server's list has to put this one back.
-pub const DEFAULT_MODEL: &str = "automatic";
+/// Brave-bot's own triage entry. Leo uses `automatic` for a different routing policy; requests from
+/// this product identify themselves with `Brave-Product: brave-bot` so the listing and completions
+/// endpoints offer this name instead.
+pub const DEFAULT_MODEL: &str = "automatic-brave-bot";
+
+/// The automatic routing name Leo uses. Remembered choices and configuration may still say it from
+/// before brave-bot had its own entry; [`normalize_model`] rewrites those to [`DEFAULT_MODEL`].
+const LEGACY_AUTOMATIC: &str = "automatic";
+
+/// Rewrite a model name from an older choice or configuration to what this product sends now.
+pub fn normalize_model(name: &str) -> &str {
+    if name == LEGACY_AUTOMATIC {
+        DEFAULT_MODEL
+    } else {
+        name
+    }
+}
 
 /// How many prompt tokens a conversation may reach before it is compacted.
 ///
@@ -39,8 +53,8 @@ pub const DEFAULT_MODEL: &str = "automatic";
 /// is the feature not existing. See [`Config::context_budget`].
 ///
 /// Only a fallback now. Where the endpoint says what a model's window is, that is used instead:
-/// see [`budget_for_window`]. This stands in for `automatic`, whose model is chosen per request so
-/// no one window describes it, and for an entry that reports nothing.
+/// see [`budget_for_window`]. This stands in for [`DEFAULT_MODEL`], whose model is chosen per
+/// request so no one window describes it, and for an entry that reports nothing.
 ///
 /// This was 100_000, which is not under any window the backend serves, so compaction could not
 /// fire: recorded sessions ended at 28,600, 34,751 and 34,800 prompt tokens having never once been
@@ -316,42 +330,48 @@ impl Config {
             return Err(ConfigError::InvalidEndpoint { value: endpoint });
         }
 
-        // `automatic` for everyone, Bedrock block or not: it is the Brave backend's own default and a
-        // settings block adds a roster rather than changing what answers when nobody has picked. The
-        // exception is a build that cannot reach Brave at all, where `automatic` names a backend with
-        // no credentials and the strongest configured tier is the only thing that can answer.
-        let default_model = lookup(env_var::DEFAULT_MODEL)
-            .filter(|m| !m.trim().is_empty())
-            // `opus`, `sonnet` and `haiku` name a tier rather than a model, which is what those
-            // words mean in the settings file this key is copied from. Left as the word they reach a
-            // service that has never heard of them, so they are resolved to a model that exists:
-            // the tier's own ARN where an AWS account named one, and the Brave roster's name for
-            // that tier otherwise, since every build can reach Brave.
-            //
-            // The AWS account wins where it named the tier, because somebody who configured it
-            // asked for it by name. A tier they left unset falls through to Brave rather than being
-            // guessed at, an ARN not being derivable from a word, except on a build with no Brave
-            // credentials: there a Brave name reaches a service this build cannot sign for, so the
-            // strongest tier the AWS account did name is the only thing that could answer.
-            .map(|chosen| match bedrock::Tier::from_alias(&chosen) {
-                Some(tier) => match bedrock.as_ref() {
-                    Some(bedrock) => bedrock
-                        .model_for(tier)
-                        .or_else(|| match endpoint.is_empty() {
-                            true => bedrock.default_model(),
-                            false => None,
-                        })
-                        .unwrap_or(tier.brave_model())
-                        .to_string(),
-                    None => tier.brave_model().to_string(),
-                },
-                None => chosen,
-            })
-            .or_else(|| match bedrock.as_ref() {
-                Some(bedrock) if endpoint.is_empty() => bedrock.default_model().map(str::to_string),
-                _ => None,
-            })
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        // [`DEFAULT_MODEL`] for everyone, Bedrock block or not: it is the Brave backend's own
+        // default for this product and a settings block adds a roster rather than changing what
+        // answers when nobody has picked. The exception is a build that cannot reach Brave at all,
+        // where that name reaches a backend with no credentials and the strongest configured tier
+        // is the only thing that can answer.
+        let default_model = normalize_model(
+            &lookup(env_var::DEFAULT_MODEL)
+                .filter(|m| !m.trim().is_empty())
+                // `opus`, `sonnet` and `haiku` name a tier rather than a model, which is what those
+                // words mean in the settings file this key is copied from. Left as the word they reach a
+                // service that has never heard of them, so they are resolved to a model that exists:
+                // the tier's own ARN where an AWS account named one, and the Brave roster's name for
+                // that tier otherwise, since every build can reach Brave.
+                //
+                // The AWS account wins where it named the tier, because somebody who configured it
+                // asked for it by name. A tier they left unset falls through to Brave rather than being
+                // guessed at, an ARN not being derivable from a word, except on a build with no Brave
+                // credentials: there a Brave name reaches a service this build cannot sign for, so the
+                // strongest tier the AWS account did name is the only thing that could answer.
+                .map(|chosen| match bedrock::Tier::from_alias(&chosen) {
+                    Some(tier) => match bedrock.as_ref() {
+                        Some(bedrock) => bedrock
+                            .model_for(tier)
+                            .or_else(|| match endpoint.is_empty() {
+                                true => bedrock.default_model(),
+                                false => None,
+                            })
+                            .unwrap_or(tier.brave_model())
+                            .to_string(),
+                        None => tier.brave_model().to_string(),
+                    },
+                    None => chosen,
+                })
+                .or_else(|| match bedrock.as_ref() {
+                    Some(bedrock) if endpoint.is_empty() => {
+                        bedrock.default_model().map(str::to_string)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        )
+        .to_string();
 
         // A premium host that is present but malformed is dropped rather than rejected: it only
         // matters to someone who has imported a subscription, and failing every run over it would
@@ -476,7 +496,8 @@ impl Config {
     ///
     /// The free host, always: the listing reports which models are premium rather than differing
     /// between the two, and asking the premium host would spend a subscription credential to learn
-    /// something the free one says for nothing.
+    /// something the free one says for nothing. Callers send `Brave-Product: brave-bot` so the
+    /// roster is the one curated for this agent rather than Leo's.
     pub fn models_url(&self) -> String {
         format!("{}/v1/models", self.endpoint)
     }
@@ -1096,7 +1117,6 @@ mod tests {
             "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc",
             "claude-opus-4-8",
             "llama-3-8b-instruct",
-            "automatic",
         ] {
             let config = Config::from_lookup(|key| match key {
                 env_var::USE_BEDROCK => Some("1".into()),
@@ -1108,6 +1128,17 @@ mod tests {
             .unwrap();
             assert_eq!(config.default_model, name);
         }
+    }
+
+    /// Leo's automatic routing name is rewritten to brave-bot's own entry.
+    #[test]
+    fn the_legacy_automatic_name_becomes_the_brave_bot_default() {
+        let config = Config::from_lookup(|key| match key {
+            env_var::DEFAULT_MODEL => Some("automatic".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+        assert_eq!(config.default_model, DEFAULT_MODEL);
     }
 
     /// An ARN cannot be derived from a word, so a tier the AWS account left unset falls through to

@@ -7,6 +7,7 @@
 use bravebot_aichat::protocol::{ChatRequest, Message};
 use bravebot_aichat::{AichatClient, ChatError};
 use bravebot_config::Config;
+use bravebot_config::DEFAULT_MODEL;
 use bravebot_core::cancel::Cancel;
 use bravebot_core::capability::{Capability, CapabilitySet};
 use bravebot_core::event::RecordingSink;
@@ -355,7 +356,7 @@ fn a_completion_round_trips() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let completion = client
         .complete(&mut policy, &request)
         .expect("completion succeeds");
@@ -391,7 +392,7 @@ fn the_request_carries_the_signing_headers() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     client.complete(&mut policy, &request).expect("completion");
 
     let captured = received.recv().expect("request captured");
@@ -443,7 +444,7 @@ fn the_request_body_matches_the_protocol() {
 
     let mut client = AichatClient::new(&config, &egress);
     let request = ChatRequest::new(
-        "automatic",
+        DEFAULT_MODEL,
         vec![Message::system("be brief"), Message::user("hi")],
     );
     client.complete(&mut policy, &request).expect("completion");
@@ -451,7 +452,7 @@ fn the_request_body_matches_the_protocol() {
     let captured = received.recv().expect("request captured");
     let body: serde_json::Value = serde_json::from_str(&captured.body).expect("json body");
 
-    assert_eq!(body["model"], "automatic");
+    assert_eq!(body["model"], DEFAULT_MODEL);
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][1]["content"], "hi");
 }
@@ -472,7 +473,7 @@ fn a_completion_without_the_capability_is_refused() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let error = client
         .complete(&mut policy, &request)
         .expect_err("must be refused");
@@ -496,7 +497,7 @@ fn a_response_without_content_is_an_error() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let error = client
         .complete(&mut policy, &request)
         .expect_err("no content is an error");
@@ -527,7 +528,7 @@ fn a_stop_does_not_wait_for_the_model_to_start_writing() {
 
     let cancel = Cancel::new();
     let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     // Pressed while the reply is still being waited for, from a thread of its own because the
     // call below is what a person would be pressing it at.
@@ -570,7 +571,7 @@ fn a_stop_does_not_wait_for_an_endpoint_that_has_not_answered() {
 
     let cancel = Cancel::new();
     let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     let stopping = cancel.clone();
     thread::spawn(move || {
@@ -622,7 +623,7 @@ fn a_stopped_stream_stops_before_the_reply_is_over() {
 
     let cancel = Cancel::new();
     let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     let mut reports = 0;
     let error = client
@@ -661,7 +662,7 @@ fn a_stream_stopped_before_it_starts_reports_nothing() {
     let cancel = Cancel::new();
     cancel.cancel();
     let mut client = AichatClient::new(&config, &egress).with_cancel(cancel);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     let mut reports = 0;
     let error = client
@@ -698,7 +699,7 @@ fn a_streamed_completion_arrives_in_pieces() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     // The witness a caller with a screen mints. Without one the words in each report cannot be
     // read at all, which is the arrangement: a caller with nowhere to draw them never asks.
@@ -772,7 +773,7 @@ fn a_stream_that_stops_before_the_server_says_it_is_finished_is_not_a_reply() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let failed = client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect_err("a reply that stopped early is not an answer");
@@ -812,7 +813,7 @@ fn either_way_of_saying_the_reply_is_over_is_accepted() {
         .expect("policy");
 
         let mut client = AichatClient::new(&config, &egress);
-        let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+        let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
         client
             .complete_streaming(&mut policy, &request, |_| {})
             .expect("a reply the server said was over is an answer");
@@ -850,7 +851,7 @@ fn a_streamed_tool_call_is_reassembled() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("read a.rs")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("read a.rs")]);
     let completion = client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect("a tool-calling stream succeeds");
@@ -880,7 +881,7 @@ fn a_streamed_request_without_the_capability_is_refused() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let error = client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect_err("must be refused");
@@ -909,7 +910,7 @@ fn a_stream_with_no_content_is_an_error() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let error = client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect_err("no content is an error");
@@ -938,7 +939,7 @@ fn unparseable_frames_do_not_lose_the_reply() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let completion = client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect("a stream with noise in it still succeeds");
@@ -996,7 +997,7 @@ fn a_subscribed_request_goes_to_the_premium_host_with_the_credential() {
 
     let mut subscription = StubSubscription { remaining: 1 };
     let mut client = AichatClient::new(&config, &egress).with_subscription(&mut subscription);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     client
         .complete(&mut policy, &request)
         .expect("completion succeeds");
@@ -1028,7 +1029,7 @@ fn an_exhausted_subscription_fails_rather_than_downgrading() {
 
     let mut subscription = StubSubscription { remaining: 0 };
     let mut client = AichatClient::new(&config, &egress).with_subscription(&mut subscription);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     let err = client
         .complete(&mut policy, &request)
@@ -1059,7 +1060,7 @@ fn without_a_premium_host_no_credential_is_attached() {
 
     let mut subscription = StubSubscription { remaining: 5 };
     let mut client = AichatClient::new(&config, &egress).with_subscription(&mut subscription);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     client
         .complete(&mut policy, &request)
         .expect("completion succeeds");
@@ -1095,7 +1096,7 @@ fn a_stop_does_not_wait_out_the_pause_between_attempts() {
 
     let cancel = Cancel::new();
     let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
 
     // The retry is announced before the pause, which is where a person watching would press the
     // key: the interface has just told them it is trying again.
@@ -1140,7 +1141,7 @@ fn a_request_that_died_in_transit_is_sent_again() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     let mut attempts = Vec::new();
     let completion = client
         .complete_streaming(&mut policy, &request, |progress| {
@@ -1183,7 +1184,7 @@ fn a_request_the_server_refused_is_not_sent_again() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect_err("a refused request stays refused");
@@ -1220,7 +1221,7 @@ fn a_retry_goes_through_the_gate_again() {
     .expect("policy");
 
     let mut client = AichatClient::new(&config, &egress);
-    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+    let request = ChatRequest::new(DEFAULT_MODEL, vec![Message::user("hi")]);
     client
         .complete_streaming(&mut policy, &request, |_| {})
         .expect("the second attempt succeeds");
@@ -1263,7 +1264,7 @@ fn the_model_listing_is_fetched_from_the_models_path() {
     let models =
         bravebot_aichat::models::list(&mut policy, &config, &egress).expect("the list arrives");
 
-    assert_eq!(models[0].key, "automatic");
+    assert_eq!(models[0].key, DEFAULT_MODEL);
     assert_eq!(models[1].key, "claude-3-sonnet");
 
     let captured = received.recv().expect("request captured");
@@ -1279,6 +1280,11 @@ fn the_model_listing_is_fetched_from_the_models_path() {
     assert!(
         captured.header("cookie").is_none(),
         "a credential was spent on the listing"
+    );
+    assert_eq!(
+        captured.header("Brave-Product"),
+        Some("brave-bot"),
+        "the listing did not identify this product"
     );
 }
 

@@ -402,6 +402,7 @@ fn tokens(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bravebot_config::DEFAULT_MODEL;
 
     fn config_for(endpoint: &str, premium: Option<&str>) -> Config {
         Config::from_lookup(|key| match key {
@@ -760,7 +761,7 @@ mod tests {
         let trust = trusting();
 
         let shown = rendered(&report(&facts(&config, &trust)));
-        assert!(shown.contains("automatic"), "{shown}");
+        assert!(shown.contains(DEFAULT_MODEL), "{shown}");
         assert!(shown.contains("the configured default"), "{shown}");
 
         let mut chosen = facts(&config, &trust);
