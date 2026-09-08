@@ -31,6 +31,39 @@ pub const ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 /// rather than silently truncated, but the cheaper fix is to not hit it.
 pub const MAX_TOKENS: u64 = 8_192;
 
+/// A cache breakpoint: everything in front of it may be reused by the next request.
+///
+/// The prefix is tools, then system, then messages, so a breakpoint at the end of the system
+/// prompt covers the tool schemas as well and one on the last message covers the lot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl CacheControl {
+    /// The only kind this API offers, and the only one worth asking for: a turn re-sends its whole
+    /// history every round, and rounds are seconds apart.
+    pub fn ephemeral() -> Self {
+        Self {
+            kind: "ephemeral".to_string(),
+        }
+    }
+}
+
+/// The system prompt as this API takes it when a breakpoint has to go on the end of it.
+///
+/// A bare string is the other shape it accepts, and the one this sent before. The block form is
+/// what carries `cache_control`, and it is otherwise the same prompt.
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemBlock {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
 /// A request to Bedrock.
 #[derive(Debug, Clone, Serialize)]
 pub struct InvokeRequest {
@@ -38,7 +71,7 @@ pub struct InvokeRequest {
     pub max_tokens: u64,
     /// The system prompt, hoisted out of the message list.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<Vec<SystemBlock>>,
     pub messages: Vec<BedrockMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<BedrockTool>>,
@@ -83,6 +116,10 @@ pub struct BedrockMessage {
 pub enum Block {
     Text {
         text: String,
+        /// Set on the last block of the last message and nowhere else. Absent from everything
+        /// read back, since a reply never carries one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     Image {
         source: ImageSource,
@@ -95,6 +132,8 @@ pub enum Block {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
 }
 
@@ -137,6 +176,13 @@ pub struct BedrockUsage {
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    /// Tokens served out of the cache, which this API reports apart from `input_tokens` rather
+    /// than inside it. Counted here so a cached round does not read as a shrinking conversation.
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+    /// Tokens written into the cache on the way past, reported apart for the same reason.
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
 }
 
 /// The stop reason meaning the reply hit the ceiling rather than finishing.
@@ -229,13 +275,48 @@ pub fn request_from(
         }
     }
 
+    // Two breakpoints, which is what this conversation is shaped like. The prompt and the tool
+    // schemas are the same bytes on every round of every turn, and the messages in front of the
+    // last one are the same bytes they were a round ago: a turn re-sends its whole history each
+    // round, so without these the service reads all of it again every time. One session grew to
+    // a hundred thousand tokens over twenty-seven rounds, and paid for every one of them at full
+    // price, in seconds as much as in money.
+    //
+    // The prefix runs tools, then system, then messages, so the breakpoint on the system prompt
+    // covers the schemas too and the one on the last message covers everything.
+    let system = (!system.is_empty()).then(|| {
+        vec![SystemBlock {
+            kind: "text",
+            text: system.join("\n\n"),
+            cache_control: Some(CacheControl::ephemeral()),
+        }]
+    });
+    mark_the_end(&mut converted);
+
     InvokeRequest {
         anthropic_version: ANTHROPIC_VERSION,
         max_tokens: MAX_TOKENS,
-        system: (!system.is_empty()).then(|| system.join("\n\n")),
+        system,
         messages: converted,
         tools: tools.map(|tools| tools.iter().map(tool_from).collect()),
         output_config: None,
+    }
+}
+
+/// Put a breakpoint on the last block of the conversation.
+///
+/// Rolling rather than fixed: it moves to the end on every request, so each round writes the
+/// round before it into the cache and reads back everything older. A block that cannot carry one
+/// leaves the request without it, which costs a cache write and nothing else.
+fn mark_the_end(messages: &mut [BedrockMessage]) {
+    let Some(last) = messages.last_mut().and_then(|m| m.content.last_mut()) else {
+        return;
+    };
+    match last {
+        Block::Text { cache_control, .. } | Block::ToolResult { cache_control, .. } => {
+            *cache_control = Some(CacheControl::ephemeral());
+        }
+        Block::Image { .. } | Block::ToolUse { .. } => {}
     }
 }
 
@@ -264,7 +345,10 @@ fn user_blocks(message: &bravebot_aichat::protocol::Message) -> Vec<Block> {
         Content::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                Part::Text { text } => Some(Block::Text { text: text.clone() }),
+                Part::Text { text } => Some(Block::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                }),
                 // A data URI, which is the only form attachments take here: `data:<media>;base64,<data>`.
                 // Anything else is dropped rather than sent as a link, because asking the service to
                 // fetch a URL is an effect nobody endorsed.
@@ -283,6 +367,7 @@ fn tool_result_blocks(message: &bravebot_aichat::protocol::Message) -> Vec<Block
     vec![Block::ToolResult {
         tool_use_id: id,
         content: message.content.text(),
+        cache_control: None,
     }]
 }
 
@@ -310,6 +395,7 @@ fn text_block(text: &str) -> Vec<Block> {
     } else {
         vec![Block::Text {
             text: text.to_string(),
+            cache_control: None,
         }]
     }
 }
@@ -347,7 +433,7 @@ pub fn parts_of(blocks: &[Block]) -> (String, Vec<bravebot_aichat::protocol::Too
 
     for block in blocks {
         match block {
-            Block::Text { text: piece } => text.push_str(piece),
+            Block::Text { text: piece, .. } => text.push_str(piece),
             Block::ToolUse { id, name, input } => calls.push(ToolCall {
                 id: Some(id.clone()),
                 function: ToolCallFunction {
@@ -367,7 +453,13 @@ pub fn parts_of(blocks: &[Block]) -> (String, Vec<bravebot_aichat::protocol::Too
 impl From<BedrockUsage> for bravebot_aichat::protocol::Usage {
     fn from(usage: BedrockUsage) -> Self {
         Self {
-            prompt_tokens: usage.input_tokens,
+            // Everything the request carried, whoever read it. This API states `input_tokens`
+            // net of the cache, so a round that hit it reports a fraction of the prompt it
+            // actually sent, and a context gauge fed that figure would show a conversation
+            // shrinking as it grew. What the three add up to is the prompt.
+            prompt_tokens: usage.input_tokens
+                + usage.cache_read_input_tokens
+                + usage.cache_creation_input_tokens,
             completion_tokens: usage.output_tokens,
         }
     }
@@ -388,7 +480,8 @@ mod tests {
             &[Message::system("be helpful"), Message::user("hello")],
             None,
         );
-        assert_eq!(request.system.as_deref(), Some("be helpful"));
+        let system = request.system.as_deref().expect("a system block");
+        assert_eq!(system[0].text, "be helpful");
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, "user");
     }
@@ -423,7 +516,8 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(request.system.as_deref(), Some("first\n\nsecond"));
+        let system = request.system.as_deref().expect("a system block");
+        assert_eq!(system[0].text, "first\n\nsecond");
     }
 
     /// The API refuses two consecutive turns of the same role, and this conversion creates them:
@@ -477,6 +571,7 @@ mod tests {
             Block::ToolResult {
                 tool_use_id,
                 content,
+                ..
             } => {
                 assert_eq!(tool_use_id, "call-1");
                 assert_eq!(content, "the output");
@@ -649,12 +744,109 @@ mod tests {
         assert_eq!(sent[0].input_schema["type"], "object");
     }
 
+    /// A cached round sent every one of those tokens, whoever ended up reading them.
+    #[test]
+    fn cached_tokens_are_counted_as_the_prompt_they_were() {
+        let usage: bravebot_aichat::protocol::Usage = BedrockUsage {
+            input_tokens: 12,
+            output_tokens: 40,
+            cache_read_input_tokens: 900,
+            cache_creation_input_tokens: 88,
+        }
+        .into();
+        assert_eq!(
+            usage.prompt_tokens, 1000,
+            "a cached round read as a smaller prompt than it sent"
+        );
+        assert_eq!(usage.completion_tokens, 40);
+    }
+
+    /// The prompt and the schemas are the same bytes every round, so the request says so.
+    #[test]
+    fn the_system_prompt_carries_a_breakpoint() {
+        let request = request_from(
+            &[Message::system("be helpful"), Message::user("hello")],
+            None,
+        );
+        let system = request.system.as_deref().expect("a system block");
+        assert_eq!(
+            system[0].cache_control,
+            Some(CacheControl::ephemeral()),
+            "the prefix every round shares was not marked"
+        );
+    }
+
+    /// Rolling, so each round writes the round before it into the cache and reads back the rest.
+    #[test]
+    fn the_last_block_of_the_conversation_carries_a_breakpoint() {
+        let request = request_from(
+            &[
+                Message::user("first"),
+                Message::assistant("an answer"),
+                Message::user("second"),
+            ],
+            None,
+        );
+        let last = request
+            .messages
+            .last()
+            .and_then(|m| m.content.last())
+            .expect("a last block");
+        match last {
+            Block::Text { cache_control, .. } => assert_eq!(
+                cache_control.as_ref(),
+                Some(&CacheControl::ephemeral()),
+                "the end of the conversation was not marked"
+            ),
+            other => panic!("the last block was not text: {other:?}"),
+        }
+
+        let earlier = &request.messages[0].content[0];
+        match earlier {
+            Block::Text { cache_control, .. } => assert_eq!(
+                cache_control, &None,
+                "an earlier block was marked as well, spending a breakpoint on nothing"
+            ),
+            other => panic!("the first block was not text: {other:?}"),
+        }
+    }
+
+    /// A round ends on tool results as often as on words, and that is exactly the prefix the next
+    /// round wants back.
+    #[test]
+    fn a_conversation_ending_in_a_tool_result_is_marked_too() {
+        let request = request_from(&[Message::tool_result("call-1", "the output")], None);
+        match &request.messages[0].content[0] {
+            Block::ToolResult { cache_control, .. } => assert_eq!(
+                cache_control.as_ref(),
+                Some(&CacheControl::ephemeral()),
+                "a round ending in a tool result was not marked"
+            ),
+            other => panic!("expected a tool result: {other:?}"),
+        }
+    }
+
+    /// A reply never carries one, so reading one back must not require it.
+    #[test]
+    fn a_reply_without_a_breakpoint_still_parses() {
+        let blocks: Vec<Block> =
+            serde_json::from_value(json!([{"type": "text", "text": "hello"}])).expect("parses");
+        assert!(matches!(
+            blocks.first(),
+            Some(Block::Text {
+                cache_control: None,
+                ..
+            })
+        ));
+    }
+
     /// The reply's text and calls come back in the shapes the turn loop already handles.
     #[test]
     fn a_reply_is_read_back_into_text_and_calls() {
         let blocks = vec![
             Block::Text {
                 text: "I will read it".into(),
+                cache_control: None,
             },
             Block::ToolUse {
                 id: "call-1".into(),
@@ -679,9 +871,11 @@ mod tests {
         let blocks = vec![
             Block::Text {
                 text: "first ".into(),
+                cache_control: None,
             },
             Block::Text {
                 text: "second".into(),
+                cache_control: None,
             },
         ];
         assert_eq!(parts_of(&blocks).0, "first second");
@@ -694,6 +888,8 @@ mod tests {
         let usage: bravebot_aichat::protocol::Usage = BedrockUsage {
             input_tokens: 100,
             output_tokens: 20,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         }
         .into();
         assert_eq!(usage.prompt_tokens, 100);

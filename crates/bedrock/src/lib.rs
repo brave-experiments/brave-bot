@@ -815,6 +815,8 @@ mod tests {
                 usage: Some(protocol::BedrockUsage {
                     input_tokens: 1_000,
                     output_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 }),
             },
         });
@@ -825,6 +827,8 @@ mod tests {
             usage: Some(protocol::BedrockUsage {
                 input_tokens: 0,
                 output_tokens: 42,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             }),
         });
 
@@ -854,6 +858,8 @@ mod tests {
             usage: Some(protocol::BedrockUsage {
                 input_tokens: 0,
                 output_tokens: 99,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             }),
         });
         assert_eq!(reply.usage.completion_tokens, 99);

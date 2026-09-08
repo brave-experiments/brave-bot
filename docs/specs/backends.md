@@ -693,6 +693,38 @@ deliberately is not something the picker offers, that entry not being on this pr
 `verified-by: bravebot_aichat::models::automatic_is_offered_once_even_if_the_server_lists_it_too`
 `verified-by: bravebot_agent::turn::without_a_choice_the_configured_default_is_requested`
 
+<a id="BACKEND-27"></a>
+### BACKEND-27: a Bedrock request marks the prefix it will send again
+
+Two cache breakpoints go on every request to Bedrock: one at the end of the system prompt, which
+covers the tool schemas in front of it, and one on the last block of the conversation, which moves
+to the end as the conversation grows. Neither changes what is sent, only what the service has to
+read again.
+
+**Why.** A turn re-sends its whole history every round. One session reached 104,633 tokens over
+twenty-seven rounds and paid for every token of every round at full price, in latency as much as in
+money, and the great majority of those tokens were bytes the service had already read a minute
+earlier. The prompt and the schemas are identical on every round of every session; the messages in
+front of the last one are identical to a round ago.
+
+**Rolling rather than fixed.** Each request writes the round before it into the cache and reads
+back everything older, which is what makes the second breakpoint worth a cache write. A last block
+that cannot carry one, an image or a tool call, leaves the request with one breakpoint and costs
+nothing else.
+
+**The reported prompt is what was sent, not what was read.** This API states `input_tokens` net of
+the cache and reports the cached tokens beside it, so the three are added back together on the way
+into a `Usage`. Without that a cached round reads as a conversation that shrank while it grew.
+
+**Only this backend.** The aichat endpoint and an OpenAI-compatible gateway take a different wire
+format, which has no field for this and asks for nothing.
+
+`verified-by: bravebot_bedrock::protocol::the_system_prompt_carries_a_breakpoint`
+`verified-by: bravebot_bedrock::protocol::the_last_block_of_the_conversation_carries_a_breakpoint`
+`verified-by: bravebot_bedrock::protocol::a_conversation_ending_in_a_tool_result_is_marked_too`
+`verified-by: bravebot_bedrock::protocol::a_reply_without_a_breakpoint_still_parses`
+`verified-by: bravebot_bedrock::protocol::cached_tokens_are_counted_as_the_prompt_they_were`
+
 ## Known costs
 
 - **Which models a product is served is the service's decision, and this holds no copy of it.** The
