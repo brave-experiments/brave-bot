@@ -145,5 +145,6 @@ a code change staged alongside them is a change they do not cover.
   is in a bullet or was deliberately dropped.
 - No bullet describes a fix to something that never shipped.
 - No em-dash, anywhere. A comma, a colon, or two sentences does the job.
-- The heading version matches `Cargo.toml` and `package.json`. CI refuses a tag that
-  disagrees with either, so a mismatch here is a mismatch worth mentioning now.
+- The heading version matches `Cargo.toml` and `package.json`. `make github-release` refuses
+  when those two disagree, and names the tag from `Cargo.toml`, so a mismatch here is a
+  mismatch worth mentioning now.

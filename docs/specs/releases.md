@@ -18,9 +18,12 @@ Building for a platform is not this topic. Reproducible cross-builds are ordinar
 in [../development.md](../development.md). This file governs only the path from a version to a
 published asset, and the checks along it.
 
-Nothing here is pinned by a Rust test. A release runs in CI against a pushed tag, and the rules
-below are enforced by a refusal in the release path rather than by anything the test suite can
-execute, so each clause says in brackets what makes it hold.
+GitHub Actions compiles and tests. It does not create a GitHub release. Signed, configured
+binaries are built and published by the Jenkins job `brave-bot-build` in the devops repository.
+
+Nothing here is pinned by a Rust test. The rules below are enforced by a refusal in the tagging
+path or the Jenkins publish path rather than by anything the test suite can execute, so each
+clause says in brackets what makes it hold.
 
 ## Clauses
 
@@ -35,7 +38,7 @@ being resolved in favour of either.
 files disagreeing does not produce a mislabelled release, it produces a release whose assets the
 installer looks for under a name that was never uploaded.
 
-`verified-by: by-construction (bumping rewrites every file that states the version in one step, and both tagging and the release job refuse a mismatch)`
+`verified-by: by-construction (bumping rewrites every file that states the version in one step, and tagging refuses a mismatch)`
 
 <a id="RELEASE-2"></a>
 ### RELEASE-2: setting the next version publishes nothing
@@ -50,16 +53,17 @@ removes that point, and makes a mistyped bump irreversible in the same breath.
 `verified-by: by-construction (the bump target writes files and prints the next step, and contains no git command)`
 
 <a id="RELEASE-3"></a>
-### RELEASE-3: a pushed version tag is the only thing that publishes
+### RELEASE-3: GitHub Actions does not publish a release
 
-No branch push, no pull request, and no manually dispatched run produces a release. Publication
-happens for a pushed tag naming a version, and for nothing else.
+No branch push, no pull request, no tag push, and no manually dispatched GitHub Actions run
+creates a GitHub release or attaches binaries people install. Publication happens in Jenkins,
+when `brave-bot-build` is run with `UPLOAD` and `RELEASE`.
 
-**Why.** One trigger is one thing to reason about when asking whether something was published.
-A second path, a dispatch button in particular, means the answer depends on who pressed what,
-which is not recoverable from the repository afterwards.
+**Why.** GitHub Actions cannot codesign Darwin or Authenticode-sign Windows. If it published,
+the public assets would be unsigned until a later overwrite, and a tag re-push would put those
+unsigned bytes back.
 
-`verified-by: by-construction (the release job runs only for a ref under refs/tags/v, and no other trigger reaches it)`
+`verified-by: by-construction (ci.yml has no release job and contents: write is not granted)`
 
 <a id="RELEASE-4"></a>
 ### RELEASE-4: nothing is tagged from a tree that was not reviewed
@@ -74,18 +78,21 @@ work that was never reviewed; tagging ahead of the remote names a commit nobody 
 `verified-by: by-construction (each condition is a separate refusal in the tagging path, checked before the tag is created)`
 
 <a id="RELEASE-5"></a>
-### RELEASE-5: a tag that disagrees with the tree it points at publishes nothing
+### RELEASE-5: the published name is the version in the tree that was built
 
-When the version a tag names is not the version in the commit it points at, the release fails
-and no asset is uploaded.
+The makefile names the tag `v` plus the version in `Cargo.toml`, after refusing a
+`package.json` mismatch. Jenkins names the GitHub release the same way from the `Cargo.toml`
+of the commit it checked out. Neither path publishes under a name that disagrees with the
+tree it built.
 
-**Why.** A tag can be created by hand, so the tagging refusals are not the only way one arrives.
-This is the check that does not depend on how the tag was made.
+**Why.** The installer derives the tag it downloads from the version it was published with, so
+a release whose name is not the version in the tree is a release whose assets the installer
+looks for under a name that was never uploaded.
 
-**Note.** This is the same agreement RELEASE-1 requires, checked at a different moment: once
-before the tag exists, once after it does.
+**Note.** A tag created by hand that disagrees with the tree is not refused at Jenkins publish
+time. Jenkins does not read git tags.
 
-`verified-by: by-construction (the release job compares the tag name against the version in the checked-out tree before uploading anything)`
+`verified-by: by-construction (the tagging path sets the tag from Cargo.toml after checking package.json, and Jenkins sets the release name from Cargo.toml)`
 
 <a id="RELEASE-6"></a>
 ### RELEASE-6: a published binary carries the configuration it needs to run
@@ -101,7 +108,7 @@ and obvious, to every machine that installed it, where it reads as the program b
 **Note.** The permission to build unconfigured is granted by an exact value, so a setting that is
 present but means nothing does not grant it.
 
-`verified-by: by-construction (the build fails on missing configuration unless permitted, and a tag build does not grant that permission)`
+`verified-by: by-construction (the build fails on missing configuration unless permitted, and a Jenkins upload does not grant that permission)`
 
 <a id="RELEASE-7"></a>
 ### RELEASE-7: a release has every supported platform in it, or is not published
@@ -113,7 +120,7 @@ fails the release instead of publishing the rest.
 smaller release. It is a broken install for whoever is on the platform that went missing, and it
 reads to them as the release existing but the tool not working.
 
-`verified-by: by-construction (the release job lists the expected assets and fails when one is absent)`
+`verified-by: by-construction (Jenkins lists the expected assets from the build outputs and uploads each one)`
 
 <a id="RELEASE-8"></a>
 ### RELEASE-8: every asset is published with a checksum of the bytes that were uploaded
@@ -125,7 +132,7 @@ step that alters its bytes.
 match, and the mismatch looks exactly like tampering, so the one signal that is supposed to
 distinguish a bad download from a good one now fires on every good one.
 
-`verified-by: by-construction (checksums are computed in the release job after the binaries are stripped and immediately before upload)`
+`verified-by: by-construction (Jenkins attaches the .sha256 written after signing, covering the bytes that were uploaded)`
 
 <a id="RELEASE-9"></a>
 ### RELEASE-9: a downloaded binary is checked against its published checksum before it is installed
@@ -134,25 +141,28 @@ The installer fetches the published checksum, compares it against what it downlo
 no executable when the two differ or the checksum is not well formed.
 
 **Why.** Without this the binary runs on the strength of the transport alone, and a substituted
-release asset is indistinguishable from a good one. The assets are not signed, so this is the only
-thing standing between a replaced download and an executable on the user's machine.
+release asset is indistinguishable from a good one. Signing proves who produced the Darwin and
+Windows binaries; the checksum is what the installer can check on every platform, including
+Linux.
 
 `verified-by: by-construction (the install step hashes what it downloaded, compares it against the published value, and exits without writing on a mismatch)`
 
 ## Known costs
 
 - **Nothing here is pinned by a test.** Every clause is by-construction, which means a refusal can
-  be removed and only a reader will notice. The release path is shell in a makefile and a workflow,
-  neither of which the Rust test suite can reach, and a test that shelled out to a real tag push
-  would have to publish something to prove anything.
+  be removed and only a reader will notice. The tagging path is shell in a makefile, publication
+  is a Jenkins job in another repository, and a test that shelled out to a real tag push would
+  have to publish something to prove anything.
 
-- **Released assets are not signed or notarised.** macOS refuses a downloaded binary that carries
-  no signature, so a user who installs one by hand has to clear it themselves. RELEASE-9 is what
-  makes an unsigned asset safe to fetch through the installer, and it is a weaker guarantee: it
-  proves the bytes match what was published, not who published them. Anyone who can write to the
-  release can write both the asset and its checksum.
+- **Publication lives outside this repository.** `brave-bot-build` in devops is what signs and
+  attaches assets. A change there can break RELEASE-6 through RELEASE-8 without this tree
+  noticing.
+
+- **A second Jenkins run of RELEASE for the same version fails.** `gh release create` does not
+  replace an existing release, so a retry after a successful publish, or after a hand-made
+  release of the same tag, stops before upload.
 
 - **The npm package is not published.** RELEASE-1 and RELEASE-5 already require the npm manifest to
-  agree with the tag, and the installer already resolves assets from a published release, so the
-  packaging half is specified and exercised while publication is not. What is unproven is the
-  registry step itself.
+  agree with the version that is tagged and released, and the installer already resolves assets
+  from a published release, so the packaging half is specified and exercised while publication
+  is not. What is unproven is the registry step itself.

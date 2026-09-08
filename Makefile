@@ -34,7 +34,7 @@ help:
 	@echo
 	@echo "Releasing:"
 	@echo "  make bump-version BUMP=bugfix|minor|major   Set the next version"
-	@echo "  make github-release                         Tag it and let CI publish"
+	@echo "  make github-release                         Tag it; Jenkins publishes signed assets"
 	@echo
 	@echo "  make clean          Remove build output"
 
@@ -225,8 +225,8 @@ fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");'; \
 	echo "bumped $$current -> $$next (Cargo.toml, Cargo.lock, package.json)"; \
 	echo "commit this, then run: make github-release"
 
-# Tags the current version and pushes it. The tag push is the only thing that triggers
-# a release build, so everything CI needs must already be committed and on origin.
+# Tags the current version and pushes it. GitHub Actions runs CI on the tag; Jenkins
+# (brave-bot-build with UPLOAD and RELEASE) builds, signs, and publishes the assets.
 .PHONY: github-release
 github-release:
 	@set -eu; \
@@ -258,8 +258,9 @@ github-release:
 	fi; \
 	git tag -a -m "bravebot $(TAG)" "$(TAG)"; \
 	git push origin "$(TAG)"; \
-	echo "pushed $(TAG); CI will build, checksum, and publish the GitHub release"; \
-	echo "watch with: gh run watch --repo brave-experiments/brave-bot"
+	echo "pushed $(TAG); GitHub Actions will run CI on the tag"; \
+	echo "publish signed assets with Jenkins job brave-bot-build (UPLOAD and RELEASE)"; \
+	echo "watch CI with: gh run watch --repo brave-experiments/brave-bot"
 
 .PHONY: clean
 clean:
