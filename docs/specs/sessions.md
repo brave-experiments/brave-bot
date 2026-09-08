@@ -393,18 +393,25 @@ dropped, since they decided about a turn that is no longer in the conversation. 
 goes back past the session's first turn removes its record rather than leaving one with nothing
 in it.
 
+A path that will not go back is named on the line that reports the rewind, and the rest of the
+rewind still happens.
+
 One turn is as far back as it goes, and the window closes when the next turn begins. `/clear`
 closes it too, and so does a shell-mode command, which the workspace does not see.
 
 **Why.** A turn that went wrong is the case with no clean recovery: `git checkout` takes the
 user's own uncommitted work with it, and `/clear` throws away the context that was worth keeping.
 Disk and conversation move together because either one alone leaves the transcript describing a
-tree that is not there, which is worse than neither.
+tree that is not there, which is worse than neither. A file that would not go back is that same
+disagreement, so it is said out loud rather than swallowed: a person told a turn was undone will
+not go looking.
 
 `verified-by: bravebot_agent::workspace::a_rewind_puts_back_what_a_turn_overwrote`
 `verified-by: bravebot_agent::workspace::a_rewind_removes_a_file_the_turn_created`
 `verified-by: bravebot_agent::workspace::a_path_written_twice_in_a_turn_rewinds_to_before_the_first_write`
 `verified-by: bravebot_agent::workspace::taking_the_backups_leaves_the_next_turn_with_none`
+`verified-by: bravebot_agent::workspace::a_rewind_names_the_paths_it_could_not_put_back`
+`verified-by: bravebot_agent::workspace::a_created_file_already_gone_is_not_reported_as_refused`
 `verified-by: bravebot_tui::sessions::truncating_an_audit_log_removes_events_from_undone_turns`
 `verified-by: bravebot_tui::state::clearing_drops_the_transcript_and_what_it_spent`
 

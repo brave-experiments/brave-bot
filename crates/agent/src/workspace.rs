@@ -900,20 +900,30 @@ impl Workspace {
         std::mem::take(&mut *guard)
     }
 
-    /// Put back what a turn wrote over.
+    /// Put back what a turn wrote over, and say which paths would not go back.
     ///
-    /// A path whose file did not exist is removed again.
-    pub fn restore_backups(&self, backups: Vec<Backup>) {
+    /// A path whose file did not exist is removed again, and one already gone counts as removed:
+    /// the state asked for is the state that is there.
+    ///
+    /// Every path is attempted rather than stopping at the first failure, and the ones that
+    /// failed are returned rather than dropped. A rewind that reported a turn undone while a
+    /// file still held that turn's work would leave the transcript describing a tree that is not
+    /// there, which is the failure a rewind exists to prevent.
+    pub fn restore_backups(&self, backups: Vec<Backup>) -> Vec<PathBuf> {
+        let mut refused = Vec::new();
         for backup in backups {
-            match backup.was {
-                Some(bytes) => {
-                    let _ = std::fs::write(&backup.path, bytes);
-                }
-                None => {
-                    let _ = std::fs::remove_file(&backup.path);
-                }
+            let put_back = match backup.was {
+                Some(bytes) => std::fs::write(&backup.path, bytes),
+                None => match std::fs::remove_file(&backup.path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    other => other,
+                },
+            };
+            if put_back.is_err() {
+                refused.push(backup.path);
             }
         }
+        refused
     }
 }
 

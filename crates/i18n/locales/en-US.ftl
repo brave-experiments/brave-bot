@@ -577,6 +577,8 @@ session-rename-needs-a-name = /rename needs a name, as in /rename the parser bug
 session-rename-needs-something = /rename needs a name with something in it
 session-cleared = cleared: a new session, with the previous one still resumable
 session-last-turn-undone = rewound the session by one turn
+session-last-turn-undone-partly =
+    rewound the session by one turn, but these files still hold what it wrote: { $paths }
 session-nothing-to-undo = nothing left to undo in this session
 session-exported = exported transcript to { $path }
 session-export-failed = could not export transcript: { $problem }
