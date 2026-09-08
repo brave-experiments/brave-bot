@@ -675,11 +675,14 @@ the person's own, after they have read it, exactly as if they had typed it
 ([sessions.md](sessions.md)).
 
 Mid-turn is when the wanted prompt is most likely to be one that has scrolled away, and searching
-sends nothing, which is the whole of what a running turn refuses (INPUT-9).
+sends nothing, which is the whole of what a running turn refuses (INPUT-9). Escape and Ctrl-C reach
+the search before they reach the turn, so the key that closes it leaves the turn running and the
+press that stops the turn is the next one.
 
 `verified-by: bravebot_tui::app::ctrl_r_searches_the_prompts_already_sent`
 `verified-by: bravebot_tui::render::how_to_search_the_prompts_is_said_where_somebody_would_look`
 `verified-by: bravebot_tui::app::the_prompts_can_be_searched_while_a_turn_is_running`
+`verified-by: bravebot_tui::app::the_search_answers_the_stop_keys_before_the_turn_does`
 `verified-by: bravebot_tui::app::ctrl_r_with_nothing_sent_yet_opens_nothing`
 `verified-by: bravebot_tui::app::the_search_starts_from_what_was_already_typed`
 `verified-by: bravebot_tui::app::a_letter_narrows_the_search_rather_than_reaching_the_box`

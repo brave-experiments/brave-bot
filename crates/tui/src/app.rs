@@ -328,14 +328,23 @@ fn cycles_the_mode(key: KeyEvent) -> bool {
 
 /// Whether a key press reaches the turn in flight.
 ///
-/// The scroller answers these keys before the turn does, because it is the nearest thing there is
-/// to stop. Somebody who opened it to read what the turn had already done is not asking for the
-/// turn to end when they close it again, and the press that reaches the turn is the next one.
+/// A mode standing over the session answers these keys before the turn does, because it is the
+/// nearer thing to stop. Somebody who opened the scroller to read what the turn had already done,
+/// the view to see what a delegate was doing, or the search to find a prompt that has scrolled
+/// away is not asking for the turn to end when they close it again, and the press that reaches
+/// the turn is the next one. Watching is also the mode most likely to be open while something is
+/// going wrong.
+///
+/// Each of the three names these keys itself, and this is what lets them have them: the loops read
+/// this before any ladder, so a mode left out here is one whose way out ends the turn instead.
 ///
 /// Named rather than written out at each loop, because there are three of them and a condition
 /// copied three times is a condition that ends up meaning three things.
 fn stops_the_turn(session: &Session, key: KeyEvent) -> bool {
-    !session.scrolling() && (is_ctrl_c(key) || wants_cancel(key))
+    !session.scrolling()
+        && session.watching().is_none()
+        && !session.searching_history()
+        && (is_ctrl_c(key) || wants_cancel(key))
 }
 
 /// Interpret a key press while the scroller is open.
@@ -3869,7 +3878,24 @@ mod tests {
             let mut session = Session::new("kernel-enforced");
             session.status = Status::Working;
             spawn(&mut session, "checker", "run the build");
+
+            // The loops answer the stop keys before any ladder does, so the guard that lets the
+            // view have them first is the whole of what keeps the key that closes it from ending
+            // the turn the person opened it to watch.
+            for stopping in [ctrl('c'), key(KeyCode::Esc)] {
+                assert!(
+                    stops_the_turn(&session, stopping),
+                    "{stopping:?} did not reach the turn with nothing in the way"
+                );
+            }
+
             handle_key_while_working(&mut session, ctrl('l'));
+            for stopping in [ctrl('c'), key(KeyCode::Esc)] {
+                assert!(
+                    !stops_the_turn(&session, stopping),
+                    "{stopping:?} stopped the turn from inside the view"
+                );
+            }
 
             let action = handle_key_while_working(&mut session, ctrl('c'));
 
@@ -3879,6 +3905,34 @@ mod tests {
             );
             assert!(session.watching().is_none(), "the view did not close");
             assert_eq!(session.status, Status::Working, "the turn was stopped");
+        }
+
+        /// Both keys close, and a person who reached for the one they close every other panel
+        /// with is not asking for the turn behind it to end.
+        #[test]
+        fn escape_leaves_the_view_the_way_q_does() {
+            for leaving in [key(KeyCode::Esc), key(KeyCode::Char('q'))] {
+                let mut session = Session::new("kernel-enforced");
+                session.status = Status::Working;
+                spawn(&mut session, "reader", "find the parser");
+                spawn(&mut session, "checker", "run the build");
+                handle_key_while_working(&mut session, ctrl('l'));
+                session.open_watched();
+
+                let action = handle_key_while_working(&mut session, leaving);
+                assert!(
+                    !matches!(action, Action::Cancel),
+                    "{leaving:?} cancelled the turn behind the view"
+                );
+                assert!(
+                    session.listing_delegates(),
+                    "{leaving:?} did not go back to the list"
+                );
+
+                handle_key_while_working(&mut session, leaving);
+                assert!(session.watching().is_none(), "{leaving:?} did not close");
+                assert_eq!(session.status, Status::Working, "the turn was stopped");
+            }
         }
 
         /// Nothing falls through to a box the person cannot see. Typed there, the words would be
@@ -6918,6 +6972,36 @@ mod tests {
 
         handle_key_while_working(&mut session, ctrl('r'));
         assert!(session.searching_history());
+    }
+
+    /// The loops answer the stop keys before any ladder does, so the guard that lets the search
+    /// have them first is the whole of what keeps the keys that close it from ending the turn a
+    /// person opened it during. Searching sends nothing, so there was never anything in it for the
+    /// turn to refuse.
+    #[test]
+    fn the_search_answers_the_stop_keys_before_the_turn_does() {
+        let mut session = having_sent(&["first question"]);
+        type_line(&mut session, "second question");
+        handle_key(&mut session, key(KeyCode::Enter));
+
+        for stopping in [ctrl('c'), key(KeyCode::Esc)] {
+            assert!(
+                stops_the_turn(&session, stopping),
+                "{stopping:?} did not reach the turn with nothing in the way"
+            );
+        }
+
+        handle_key_while_working(&mut session, ctrl('r'));
+        for stopping in [ctrl('c'), key(KeyCode::Esc)] {
+            assert!(
+                !stops_the_turn(&session, stopping),
+                "{stopping:?} stopped the turn from inside the search"
+            );
+        }
+
+        handle_key_while_working(&mut session, key(KeyCode::Esc));
+        assert!(!session.searching_history(), "the search did not close");
+        assert_eq!(session.status, Status::Working, "the turn was stopped");
     }
 
     /// With nothing sent there is nothing to search, and a panel saying so is a mode a person then

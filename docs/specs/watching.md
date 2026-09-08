@@ -196,8 +196,9 @@ at the last one and know that it is the last.
 Nothing falls through to the input box, and the box is not drawn, behind the list's panel or
 anywhere else. `q` and Escape go back to the
 list from a delegate, and close the mode from the list or where there is no list behind it.
-Ctrl-L and Ctrl-C close it from either level and do nothing else: the turn in flight goes on, and
-the press that reaches it is the next one.
+Ctrl-L and Ctrl-C close it from either level and do nothing else. Escape and Ctrl-C reach the mode
+before they reach the turn: the turn in flight goes on, and the press that reaches it is the next
+one.
 
 There is no key for talking to a delegate and no box for it. A delegate is given one task, has
 nobody to ask, and takes no line typed mid-turn.
@@ -210,6 +211,7 @@ watching is also the mode most likely to be open while something is going wrong.
 `verified-by: bravebot_tui::app::a_typed_character_does_not_reach_the_box_while_a_delegate_is_watched`
 `verified-by: bravebot_tui::app::q_goes_back_to_the_list_before_it_closes`
 `verified-by: bravebot_tui::app::q_closes_outright_where_there_is_no_list_to_go_back_to`
+`verified-by: bravebot_tui::app::escape_leaves_the_view_the_way_q_does`
 `verified-by: bravebot_tui::app::the_view_answers_the_stop_keys_before_the_turn_does`
 
 <a id="WATCH-10"></a>
