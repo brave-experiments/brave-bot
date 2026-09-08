@@ -328,10 +328,12 @@ pub const MAX_TOOL_ROUNDS: usize = 200;
 /// which is the ordinary way somebody finds out a turn has gone wrong. The prompt asks for slices;
 /// this is what notices that the prompt did not take, and it says so once rather than governing.
 ///
-/// Fifteen because it is past honest orientation and short of a session. The turn that produced
-/// this had everything it needed for its first three files by round fifteen and read for
-/// twenty-five more.
-pub const ROUNDS_BEFORE_WRITING: usize = 15;
+/// Eight because fifteen was measured and found late. The turn this was built for wrote nothing in
+/// forty rounds; the next one, with the prompt and this, wrote its first file on round sixteen,
+/// one round after the line landed. That is the line working and the paragraph above it not: the
+/// planner had the pref and the strings settled by round five and spent ten more rounds reading.
+/// Eight is past honest orientation on a large repository and well short of a plan.
+pub const ROUNDS_BEFORE_WRITING: usize = 8;
 
 /// How the driver introduces itself when it takes the tools away.
 ///

@@ -57,6 +57,11 @@ says so once, at the end of a round, and the turn carries on with its tools. The
 not a bound: nothing is taken away, nothing is refused, and a planner that keeps reading keeps
 reading.
 
+**The number is measured, not chosen.** It was fifteen, and a run with the prompt and the line
+together wrote its first file on round sixteen: the line working, and the paragraph asking for the
+same thing not. Where a planner is reading past the point it could have written, the number is too
+high.
+
 **A different futility from [TURN-1](#TURN-1).** That one is about a turn which never ends. This
 one is about a turn which ends having only understood: a planner that maps a repository before
 changing anything is doing real work, and it still leaves nothing behind when somebody stops it,
