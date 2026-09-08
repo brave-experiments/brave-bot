@@ -38,9 +38,14 @@ clean, the two version files agree, and HEAD is `main` at `origin/main`, then pu
 
 The tag push does not publish binaries. GitHub Actions still builds and tests on the tag.
 Signed, configured assets are built, notarised, and uploaded by the Jenkins job
-`brave-bot-build` with `UPLOAD` and `RELEASE` enabled. That job creates a GitHub release
-named `v<version>` from `Cargo.toml` and attaches the signed binaries plus the `.sha256`
-files written after signing. `gh release create` fails if that release already exists.
+`brave-bot-build` with `UPLOAD` and `RELEASE` enabled. That job builds the tip of the branch it
+is given, creates a GitHub release named `v<version>` from `Cargo.toml`, and attaches the signed
+binaries plus the `.sha256` files written after signing. `gh release create` fails if that
+release already exists.
+
+Push the tag before running the job. It does not read tags, so creating a release for a tag that
+does not exist yet puts that tag on the head of the default branch rather than on the commit the
+binaries were built from.
 
 `BRAVEBOT_ALLOW_UNCONFIGURED_BUILD` is set in GitHub Actions so forks and PRs compile without
 secrets. Jenkins does not set it on an upload, so a missing credential fails the release

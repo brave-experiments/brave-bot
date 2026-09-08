@@ -157,6 +157,9 @@ all-platforms: darwin-arm64 darwin-amd64 linux-amd64 linux-arm64 windows-amd64 w
 #
 # rust-objcopy is LLVM-based and handles Mach-O, ELF, and PE alike, so one tool covers
 # every target; the per-target GNU strip binaries are not all present in the image.
+#
+# Run by the publish job after `all-platforms`, and by nothing in this repository, so the
+# release carries stripped binaries while a local cross-build keeps its symbols.
 RUST_LIB_DIR = /usr/local/rustup/toolchains/1.93.0-x86_64-unknown-linux-gnu/lib
 STRIP_TOOL = $(RUST_LIB_DIR)/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy
 .PHONY: strip
@@ -171,6 +174,10 @@ strip:
 	@echo "stripped:"
 	@ls -lh dist/ | awk 'NR>1 {print "  " $$9, $$5}'
 
+# Nothing in this repository runs this, and the publish job hashes the signed binaries itself.
+# It is the statement of the format those files have to be in: the digest alone, with no filename
+# beside it, which is the only thing the npm postinstall accepts. SHA256SUMS is the conventional
+# form of the same hashes, for verifying a download by hand.
 .PHONY: checksums
 checksums:
 	@cd dist && rm -f ./*.sha256 SHA256SUMS && \

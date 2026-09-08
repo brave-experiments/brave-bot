@@ -120,7 +120,7 @@ fails the release instead of publishing the rest.
 smaller release. It is a broken install for whoever is on the platform that went missing, and it
 reads to them as the release existing but the tool not working.
 
-`verified-by: by-construction (Jenkins lists the expected assets from the build outputs and uploads each one)`
+`verified-by: by-construction (the publish job collects all six assets before it creates the release, and a missing one fails the job before anything is published)`
 
 <a id="RELEASE-8"></a>
 ### RELEASE-8: every asset is published with a checksum of the bytes that were uploaded
@@ -138,7 +138,8 @@ distinguish a bad download from a good one now fires on every good one.
 ### RELEASE-9: a downloaded binary is checked against its published checksum before it is installed
 
 The installer fetches the published checksum, compares it against what it downloaded, and writes
-no executable when the two differ or the checksum is not well formed.
+no executable when the two differ or the checksum is not well formed. Well formed is the digest
+and nothing else: sixty-four hex digits, with no filename beside them.
 
 **Why.** Without this the binary runs on the strength of the transport alone, and a substituted
 release asset is indistinguishable from a good one. Signing proves who produced the Darwin and
@@ -155,8 +156,23 @@ Linux.
   have to publish something to prove anything.
 
 - **Publication lives outside this repository.** `brave-bot-build` in devops is what signs and
-  attaches assets. A change there can break RELEASE-6 through RELEASE-8 without this tree
+  attaches assets. A change there can break RELEASE-6 through RELEASE-9 without this tree
   noticing.
+
+- **The refusals before a tag guard the tag, not the publish.** Tagging checks the branch, the
+  remote, and the agreement between the two version files. The publish job builds the tip of a
+  branch it is handed, takes the version from `Cargo.toml`, and reads neither the tag nor
+  `package.json`. A release can therefore come from a commit that was never on `origin/main`, and
+  an npm manifest disagreeing with the workspace reaches a published release rather than stopping
+  at the tagging step.
+
+- **What published a release is not recoverable from here.** A publish is a parameterised build in
+  another system, so which commit was built, and who asked for it, lives in that system's history.
+  A tag in this repository is not evidence that the release was built from it.
+
+- **No build in this repository is configured.** Every job in the workflow carries the permission
+  to compile without credentials, so the first configured build of a commit happens in the publish
+  job. A change that only fails with configuration baked in gets no signal before then.
 
 - **A second Jenkins run of RELEASE for the same version fails.** `gh release create` does not
   replace an existing release, so a retry after a successful publish, or after a hand-made
