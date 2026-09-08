@@ -23,31 +23,34 @@ make all-platforms
 
 ## Releasing
 
-Two steps, because the version is a reviewable change and the tag is the trigger.
+Two steps to name the version, then Jenkins to publish signed binaries.
 
 ```sh
 make bump-version BUMP=bugfix   # or minor, major
 # commit the result, land it on main
 make github-release
+# then run Jenkins job brave-bot-build with UPLOAD and RELEASE
 ```
 
 `bump-version` rewrites the version in `Cargo.toml`, `Cargo.lock`, and `package.json` and stops
 there; nothing is committed or pushed for you. `github-release` refuses to tag unless the tree is
 clean, the two version files agree, and HEAD is `main` at `origin/main`, then pushes `v<version>`.
 
-The tag push is the only thing that publishes. CI builds all six targets, strips them, writes a
-`.sha256` beside each one plus a `SHA256SUMS`, and creates the GitHub release. A tag whose name
-disagrees with the version in the tree fails the job rather than publishing assets the installer
-would then look for under the wrong name.
+The tag push does not publish binaries. GitHub Actions still builds and tests on the tag.
+Signed, configured assets are built, notarised, and uploaded by the Jenkins job
+`brave-bot-build` with `UPLOAD` and `RELEASE` enabled. That job builds the tip of the branch it
+is given. A RELEASE run refuses unless tag `v<version>` from `Cargo.toml` already exists and
+points at that commit, then creates a GitHub release of that name and attaches the signed
+binaries plus the `.sha256` files written after signing. `gh release create` fails if that
+release already exists.
 
-Unlike other builds, a tag build does not set `BRAVEBOT_ALLOW_UNCONFIGURED_BUILD`, so a missing
-credential fails the release instead of shipping a binary that cannot reach the backend.
+`BRAVEBOT_ALLOW_UNCONFIGURED_BUILD` is set in GitHub Actions so forks and PRs compile without
+secrets. Jenkins does not set it on an upload, so a missing credential fails the release
+instead of shipping a binary that cannot reach the backend.
 
-Released binaries are **not** code-signed or notarised yet, so macOS Gatekeeper will refuse a
-downloaded one until that is added. What makes an unsigned asset safe to fetch is the checksum: the
-npm `postinstall` verifies the binary against its published `.sha256` before writing it, so TLS is
-not the only thing standing between a substituted asset and an executable. npm publication is
-deliberately not wired up.
+Darwin binaries are codesigned and notarised, Windows binaries are Authenticode-signed. The
+npm `postinstall` still verifies the binary against its published `.sha256` before writing it.
+npm publication is deliberately not wired up.
 
 ## Agent configuration
 
