@@ -701,10 +701,10 @@ fn ensure_dir_secure(directory: &Path) -> std::io::Result<()> {
         builder.recursive(true).mode(0o700);
         builder.create(directory)?;
         let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
-        if let Some(parent) = directory.parent() {
-            if parent.file_name().is_some_and(|n| n == SESSIONS) {
-                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
-            }
+        if let Some(parent) = directory.parent()
+            && parent.file_name().is_some_and(|n| n == SESSIONS)
+        {
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
         Ok(())
     }

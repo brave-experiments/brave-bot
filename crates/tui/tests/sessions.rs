@@ -985,8 +985,13 @@ fn session_records_and_audit_trails_are_written_mode_0600() {
         },
     );
 
-    let event = Event::Read("private.rs".into(), Label::Untrusted, Capability::Workspace);
-    handle.append_audit(1, &stamped(vec![event]));
+    handle.append_audit(
+        1,
+        &stamped(vec![Event::Observed {
+            capability: Capability::FileRead,
+            label: Label::untrusted_private(),
+        }]),
+    );
 
     let dir = sessions::project_directory(&scratch.project).expect("project directory");
     let dir_mode = std::fs::metadata(&dir)
@@ -1055,9 +1060,11 @@ fn pre_existing_session_files_and_directories_are_tightened_on_write() {
 
     // Create both files with loose permissions (0644) beforehand.
     std::fs::write(&record_path, b"{}").expect("write record");
-    std::fs::set_permissions(&record_path, std::fs::Permissions::from_mode(0o644)).expect("chmod record");
+    std::fs::set_permissions(&record_path, std::fs::Permissions::from_mode(0o644))
+        .expect("chmod record");
     std::fs::write(&audit_path, b"").expect("write audit");
-    std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o644)).expect("chmod audit");
+    std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o644))
+        .expect("chmod audit");
 
     let conversation = a_conversation();
     let programs = a_program_list();
@@ -1083,24 +1090,44 @@ fn pre_existing_session_files_and_directories_are_tightened_on_write() {
         },
     );
 
-    let event = Event::Read("secret.txt".into(), Label::Untrusted, Capability::Workspace);
-    handle.append_audit(1, &stamped(vec![event]));
+    handle.append_audit(
+        1,
+        &stamped(vec![Event::Observed {
+            capability: Capability::FileRead,
+            label: Label::untrusted_private(),
+        }]),
+    );
 
     let dir_mode = std::fs::metadata(&dir)
         .expect("directory metadata")
         .permissions()
         .mode();
-    assert_eq!(dir_mode & 0o077, 0, "directory was not tightened to 0700: {:o}", dir_mode);
+    assert_eq!(
+        dir_mode & 0o077,
+        0,
+        "directory was not tightened to 0700: {:o}",
+        dir_mode
+    );
 
     let record_mode = std::fs::metadata(&record_path)
         .expect("record metadata")
         .permissions()
         .mode();
-    assert_eq!(record_mode & 0o077, 0, "record was not tightened to 0600: {:o}", record_mode);
+    assert_eq!(
+        record_mode & 0o077,
+        0,
+        "record was not tightened to 0600: {:o}",
+        record_mode
+    );
 
     let audit_mode = std::fs::metadata(&audit_path)
         .expect("audit metadata")
         .permissions()
         .mode();
-    assert_eq!(audit_mode & 0o077, 0, "audit was not tightened to 0600: {:o}", audit_mode);
+    assert_eq!(
+        audit_mode & 0o077,
+        0,
+        "audit was not tightened to 0600: {:o}",
+        audit_mode
+    );
 }
