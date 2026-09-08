@@ -565,6 +565,7 @@ command-compact = Summarise the conversation so far, keeping the recent part
 command-clear = Start a new session here, keeping this one resumable
 command-loop = Send a prompt again and again, on your interval or at a pace each turn sets
 command-export = Export the session transcript to a markdown file
+command-undo = Rewind the last turn and restore files
 command-exit = Leave
 
 
@@ -575,6 +576,8 @@ session-renamed = renamed to { $title }
 session-rename-needs-a-name = /rename needs a name, as in /rename the parser bug
 session-rename-needs-something = /rename needs a name with something in it
 session-cleared = cleared: a new session, with the previous one still resumable
+session-last-turn-undone = rewound the session by one turn
+session-nothing-to-undo = nothing left to undo in this session
 session-exported = exported transcript to { $path }
 session-export-failed = could not export transcript: { $problem }
 session-add-dir-needs-a-path = /add-dir needs a directory, as in /add-dir ~/notes

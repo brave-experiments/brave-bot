@@ -552,6 +552,31 @@ impl Occupancy {
     }
 }
 
+/// A checkpoint of session state captured before a turn begins, for `/undo`.
+#[derive(Debug, Clone)]
+pub struct TurnSnapshot {
+    /// The conversation state (messages, references, context).
+    pub conversation: bravebot_agent::conversation::Snapshot,
+    /// Completed turns count before this turn.
+    pub turns: usize,
+    /// Cumulative tokens before this turn.
+    pub tokens: u64,
+    /// Spend by turn before this turn.
+    pub spend: std::collections::BTreeMap<usize, u64>,
+    /// Timing by turn before this turn.
+    pub timing: std::collections::BTreeMap<usize, bravebot_agent::timing::Timing>,
+    /// Trust map rules before this turn.
+    pub trust: bravebot_core::trust::TrustStore,
+    /// Trusted programs before this turn.
+    pub programs: bravebot_core::programs::TrustedPrograms,
+    /// Length of transcript entries before this turn.
+    pub transcript_len: usize,
+    /// Stored session title before this turn.
+    pub title: String,
+    /// Whether the session had already been written to disk before this turn.
+    pub was_wrote: bool,
+}
+
 /// Everything the interface needs to draw itself.
 #[derive(Debug)]
 pub struct Session {
@@ -730,6 +755,15 @@ pub struct Session {
     /// Cleared between turns. `None` before the first request goes out, which is the only
     /// moment the generic word is all there is to say.
     pub phase: Option<Phase>,
+    /// What the files the last turn wrote to held before it wrote to them.
+    ///
+    /// Taken off the workspace when the turn ends, so `/undo` can put them back.
+    pub last_turn_backups: Vec<bravebot_agent::workspace::Backup>,
+    /// The state before the most recent turn.
+    ///
+    /// Captured in memory right before a turn starts, and kept here so `/undo` can rebuild
+    /// the session to match it.
+    pub previous_turn: Option<TurnSnapshot>,
     /// The tool call in flight, if one is.
     ///
     /// Also in the transcript, where it stays. Kept here as well because the indicator needs
@@ -918,6 +952,8 @@ impl Session {
             running: None,
             queued: Vec::new(),
             looping: None,
+            last_turn_backups: Vec::new(),
+            previous_turn: None,
             pending: crate::remote_confirm::Interjections::new(),
             streaming: String::new(),
             attributed_to: None,
@@ -1191,6 +1227,8 @@ impl Session {
         self.selection = None;
         self.copied = None;
         self.finished = None;
+        self.last_turn_backups.clear();
+        self.previous_turn = None;
         // A standing condition is worth saying once per session, and this is now a new one: the
         // reason a skill was left out applies to the next turn as much as it did to the last.
         self.said.clear();
@@ -5528,6 +5566,11 @@ mod tests {
         assert_eq!(s.turns, 0);
         assert_eq!(s.tokens, 0, "the spend survived");
         assert_eq!(s.status, Status::Idle);
+        assert!(
+            s.previous_turn.is_none(),
+            "the previous turn survived clear"
+        );
+        assert!(s.last_turn_backups.is_empty(), "the backups survived clear");
     }
 
     /// What belongs to the user rather than to the session survives, since none of it is a

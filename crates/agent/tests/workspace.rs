@@ -2614,3 +2614,129 @@ fn a_destination_inside_a_directory_the_user_added_is_confined() {
     assert!(workspace.confines(&other.join("out.txt")).is_ok());
     let _ = std::fs::remove_dir_all(&other);
 }
+
+/// The half of a rewind that protects work: a turn that overwrote a file has to be able to put
+/// back what was there, and what was there is only knowable before the write happens.
+#[test]
+fn a_rewind_puts_back_what_a_turn_overwrote() {
+    let scratch = Scratch::new("rewind-overwrote");
+    std::fs::write(scratch.path.join("notes.md"), "the user's work").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    workspace
+        .write(
+            &mut policy,
+            &Labelled::trusted("notes.md".to_string()),
+            &Labelled::trusted("what the turn made of it".to_string()),
+        )
+        .expect("write succeeds");
+
+    workspace.restore_backups(workspace.take_backups());
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
+        "the user's work"
+    );
+}
+
+/// A file the turn brought into existence has no earlier contents to put back, so undoing it
+/// means removing it. Leaving it behind would call the rewind complete with the turn's work
+/// still on disk.
+#[test]
+fn a_rewind_removes_a_file_the_turn_created() {
+    let scratch = Scratch::new("rewind-created");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    workspace
+        .write(
+            &mut policy,
+            &Labelled::trusted("new.txt".to_string()),
+            &Labelled::trusted("made by the turn".to_string()),
+        )
+        .expect("write succeeds");
+
+    workspace.restore_backups(workspace.take_backups());
+
+    assert!(!scratch.path.join("new.txt").exists());
+}
+
+/// Rewinding to the state between two writes of one turn would leave that turn half undone, so
+/// the first write of a turn is the one kept.
+#[test]
+fn a_path_written_twice_in_a_turn_rewinds_to_before_the_first_write() {
+    let scratch = Scratch::new("rewind-twice");
+    std::fs::write(scratch.path.join("notes.md"), "first").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    for body in ["second", "third"] {
+        workspace
+            .write(
+                &mut policy,
+                &Labelled::trusted("notes.md".to_string()),
+                &Labelled::trusted(body.to_string()),
+            )
+            .expect("write succeeds");
+    }
+
+    workspace.restore_backups(workspace.take_backups());
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
+        "first"
+    );
+}
+
+/// Taking the backups is what ends a turn's window. A turn that starts with the previous turn's
+/// backups still on the workspace would rewind further than the one turn it was asked to.
+#[test]
+fn taking_the_backups_leaves_the_next_turn_with_none() {
+    let scratch = Scratch::new("rewind-window");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    workspace
+        .write(
+            &mut policy,
+            &Labelled::trusted("out.txt".to_string()),
+            &Labelled::trusted("body".to_string()),
+        )
+        .expect("write succeeds");
+
+    assert_eq!(workspace.take_backups().len(), 1);
+    assert!(workspace.take_backups().is_empty());
+}
