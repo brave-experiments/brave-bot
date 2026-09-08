@@ -2341,6 +2341,32 @@ impl Session {
         line
     }
 
+    /// A line in the form worth remembering, with every marker settled.
+    ///
+    /// A marker stands for something staged beside the line, and nothing staged outlives the
+    /// session that staged it. Remembered as it stands, a marker comes back naming nothing: a
+    /// picture nobody can produce, a file nothing read.
+    ///
+    /// A dropped file becomes its name, which is a path a person recognises and one the planner
+    /// can go and read through the gate it reads anything through. That is what a file dropped
+    /// onto a line queued mid-turn already becomes.
+    ///
+    /// A picture becomes nothing at all, along with the space beside it, because there is no
+    /// durable text that stands for a screenshot and the words around it are what the person
+    /// meant. Somebody recalling that prompt pastes the picture they mean now.
+    fn recallable(&self, line: &str) -> String {
+        let mut line = line.to_string();
+        for attached in &self.attached {
+            line = line.replace(&attached.marker, &attached.name);
+        }
+        for pasted in &self.pasted {
+            line = line.replace(&format!("{} ", pasted.marker), "");
+            line = line.replace(&format!(" {}", pasted.marker), "");
+            line = line.replace(&pasted.marker, "");
+        }
+        line
+    }
+
     /// Take a paste that turned out to be a drop, or say it was not one.
     ///
     /// A recognised file becomes a marker in the line and an attachment behind it. Anything else,
@@ -2738,9 +2764,12 @@ impl Session {
     /// what is recorded beside it has to be the same each time. Nothing is written for a prompt
     /// the history collapsed into the one before it: the file would hold the second copy that the
     /// session in front of the person does not.
+    ///
+    /// What is written is the line with its markers settled, because the session that recalls it
+    /// staged none of them.
     fn remember(&mut self, prompt: &str) {
         let project = self.project();
-        let stored = self.history.push(prompt, project).cloned();
+        let stored = self.history.push(self.recallable(prompt), project).cloned();
         if let (true, Some(entry)) = (self.persist, stored) {
             crate::store::append_history(&entry);
         }
@@ -2807,14 +2836,15 @@ impl Session {
             return None;
         }
         let prompt = self.unfolded(&typed);
+        // Recorded here rather than in `begin_turn`, because a queued prompt was recorded when it
+        // was queued: from the person's side that is when they sent it. Before the line is taken,
+        // because taking it clears what the markers in it stand for.
+        self.remember(&prompt);
         // Settled from the line as it was typed, since that is where the markers are. Everything
         // still named goes; a marker the user deleted is an attachment they took off, and it goes
         // nowhere. Pictures settle the same way and at the same moment, since a marker rubbed out
         // means the same thing whether the thing behind it was dropped or pasted.
         let taken = self.take_line(&typed);
-        // Recorded here rather than in `begin_turn`, because a queued prompt was recorded when it
-        // was queued: from the person's side that is when they sent it.
-        self.remember(&prompt);
         Some(self.begin_turn(prompt, taken))
     }
 
@@ -2837,8 +2867,8 @@ impl Session {
         // Resolved before the line is taken, because taking it clears what the markers stand for.
         let resolved = self.resolved(&typed);
         let prompt = self.unfolded(&typed);
-        let (attached, pasted) = self.take_line(&typed);
         self.remember(&prompt);
+        let (attached, pasted) = self.take_line(&typed);
         // Into the turn's reach the moment it is typed, rather than when the turn next asks. The
         // turn asks between rounds and a round can be a long wait; put there now, the line is
         // taken at the first boundary after it was sent, which is the soonest anything could act
@@ -5131,6 +5161,35 @@ mod tests {
         s.paste_text("one\ntwo\nthree\n");
 
         assert_eq!(s.input, "[Image #1][Pasted text #2 +3 lines]");
+    }
+
+    /// A picture is the session's own and nothing durable stands for it, so the prompt is
+    /// remembered without the marker. Kept, it comes back in a later session naming a screenshot
+    /// nobody can produce, and `[Image #1]` reaches the planner standing for nothing.
+    #[test]
+    fn a_recalled_prompt_does_not_name_a_picture_that_went_with_the_line() {
+        let mut s = session();
+        for c in "what is wrong here ".chars() {
+            s.type_char(c);
+        }
+        s.attach(picture(b"pixels"));
+        assert_eq!(s.input, "what is wrong here [Image #1]");
+        s.submit().expect("submitted");
+
+        let entry = s.history.entries().last().expect("an entry");
+        assert_eq!(entry.prompt, "what is wrong here");
+    }
+
+    /// The picture still goes with the turn that named it. What is remembered is a question about
+    /// the next session, and must not change what this one sends.
+    #[test]
+    fn settling_a_marker_for_the_history_does_not_take_the_picture_off_the_turn() {
+        let mut s = session();
+        s.attach(picture(b"pixels"));
+        let prompt = s.submit().expect("submitted");
+
+        assert_eq!(prompt, "[Image #1]");
+        assert_eq!(s.sent_pasted().len(), 1);
     }
 
     /// A prompt recalled out of the history comes back as the words themselves, which is what

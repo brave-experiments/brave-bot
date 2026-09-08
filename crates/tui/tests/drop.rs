@@ -329,3 +329,24 @@ fn resolving_a_queued_line_does_not_rewrite_what_the_person_sees() {
         "the person's own line was rewritten under them"
     );
 }
+
+/// A marker stands for a file staged beside the line, and nothing staged outlives the session
+/// that staged it. Remembered as the marker, the prompt comes back naming nothing at all;
+/// remembered as the name, it comes back saying which file it was about, and the planner can go
+/// and read that file through the gate it reads any other through.
+#[test]
+fn a_dropped_file_is_recalled_by_name_rather_than_by_its_marker() {
+    let scratch = Scratch::new("recall-name");
+    let path = scratch.file("shot.png");
+    let mut session = session_in(&scratch);
+
+    for c in "look at ".chars() {
+        session.type_char(c);
+    }
+    assert!(session.drop_files(&path), "not recognised as a drop");
+    assert_eq!(session.input(), "look at [Image #1] ");
+
+    session.submit().expect("submitted");
+    session.recall_older();
+    assert_eq!(session.input(), "look at shot.png");
+}

@@ -112,12 +112,16 @@ everything the planner then wrote as untrusted, on the strength of the user's ow
 ### PASTE-6: what is sent is what the prompt says
 
 The marker is written where the caret is and the picture goes wherever that text goes. Deleting
-the marker unsends it; recalling an older prompt carries none of them, because the markers went
-with the line. A picture is refused in shell mode rather than written into the command. Anything
-over 10 MB is refused rather than sent, and says so with its size.
+the marker unsends it. A prompt recalled from the history carries no pictures and names none: the
+marker is not what gets remembered, because it stands for a screenshot only the session that
+pasted it holds, and the words around it are what the person meant. A picture is refused in shell
+mode rather than written into the command. Anything over 10 MB is refused rather than sent, and
+says so with its size.
 
 `verified-by: bravebot_tui::app::a_picture_is_refused_in_shell_mode_rather_than_written_into_the_command`
 `verified-by: bravebot_tui::app::a_picture_too_large_to_send_says_so_with_its_size`
+`verified-by: bravebot_tui::state::a_recalled_prompt_does_not_name_a_picture_that_went_with_the_line`
+`verified-by: bravebot_tui::state::settling_a_marker_for_the_history_does_not_take_the_picture_off_the_turn`
 
 
 <a id="PASTE-7"></a>

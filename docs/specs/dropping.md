@@ -139,8 +139,8 @@ trusted slot for one to arrive in. What the planner is given instead is the file
 **name**, in place of the marker, settled at the moment the line was sent. A pasted picture has no
 such recourse and resolves to a sentence saying a picture was pasted and cannot be shown.
 
-Only what talks to the model sees this. The box, the transcript and the history keep the marker,
-because that is what was on the person's screen.
+Only what talks to the model sees this. The box and the transcript keep the marker, because that
+is what was on the person's screen.
 
 **Why.** Dropping a file mid-turn is telling the agent which file to look at, and a name is enough
 for that: the planner reads it and goes to the file through the same gate it reads any other file
@@ -155,6 +155,21 @@ as its own turn it carries its files and pictures the way any prompt does.
 
 `verified-by: bravebot_tui::drop::a_file_dropped_into_a_queued_line_is_named_to_the_planner`
 `verified-by: bravebot_tui::drop::resolving_a_queued_line_does_not_rewrite_what_the_person_sees`
+
+<a id="DROP-9"></a>
+### DROP-9: a recalled prompt names the file rather than the marker
+
+What the history remembers is the line with each dropped file's name in place of the marker it
+was sent behind, so a prompt recalled in a later session says which file it was about.
+
+**Why.** A marker stands for a file staged beside the line, and nothing staged outlives the
+session that staged it. Remembered as it stands, `[Image #1]` comes back naming nothing: the
+person reads a prompt that claims to carry a file, and the planner is sent a placeholder standing
+for one. A name is what is left when the staging is gone, and it is enough: the planner reads it
+and goes to the file through the same gate it reads any other file through, which is what a file
+dropped onto a line queued mid-turn already relies on.
+
+`verified-by: bravebot_tui::drop::a_dropped_file_is_recalled_by_name_rather_than_by_its_marker`
 
 ## Known costs
 
