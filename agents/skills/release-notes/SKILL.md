@@ -39,11 +39,19 @@ Exactly that, clause by clause:
 
 - The heading is `## [<version>](<url of the release tag>)`, with no `v` in the link text
   and a `v` in the tag it points at. One blank line under it.
-- Every bullet is one line: one leading space, `- `, then a single sentence ending in a
-  period. No blank lines between bullets, no nesting, no sub-headings, no bold labels.
-- Order is new features first, then changes, then fixes, and most significant first inside
-  each of those. The opening verb is what tells a reader which group a bullet is in, so
-  there is nothing to label.
+- Every bullet is one line: one leading space, `- `, then one sentence saying what the
+  change is, and at most one more if a person needs a caveat or how to reach it. No blank
+  lines between bullets, no nesting, no sub-headings, no bold labels.
+- **Bottom line first, in plain language, and short.** The first clause names the thing a
+  person got. Whatever qualifies it comes after: how it is reached, what it costs, what it
+  does not do. A reader skimming the first half of every bullet should come away with the
+  release. Prefer the ordinary word to the precise one, and cut any clause that would not
+  change what somebody does next.
+- Order is new features first, then changes, then fixes. Inside each group, most impactful
+  first: what most people will use, or what they will find most interesting, leads. A new
+  capability outranks a preference panel; a preference panel outranks a message that got
+  clearer. The opening verb is what tells a reader which group a bullet is in, so there is
+  nothing to label.
 - An issue link goes after the sentence's period, in parentheses:
   `([#84](https://github.com/brave-experiments/brave-bot/issues/84))`. Only when a commit
   named the issue.
@@ -116,6 +124,10 @@ A breaking change is always in, however small, and it leads the list.
   `Removed`, `Fixed`.
 - Say what the person gets, in their vocabulary. No crate names, no function names, no
   module paths, no commit hashes, no conventional-commit prefixes.
+- Name a tool, command, key or flag a person types, in backticks. A capability described
+  without its name leaves them unable to reach it.
+- Lead with the capability, not the mechanism. "Added code navigation through a language
+  server" before the eight operations it supports.
 - Never invent an issue number, and never link one a commit did not name.
 
 ```
@@ -124,6 +136,15 @@ Good:  Added `/cd`, which moves a session to another directory and carries its t
 
 Bad:   fix(bedrock): ask the AWS CLI whether a session is good once, not every turn
 Good:  Fixed the delay before every turn on Bedrock, caused by re-checking the AWS session each time.
+
+Bad:   Added a language server tool, so a turn can ask where a symbol is defined, what
+       references it, what a hover says, the symbols in a file or across the workspace, an
+       implementation, and which functions call which. The server runs with your own access
+       once you agree to it, and its index is cached under `~/.bravebot` so a later session
+       does not wait for it again.
+Good:  Added code navigation through a language server: jump to a definition, find
+       references, read a hover, list the symbols in a file or the workspace, and follow a
+       call in either direction. The server runs with your access once you allow it.
 ```
 
 ## Step 5: where it goes
@@ -144,6 +165,8 @@ a code change staged alongside them is a change they do not cover.
 - Every bullet traces to a commit in the range, and every user-visible commit in the range
   is in a bullet or was deliberately dropped.
 - No bullet describes a fix to something that never shipped.
+- Reading only the first clause of every bullet still gives a reader the release, and the
+  bullet a reader would care about most is the first one.
 - No em-dash, anywhere. A comma, a colon, or two sentences does the job.
 - The heading version matches `Cargo.toml` and `package.json`. `make github-release` refuses
   when those two disagree, and names the tag from `Cargo.toml`, so a mismatch here is a
