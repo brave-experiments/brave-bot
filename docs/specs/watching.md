@@ -130,19 +130,19 @@ do.
 `verified-by: bravebot_tui::state::a_reply_a_delegate_is_writing_is_not_drawn_over_the_turn`
 
 <a id="WATCH-7"></a>
-### WATCH-7: Ctrl-L opens the delegates: the list where there are several, the one where there is one
+### WATCH-7: Ctrl-L opens what happened outside the transcript: the list where there are several rows, the one where there is one
 
-The list is the way in where the session has spawned more than one, and where it has spawned one
-that delegate's own lines are what opens. The delegate the view opens on is the one that is
-working, or the most recent where none is.
+The list is the way in where the view holds more than one row, and where it holds one that row's
+own lines are what opens. The view opens on the delegate that is working, and on the last row in
+the list where none is.
 
-Where the session has spawned none the key does nothing at all.
+Where the view holds nothing the key does nothing at all.
 
 The list is a panel over the session, sized to the delegates it holds and never to the screen, and
 the transcript stays drawn behind it. A delegate's own lines take the screen. Where there are more
 delegates than the panel is tall, the rows drawn are the ones around the highlight.
 
-**Why.** Which delegate is the question a person has when several are going, and a mode that
+**Why.** Which row is the question a person has when several runs are going, and a mode that
 opened straight into one of them answers a question they did not ask. A list of one is a row to
 press through to reach the only thing behind it. A mode that opens on an empty screen is worse
 than a key that does not answer: it puts somebody somewhere, with nothing to read and something to
@@ -236,15 +236,20 @@ position and the keys for moving between delegates appear only where there is mo
 The list carries its own title and its own key row, and fills the row that would open edge to
 edge rather than marking it.
 
-Once the session has spawned any delegate, the hint line names the key and says how many there
-are. The key is in the shortcut list. No other row names it, including the one that reports what
-the turn is doing.
+Once the view has anything to open, the hint line names the key and says how many rows there are,
+counting the delegates and the commands together. The key is in the shortcut list. No other row
+names it, including the one that reports what the turn is doing.
 
-**Why.** The turn's transcript shows one block and three rows of it, so somebody who does not
-already know the key has no way to find out there is anything more to see. The hint line is where
-that is said because it outlasts the turn, and a delegate is most worth opening afterwards: what
-it leaves behind is a sentence about work nobody has read. The count is there because a key with
-nothing behind it does nothing, and that line is read at a glance.
+**Why.** The turn's transcript shows one block and three rows of a delegate, and a preview and a
+count of what a command printed, so somebody who does not already know the key has no way to find
+out there is anything more to see. The hint line is where that is said because it outlasts the
+turn, and what the view holds is most worth opening afterwards: what a delegate leaves behind is a
+sentence about work nobody has read. The count is there because a key with nothing behind it does
+nothing, and that line is read at a glance.
+
+**Why both kinds in one count.** The key opens one list and the count stands for what is in it. A
+count of delegates alone leaves a session that ran commands and spawned none with a key that opens
+something and no line on the screen saying so, which is the case the hint exists for.
 
 **Why only there.** One key named twice on one screen, once beside the spinner and once at the
 foot, reads as two things to press. The line that is always drawn is the one to put it on.
@@ -256,6 +261,7 @@ foot, reads as two things to press. The line that is always drawn is the one to 
 `verified-by: bravebot_tui::render::a_narrow_row_keeps_the_count_and_loses_the_end_of_the_task`
 `verified-by: bravebot_tui::render::the_row_that_says_what_the_turn_is_doing_leaves_the_key_to_the_hint_line`
 `verified-by: bravebot_tui::render::the_hint_line_names_the_delegate_key_once_one_has_run`
+`verified-by: bravebot_tui::render::the_hint_line_counts_the_commands_as_well_as_the_delegates`
 `verified-by: bravebot_tui::render::the_shortcut_list_names_the_key_that_watches`
 
 <a id="WATCH-12"></a>

@@ -693,10 +693,7 @@ watching-calls = { $count ->
     [one] { $count } appel
    *[other] { $count } appels
     }
-# Dit sur la ligne du bas une fois qu'un delegue a tourne, la seule qui survit au tour
-# avec le tour qui l'a dessinee. Le compte y est car une touche sans rien derriere ne vaut pas
-# la peine.
-watching-hint = { $count ->
-    [one] ctrl-l { $count } delegue
-   *[other] ctrl-l { $count } delegues
-    }
+# Dit sur la ligne du bas une fois que la vue a quelque chose a ouvrir, la seule ligne qui survit
+# au tour qui l'a dessinee. Le compte y est car une touche sans rien derriere ne vaut pas la
+# peine. Delegues et commandes sont comptes ensemble, une seule touche ouvrant la liste des deux.
+watching-hint = ctrl-l { $count } a ouvrir

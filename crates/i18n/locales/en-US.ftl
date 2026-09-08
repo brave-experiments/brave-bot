@@ -543,12 +543,11 @@ watching-calls = { $count ->
     [one] { $count } call
    *[other] { $count } calls
     }
-# Said on the bottom line once any delegate has run, which is the one row that outlasts the turn
-# that drew it. The count is there because a key with nothing behind it is not worth pressing.
-watching-hint = { $count ->
-    [one] ctrl-l { $count } delegate
-   *[other] ctrl-l { $count } delegates
-    }
+# Said on the bottom line once the view has anything to open, which is the one row that outlasts
+# the turn that drew it. The count is there because a key with nothing behind it is not worth
+# pressing. Delegates and commands are counted together, since one key opens the list holding both
+# and naming either kind here would undercount the other.
+watching-hint = ctrl-l { $count } to open
 
 
 ## The commands a line beginning with a slash may be

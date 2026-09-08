@@ -2512,12 +2512,15 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
         None => String::new(),
     };
 
-    // The way into the delegates, for as long as the session has any. The row that reports what
-    // the turn is doing names the key too, but that row goes when the turn ends, and a delegate
-    // is most worth opening afterwards: the block it left behind is one sentence about work
-    // somebody may want to read. The count is there because a key with nothing behind it does
-    // nothing at all, and this line is read at a glance.
-    let delegates = match session.delegates().len() {
+    // The way into the view, for as long as it holds anything. The row that reports what the turn
+    // is doing names the key too, but that row goes when the turn ends, and what the view holds is
+    // most worth opening afterwards: the transcript keeps one sentence about a delegate and a
+    // preview of what a command printed. The count is there because a key with nothing behind it
+    // does nothing at all, and this line is read at a glance.
+    //
+    // Everything the view opens, not the delegates alone. A session that ran commands and spawned
+    // no delegate has a key that works and, counted the other way, no line saying so.
+    let watchable = match session.watchable().len() {
         0 => String::new(),
         count => t!(watching_hint, count = count).to_string(),
     };
@@ -2538,14 +2541,14 @@ fn draw_hint(frame: &mut Frame, area: Rect, session: &Session) {
     // the last column falls and leaves "? fo". Dropping a whole part at a separator is legible; half
     // a word reads as a rendering bug. See `fitted` for the order they are given up in.
     //
-    // An empty part is skipped rather than drawn, so a session with no trail, nothing measured and no
-    // delegates does not open its line on a separator with nothing in front of it.
+    // An empty part is skipped rather than drawn, so a session with no trail, nothing measured and
+    // nothing to open does not open its line on a separator with nothing in front of it.
     let mode = crate::status::named_mode(session.permission_mode());
     let parts = [
         mode.unwrap_or_default().to_string(),
         trail.to_string(),
         context,
-        delegates,
+        watchable,
         SHORTCUTS_HINT.to_string(),
     ];
     // Indices into `parts`, in the order they are given up: the way to the bindings first, then the
@@ -4625,7 +4628,7 @@ mod tests {
         let mut session = Session::new("kernel-enforced");
         assert!(
             !hint_row_at(&session, 120, 24).contains("ctrl-l"),
-            "a session with no delegate offered the key anyway"
+            "a session with nothing to open offered the key anyway"
         );
 
         let id = bravebot_agent::report::DelegateId::nth(1);
@@ -4638,8 +4641,41 @@ mod tests {
 
         let hint = hint_row_at(&session, 120, 24);
         assert!(
-            hint.contains("ctrl-l") && hint.contains("1 delegate"),
+            hint.contains("ctrl-l") && hint.contains("1 to open"),
             "the hint line does not say a delegate can be opened: {hint}"
+        );
+    }
+
+    /// A session that ran commands and spawned no delegate has a key that opens something, and
+    /// counting delegates alone left it with no line saying so: the transcript shows a preview and
+    /// a count, and nothing on the screen says the rest is a key away.
+    #[test]
+    fn the_hint_line_counts_the_commands_as_well_as_the_delegates() {
+        let mut session = Session::new("kernel-enforced");
+        session.command_printed(bravebot_agent::report::Printed {
+            command: "cargo test".to_string(),
+            lines: vec!["first".to_string()],
+            total: 1,
+            read_by_the_planner: false,
+        });
+
+        let hint = hint_row_at(&session, 120, 24);
+        assert!(
+            hint.contains("ctrl-l") && hint.contains("1 to open"),
+            "a command this session ran was not counted: {hint}"
+        );
+
+        let id = bravebot_agent::report::DelegateId::nth(1);
+        session.delegate_started(bravebot_agent::report::Delegation {
+            id,
+            kind: "reader",
+            task: "find the parser".to_string(),
+        });
+
+        let hint = hint_row_at(&session, 120, 24);
+        assert!(
+            hint.contains("2 to open"),
+            "the two kinds were not counted together: {hint}"
         );
     }
 
