@@ -1,6 +1,8 @@
 BINARY = bravebot
 VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)
 TAG = v$(VERSION)
+# Every file that states the version, which is what a bump rewrites and commits.
+VERSION_FILES = Cargo.toml Cargo.lock package.json package-lock.json
 
 # Forwarded into the cross-build container, which does not inherit the host environment.
 BUILD_ENV = SERVICES_KEY_AICHAT BRAVE_SERVICES_KEY_ID BRAVE_AI_CHAT_ENDPOINT \
@@ -187,9 +189,9 @@ checksums:
 	done
 	@echo "wrote dist/SHA256SUMS"
 
-# Edits the version in place and stops. Committing it is a separate, reviewable step,
-# and `github-release` refuses to tag a dirty tree, so the bump cannot ride along
-# untracked with a tag that claims to name it.
+# Edits the four files that state the version and commits exactly those, so no lockfile is
+# left behind still naming the old one. It stops there: nothing is pushed and nothing is
+# tagged, and the commit is still reviewed before `github-release` will tag it.
 .PHONY: bump-version
 bump-version:
 	@if [ "$(BUMP)" != "bugfix" ] && [ "$(BUMP)" != "minor" ] && [ "$(BUMP)" != "major" ]; then \
@@ -200,6 +202,10 @@ bump-version:
 	current="$(VERSION)"; \
 	if [ -z "$$current" ]; then \
 		echo "error: unable to read version from Cargo.toml"; \
+		exit 1; \
+	fi; \
+	if ! git diff --quiet -- $(VERSION_FILES) || ! git diff --cached --quiet -- $(VERSION_FILES); then \
+		echo "error: $(VERSION_FILES) already modified; commit or stash that first"; \
 		exit 1; \
 	fi; \
 	major="$${current%%.*}"; rest="$${current#*.}"; \
@@ -230,8 +236,9 @@ if (!process.env.V) { throw new Error("version not passed through"); } \
 pkg.version = process.env.V; \
 fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");'; \
 	BRAVEBOT_INSTALL_SKIP_DOWNLOAD=1 npm install --package-lock-only --ignore-scripts >/dev/null; \
-	echo "bumped $$current -> $$next (Cargo.toml, Cargo.lock, package.json, package-lock.json)"; \
-	echo "commit this, then run: make github-release"
+	git commit -q -m "Bump version to $$next" -- $(VERSION_FILES); \
+	echo "committed: bumped $$current -> $$next ($(VERSION_FILES))"; \
+	echo "review it, land it on main, then run: make github-release"
 
 # Tags the current version and pushes it. GitHub Actions runs CI on the tag.
 # Signed assets and the npm package are published later, each by hand: Jenkins

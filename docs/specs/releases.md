@@ -45,16 +45,20 @@ installer looks for under a name that was never uploaded.
 `verified-by: by-construction (bumping rewrites every file that states the version in one step, and both tagging and Jenkins refuse a mismatch)`
 
 <a id="RELEASE-2"></a>
-### RELEASE-2: setting the next version publishes nothing
+### RELEASE-2: setting the next version commits every file that states it, and publishes nothing
 
-Choosing a version edits the tree and stops. It commits nothing, pushes nothing, and tags
-nothing.
+Choosing a version rewrites every file that states it, commits exactly those files under a
+message naming the version, and stops. It pushes nothing and tags nothing. Where any of those
+files is already modified, it refuses rather than committing work it did not write.
 
-**Why.** A version bump is a reviewable change, and the review is worth having: it is the last
-point where the size of a release can be questioned. Bundling the bump into the act of releasing
-removes that point, and makes a mistyped bump irreversible in the same breath.
+**Why.** The files that state a version are only correct together, so a bump left uncommitted is
+one a lockfile can be dropped from, which is the disagreement [RELEASE-1](#RELEASE-1) exists to
+stop. Committing them is mechanical and has one right answer, so leaving it to be done by hand
+adds a way to get it wrong without adding a decision. The review still happens: the commit is
+read before it lands, and [RELEASE-4](#RELEASE-4) refuses to tag anything that is not on the
+trunk at the remote.
 
-`verified-by: by-construction (the bump target writes files and prints the next step, and contains no git command)`
+`verified-by: by-construction (the bump target commits an explicit list of paths and contains no push or tag, and refuses when one of those paths is already modified)`
 
 <a id="RELEASE-3"></a>
 ### RELEASE-3: GitHub Actions does not publish a GitHub release

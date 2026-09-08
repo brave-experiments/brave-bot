@@ -28,16 +28,18 @@ GitHub Actions for the npm package. Either can wait days after the tag.
 
 ```sh
 make bump-version BUMP=bugfix   # or minor, major
-# commit the result, land it on main
+# review the commit it made, land it on main
 make github-release
 # later: Jenkins job brave-bot-build with UPLOAD and RELEASE
 # later: Actions → Publish npm, with tag v<version>
 ```
 
 `bump-version` rewrites the version in `Cargo.toml`, `Cargo.lock`, `package.json`, and
-`package-lock.json` and stops there; nothing is committed or pushed for you. `github-release`
-refuses to tag unless the tree is clean, the two version files agree, and HEAD is `main` at
-`origin/main`, then pushes `v<version>`.
+`package-lock.json`, commits exactly those four as `Bump version to <version>`, and stops there:
+nothing is pushed and nothing is tagged. It refuses if any of the four is already modified,
+rather than committing changes it did not write. `github-release` refuses to tag unless the tree
+is clean, the two version files agree, and HEAD is `main` at `origin/main`, then pushes
+`v<version>`.
 
 The tag push does not publish binaries. GitHub Actions still builds and tests on the tag.
 Signed, configured assets are built, notarised, and uploaded by the Jenkins job
