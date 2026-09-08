@@ -38,7 +38,7 @@ being resolved in favour of either.
 files disagreeing does not produce a mislabelled release, it produces a release whose assets the
 installer looks for under a name that was never uploaded.
 
-`verified-by: by-construction (bumping rewrites every file that states the version in one step, and tagging refuses a mismatch)`
+`verified-by: by-construction (bumping rewrites every file that states the version in one step, and both tagging and Jenkins refuse a mismatch)`
 
 <a id="RELEASE-2"></a>
 ### RELEASE-2: setting the next version publishes nothing
@@ -82,17 +82,14 @@ work that was never reviewed; tagging ahead of the remote names a commit nobody 
 
 The makefile names the tag `v` plus the version in `Cargo.toml`, after refusing a
 `package.json` mismatch. Jenkins names the GitHub release the same way from the `Cargo.toml`
-of the commit it checked out. Neither path publishes under a name that disagrees with the
-tree it built.
+of the commit it checked out, after the same refusal. Neither path publishes under a name that
+disagrees with the tree it built.
 
 **Why.** The installer derives the tag it downloads from the version it was published with, so
 a release whose name is not the version in the tree is a release whose assets the installer
 looks for under a name that was never uploaded.
 
-**Note.** A tag created by hand that disagrees with the tree is not refused at Jenkins publish
-time. Jenkins does not read git tags.
-
-`verified-by: by-construction (the tagging path sets the tag from Cargo.toml after checking package.json, and Jenkins sets the release name from Cargo.toml)`
+`verified-by: by-construction (the tagging path sets the tag from Cargo.toml after checking package.json, and a Jenkins RELEASE refuses unless that tag already names the commit it checked out and package.json states the same version, then names the GitHub release from Cargo.toml)`
 
 <a id="RELEASE-6"></a>
 ### RELEASE-6: a published binary carries the configuration it needs to run
@@ -120,7 +117,7 @@ fails the release instead of publishing the rest.
 smaller release. It is a broken install for whoever is on the platform that went missing, and it
 reads to them as the release existing but the tool not working.
 
-`verified-by: by-construction (the publish job collects all six assets before it creates the release, and a missing one fails the job before anything is published)`
+`verified-by: by-construction (the publish job in devops downloads each of the six named assets before it creates the GitHub release; a missing object fails that download. This tree does not contain that job)`
 
 <a id="RELEASE-8"></a>
 ### RELEASE-8: every asset is published with a checksum of the bytes that were uploaded
@@ -156,19 +153,20 @@ Linux.
   have to publish something to prove anything.
 
 - **Publication lives outside this repository.** `brave-bot-build` in devops is what signs and
-  attaches assets. A change there can break RELEASE-6 through RELEASE-9 without this tree
-  noticing.
+  attaches assets. A change there can break RELEASE-6 through RELEASE-8 without this tree
+  noticing. RELEASE-9 is the installer in this repository: a checksum Jenkins ships in the
+  wrong form is refused here, not accepted.
 
-- **The refusals before a tag guard the tag, not the publish.** Tagging checks the branch, the
+- **The refusals before a tag guard the tag, not the branch.** Tagging checks the branch, the
   remote, and the agreement between the two version files. The publish job builds the tip of a
-  branch it is handed, takes the version from `Cargo.toml`, and reads neither the tag nor
-  `package.json`. A release can therefore come from a commit that was never on `origin/main`, and
-  an npm manifest disagreeing with the workspace reaches a published release rather than stopping
-  at the tagging step.
+  branch it is handed, refuses a `package.json` mismatch, and refuses unless tag `v` plus the
+  version in `Cargo.toml` already names that commit. A commit that is not `origin/main` can
+  still be published if that is what the tag names and BRANCH points there.
 
-- **What published a release is not recoverable from here.** A publish is a parameterised build in
-  another system, so which commit was built, and who asked for it, lives in that system's history.
-  A tag in this repository is not evidence that the release was built from it.
+- **Who published a release is not recoverable from here.** A publish is a parameterised build in
+  another system, so who asked for it lives in that system's history. The job requires the tag
+  to name the commit it built, so a GitHub release created by that job is built from that tag. A
+  tag with no GitHub release is not a publish.
 
 - **No build in this repository is configured.** Every job in the workflow carries the permission
   to compile without credentials, so the first configured build of a commit happens in the publish
