@@ -200,6 +200,10 @@ exactly what was asked: a server told to serve a page serves it, prints as it go
 exits. Returning the failure alone threw that account away and left a program that hung
 indistinguishable from one that was working.
 
+A program *meant* to keep running is asked for differently, and [RUN-15](#RUN-15) is how. The limit
+is the answer for the program that hangs; applied to a server it meant the only way to start one
+was to have it killed five minutes later, with no moment at which it was up and could be used.
+
 **Not a safety property.** A stage that finishes inside the limit is no safer than one that
 outstays it, and nothing may be inferred about what a program did from the fact that it stopped in
 time. This is a bound on futility: a program that never returns holds the turn open with nothing
@@ -295,7 +299,58 @@ is not inferring it: the planner still cannot vouch for anything, and a person s
 `verified-by: bravebot_agent::turn::a_quarantined_run_says_what_would_make_it_visible`
 `verified-by: bravebot_agent::turn::a_quarantined_read_says_nothing_about_vouching_for_a_command`
 
-## Open questions
+<a id="RUN-15"></a>
+### RUN-15: a pipeline may be left running, and the turn that started it ends it
+
+`background: true` starts the line and does not wait for it, handing back a job name. The name is
+the driver's own, minted here and looked up in this module's own map, so it is trusted and public
+and the planner may use it as routing. `job_output` reports what the job has printed since the last
+look, whether it has ended, and kills it on request.
+
+Every gate is the one a foreground run passes, at the same point and in the same order: the rules,
+the person's approval, and the label the output will carry are all settled before anything starts.
+Being left running is not a reason to ask for less.
+
+**One pipeline, and no redirection.** A line with `&&` or `||` decides where to go next by waiting
+on the part before it, and nothing waits here; a redirection names a destination the background has
+no reader for. Both are refused rather than half-honoured.
+
+**The turn owns it.** Dropping the handle kills the pipeline, so a job cannot outlive the turn that
+started one. A background program still running after its turn ended would be an effect nobody is
+watching, nobody is being asked about, and nobody can stop.
+
+**Why.** A program meant to keep running is what [RUN-11](#RUN-11)'s limit cannot serve. Its own
+rationale names the case: a server told to serve serves, prints as it goes, and never exits. Waiting
+for one and killing it at the limit leaves no moment at which it is up and can be used, so the turn
+that started a server could never talk to it.
+
+`verified-by: bravebot_agent::exec::a_background_pipeline_reports_what_it_printed_while_it_is_still_running`
+`verified-by: bravebot_agent::exec::a_background_pipeline_that_finishes_says_so_and_reports_its_code`
+`verified-by: bravebot_agent::exec::a_killed_background_pipeline_keeps_what_it_printed`
+`verified-by: bravebot_agent::exec::background_stages_are_chained_so_one_feeds_the_next`
+`verified-by: bravebot_agent::exec::dropping_a_background_pipeline_kills_it`
+`verified-by: bravebot_agent::exec::a_background_pipeline_with_missing_resolutions_does_not_start`
+`verified-by: bravebot_agent::turn::a_background_server_is_still_running_when_the_next_call_is_made`
+`verified-by: bravebot_agent::turn::a_background_command_must_be_one_pipeline`
+`verified-by: bravebot_agent::turn::a_refused_background_run_starts_nothing`
+`verified-by: bravebot_agent::turn::asking_about_a_job_that_does_not_exist_says_so`
+
+<a id="RUN-16"></a>
+### RUN-16: what a background job printed keeps the label its plan was given
+
+The label is fixed by [RUN-4](#RUN-4) when the job starts and kept with it, rather than worked out
+again when the output is read. Each look reports what is new since the last one, counted in bytes.
+
+**Why the label is kept rather than recomputed.** What a person has vouched for can change during a
+turn, and a pipeline started before that must not have its output relabelled because of it. A second
+derivation of the same thing is a second answer waiting to disagree with the one the trail recorded.
+
+Reporting only what is new is bookkeeping about how much has been handed over, never a comparison of
+what was printed: nothing here reads a byte of it.
+
+`verified-by: bravebot_agent::turn::what_a_background_job_printed_is_quarantined_like_any_other_output`
+`verified-by: bravebot_agent::exec::a_background_pipeline_does_not_see_this_agents_credentials`
+
 ## Open questions
 
 - Whether to confine children is issue #4. Whether output can ever be trusted by proof rather than

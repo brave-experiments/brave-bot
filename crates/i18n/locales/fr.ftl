@@ -689,6 +689,7 @@ verb-ask-user = Demander
 verb-run = Exécuter
 verb-read-output = Lire la sortie
 verb-fetch-url = Récupérer
+verb-job-output = Tâche
 verb-spawn-agent = Déléguer
 verb-schedule-next = Programmer
 verb-unknown = Outil

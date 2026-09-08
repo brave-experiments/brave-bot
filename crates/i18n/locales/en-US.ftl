@@ -742,6 +742,7 @@ verb-ask-user = Ask
 verb-run = Run
 verb-read-output = Read output
 verb-fetch-url = Fetch
+verb-job-output = Job
 verb-spawn-agent = Delegate
 verb-schedule-next = Schedule
 verb-unknown = Tool

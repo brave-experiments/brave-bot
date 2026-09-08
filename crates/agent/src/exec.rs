@@ -579,3 +579,200 @@ fn stop(children: &mut [Child]) {
         let _ = child.wait();
     }
 }
+
+/// A pipeline left running, and what it has printed so far.
+///
+/// For the program that is doing exactly what was asked and will never exit: a server told to
+/// serve, a watcher told to watch. [`LIMIT`] exists for the program that hangs, and applying it to
+/// these two meant the only way to start a server was to have it killed three hundred seconds
+/// later, so the turn that started one could never talk to it.
+///
+/// What is deferred is only the waiting. The argv was resolved and endorsed before anything
+/// started, exactly as for [`run`], and the label its output carries was fixed then too: a
+/// pipeline is not made more trustworthy by being left alone. Nothing here reads a byte of what it
+/// printed.
+///
+/// Dropping this kills the pipeline. A background job outliving the turn that started it would be
+/// an effect nobody is watching and nobody can stop, so the turn owns it and ends it.
+pub struct Background {
+    children: Vec<Child>,
+    stdout: Drain,
+    stderr: Vec<Drain>,
+    /// The exit code of each step, filled in as they are collected.
+    codes: Vec<Option<i32>>,
+    finished: Vec<bool>,
+    started: Instant,
+}
+
+impl Background {
+    /// Whether every step has exited.
+    ///
+    /// Polled rather than waited on, so asking costs nothing and a caller is never blocked by a
+    /// program that is behaving as intended.
+    pub fn ended(&mut self) -> bool {
+        for (index, child) in self.children.iter_mut().enumerate() {
+            if self.finished[index] {
+                continue;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.codes[index] = status.code();
+                    self.finished[index] = true;
+                }
+                Ok(None) => {}
+                // A child that cannot be asked about is not one to keep waiting for.
+                Err(_) => self.finished[index] = true,
+            }
+        }
+        self.finished.iter().all(|done| *done)
+    }
+
+    /// What it has printed so far, standard output then standard error.
+    ///
+    /// A snapshot rather than a stream: the drains keep everything read since the pipeline
+    /// started, so two reads of a growing log both begin at the beginning. Whoever reads this is
+    /// told how much of it they have seen.
+    pub fn printed(&self) -> String {
+        let mut text = self.stdout.text();
+        for drain in &self.stderr {
+            let errored = drain.text();
+            if !errored.is_empty() {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&errored);
+            }
+        }
+        text
+    }
+
+    /// How long it has been running.
+    pub fn ran_for(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// The exit codes collected so far, for a step that has ended.
+    pub fn codes(&self) -> &[Option<i32>] {
+        &self.codes
+    }
+
+    /// Kill every step, and keep what it printed.
+    pub fn kill(&mut self) {
+        stop(&mut self.children);
+    }
+}
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        stop(&mut self.children);
+    }
+}
+
+impl fmt::Debug for Background {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // No output: it is labelled content, and a `Debug` that printed it would be a way past
+        // every gate that decides who may read it.
+        f.debug_struct("Background")
+            .field("steps", &self.children.len())
+            .field("codes", &self.codes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Start a pipeline and leave it running.
+///
+/// The same spawning as [`run`], stopping before the wait. Every step is started, chained the same
+/// way, and given the same scrubbed environment and empty stdin; what differs is that nothing
+/// waits for them.
+pub fn start(
+    pipeline: &Pipeline,
+    resolved: &[std::path::PathBuf],
+    directory: &std::path::Path,
+) -> Result<Background, ExecError> {
+    if pipeline.is_empty() {
+        return Err(ExecError::Io("no stages to run".to_string()));
+    }
+    if resolved.len() != pipeline.len() {
+        return Err(ExecError::Io(
+            "every stage must have been resolved to a program before it runs".to_string(),
+        ));
+    }
+    let steps: Vec<Step> = pipeline
+        .stages
+        .iter()
+        .zip(resolved)
+        .map(|(stage, path)| Step {
+            program: stage.program.clone(),
+            resolved: path.clone(),
+            args: stage.args.clone(),
+            environment: Vec::new(),
+            routes: Vec::new(),
+        })
+        .collect();
+    start_steps(&steps, directory)
+}
+
+/// [`start`], for the steps of a compiled plan.
+///
+/// A plan's redirections and joins are not honoured here: a background job is one pipeline, which
+/// is what [`crate::tools`] refuses anything else for. Every step's own environment is applied, as
+/// it is in the foreground.
+pub fn start_steps(steps: &[Step], directory: &std::path::Path) -> Result<Background, ExecError> {
+    if steps.is_empty() {
+        return Err(ExecError::Io("no stages to run".to_string()));
+    }
+
+    let mut children: Vec<Child> = Vec::with_capacity(steps.len());
+    let mut upstream = Stdio::null();
+    let mut tail: Option<Drain> = None;
+    let mut draining: Vec<Drain> = Vec::new();
+    let last = steps.len() - 1;
+
+    for (index, step) in steps.iter().enumerate() {
+        let mut command = Command::new(&step.resolved);
+        command.args(&step.args).current_dir(directory);
+        for (name, value) in &step.environment {
+            command.env(name, value);
+        }
+        // Every step, as in the foreground: a credential is as reachable from the middle of a
+        // pipeline as from the front, and one spared would be the whole of the hole.
+        crate::scrub::apply(&mut command);
+
+        let (out_reader, out_writer) = std::io::pipe().map_err(|e| ExecError::Io(e.to_string()))?;
+        let (err_reader, err_writer) = std::io::pipe().map_err(|e| ExecError::Io(e.to_string()))?;
+
+        command
+            .stdin(std::mem::replace(&mut upstream, Stdio::null()))
+            .stdout(Stdio::from(out_writer))
+            .stderr(Stdio::from(err_writer));
+
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                stop(&mut children);
+                return Err(ExecError::NotStarted {
+                    program: step.program.clone(),
+                    detail: e.to_string(),
+                });
+            }
+        };
+        children.push(child);
+
+        if index == last {
+            tail = Some(Drain::reading(out_reader));
+        } else {
+            upstream = Stdio::from(out_reader);
+        }
+        draining.push(Drain::reading(err_reader));
+    }
+
+    let steps = children.len();
+    Ok(Background {
+        children,
+        stdout: tail.expect("the last step's output is always collected"),
+        stderr: draining,
+        codes: vec![None; steps],
+        finished: vec![false; steps],
+        started: Instant::now(),
+    })
+}

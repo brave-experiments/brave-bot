@@ -10653,3 +10653,239 @@ impl bravebot_agent::Confirmer for ApprovesFetchesAndWrites {
         None
     }
 }
+
+/// The turn a background job exists for, and the one that could not happen before: a server is
+/// started, the turn talks to it while it is up, and it is still up when the second call is made.
+/// Waiting for it would have held the turn for five minutes and then killed it, so there was never
+/// a moment at which the server was both running and reachable.
+#[test]
+fn a_background_server_is_still_running_when_the_next_call_is_made() {
+    let scratch = Scratch::new("background-server");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // A "server": prints a line, writes a file a moment later, and keeps going. The file is what
+    // a later call can observe without anything having to speak HTTP.
+    let script = scratch.path.join("serve");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho listening\nsleep 0.3\ntouch served\nsleep 30\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"./serve","background":true}"#),
+        // Long enough for the server to have written its file, which is how this observes that it
+        // was still running rather than killed at the end of the first call.
+        tool_request("run", r#"{"command":"sleep 1"}"#),
+        tool_request("run", r#"{"command":"ls served"}"#),
+        tool_request("job_output", r#"{"job":"job:1","kill":true}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always());
+    let outcome = turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("start the server"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+    assert!(outcome.clean, "no gate should have refused");
+
+    assert!(
+        scratch.path.join("served").exists(),
+        "the background program was killed before it got to do its work"
+    );
+
+    let bodies: Vec<String> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+    let started = bodies
+        .iter()
+        .find(|body| body.contains("started in the background"))
+        .expect("the planner was not told the job started");
+    assert!(
+        started.contains("job:1"),
+        "the planner was not given a name for the job: {started}"
+    );
+}
+
+/// What a background job printed is quarantined exactly as a foreground run's output is. Vouching
+/// is what makes it readable, and nothing about being left running does.
+#[test]
+fn what_a_background_job_printed_is_quarantined_like_any_other_output() {
+    let scratch = Scratch::new("background-quarantined");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let script = scratch.path.join("noisy");
+    std::fs::write(&script, "#!/bin/sh\necho SENTINEL-BACKGROUND\nsleep 30\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"./noisy","background":true}"#),
+        tool_request("run", r#"{"command":"sleep 0.5"}"#),
+        tool_request("job_output", r#"{"job":"job:1","kill":true}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Approves each run without vouching, so the output stays untrusted.
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("start it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let bodies: Vec<String> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+    assert!(
+        bodies
+            .iter()
+            .all(|body| !body.contains("SENTINEL-BACKGROUND")),
+        "what a background job printed reached the planner unvouched for"
+    );
+}
+
+/// A job name nobody handed out is an error rather than an empty result, for the reason a search
+/// that ran no pattern is: nothing found reads as a fact about the job.
+#[test]
+fn asking_about_a_job_that_does_not_exist_says_so() {
+    let scratch = Scratch::new("background-unknown");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("job_output", r#"{"job":"job:9"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look at it"),
+        &mut bravebot_agent::confirm::Unattended,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("no background job"),
+        "an unknown job name was not reported as one: {second}"
+    );
+}
+
+/// A line with joins or redirection is refused rather than half-honoured. Nothing waits on a
+/// background job, so there is nothing to decide `&&` from, and no reader for a redirection.
+#[test]
+fn a_background_command_must_be_one_pipeline() {
+    let scratch = Scratch::new("background-shape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"echo a && echo b","background":true}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("start it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("one pipeline"),
+        "a joined line was accepted as a background job: {second}"
+    );
+}
+
+/// A background job is still a run, so it is put to the person before anything starts. A refusal
+/// starts nothing.
+#[test]
+fn a_refused_background_run_starts_nothing() {
+    let scratch = Scratch::new("background-refused");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"command":"touch evidence.txt","background":true}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::reject());
+    let seen = confirmer.seen.clone();
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("start it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    assert_eq!(seen.lock().unwrap().len(), 1, "the user was not asked");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !scratch.path.join("evidence.txt").exists(),
+        "a refused background run started anyway"
+    );
+}

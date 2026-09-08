@@ -1581,6 +1581,10 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // turn rather than for the round: two delegates spawned in different rounds are still two
     // delegates, and everything reported about either is tagged with its number.
     let mut spawned = 0u32;
+    // The pipelines this turn leaves running. Held here so they end here: dropping this kills
+    // whatever is still going, which is what keeps a background job from outliving the turn that
+    // started it and becoming an effect nobody is watching.
+    let mut jobs = crate::tools::Jobs::new();
     // Shared rather than handed over: a delegate takes the lock for one call and gives it back,
     // and the turn keeps its own handle on all three.
     let (confirming, reporting, recording) = (&confirming, &reporting, &recording);
@@ -1899,6 +1903,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         // A delegate is offered no way to delegate, and dispatch refuses one anyway.
                         delegated: task.delegate.is_some(),
                         spawned: &mut spawned,
+                        jobs: &mut jobs,
                     },
                     &mut asking,
                     &mut reporter,

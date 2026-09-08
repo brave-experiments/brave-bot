@@ -443,7 +443,11 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
              command in the line; otherwise it comes back as a reference, like a file you may \
              not read: pass it to read_output to ask the user to show it to you, hand it to \
              spawn_processor, or write it to a file with write_file. Do use it to compile and \
-             test what you changed.",
+             test what you changed. \
+             \
+             A program meant to keep running, such as a server or a watcher, needs \
+             background: true. Without it the line is waited on and killed after five minutes, \
+             so there is no moment at which it is up and you can do anything with it.",
             json!({
                 "type": "object",
                 "properties": {
@@ -452,9 +456,46 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                         "description": "One command line. Programs are looked up on PATH, or \
                                         taken as paths relative to the workspace. A newline is not \
                                         accepted, since this is one line and not a script."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Leave it running instead of waiting for it, and hand \
+                                        back a job name. For a program meant to keep going: a \
+                                        server, a watcher, a log follower. Use it when you need \
+                                        the program still up while you do something else, such \
+                                        as starting a server and then fetching a page from it. \
+                                        Call job_output with the name to see what it has \
+                                        printed. Must be one pipeline with no redirection, and \
+                                        it is killed when this turn ends. Defaults to false, \
+                                        which waits and hands back the output."
                     }
                 },
                 "required": ["command"]
+            }),
+        ),
+        Tool::function(
+            "job_output",
+            "See what a background job has printed, and whether it has ended. Give the job name \
+             run handed back. Each call reports what is new since the last one, so calling it \
+             again after doing something else shows what happened in between rather than \
+             repeating what you have seen. Output is quarantined exactly as a run's is: it comes \
+             back as text where the user vouched for every command in the line, and otherwise as \
+             a reference to pass to read_output, spawn_processor or write_file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "job": {
+                        "type": "string",
+                        "description": "The job name run gave you, e.g. \"job:1\"."
+                    },
+                    "kill": {
+                        "type": "boolean",
+                        "description": "Stop the job after reading what it printed. Use it once \
+                                        you are done with a server you started. Defaults to \
+                                        false, which leaves it running."
+                    }
+                },
+                "required": ["job"]
             }),
         ),
         Tool::function(
@@ -603,7 +644,7 @@ pub fn for_delegate(capabilities: &bravebot_core::capability::CapabilitySet) -> 
         .filter(|tool| match tool.function.name.as_str() {
             "spawn_agent" | "ask_user" | "todo_write" | "schedule_next" => false,
             "write_file" | "edit_file" => capabilities.contains(Capability::FileWrite),
-            "run" | "read_output" => capabilities.contains(Capability::ShellExec),
+            "run" | "read_output" | "job_output" => capabilities.contains(Capability::ShellExec),
             "fetch_url" => capabilities.contains(Capability::WebFetch),
             _ => capabilities.contains(Capability::FileRead),
         })
@@ -745,6 +786,84 @@ pub struct Tools<'a> {
     /// whole turn and a call is one round of it. The number is the driver's own and nothing a
     /// model wrote reaches it, which is what makes it usable for saying whose reports are whose.
     pub spawned: &'a mut u32,
+    /// The pipelines this turn left running, by the reference each was given.
+    ///
+    /// Held by the turn so they end with it: a background job outliving the turn that started one
+    /// would be an effect nobody is watching and nobody can stop.
+    pub jobs: &'a mut Jobs,
+}
+
+/// The background pipelines a turn has started.
+///
+/// Dropping this kills whatever is still running, so the turn ending is the end of them.
+///
+/// A job's name is not a reference and holds no content. It is a label the driver minted, which
+/// makes it trusted and public and so usable as routing: the planner names one to say which
+/// pipeline it means, exactly as it names a program. What a job *printed* is content, and that
+/// comes back through the ordinary quarantine like anything else a program printed.
+#[derive(Debug, Default)]
+pub struct Jobs {
+    running: std::collections::BTreeMap<String, Job>,
+    /// How many have been started, so each gets a name of its own.
+    ///
+    /// Never reused within a turn, so a name cannot come to mean a second pipeline after the
+    /// planner has been told what it means.
+    started: usize,
+}
+
+/// One background pipeline, and what it was started as.
+#[derive(Debug)]
+struct Job {
+    running: crate::exec::Background,
+    /// The line as the person approved it, for the account given afterwards.
+    line: String,
+    /// The label its output carries, as the kernel fixed it before anything started.
+    ///
+    /// Kept rather than worked out again when the output is read. The label belongs to the plan a
+    /// person answered for, and deriving it a second time later would be a second answer waiting
+    /// to disagree: what a person vouched for can change during a turn, and a pipeline started
+    /// before that must not have its output relabelled because of it.
+    label: bravebot_core::label::Label,
+    /// How many bytes have already been handed over, so a later look reports what is new.
+    ///
+    /// A count of bytes, never a comparison of them: nothing here reads what was printed.
+    read: usize,
+}
+
+impl Jobs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many are held, running or finished.
+    pub fn len(&self) -> usize {
+        self.running.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.running.is_empty()
+    }
+
+    /// Take a background pipeline and hand back the name the planner will call it by.
+    fn keep(
+        &mut self,
+        running: crate::exec::Background,
+        line: String,
+        label: bravebot_core::label::Label,
+    ) -> String {
+        self.started += 1;
+        let name = format!("job:{}", self.started);
+        self.running.insert(
+            name.clone(),
+            Job {
+                running,
+                line,
+                label,
+                read: 0,
+            },
+        );
+        name
+    }
 }
 
 /// What one tool produced, before dispatch wraps it up.
@@ -804,6 +923,11 @@ struct Produced {
     printed_by: Option<crate::report::Command>,
     /// When the planner asked for the next tick of a self-paced loop.
     wakeup: Option<crate::turn::Wakeup>,
+    /// The name of a pipeline this call left running, where it started one.
+    ///
+    /// Reported so a person watching sees that something was started rather than run, which is a
+    /// different thing to have agreed to.
+    background: Option<String>,
     /// The delegates the kernel has approved and nobody has started yet.
     ///
     /// Started by the turn rather than here, because a delegate outlives the call that asked for
@@ -835,6 +959,7 @@ impl Produced {
             inference: std::time::Duration::ZERO,
             printed_by: None,
             wakeup: None,
+            background: None,
             delegate: Vec::new(),
         }
     }
@@ -852,6 +977,20 @@ impl Produced {
     /// Say that what this produced is workspace content, not the driver's words about it.
     fn of_content(mut self) -> Self {
         self.content = true;
+        self
+    }
+
+    /// Say a pipeline was left running under this name.
+    ///
+    /// The name is the driver's own, so the planner is told it as text rather than being handed a
+    /// reference: there is nothing quarantined about it, and nothing has been printed yet.
+    fn started_in_the_background(mut self, job: String) -> Self {
+        self.text = Labelled::trusted(format!(
+            "started in the background as {job}. Nothing has been read from it yet: call \
+             job_output with \"{job}\" to see what it has printed, and again later for what is \
+             new. It is killed when this turn ends."
+        ));
+        self.background = Some(job);
         self
     }
 
@@ -960,6 +1099,7 @@ fn target_key(tool: &str) -> Option<&'static str> {
         "search" => Some("pattern"),
         "load_skill" => Some("name"),
         "fetch_url" => Some("url"),
+        "job_output" => Some("job"),
         _ => None,
     }
 }
@@ -1209,6 +1349,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "run" => run(policy, tools, confirmer, &arguments),
         "read_output" => read_output(policy, tools, confirmer, &arguments),
         "fetch_url" => fetch_url(policy, tools, confirmer, &arguments),
+        "job_output" => job_output(policy, tools, &arguments),
         "schedule_next" if tools.self_paced => schedule_next(policy, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
     };
@@ -1266,6 +1407,7 @@ fn problem(text: impl Into<String>) -> Produced {
         usage: Usage::default(),
         inference: std::time::Duration::ZERO,
         printed_by: None,
+        background: None,
         delegate: Vec::new(),
     }
 }
@@ -2452,6 +2594,48 @@ fn run<S: Sink, C: Confirmer>(
     };
 
     let displayed = plan.display();
+
+    // Absent or non-boolean means the foreground, which is the reading that waits for the program
+    // and hands back what it printed.
+    let in_the_background = arguments
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if in_the_background {
+        // One pipeline, because that is the whole of what a long-lived program is. A line with
+        // joins waits on its own parts to decide where to go next, and nothing waits here; a
+        // redirection is a destination the background has no reader for.
+        let steps = match &plan.steps {
+            bravebot_core::command::Steps::Pipeline(steps)
+                if plan.writes.is_empty() && plan.reads.is_empty() =>
+            {
+                steps
+            }
+            _ => {
+                return problem(
+                    "error: a background command must be one pipeline with no redirection. \
+                     Run the parts separately, or run this one in the foreground.",
+                );
+            }
+        };
+
+        return match crate::exec::start_steps(steps, &plan.directory) {
+            Ok(running) => {
+                let name = tools.jobs.keep(running, displayed.clone(), label);
+                Produced::new(
+                    // Nothing has been printed yet, and the label is the one the kernel fixed
+                    // before anything started: leaving it running does not make it trustworthier.
+                    Labelled::new(String::new(), label),
+                    format!("`{displayed}` started in the background"),
+                    format!("started as {name}"),
+                )
+                .started_in_the_background(name)
+            }
+            Err(error) => problem(format!("error: `{displayed}` did not start: {error}")),
+        };
+    }
+
     match crate::exec::run_plan(&plan, tools.cancel, crate::exec::LIMIT) {
         Ok(ran) => {
             // stdout and stderr together, because a program that failed usually explains itself
@@ -2610,6 +2794,110 @@ fn fetch_url<S: Sink, C: Confirmer>(
         // chose. Nothing of the response is, and none of it is read to build this.
         Err(error) => problem(format!("error: fetching {url} failed: {error}")),
     }
+}
+
+/// What a background pipeline has printed since it was last looked at.
+///
+/// The job name is routing, and it is the driver's own: a name this module minted and looked up in
+/// its own map, so nothing the planner writes reaches anything but that lookup. The output is
+/// content and carries the label the kernel fixed before the pipeline started.
+fn job_output<S: Sink>(
+    policy: &mut Policy<'_, S>,
+    tools: &mut Tools<'_>,
+    arguments: &Value,
+) -> Produced {
+    let Some(named) = argument(arguments, "job") else {
+        return problem("error: 'job' is required and must be a job name, e.g. \"job:1\"");
+    };
+
+    // Released for a lookup against names the driver handed out, which is the same treatment a
+    // reference gets. Nothing is decided from it beyond whether it is one of ours.
+    let proof = policy.authorise_display_release("a job name the planner asked about");
+    let name = named.declassify(&proof);
+
+    let kill = arguments
+        .get("kill")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let Some(job) = tools.jobs.running.get_mut(&name) else {
+        return problem(format!(
+            "error: there is no background job called '{name}'. Only a job name run handed back \
+             in this turn can be read, and they do not outlive the turn."
+        ));
+    };
+
+    let ended = job.running.ended();
+    let printed = job.running.printed();
+    // Bytes, so a partial line is not counted as read. The count is the driver's own bookkeeping
+    // and nothing here compares what was printed.
+    let fresh = printed.get(job.read..).unwrap_or_default().to_string();
+    job.read = printed.len();
+
+    let ran_for = job.running.ran_for();
+    let line = job.line.clone();
+    let label = job.label;
+
+    if kill {
+        job.running.kill();
+    }
+
+    // Said from the clock and the exit codes, which are structure: nothing here reads a byte of
+    // what the pipeline printed.
+    let outcome = if kill {
+        "killed".to_string()
+    } else if ended {
+        let failed: Vec<String> = job
+            .running
+            .codes()
+            .iter()
+            .enumerate()
+            .filter(|(_, code)| **code != Some(0))
+            .map(|(at, code)| match code {
+                Some(code) => format!("step {} exited {code}", at + 1),
+                None => format!("step {} was killed", at + 1),
+            })
+            .collect();
+        if failed.is_empty() {
+            "ended, every step succeeded".to_string()
+        } else {
+            format!("ended: {}", failed.join(", "))
+        }
+    } else {
+        format!("still running after {} seconds", ran_for.as_secs())
+    };
+
+    let note = format!(
+        "{outcome}, {}",
+        tally(fresh.lines().count(), "new line", "new lines")
+    );
+
+    // Capped only where the planner may read it, exactly as a foreground run is: output it may not
+    // read becomes a reference, and there is nothing of it in the conversation to bound.
+    let (fresh, capped) = if label.is_trusted() {
+        bounded(&fresh)
+    } else {
+        (fresh, false)
+    };
+
+    let mut produced = Produced::new(
+        Labelled::new(fresh, label),
+        format!("what `{line}` has printed"),
+        note,
+    )
+    .of_content()
+    .capped(capped);
+    produced.untrusted = !label.is_trusted();
+    // So a person can be asked to read it later, and can see which command they are reading.
+    produced.printed_by = Some(crate::report::Command {
+        line,
+        outcome: if ended || kill {
+            crate::report::Outcome::Succeeded
+        } else {
+            crate::report::Outcome::Stopped(ran_for)
+        },
+    });
+    produced
 }
 
 /// How much of a command's output may enter the conversation.
@@ -3478,6 +3766,7 @@ mod tests {
                 "load_skill",
                 "ask_user",
                 "run",
+                "job_output",
                 "read_output",
                 "spawn_agent",
                 "fetch_url"
@@ -3579,9 +3868,10 @@ mod tests {
         }
     }
 
-    /// `run` takes one command line and nothing else. The line is compiled here rather than
-    /// handed anywhere, so what matters about the surface is that there is exactly one field for
-    /// it: a second way to say what to run would be a second thing to keep honest.
+    /// `run` has exactly one field saying what to run. The line is compiled here rather than handed
+    /// anywhere, so a second way to say what to run would be a second thing to keep honest.
+    /// `background` says what to do with the line rather than what it is, and is the only other
+    /// field.
     #[test]
     fn run_takes_one_command_line_and_nothing_else() {
         let tool = available(false)
@@ -3593,10 +3883,18 @@ mod tests {
             .expect("run has parameters");
         assert_eq!(
             properties.keys().collect::<Vec<_>>(),
-            vec!["command"],
-            "run gained a field beside the command line"
+            vec!["background", "command"],
+            "run gained a field beside the command line and whether to wait for it"
         );
         assert_eq!(properties["command"]["type"], "string");
+        assert_eq!(properties["background"]["type"], "boolean");
+        assert_eq!(
+            tool.function.parameters["required"]
+                .as_array()
+                .expect("run says what is required"),
+            &[serde_json::json!("command")],
+            "the command line is the only thing a run must be given"
+        );
     }
 
     /// A tool's description is the only instruction the planner reliably reads, so wording that

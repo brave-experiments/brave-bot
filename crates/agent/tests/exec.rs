@@ -764,3 +764,191 @@ fn an_assignment_reaches_the_step_it_was_written_in_front_of() {
         "it did not carry over to the next line"
     );
 }
+
+/// Make `name` an executable script in `at`, and return the path it resolved to.
+fn script(at: &std::path::Path, name: &str, body: &str) -> PathBuf {
+    let path = at.join(name);
+    std::fs::write(&path, body).expect("write the script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+    }
+    path.canonicalize().expect("canonicalize")
+}
+
+/// The case the whole thing exists for. A server prints that it is listening and then keeps
+/// running, so a caller that had to wait for it would wait out the limit and be handed a corpse.
+#[test]
+fn a_background_pipeline_reports_what_it_printed_while_it_is_still_running() {
+    let scratch = Scratch::new("background-serving");
+    let resolved = script(
+        &scratch.path,
+        "serve",
+        "#!/bin/sh\necho listening\nsleep 30\n",
+    );
+
+    let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
+    let started = std::time::Instant::now();
+    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "starting a background pipeline waited for it"
+    );
+
+    // What it printed is readable while it is still running, which is the point.
+    let mut printed = String::new();
+    for _ in 0..100 {
+        printed = job.printed();
+        if printed.contains("listening") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        printed.contains("listening"),
+        "nothing came back from a program that had printed: {printed:?}"
+    );
+    assert!(
+        !job.ended(),
+        "a program sleeping for 30s was reported ended"
+    );
+}
+
+#[test]
+fn a_background_pipeline_that_finishes_says_so_and_reports_its_code() {
+    let scratch = Scratch::new("background-ends");
+    let resolved = script(&scratch.path, "quick", "#!/bin/sh\necho done\nexit 3\n");
+
+    let pipeline = Pipeline::new(vec![Stage::new("quick", Vec::new())]);
+    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+
+    let mut ended = false;
+    for _ in 0..100 {
+        if job.ended() {
+            ended = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(ended, "a program that exited was never reported as ended");
+    assert_eq!(job.codes(), [Some(3)]);
+    assert!(job.printed().contains("done"));
+}
+
+/// A background job outliving its turn would be an effect nobody is watching and nobody can stop.
+/// The turn owns it, so dropping the handle has to end the process rather than orphan it.
+#[test]
+fn dropping_a_background_pipeline_kills_it() {
+    let scratch = Scratch::new("background-dropped");
+    // Writes a file a second after starting, so the test can tell whether it was still alive.
+    let resolved = script(
+        &scratch.path,
+        "later",
+        "#!/bin/sh\nsleep 1\ntouch survived\n",
+    );
+
+    let pipeline = Pipeline::new(vec![Stage::new("later", Vec::new())]);
+    let job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    drop(job);
+
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(
+        !scratch.path.join("survived").exists(),
+        "a dropped background pipeline went on running"
+    );
+}
+
+#[test]
+fn a_killed_background_pipeline_keeps_what_it_printed() {
+    let scratch = Scratch::new("background-killed");
+    let resolved = script(
+        &scratch.path,
+        "serve",
+        "#!/bin/sh\necho listening\nsleep 30\n",
+    );
+
+    let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
+    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    for _ in 0..100 {
+        if job.printed().contains("listening") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    job.kill();
+    assert!(
+        job.printed().contains("listening"),
+        "killing it threw away what it had printed"
+    );
+    assert!(job.ended(), "a killed pipeline was not reported as ended");
+}
+
+/// Stages are chained in the background exactly as they are in the foreground.
+#[test]
+fn background_stages_are_chained_so_one_feeds_the_next() {
+    let scratch = Scratch::new("background-chained");
+    let pipeline = Pipeline::new(vec![
+        Stage::new("printf", vec!["a\nb\nc\n".into()]),
+        Stage::new("wc", vec!["-l".into()]),
+    ]);
+    let resolved = resolve_all(&pipeline, &scratch.path).expect("both resolve");
+    let mut job = exec::start(&pipeline, &resolved, &scratch.path).expect("it starts");
+
+    for _ in 0..100 {
+        if job.ended() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(job.printed().trim(), "3");
+}
+
+/// The credentials rule is not relaxed by moving to the background. A long-lived program is a
+/// better place to read one from than a short one, so this must hold here too.
+#[test]
+fn a_background_pipeline_does_not_see_this_agents_credentials() {
+    let _guard = with_env(&[
+        ("SERVICES_KEY_AICHAT", Some("a-live-signing-key")),
+        ("BRAVE_SERVICES_KEY_ID", Some("a-live-key-id")),
+        // The user's own, which is deliberately kept: a name-matching filter cannot tell
+        // `run aws s3 ls` from an exfiltration, so only this agent's secrets are withheld.
+        ("AWS_SECRET_ACCESS_KEY", Some("the-users-own-key")),
+    ]);
+    let scratch = Scratch::new("background-scrubbed");
+
+    let pipeline = Pipeline::new(vec![Stage::new("env", Vec::new())]);
+    let resolved = resolve_all(&pipeline, &scratch.path).expect("env resolves");
+    let mut job = exec::start(&pipeline, &resolved, &scratch.path).expect("it starts");
+    for _ in 0..100 {
+        if job.ended() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let printed = job.printed();
+    assert!(
+        !printed.contains("a-live-signing-key"),
+        "the signing key reached a background program"
+    );
+    assert!(
+        !printed.contains("a-live-key-id"),
+        "the key id reached a background program"
+    );
+    assert!(
+        printed.contains("the-users-own-key"),
+        "the user's own environment did not reach a background program"
+    );
+}
+
+#[test]
+fn a_background_pipeline_with_missing_resolutions_does_not_start() {
+    let scratch = Scratch::new("background-unresolved");
+    let pipeline = Pipeline::new(vec![Stage::new("echo", vec!["a".into()])]);
+    let error = exec::start(&pipeline, &[], &scratch.path)
+        .expect_err("nothing starts without a resolution per stage");
+    assert!(matches!(error, ExecError::Io(_)));
+}
