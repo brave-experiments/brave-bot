@@ -422,8 +422,8 @@ all: what is drawn is a mode somebody chose, named in [permission-modes.md](perm
 marker standing there on every session is one people stop reading, and being read is the whole of
 what this one is for.
 
-**What does not fit is dropped whole, at a separator.** The parts are given up in order — the way to
-the bindings, then the trail key, then the figures — and the mode is the last to go. Left to the
+**What does not fit is dropped whole, at a separator.** The parts are given up in order (the way to
+the bindings, then the trail key, then the figures), and the mode is the last to go. Left to the
 terminal, the line is cut wherever the final column falls, which puts half a word under the box:
 that reads as a rendering fault, where a part that is simply absent reads as a line with no room,
 which is the truth.
