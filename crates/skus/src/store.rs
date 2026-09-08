@@ -200,6 +200,7 @@ pub fn path() -> Result<PathBuf, StoreError> {
 ///
 /// Created 0600 before anything is written to it, rather than written and then chmod'ed: the other
 /// order leaves the secret world-readable for the moment in between.
+#[cfg(unix)]
 pub fn save(credentials: &StoredCredentials) -> Result<(), StoreError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -222,6 +223,25 @@ pub fn save(credentials: &StoredCredentials) -> Result<(), StoreError> {
 
     file.write_all(encode(credentials).as_bytes())
         .map_err(|e| unusable(format!("{}: {e}", path.display())))
+}
+
+/// Refused, because there is nothing here that can keep the secret to the user.
+///
+/// The Unix path creates the file 0600 before a byte is written, and there is no equivalent on this
+/// target: `std::os::unix` does not exist, and Windows wants a restrictive DACL, which is not
+/// written yet. The file holds a bearer token, so writing it under whatever permissions it happened
+/// to inherit is worse than not writing it — and doing that silently is worse still, since nothing
+/// would ever say the secret is unprotected. This refuses instead, and the caller reports it.
+///
+/// Reading stays available: an existing file is no less safe for being read, and a batch imported
+/// elsewhere should still work here.
+#[cfg(not(unix))]
+pub fn save(_credentials: &StoredCredentials) -> Result<(), StoreError> {
+    Err(StoreError::Unusable {
+        detail: "this platform has no way to restrict the file to your account, and the \
+                 credentials are a bearer token, so they were not written"
+            .to_string(),
+    })
 }
 
 /// Read the batch.
@@ -385,6 +405,9 @@ pub fn clear() -> Result<(), StoreError> {
     }
 }
 
+/// Only [`save`] writes, and only the Unix build of it exists, so on a target without one this is
+/// reachable from the tests alone.
+#[cfg(any(unix, test))]
 fn encode(credentials: &StoredCredentials) -> String {
     serde_json::json!({
         "version": 1,
