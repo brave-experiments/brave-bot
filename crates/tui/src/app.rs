@@ -332,6 +332,34 @@ fn starts_a_line(key: KeyEvent) -> bool {
     }
 }
 
+/// The key a press stands for in vi's NORMAL mode, where vi spells one of these with a letter.
+///
+/// `None` for every other press, including every press at all in the ordinary box. Only the bindings
+/// that reach past the line are here: the caret motions are the line's own and are carried out where
+/// the line is.
+fn spelled_by_vi(session: &Session, key: KeyEvent) -> Option<KeyEvent> {
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    // A letter with a modifier is a chord rather than one of vi's keys, and Ctrl-D is not `d`.
+    if !key.modifiers.is_empty() {
+        return None;
+    }
+    let code = match session.vi_spells(c)? {
+        crate::state::Spelled::Up => KeyCode::Up,
+        crate::state::Spelled::Down => KeyCode::Down,
+        // The chord rather than the action, so the arm that opens the search is the only place it is
+        // opened from and the two cannot come to disagree about when it may be.
+        crate::state::Spelled::SearchPrompts => return Some(ctrl_press('r')),
+    };
+    Some(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// One key held with Ctrl, as the terminal delivers it.
+fn ctrl_press(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
 /// Whether a key press asks for the next permission mode.
 ///
 /// Shift-Tab, which reaches this process as either of two things: a terminal that has been asked to
@@ -721,6 +749,13 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
     if session.searching_history() {
         return history_search_key(session, key);
     }
+
+    // After the modes above, which claim every key of their own, and before everything that reads
+    // one: in vi's NORMAL mode three letters spell keys answered further down, and what they reach is
+    // not the line. `k` and `j` walk the rows of a paragraph and then the prompt history and then the
+    // transcript; `/` opens the search Ctrl-R opens. Translated to the key rather than answered a
+    // second time, so a letter cannot come to disagree with the chord it stands for.
+    let key = spelled_by_vi(session, key).unwrap_or(key);
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -1154,6 +1189,12 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
     if session.searching_history() {
         return history_search_key(session, key);
     }
+
+    // The same translation the idle path makes, in the same place: after the modes that claim every
+    // key of their own and before anything reads one. The letters vi spells these with reach the
+    // prompt history and the search, neither of which sends anything, so a running turn refuses
+    // nothing here.
+    let key = spelled_by_vi(session, key).unwrap_or(key);
 
     // Before the modifier guard, since the readline bindings are how the caret moves on a terminal
     // that sends nothing for the named keys, and a line that can be typed mid-turn has to be
@@ -5221,6 +5262,85 @@ mod tests {
             session.vi_mode(),
             Some(crate::vim::Mode::Insert),
             "the press that stopped the turn also changed the mode"
+        );
+    }
+
+    /// A session in NORMAL mode over a paragraph, which is what gives the row keys somewhere to go.
+    fn in_normal_mode(line: &str) -> Session {
+        let mut session = editing_vis_way();
+        for c in line.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Esc));
+        session
+    }
+
+    /// `k` and `j` walk the rows of a paragraph, which is what the arrows do there. Answered by
+    /// translating the letter rather than by a second copy of that ladder, so the two cannot drift.
+    #[test]
+    fn the_row_keys_walk_a_paragraph() {
+        // Escape leaves the caret on the last character of the second row, which is where the walk
+        // upwards starts from.
+        let mut session = in_normal_mode("one\ntwo");
+        assert_eq!(session.caret(), 6);
+
+        handle_key(&mut session, key(KeyCode::Char('k')));
+        assert_eq!(session.caret(), 2, "k did not reach the row above");
+
+        handle_key(&mut session, key(KeyCode::Char('j')));
+        assert_eq!(session.caret(), 6, "j did not reach the row below");
+    }
+
+    /// Past the ends of the input the row keys reach the prompt history, which is what the arrows reach
+    /// there. A letter that only ever moved the caret would leave the prompt somebody wants most
+    /// unreachable from the mode they are in.
+    #[test]
+    fn the_row_keys_reach_the_prompt_history_at_the_ends_of_the_input() {
+        let mut session = editing_vis_way();
+        type_line(&mut session, "an earlier prompt");
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("an answer", Vec::new(), 0);
+        handle_key(&mut session, key(KeyCode::Esc));
+
+        handle_key(&mut session, key(KeyCode::Char('k')));
+
+        assert_eq!(
+            session.input(),
+            "an earlier prompt",
+            "k did not reach the history from an empty line"
+        );
+    }
+
+    /// `/` searches in vi, and the prompts already sent are the only thing here to search, so it asks
+    /// the question Ctrl-R asks. Nothing is typed into the line: the mode is not typing.
+    #[test]
+    fn a_slash_opens_the_search_over_earlier_prompts() {
+        let mut session = editing_vis_way();
+        type_line(&mut session, "an earlier prompt");
+        handle_key(&mut session, key(KeyCode::Enter));
+        session.complete("an answer", Vec::new(), 0);
+        handle_key(&mut session, key(KeyCode::Esc));
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Char('/'))),
+            Action::Redraw
+        );
+
+        assert!(session.searching_history(), "the search did not open");
+        assert!(session.input().is_empty(), "the slash was typed");
+    }
+
+    /// In INSERT mode every one of those letters is a letter, which is the whole of what the mode
+    /// means. A `/` typed there is the start of a command, and a `j` is a `j`.
+    #[test]
+    fn the_letters_that_spell_keys_are_typed_in_insert_mode() {
+        let mut session = editing_vis_way();
+        type_line(&mut session, "reject/j");
+
+        assert_eq!(session.input(), "reject/j");
+        assert!(
+            !session.searching_history(),
+            "a typed slash opened a search"
         );
     }
 

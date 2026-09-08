@@ -913,3 +913,82 @@ INSERT mode still arms it, which is where somebody who wanted a command is.
 `verified-by: bravebot_tui::state::opening_a_line_leaves_the_caret_on_the_new_one`
 `verified-by: bravebot_tui::state::the_shell_marker_is_not_armed_from_normal_mode`
 `verified-by: bravebot_tui::state::the_key_list_is_not_opened_from_normal_mode`
+
+<a id="INPUT-26"></a>
+### INPUT-26: the motions move the caret and nothing else, and never rest inside a marker
+
+| Keys | Where the caret goes |
+|---|---|
+| `h`, `l`, Space | one character left or right |
+| `w`, `e`, `b` | the start of the next word, the end of this word or the next, the start of this word or the previous |
+| `0`, `$`, `^` | the first column, the last character, the first character that is not a blank |
+| `gg`, `G` | the first line of the input, the last |
+| `f`, `F`, `t`, `T` then a character | the next or previous occurrence of it on this line, landing on it or stopping one short |
+| `;`, `,` | the last such jump again, and the same jump reversed |
+
+The caret comes to rest on a character and never in the column after the line, since NORMAL mode's
+caret sits on the character the next instruction acts on. A jump looks only along the line the caret
+is on, and one that finds nothing leaves the caret where it was. Repeating with nothing to repeat
+does nothing.
+
+A marker is crossed whole by every one of these, and there is no position inside one for a motion to
+leave the caret at.
+
+**Why.** These are the keys somebody's hands already know, so what they do here has to be what they
+do everywhere else. `w` lands on the first character of the next word rather than after the word it
+crossed, which is where the word keys under Ctrl land: both are wanted, and the letter has to mean
+vi's.
+
+A jump crossing a newline would land off the row being read, which is not what a key for reaching a
+bracket in front of you is for. Leaving the caret at the end of the line when the character is not
+there would move it on a press that failed.
+
+The marker rule holds because the motions walk through the same caret steps the arrows use, rather
+than searching the line's bytes. A motion doing its own arithmetic would have to know the marker
+rules itself, and the one that forgot would be the one that put the caret inside a picture: `f]`
+names a character a marker is spelled with, and it did exactly that before it walked.
+
+`verified-by: bravebot_tui::vim::space_moves_right_like_the_letter_does`
+`verified-by: bravebot_tui::vim::the_four_jumps_to_a_character_differ_only_in_direction_and_where_they_stop`
+`verified-by: bravebot_tui::vim::the_press_after_a_jump_key_is_the_character_to_jump_to`
+`verified-by: bravebot_tui::vim::reversing_a_jump_changes_its_direction_and_nothing_else`
+`verified-by: bravebot_tui::vim::a_pair_beginning_with_g_is_the_start_of_the_input_or_nothing`
+`verified-by: bravebot_tui::state::the_character_motions_move_one_character`
+`verified-by: bravebot_tui::state::the_word_motions_land_where_vi_lands`
+`verified-by: bravebot_tui::state::the_line_motions_reach_the_ends_and_the_first_word`
+`verified-by: bravebot_tui::state::the_input_motions_reach_the_first_and_last_line`
+`verified-by: bravebot_tui::state::the_jumps_to_a_character_land_on_it_or_just_short_of_it`
+`verified-by: bravebot_tui::state::a_jump_to_a_character_stays_on_its_own_line`
+`verified-by: bravebot_tui::state::the_repeat_keys_do_the_last_jump_again_and_then_the_other_way`
+`verified-by: bravebot_tui::state::a_repeat_with_nothing_to_repeat_does_nothing`
+`verified-by: bravebot_tui::state::a_motion_crosses_a_marker_whole`
+`verified-by: bravebot_tui::state::a_pair_that_means_nothing_ends_the_wait_rather_than_holding_it`
+
+<a id="INPUT-27"></a>
+### INPUT-27: three of vi's letters are the keys they spell, wherever those keys reach
+
+`k` and `j` are Up and Down: they walk the rows of a paragraph, then the prompt history, then the
+transcript, exactly as the arrows do. `/` opens the search over the prompts already sent, which is
+what Ctrl-R opens.
+
+While a key is waiting for the character to jump to, every press is that character, so `f/` jumps to
+a slash and `fj` to a `j`.
+
+**Why.** What these reach is not the line. Answering them by moving the caret would leave the prompt
+somebody most wants unreachable from the mode they are in, and a person who pressed `k` on an empty
+line would get nothing where the arrow beside it walks their history.
+
+They are answered by translating the letter into the key it stands for, so there is one ladder rather
+than two: a second copy would be a second set of conditions about when the history is reachable, and
+the two would drift.
+
+`/` opens that search because it is the only search here. A key that searched the line being typed
+would be answering a question about a paragraph in a box ten rows tall, while the prompts a person
+cannot see scroll away above it.
+
+`verified-by: bravebot_tui::state::the_letters_that_spell_other_keys_are_named_rather_than_acted_on`
+`verified-by: bravebot_tui::state::a_key_waiting_for_its_character_claims_the_letters_that_spell_other_keys`
+`verified-by: bravebot_tui::app::the_row_keys_walk_a_paragraph`
+`verified-by: bravebot_tui::app::the_row_keys_reach_the_prompt_history_at_the_ends_of_the_input`
+`verified-by: bravebot_tui::app::a_slash_opens_the_search_over_earlier_prompts`
+`verified-by: bravebot_tui::app::the_letters_that_spell_keys_are_typed_in_insert_mode`

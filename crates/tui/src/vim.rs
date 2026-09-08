@@ -85,12 +85,97 @@ impl Editing {
 pub enum Command {
     /// Open INSERT mode, having first moved the caret where the key says.
     Insert(Opening),
+    /// Move the caret, and nothing else.
+    Move(Motion),
+    /// Wait for one more key, which the instruction needs before it means anything.
+    Wait(Pending),
     /// The key means nothing in this mode, and nothing at all should happen.
     ///
     /// Not "fall through to the ordinary bindings": a letter that vi does not use is a letter that
     /// does nothing, and typing it into the line would be the box acting on an instruction it did
     /// not understand.
     Nothing,
+}
+
+/// Where a motion takes the caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    /// `h`: one character left.
+    Left,
+    /// `l` and Space: one character right.
+    Right,
+    /// `w`: the start of the next word.
+    WordRight,
+    /// `e`: the end of this word, or of the next one.
+    WordEnd,
+    /// `b`: the start of this word, or of the one before.
+    WordLeft,
+    /// `0`: the first column of the line.
+    LineStart,
+    /// `$`: the last character of the line.
+    LineEnd,
+    /// `^`: the first character of the line that is not a blank.
+    FirstNonBlank,
+    /// `gg`: the first line of the input.
+    InputStart,
+    /// `G`: the last line of the input.
+    InputEnd,
+    /// `f`, `F`, `t`, `T` once their character has arrived, and `;` and `,` repeating one.
+    ToChar(Find),
+}
+
+/// A jump to a character on the line, which is the shape `f`, `F`, `t` and `T` share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Find {
+    /// The character to look for.
+    pub target: char,
+    /// Whether to look towards the end of the line rather than the start.
+    pub forwards: bool,
+    /// Whether to stop short of the character rather than landing on it: `t` and `T` against `f`
+    /// and `F`.
+    pub short: bool,
+}
+
+impl Find {
+    /// The same jump the other way, which is what `,` asks for.
+    pub fn reversed(self) -> Self {
+        Self {
+            forwards: !self.forwards,
+            ..self
+        }
+    }
+}
+
+/// An instruction that has arrived without everything it needs.
+///
+/// Held rather than acted on, because `f` alone says to jump to a character nobody has named yet.
+/// The next key press names it, and until then nothing has happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pending {
+    /// `f`, `F`, `t` or `T`, waiting for the character to jump to.
+    Find { forwards: bool, short: bool },
+    /// `g`, which means nothing alone and `gg` with the second press.
+    G,
+}
+
+impl Pending {
+    /// What the key that arrived after this one means, or `Nothing` where the pair is not an
+    /// instruction.
+    ///
+    /// A pair that means nothing abandons the wait rather than holding it open for a third key. The
+    /// alternative is a box where one stray press swallows every letter after it until something
+    /// happens to match.
+    pub fn then(self, c: char) -> Command {
+        match self {
+            Pending::Find { forwards, short } => Command::Move(Motion::ToChar(Find {
+                target: c,
+                forwards,
+                short,
+            })),
+            Pending::G if c == 'g' => Command::Move(Motion::InputStart),
+            Pending::G => Command::Nothing,
+        }
+    }
 }
 
 /// Where the caret goes as INSERT mode opens.
@@ -124,6 +209,34 @@ pub fn command(c: char) -> Command {
         'A' => Command::Insert(Opening::LineEnd),
         'o' => Command::Insert(Opening::LineBelow),
         'O' => Command::Insert(Opening::LineAbove),
+        'h' => Command::Move(Motion::Left),
+        // Space among them, which is what vi does with it: a key wider than any other, for the
+        // motion people press most.
+        'l' | ' ' => Command::Move(Motion::Right),
+        'w' => Command::Move(Motion::WordRight),
+        'e' => Command::Move(Motion::WordEnd),
+        'b' => Command::Move(Motion::WordLeft),
+        '0' => Command::Move(Motion::LineStart),
+        '$' => Command::Move(Motion::LineEnd),
+        '^' => Command::Move(Motion::FirstNonBlank),
+        'G' => Command::Move(Motion::InputEnd),
+        'g' => Command::Wait(Pending::G),
+        'f' => Command::Wait(Pending::Find {
+            forwards: true,
+            short: false,
+        }),
+        'F' => Command::Wait(Pending::Find {
+            forwards: false,
+            short: false,
+        }),
+        't' => Command::Wait(Pending::Find {
+            forwards: true,
+            short: true,
+        }),
+        'T' => Command::Wait(Pending::Find {
+            forwards: false,
+            short: true,
+        }),
         _ => Command::Nothing,
     }
 }
@@ -176,5 +289,74 @@ mod tests {
     fn a_letter_that_means_nothing_in_normal_mode_types_nothing() {
         assert_eq!(command('z'), Command::Nothing);
         assert_eq!(command('q'), Command::Nothing);
+    }
+
+    /// Space is a motion rather than a character, which is what vi does with it: the widest key on the
+    /// board, for the motion pressed most.
+    #[test]
+    fn space_moves_right_like_the_letter_does() {
+        assert_eq!(command(' '), Command::Move(Motion::Right));
+        assert_eq!(command('l'), Command::Move(Motion::Right));
+    }
+
+    /// The four jumps differ in two ways and nothing else: which direction they look, and whether they
+    /// land on the character or stop short of it. One shape covers all four.
+    #[test]
+    fn the_four_jumps_to_a_character_differ_only_in_direction_and_where_they_stop() {
+        let waiting = |c: char| match command(c) {
+            Command::Wait(Pending::Find { forwards, short }) => (forwards, short),
+            other => panic!("{c} was {other:?} rather than a jump waiting for its character"),
+        };
+        assert_eq!(waiting('f'), (true, false));
+        assert_eq!(waiting('F'), (false, false));
+        assert_eq!(waiting('t'), (true, true));
+        assert_eq!(waiting('T'), (false, true));
+    }
+
+    /// The character that arrives after one of those keys is the target, whatever it is: `f$` jumps to
+    /// a dollar rather than being read as the key that ends a line.
+    #[test]
+    fn the_press_after_a_jump_key_is_the_character_to_jump_to() {
+        let pending = Pending::Find {
+            forwards: true,
+            short: false,
+        };
+        assert_eq!(
+            pending.then('$'),
+            Command::Move(Motion::ToChar(Find {
+                target: '$',
+                forwards: true,
+                short: false,
+            }))
+        );
+    }
+
+    /// `,` is the last jump the other way, which is the whole of what it means. Reversing the direction
+    /// and nothing else is what makes `f` then `,` land back where the caret came from.
+    #[test]
+    fn reversing_a_jump_changes_its_direction_and_nothing_else() {
+        let find = Find {
+            target: 'x',
+            forwards: true,
+            short: true,
+        };
+        assert_eq!(
+            find.reversed(),
+            Find {
+                target: 'x',
+                forwards: false,
+                short: true,
+            }
+        );
+    }
+
+    /// `g` means nothing alone and `gg` is the first line. A pair that means nothing abandons the wait
+    /// rather than holding it open for a third key, which would let one stray press swallow every
+    /// letter after it until something happened to match.
+    #[test]
+    fn a_pair_beginning_with_g_is_the_start_of_the_input_or_nothing() {
+        assert_eq!(command('g'), Command::Wait(Pending::G));
+        assert_eq!(Pending::G.then('g'), Command::Move(Motion::InputStart));
+        assert_eq!(Pending::G.then('x'), Command::Nothing);
     }
 }

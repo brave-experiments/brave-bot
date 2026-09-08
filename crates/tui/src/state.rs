@@ -374,6 +374,22 @@ pub enum Offered {
     Shortcuts,
 }
 
+/// A binding vi spells with a letter, which the key handler answers as though the key had arrived.
+///
+/// These reach past the line: at the ends of the input the row keys walk the prompt history and then
+/// scroll the transcript, and the search is a mode standing over the whole box. So the letter is
+/// translated and the existing arms answer it, rather than a second copy of that ladder being written
+/// for three letters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spelled {
+    /// `k`, which is Up.
+    Up,
+    /// `j`, which is Down.
+    Down,
+    /// `/`, which is the chord that searches the prompts already sent.
+    SearchPrompts,
+}
+
 /// A file dropped on the box, and the marker standing for it in the line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attached {
@@ -628,6 +644,17 @@ pub struct Session {
     /// fields because the mode outlives a trip through the ordinary style and back: somebody who
     /// turns vi editing off to paste something and on again is where they left off.
     mode: crate::vim::Mode,
+    /// A vi instruction that arrived without everything it needs, waiting for one more key.
+    ///
+    /// `f` alone says to jump to a character nobody has named yet, so nothing happens until the next
+    /// press names it. Held rather than acted on, and cleared by the press that completes or abandons
+    /// it: a wait that outlived the pair would swallow letters typed later.
+    half_typed: Option<crate::vim::Pending>,
+    /// The last jump to a character, for the keys that repeat one.
+    ///
+    /// Remembered because `;` and `,` mean nothing on their own: they say "that again", and there is
+    /// nothing else on the session that says what "that" was.
+    last_find: Option<crate::vim::Find>,
     pub status: Status,
     /// Whether the audit trail is shown alongside replies.
     pub show_trail: bool,
@@ -935,6 +962,8 @@ impl Session {
             // constructed by a test reads nothing from disk and edits the ordinary way.
             editing: crate::vim::Editing::default(),
             mode: crate::vim::Mode::default(),
+            half_typed: None,
+            last_find: None,
             status: Status::Idle,
             show_trail: false,
             scroll: 0,
@@ -1874,11 +1903,253 @@ impl Session {
     ///
     /// A letter vi does not use does nothing at all, which is the mode's whole bargain: the box is
     /// not typing, so an instruction it does not recognise is not text to fall back on.
+    ///
     fn obey(&mut self, c: char) {
-        match crate::vim::command(c) {
+        // A key that was waiting for one more takes this press and nothing else looks at it. Cleared
+        // first, so a pair that means nothing ends the wait rather than holding it open: one stray
+        // press would otherwise swallow every letter after it until something happened to match.
+        if let Some(pending) = self.half_typed.take() {
+            self.carry_out(pending.then(c));
+            return;
+        }
+        // The keys that repeat a jump, which mean nothing on their own: they say "that again", and
+        // what "that" was is the only thing the session remembers about a motion.
+        if let (';' | ',', Some(find)) = (c, self.last_find) {
+            let repeated = if c == ';' { find } else { find.reversed() };
+            self.jump_to_char(repeated);
+            return;
+        }
+        self.carry_out(crate::vim::command(c));
+    }
+
+    /// Act on an instruction that has everything it needs.
+    fn carry_out(&mut self, command: crate::vim::Command) {
+        match command {
             crate::vim::Command::Insert(opening) => self.open_insert(opening),
+            crate::vim::Command::Move(motion) => self.move_by(motion),
+            crate::vim::Command::Wait(pending) => self.half_typed = Some(pending),
             crate::vim::Command::Nothing => {}
         }
+    }
+
+    /// The key a press in NORMAL mode stands for, where vi spells an existing binding with a letter.
+    ///
+    /// `j` and `k` are Down and Up, and `/` is the chord that searches the prompts already sent. Named
+    /// here and answered by the key handler rather than acted on from this side, because what those
+    /// keys reach is not the line: at the ends of the input they walk the prompt history and then
+    /// scroll the transcript, and a letter that moved the caret from here would never reach either.
+    ///
+    /// Nothing while a key is waiting for one more, where every character is that one: `f/` jumps to
+    /// a slash rather than opening a search.
+    pub fn vi_spells(&self, c: char) -> Option<Spelled> {
+        if !self.vi_normal() || self.half_typed.is_some() {
+            return None;
+        }
+        match c {
+            'j' => Some(Spelled::Down),
+            'k' => Some(Spelled::Up),
+            // `/` searches in vi, and the prompts already sent are the only thing here to search.
+            '/' => Some(Spelled::SearchPrompts),
+
+            _ => None,
+        }
+    }
+
+    /// Move the caret where a motion says.
+    ///
+    /// Every one of these goes through the caret methods the arrows already use, so a marker is
+    /// crossed whole and there is no position inside one for a motion to leave the caret at. A motion
+    /// that did byte arithmetic on the line would have to know about markers itself, and the one that
+    /// forgot would be the one that put the caret in the middle of a picture.
+    fn move_by(&mut self, motion: crate::vim::Motion) {
+        use crate::vim::Motion;
+
+        match motion {
+            Motion::Left => self.move_left(),
+            // Stopping on the last character rather than the column after it, which is where the
+            // arrows leave the caret in INSERT mode and is not a position NORMAL mode has.
+            Motion::Right => {
+                self.move_right();
+                self.step_back_off_the_end();
+            }
+            Motion::WordRight => self.move_word_start_right(),
+            Motion::WordEnd => self.move_word_end_right(),
+            Motion::WordLeft => self.move_word_left(),
+            Motion::LineStart => self.move_to_line_start(),
+            // The last character rather than the position after it, since that is not one the caret
+            // can hold in NORMAL mode.
+            Motion::LineEnd => {
+                self.move_to_line_end();
+                self.step_back_off_the_end();
+            }
+            Motion::FirstNonBlank => self.move_to_first_non_blank(),
+            Motion::InputStart => self.caret = 0,
+            Motion::InputEnd => {
+                self.caret = self.input.len();
+                self.move_to_line_start();
+            }
+            Motion::ToChar(find) => {
+                self.last_find = Some(find);
+                self.jump_to_char(find);
+            }
+        }
+    }
+
+    /// Put the caret on a character rather than past the end of the line.
+    ///
+    /// NORMAL mode's caret sits on the character the next instruction acts on, and the column after
+    /// the line holds none. Nothing to do on an empty line, which has no character to sit on either.
+    fn step_back_off_the_end(&mut self) {
+        let (start, _) = self.caret_line();
+        if self.caret > start && self.at_line_end() {
+            self.move_left();
+        }
+    }
+
+    /// Whether the caret is at the end of the line it is on.
+    fn at_line_end(&self) -> bool {
+        self.caret == self.caret_line().1
+    }
+
+    /// Move to the first character of the line that is not a blank, which is what `^` asks for.
+    fn move_to_first_non_blank(&mut self) {
+        self.move_to_line_start();
+        while !self.at_line_end()
+            && self.input[self.caret..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_whitespace())
+        {
+            self.move_right();
+        }
+    }
+
+    /// Move to the start of the next word, which is what `w` asks for.
+    ///
+    /// Different from the word motion the arrows use under Ctrl: that one lands after the word it
+    /// crossed, and this one lands on the first character of the next. Both are wanted, and vi's is
+    /// the one an instruction typed as `w` has to mean.
+    fn move_word_start_right(&mut self) {
+        let was = self.caret;
+        // Out of the word the caret is in, then over the blanks after it. A caret already on a blank
+        // skips the first loop and lands on the next word, which is the same answer.
+        while !self.at_input_end()
+            && self.input[self.caret..]
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace())
+        {
+            self.move_right();
+        }
+        while !self.at_input_end()
+            && self.input[self.caret..]
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+        {
+            self.move_right();
+        }
+        // At the end of the input there is no next word, so the caret stays where it was rather than
+        // coming to rest past the last character.
+        if self.at_input_end() {
+            self.caret = was;
+            self.move_to_line_end();
+            self.step_back_off_the_end();
+        }
+    }
+
+    /// Move to the end of this word, or of the next one where the caret is already at an end.
+    ///
+    /// Which is what `e` asks for, and why it is not `w` stepped back: on the last character of a
+    /// word it has to reach the end of the following one.
+    fn move_word_end_right(&mut self) {
+        let was = self.caret;
+        self.move_right();
+        while !self.at_input_end()
+            && self.input[self.caret..]
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+        {
+            self.move_right();
+        }
+        while !self.at_input_end()
+            && self.input[self.caret..]
+                .chars()
+                .nth(1)
+                .is_some_and(|c| !c.is_whitespace())
+        {
+            self.move_right();
+        }
+        if self.at_input_end() {
+            self.caret = was.max(self.last_caret_position());
+        }
+    }
+
+    /// Whether the caret is at the end of the whole input.
+    fn at_input_end(&self) -> bool {
+        self.caret >= self.input.len()
+    }
+
+    /// The last position the caret can hold in NORMAL mode: on the final character, not past it.
+    fn last_caret_position(&self) -> usize {
+        match self.input.chars().next_back() {
+            Some(c) => self.input.len() - c.len_utf8(),
+            None => 0,
+        }
+    }
+
+    /// Jump to a character on the line the caret is on, if it holds one.
+    ///
+    /// The line rather than the whole input, which is what vi does: these keys are for reaching a
+    /// bracket or a comma in front of you, and one that crossed a newline would land somewhere off
+    /// the row being read. A character that is not there leaves the caret alone.
+    /// A marker is one thing to the caret, so a target inside one is not somewhere to land: the caret
+    /// would sit between two halves of a picture, in a place the person cannot see, and the next
+    /// instruction would act there. A marker is spelled with brackets and a digit, so `f]` and `f1`
+    /// both name characters that are inside one.
+    ///
+    /// Walked a position at a time through the caret methods rather than found by searching the bytes,
+    /// which is what keeps this true without a second copy of the marker rules living here.
+    fn jump_to_char(&mut self, find: crate::vim::Find) {
+        let was = self.caret;
+        let (start, end) = self.caret_line();
+        let step = |session: &mut Self| {
+            if find.forwards {
+                session.move_right();
+            } else {
+                session.move_left();
+            }
+        };
+        let arrived = |session: &Self| {
+            if find.forwards {
+                session.caret >= end
+            } else {
+                session.caret <= start
+            }
+        };
+
+        // Off the character the caret is on before looking, so `f` twice reaches the second occurrence
+        // rather than staying on the first.
+        step(self);
+        while !arrived(self) {
+            if self.input[self.caret..].starts_with(find.target) {
+                // `t` and `T` stop one character short of the target, on the side the jump came from.
+                if find.short {
+                    if find.forwards {
+                        self.move_left();
+                    } else {
+                        self.move_right();
+                    }
+                }
+                return;
+            }
+            step(self);
+        }
+
+        // The character is not on this line, and a jump to nothing leaves the caret where it was
+        // rather than at whichever end the walk gave up at.
+        self.caret = was;
     }
 
     /// Take the letters as letters again, with the caret where the key asked for it.
@@ -7879,5 +8150,200 @@ mod tests {
         let mut s = Session::new("none");
         s.adopt_editing(None);
         assert_eq!(s.editing(), crate::vim::Editing::Ordinary);
+    }
+
+    /// A session in NORMAL mode over `line`, with the caret where `at` says.
+    fn normal(line: &str, at: usize) -> Session {
+        let mut s = vi();
+        for c in line.chars() {
+            s.type_char(c);
+        }
+        s.enter_vi_normal();
+        s.caret = at;
+        s
+    }
+
+    /// Where a run of presses in NORMAL mode leaves the caret.
+    fn after(line: &str, at: usize, keys: &str) -> usize {
+        let mut s = normal(line, at);
+        for c in keys.chars() {
+            s.type_char(c);
+        }
+        s.caret
+    }
+
+    /// The keys under the fingers, and Space among them because that is what vi does with it. `j` and
+    /// `k` are not here: they spell Up and Down, which reach the prompt history past the ends of the
+    /// input, so the key handler answers them and pins them.
+    #[test]
+    fn the_character_motions_move_one_character() {
+        assert_eq!(after("hello", 2, "h"), 1);
+        assert_eq!(after("hello", 2, "l"), 3);
+        assert_eq!(after("hello", 2, " "), 3);
+    }
+
+    /// `w` lands on the first character of the next word and `b` on the first of this one or the
+    /// previous, which is not what the word keys under Ctrl do: those land after the word they
+    /// crossed. Both are wanted, and vi's is what an instruction spelled `w` has to mean.
+    #[test]
+    fn the_word_motions_land_where_vi_lands() {
+        assert_eq!(after("one two three", 0, "w"), 4);
+        assert_eq!(after("one two three", 0, "ww"), 8);
+        assert_eq!(after("one two three", 4, "b"), 0);
+        // `e` reaches the end of this word, and from an end the end of the next.
+        assert_eq!(after("one two three", 0, "e"), 2);
+        assert_eq!(after("one two three", 2, "e"), 6);
+    }
+
+    /// The ends of the line, and the first character that is not a blank. `$` lands on the last
+    /// character rather than past it, since the column after the line holds nothing for an
+    /// instruction to act on.
+    #[test]
+    fn the_line_motions_reach_the_ends_and_the_first_word() {
+        assert_eq!(after("  indented", 5, "0"), 0);
+        assert_eq!(after("  indented", 5, "^"), 2);
+        assert_eq!(after("hello", 0, "$"), 4);
+    }
+
+    /// `gg` and `G` reach the whole input rather than the line, which is what makes them worth having
+    /// in a box that holds a paragraph. `G` lands at the start of the last line, as vi does.
+    #[test]
+    fn the_input_motions_reach_the_first_and_last_line() {
+        assert_eq!(after("one\ntwo\nthree", 9, "gg"), 0);
+        assert_eq!(after("one\ntwo\nthree", 1, "G"), 8);
+    }
+
+    /// `g` alone means nothing, and a pair that means nothing must not hold the wait open: one stray
+    /// press would otherwise swallow every letter after it until something happened to match.
+    #[test]
+    fn a_pair_that_means_nothing_ends_the_wait_rather_than_holding_it() {
+        let mut s = normal("one\ntwo", 5);
+        s.type_char('g');
+        s.type_char('x');
+        assert_eq!(s.caret, 5, "the abandoned pair moved the caret");
+
+        // The next press is read on its own rather than as a third key of the pair.
+        s.type_char('0');
+        assert_eq!(s.caret, 4);
+    }
+
+    /// `f` and `t` search forwards, `F` and `T` back, and the short pair stop one character before
+    /// the target. A character that is not on the line leaves the caret alone.
+    #[test]
+    fn the_jumps_to_a_character_land_on_it_or_just_short_of_it() {
+        assert_eq!(after("one two three", 0, "ft"), 4);
+        assert_eq!(after("one two three", 0, "tt"), 3);
+        assert_eq!(after("one two three", 12, "Ft"), 8);
+        assert_eq!(after("one two three", 12, "Tt"), 9);
+        assert_eq!(after("one two three", 0, "fz"), 0);
+    }
+
+    /// The jump is over the line the caret is on, not the whole input. These keys are for reaching a
+    /// bracket in front of you, and one that crossed a newline would land off the row being read.
+    #[test]
+    fn a_jump_to_a_character_stays_on_its_own_line() {
+        assert_eq!(after("one\ntwo", 0, "fw"), 0);
+    }
+
+    /// `;` and `,` mean nothing on their own: they say "that again", forwards and then back. Without
+    /// them every repeat is the whole pair typed out, which is the thing these keys exist to save.
+    #[test]
+    fn the_repeat_keys_do_the_last_jump_again_and_then_the_other_way() {
+        assert_eq!(after("a-b-c-d", 0, "f-"), 1);
+        assert_eq!(after("a-b-c-d", 0, "f-;"), 3);
+        assert_eq!(after("a-b-c-d", 0, "f-;;"), 5);
+        assert_eq!(after("a-b-c-d", 0, "f-;;,"), 3);
+    }
+
+    /// With no jump made, the keys that repeat one have nothing to repeat and do nothing rather than
+    /// guessing at a character.
+    #[test]
+    fn a_repeat_with_nothing_to_repeat_does_nothing() {
+        assert_eq!(after("a-b-c-d", 2, ";"), 2);
+        assert_eq!(after("a-b-c-d", 2, ","), 2);
+    }
+
+    /// A marker stands for one thing, so a motion crosses it whole and cannot come to rest inside
+    /// one: a caret between two halves of a picture is in a place the person cannot see, and the next
+    /// instruction would act there. Every motion goes through the same caret methods the arrows use,
+    /// which is what makes this hold for all of them rather than for the ones somebody remembered.
+    #[test]
+    fn a_motion_crosses_a_marker_whole() {
+        /// A line with a marker in the middle of it, in NORMAL mode with the caret at `at`, and where
+        /// the marker begins and ends. Words on both sides, so the caret has somewhere to be on the far
+        /// side and what is measured is the crossing rather than the end of the line.
+        fn staged(at: impl Fn(usize, usize) -> usize) -> (Session, usize, usize) {
+            let mut s = vi();
+            for c in "look at ".chars() {
+                s.type_char(c);
+            }
+            s.attach(picture(b"pixels"));
+            for c in " and say".chars() {
+                s.type_char(c);
+            }
+            let opens = s.input.find('[').expect("the marker is in the line");
+            let closes = s.input.find(']').expect("the marker is in the line") + 1;
+            s.enter_vi_normal();
+            s.caret = at(opens, closes);
+            (s, opens, closes)
+        }
+
+        // Every motion that could reach the marker, from the side it would reach it from. One press
+        // crosses the whole of it and there is no press that lands within it.
+        let crossings = [
+            ("l", true),
+            ("w", true),
+            ("e", true),
+            ("f]", true),
+            ("$", true),
+            ("h", false),
+            ("b", false),
+            ("F[", false),
+            ("0", false),
+        ];
+        for (keys, forwards) in crossings {
+            let (mut s, opens, closes) =
+                staged(|opens, closes| if forwards { opens } else { closes });
+            for c in keys.chars() {
+                s.type_char(c);
+            }
+            assert!(
+                s.caret <= opens || s.caret >= closes,
+                "{keys} left the caret at {} inside the marker {opens}..{closes}",
+                s.caret
+            );
+        }
+    }
+
+    /// `k` and `j` are Up and Down, and `/` is the chord that searches the prompts already sent. What
+    /// those reach is not the line, so they are named for the key handler to answer rather than moving
+    /// the caret from here: at the ends of the input they walk the prompt history and then scroll.
+    #[test]
+    fn the_letters_that_spell_other_keys_are_named_rather_than_acted_on() {
+        let s = normal("one\ntwo", 0);
+        assert_eq!(s.vi_spells('k'), Some(Spelled::Up));
+        assert_eq!(s.vi_spells('j'), Some(Spelled::Down));
+        assert_eq!(s.vi_spells('/'), Some(Spelled::SearchPrompts));
+        assert_eq!(s.vi_spells('l'), None);
+
+        // Nothing at all in INSERT mode, where every one of them is a character to type.
+        let mut typing = vi();
+        assert_eq!(typing.vi_spells('j'), None);
+        assert_eq!(typing.vi_spells('/'), None);
+        typing.type_char('/');
+        assert_eq!(typing.input, "/");
+    }
+
+    /// While a key waits for its character, every press is that character: `f/` jumps to a slash
+    /// rather than opening a search, and `fj` to a `j` rather than walking a row.
+    #[test]
+    fn a_key_waiting_for_its_character_claims_the_letters_that_spell_other_keys() {
+        let mut s = normal("a/b", 0);
+        s.type_char('f');
+        assert_eq!(s.vi_spells('/'), None, "the wait did not claim the press");
+        assert_eq!(s.vi_spells('j'), None);
+
+        s.type_char('/');
+        assert_eq!(s.caret, 1, "the jump did not happen");
     }
 }
