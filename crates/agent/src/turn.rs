@@ -2232,7 +2232,8 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             } else {
                                 String::new()
                             };
-                            // What would make this one visible, for a run and only for a run.
+                            // How to see this one and how to stop being asked, for a run and
+                            // only for a run.
                             // Without it the quarantine reads as a fact about running programs,
                             // and a planner told once that a command it ran cannot be shown to it
                             // stops running commands: it spent the rest of a session reading files
@@ -2245,11 +2246,12 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             // command when a command produced it.
                             let vouching = if output.printed_by.is_some() {
                                 "\n\nThis is about the command rather than about what it \
-                                 printed: output comes back as text once a person has vouched \
-                                 for every stage of the exact command. Where a run is worth \
-                                 repeating, say what it would tell you and let them decide. To \
-                                 read a file, use read_file, which names one path and comes back \
-                                 visible where the trust map allows it."
+                                 printed, and it is not the end of the road. To see this one, \
+                                 call read_output with the reference: the user is shown it and \
+                                 decides, and if they agree it comes back as text you can read. \
+                                 To stop being asked, a person vouching for every stage of the \
+                                 exact command makes what it prints visible from then on. To \
+                                 read a file, use read_file."
                             } else {
                                 ""
                             };

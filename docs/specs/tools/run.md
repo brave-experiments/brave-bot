@@ -281,15 +281,17 @@ where it also cannot tell success from failure.
 <a id="RUN-14"></a>
 ### RUN-14: a quarantined result says what would lift the quarantine
 
-Where the output could not be shown, the planner is also told that a person vouching for every
-stage of the exact command makes it visible, and that a file is read with `read_file`. Only where a
-command produced the result: a quarantined read carries no advice about vouching for a command
-nobody ran.
+Where the output could not be shown, the planner is also told how to see this result and how to
+stop being asked: `read_output` puts this one to the user, and a person vouching for every stage of
+the exact command makes what it prints visible from then on. It is also pointed at `read_file` for
+a file. Only where a command produced the result: a quarantined read carries no advice about
+`read_output` or about vouching for a command nobody ran.
 
 **Why.** [RUN-4](#RUN-4) is about who answered for the command, not about programs being
 unreadable, and a planner that reads it the second way stops running them. One did: told once that
 `sed` on a source file could not be shown to it, it spent the rest of a session reading files
-singly through `read_file` and never asked the user to vouch for anything, which cost it the
+singly through `read_file`. It never called `read_output`, which exists for this and would have
+answered it in one call, and it never asked the user to vouch for anything either. That cost it the
 batching it had been using and cost them a turn that produced nothing. The same sentence was added
 to a quarantined *read* for the same reason, and the run path never got it.
 

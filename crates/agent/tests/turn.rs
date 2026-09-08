@@ -7532,13 +7532,14 @@ fn what_a_program_printed_does_not_reach_the_planner() {
     );
 }
 
-/// A quarantined run says what would make the next one visible.
+/// A quarantined run says how to see it, and how to stop being asked.
 ///
 /// The label is about who answered for the command, not about programs being unreadable, and a
 /// planner that reads it the second way stops running them: told once that `sed` on a source file
 /// could not be shown to it, one spent the rest of a session reading files singly through
-/// `read_file` and never asked the user to vouch for anything. So the result says both halves,
-/// what would lift it and what to use for a file.
+/// `read_file`. It never called `read_output`, which exists for exactly this and would have shown
+/// it that result in one call, and it never asked the user to vouch for anything either. So the
+/// result names all three: this result, the next one, and the tool for a file.
 #[test]
 fn a_quarantined_run_says_what_would_make_it_visible() {
     let scratch = Scratch::new("run-quarantine-says-why");
@@ -7570,8 +7571,12 @@ fn a_quarantined_run_says_what_would_make_it_visible() {
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
     assert!(
-        second.contains("vouched for every stage"),
-        "the planner was not told what would make a run visible: {second}"
+        second.contains("read_output"),
+        "the planner was not told it can ask to see this very result: {second}"
+    );
+    assert!(
+        second.contains("vouching for every stage"),
+        "the planner was not told what stops it being asked next time: {second}"
     );
     assert!(
         second.contains("read_file"),
@@ -7608,7 +7613,7 @@ fn a_quarantined_read_says_nothing_about_vouching_for_a_command() {
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
     assert!(
-        !second.contains("vouched for every stage"),
+        !second.contains("vouching for every stage"),
         "a read was given advice about vouching for a command: {second}"
     );
 }
