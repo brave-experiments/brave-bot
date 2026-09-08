@@ -118,7 +118,12 @@ impl BedrockError {
 
 impl From<EgressError> for BedrockError {
     fn from(value: EgressError) -> Self {
-        Self::Egress(value)
+        match value {
+            // Reported as the stop it is rather than as a transport failure, so a caller reading
+            // the outcome cannot mistake a withdrawn request for a connection that broke.
+            EgressError::Stopped { .. } => Self::Cancelled,
+            other => Self::Egress(other),
+        }
     }
 }
 
@@ -254,9 +259,12 @@ impl<'a> BedrockClient<'a> {
         }
 
         let (http, model) = self.build(request, true)?;
-        let stream = self
-            .egress
-            .fetch_streaming(policy, http, Label::untrusted_public())?;
+        let stream = self.egress.fetch_streaming(
+            policy,
+            http,
+            Label::untrusted_public(),
+            self.cancel.as_ref(),
+        )?;
         let label = stream.label();
 
         // Read on a thread this one can walk away from, for the same reason the other backend does:

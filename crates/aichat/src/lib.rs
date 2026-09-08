@@ -48,7 +48,7 @@ pub enum ChatError {
     ///
     /// Fails the request rather than falling back: see [`AichatClient::route`].
     Subscription(String),
-    /// The caller asked for the reply to stop arriving, part way through reading it.
+    /// The caller asked for the reply to stop, whether or not it had begun arriving.
     ///
     /// Never retried: it is the one error that says the answer is no longer wanted.
     Cancelled,
@@ -64,7 +64,7 @@ impl fmt::Display for ChatError {
             Self::Incomplete => {
                 f.write_str("the reply stopped before the server said it was finished")
             }
-            Self::Cancelled => f.write_str("the reply was stopped while it was arriving"),
+            Self::Cancelled => f.write_str("the reply was stopped while it was being waited for"),
             Self::Subscription(detail) => write!(
                 f,
                 "the Leo subscription could not be used: {detail}. Run `bravebot import-leo-creds` to \
@@ -78,7 +78,12 @@ impl std::error::Error for ChatError {}
 
 impl From<EgressError> for ChatError {
     fn from(value: EgressError) -> Self {
-        Self::Egress(value)
+        match value {
+            // Reported as the stop it is rather than as a transport failure, so a caller reading
+            // the outcome cannot mistake a withdrawn request for a connection that broke.
+            EgressError::Stopped { .. } => Self::Cancelled,
+            other => Self::Egress(other),
+        }
     }
 }
 
@@ -442,9 +447,12 @@ impl<'a> AichatClient<'a> {
 
         let http = self.prepare(request)?.header("accept", "text/event-stream");
 
-        let stream = self
-            .egress
-            .fetch_streaming(policy, http, Label::untrusted_public())?;
+        let stream = self.egress.fetch_streaming(
+            policy,
+            http,
+            Label::untrusted_public(),
+            self.cancel.as_ref(),
+        )?;
         let label = stream.label();
 
         // Read on a thread this one can walk away from.

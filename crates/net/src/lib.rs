@@ -18,6 +18,7 @@
 //! content inspection: the bytes are never parsed to decide anything, they are handed
 //! back for the caller to label.
 
+use bravebot_core::cancel::Cancel;
 use bravebot_core::event::Sink;
 use bravebot_core::label::Label;
 use bravebot_core::policy::{Denial, Policy};
@@ -93,6 +94,8 @@ pub enum EgressError {
     },
     /// The server returned a non-success status.
     Status { url: String, status: u16 },
+    /// The caller asked to stop while the request was still being waited on.
+    Stopped { url: String },
 }
 
 impl fmt::Display for EgressError {
@@ -110,6 +113,7 @@ impl fmt::Display for EgressError {
                 write!(f, "request to {url} failed: {detail}")
             }
             Self::Status { url, status } => write!(f, "{url} returned HTTP {status}"),
+            Self::Stopped { url } => write!(f, "the request to {url} was stopped"),
         }
     }
 }
@@ -127,7 +131,10 @@ impl EgressError {
             Self::Denied(_)
             | Self::TooManyRedirects { .. }
             | Self::MissingLocation { .. }
-            | Self::InvalidUrl { .. } => false,
+            | Self::InvalidUrl { .. }
+            // The one error that says the reply is not wanted. Sending it again would be
+            // answering a request somebody withdrew.
+            | Self::Stopped { .. } => false,
         }
     }
 }
@@ -247,7 +254,7 @@ impl fmt::Debug for Streamed<'_> {
 const STREAM_CHUNK_BYTES: usize = 1024;
 
 /// A request to send.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Request {
     pub method: Method,
     pub url: String,
@@ -337,7 +344,7 @@ impl Egress {
         request: Request,
         label: Label,
     ) -> Result<Response, EgressError> {
-        let (status, content_type, url, reader) = self.fetch_checked(policy, &request)?;
+        let (status, content_type, url, reader) = self.fetch_checked(policy, &request, None)?;
         let (body, truncated) = read_capped(reader).map_err(|e| EgressError::Transport {
             url: url.clone(),
             detail: e.to_string(),
@@ -365,8 +372,9 @@ impl Egress {
         policy: &mut Policy<'_, S>,
         request: Request,
         label: Label,
+        cancel: Option<&Cancel>,
     ) -> Result<Streamed<'static>, EgressError> {
-        let (status, content_type, url, reader) = self.fetch_checked(policy, &request)?;
+        let (status, content_type, url, reader) = self.fetch_checked(policy, &request, cancel)?;
 
         Ok(Streamed {
             status,
@@ -388,6 +396,7 @@ impl Egress {
         &self,
         policy: &mut Policy<'_, S>,
         request: &Request,
+        cancel: Option<&Cancel>,
     ) -> Result<(u16, Option<String>, String, Box<dyn std::io::Read + Send>), EgressError> {
         let mut url = request.url.clone();
         let mut hops = 0;
@@ -396,7 +405,10 @@ impl Egress {
             require_http_scheme(&url)?;
             policy.before_network(&url)?;
 
-            let response = self.send_once(request, &url)?;
+            let response = match cancel {
+                Some(cancel) => self.send_watching(request, &url, cancel)?,
+                None => send(&self.agent, request, &url)?,
+            };
             let status = response.0;
 
             if is_redirect(status) {
@@ -423,75 +435,123 @@ impl Egress {
         }
     }
 
-    /// One hop. Returns status, location, content-type, and the body reader.
-    #[allow(clippy::type_complexity)]
-    fn send_once(
+    /// One hop, sent on a thread this one can walk away from when the caller says to stop.
+    ///
+    /// The wait before a reply begins is the longest one in a turn and the least interruptible:
+    /// name resolution, the connection, the request going out and the endpoint's first byte all
+    /// happen inside a single call that cannot be asked to return. Left on this thread, a stop
+    /// pressed while an endpoint is still quiet could not be noticed until it answered or the
+    /// bound on the reply ran out, which is ten minutes.
+    ///
+    /// Nothing on the other thread holds a policy or a workspace: every gate has been passed
+    /// before it starts, and it sends bytes and hands back a reader. So a request walked away
+    /// from leaves a socket to be closed when the far end finishes or the connection times out,
+    /// and nothing else.
+    fn send_watching(
         &self,
         request: &Request,
         url: &str,
-    ) -> Result<
-        (
-            u16,
-            Option<String>,
-            Option<String>,
-            Box<dyn std::io::Read + Send>,
-        ),
-        EgressError,
-    > {
-        // GET and POST builders have different types in ureq, so the header loop is
-        // repeated rather than abstracted over them.
-        let result = match request.method {
-            Method::Get => {
-                let mut builder = self.agent.get(url);
-                for (name, value) in &request.headers {
-                    builder = builder.header(name, value);
-                }
-                builder.call()
-            }
-            Method::Post => {
-                let mut builder = self.agent.post(url);
-                for (name, value) in &request.headers {
-                    builder = builder.header(name, value);
-                }
-                match &request.body {
-                    Some(bytes) => builder.send(&bytes[..]),
-                    None => builder.send_empty(),
-                }
-            }
-        };
+        cancel: &Cancel,
+    ) -> Result<Sent, EgressError> {
+        let (answered, waiting) = std::sync::mpsc::channel();
+        let (agent, hop, target) = (self.agent.clone(), request.clone(), url.to_string());
+        std::thread::spawn(move || {
+            // A send that fails means the caller stopped, so there is nobody left to answer.
+            let _ = answered.send(send(&agent, &hop, &target));
+        });
 
-        let response = match result {
-            Ok(r) => r,
-            // A redirect with max_redirects(0) is returned as a response, not an
-            // error, so anything here is a genuine transport failure.
-            Err(e) => {
-                return Err(EgressError::Transport {
+        loop {
+            if cancel.is_cancelled() {
+                return Err(EgressError::Stopped {
                     url: url.to_string(),
-                    detail: e.to_string(),
-                    transient: is_transient_call(&e),
                 });
             }
-        };
-
-        let status = response.status().as_u16();
-        let header = |name: &str| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        };
-        let location = header("location");
-        let content_type = header("content-type");
-
-        Ok((
-            status,
-            location,
-            content_type,
-            Box::new(response.into_body().into_reader()),
-        ))
+            match waiting.recv_timeout(STOP_CHECK) {
+                Ok(sent) => return sent,
+                // Nothing has arrived yet, which is the whole point of waiting with a limit.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                // The thread is gone without having answered, which only a panic leaves behind.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(EgressError::Transport {
+                        url: url.to_string(),
+                        detail: "the request ended without a reply".to_string(),
+                        transient: false,
+                    });
+                }
+            }
+        }
     }
 }
+
+/// What one hop answers with: status, location, content-type, and the body reader.
+type Sent = (
+    u16,
+    Option<String>,
+    Option<String>,
+    Box<dyn std::io::Read + Send>,
+);
+
+/// One hop, on whichever thread calls it.
+///
+/// Owns nothing of the caller's, so the whole of it can be handed to a thread that is allowed to
+/// outlive the wait for it.
+fn send(agent: &ureq::Agent, request: &Request, url: &str) -> Result<Sent, EgressError> {
+    // GET and POST builders have different types in ureq, so the header loop is
+    // repeated rather than abstracted over them.
+    let result = match request.method {
+        Method::Get => {
+            let mut builder = agent.get(url);
+            for (name, value) in &request.headers {
+                builder = builder.header(name, value);
+            }
+            builder.call()
+        }
+        Method::Post => {
+            let mut builder = agent.post(url);
+            for (name, value) in &request.headers {
+                builder = builder.header(name, value);
+            }
+            match &request.body {
+                Some(bytes) => builder.send(&bytes[..]),
+                None => builder.send_empty(),
+            }
+        }
+    };
+
+    let response = match result {
+        Ok(r) => r,
+        // A redirect with max_redirects(0) is returned as a response, not an
+        // error, so anything here is a genuine transport failure.
+        Err(e) => {
+            return Err(EgressError::Transport {
+                url: url.to_string(),
+                detail: e.to_string(),
+                transient: is_transient_call(&e),
+            });
+        }
+    };
+
+    let status = response.status().as_u16();
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let location = header("location");
+    let content_type = header("content-type");
+
+    Ok((
+        status,
+        location,
+        content_type,
+        Box::new(response.into_body().into_reader()),
+    ))
+}
+
+/// How often a thread waiting on a reply looks at whether the caller has stopped.
+const STOP_CHECK: Duration = Duration::from_millis(50);
 
 /// Whether a failure to send or to read the reply is worth another attempt.
 ///

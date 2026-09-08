@@ -207,6 +207,31 @@ fn serve_stream_paced(frames: Vec<String>, pause: std::time::Duration) -> String
     format!("http://127.0.0.1:{port}")
 }
 
+/// A server that takes the request and never answers it, holding the connection open.
+///
+/// What an endpoint under load looks like from here: the request has gone, the socket is up, and
+/// nothing has come back, not even a status line.
+fn serve_but_never_answer() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+
+    thread::spawn(move || {
+        while let Ok((stream, _)) = listener.accept() {
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            // Held rather than dropped: a connection that closed would be answered as one that
+            // died, and this is a connection that is up and quiet.
+            thread::spawn(move || {
+                thread::sleep(Duration::from_secs(30));
+                drop(stream);
+            });
+        }
+    });
+
+    format!("http://127.0.0.1:{port}")
+}
+
 /// What the server does with one connection.
 enum Attempt {
     /// Read the request and hang up without answering, the way a connection that died looks.
@@ -521,6 +546,47 @@ fn a_stop_does_not_wait_for_the_model_to_start_writing() {
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "it waited for the model to start: {:?}",
+        started.elapsed()
+    );
+}
+
+/// The wait before a reply begins is the one somebody presses the key in, and an endpoint that
+/// has not answered at all is still that wait: resolving the name, opening the socket and reading
+/// the first byte happen inside one call that cannot be asked to return. Left there, a stop could
+/// not be noticed until the endpoint answered or the ten-minute bound on a reply ran out.
+#[test]
+fn a_stop_does_not_wait_for_an_endpoint_that_has_not_answered() {
+    let endpoint = serve_but_never_answer();
+    let config = config_for(&endpoint);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let cancel = Cancel::new();
+    let mut client = AichatClient::new(&config, &egress).with_cancel(cancel.clone());
+    let request = ChatRequest::new("automatic", vec![Message::user("hi")]);
+
+    let stopping = cancel.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        stopping.cancel();
+    });
+
+    let started = std::time::Instant::now();
+    let error = client
+        .complete_streaming(&mut policy, &request, |_| {})
+        .expect_err("a stopped request produced a completion");
+
+    assert!(matches!(error, ChatError::Cancelled), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it waited for the endpoint to answer: {:?}",
         started.elapsed()
     );
 }

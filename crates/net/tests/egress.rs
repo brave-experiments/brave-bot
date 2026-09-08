@@ -416,7 +416,12 @@ fn a_reply_that_stops_arriving_is_given_up_on() {
     });
 
     let mut stream = egress
-        .fetch_streaming(&mut policy, Request::get(&base), Label::untrusted_public())
+        .fetch_streaming(
+            &mut policy,
+            Request::get(&base),
+            Label::untrusted_public(),
+            None,
+        )
         .expect("the reply starts arriving");
 
     let error = loop {
