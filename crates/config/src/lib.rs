@@ -398,32 +398,26 @@ impl Config {
 
     /// Take the window the endpoint advertised for the model in use, where it is worth taking.
     ///
-    /// Ignored when a budget was set by hand. An advertised window sets the budget; when the
-    /// endpoint advertises nothing or a placeholder, the budget reverts to the default. Returns
-    /// whether the budget changed, so a caller can say so once rather than every turn.
+    /// Ignored when a budget was set by hand, and when the endpoint advertised nothing or something
+    /// too small to work in: in both cases what is already here stands. Returns whether the budget
+    /// changed, so a caller can say so once rather than every turn.
+    ///
+    /// A window that was not advertised still stops the budget claiming to be one. What stands is
+    /// then a figure taken for a model that is no longer in force, which is a guess in the sense
+    /// [`Config::budget_is_guessed`] means: good enough to compact against, not good enough to
+    /// state a percentage against without saying so.
     pub fn adopt_window(&mut self, advertised: Option<u64>) -> bool {
         if self.budget_was_chosen {
             return false;
         }
-        match budget_for_window(advertised) {
-            Some(budget) => {
-                self.budget_was_advertised = true;
-                if budget != self.context_budget {
-                    self.context_budget = budget;
-                    true
-                } else {
-                    false
-                }
+        let advertised = budget_for_window(advertised);
+        self.budget_was_advertised = advertised.is_some();
+        match advertised {
+            Some(budget) if budget != self.context_budget => {
+                self.context_budget = budget;
+                true
             }
-            None => {
-                self.budget_was_advertised = false;
-                if self.context_budget != DEFAULT_CONTEXT_BUDGET {
-                    self.context_budget = DEFAULT_CONTEXT_BUDGET;
-                    true
-                } else {
-                    false
-                }
-            }
+            _ => false,
         }
     }
 
@@ -605,6 +599,21 @@ mod tests {
         let mut config = Config::from_lookup(complete_env).unwrap();
         assert!(config.adopt_window(Some(102_400)));
         assert!(!config.budget_is_guessed());
+    }
+
+    /// A budget that came from one model's window is not a claim about the next one, and the
+    /// figure on the hint line says so. Reverting to the default instead would raise the budget
+    /// above a cramped window still in force, and a budget above the window does not delay
+    /// compaction, it removes it.
+    #[test]
+    fn a_window_nobody_advertised_leaves_an_adopted_budget_standing_and_marks_it_guessed() {
+        let mut config = Config::from_lookup(complete_env).unwrap();
+        assert!(config.adopt_window(Some(6_400)));
+        assert!(!config.budget_is_guessed());
+
+        assert!(!config.adopt_window(None));
+        assert_eq!(config.context_budget, 6_400);
+        assert!(config.budget_is_guessed());
     }
 
     #[test]
