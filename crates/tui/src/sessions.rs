@@ -1172,7 +1172,7 @@ pub fn fork(project: &Path, source_id: &str) -> Option<Record> {
 
         // The prefix is shared, so what its gates decided is the fork's history too. A fork
         // whose trail began at the fork point would report a conversation arriving from nowhere.
-        let old_audit_path = directory.join(format!("{}.audit.jsonl", old_id));
+        let old_audit_path = directory.join(format!("{old_id}.audit.jsonl"));
         let new_audit_path = directory.join(format!("{}.audit.jsonl", record.id));
         if let Ok(content) = std::fs::read(&old_audit_path) {
             let _ = write_secure(&new_audit_path, &content);

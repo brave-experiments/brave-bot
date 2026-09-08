@@ -1169,8 +1169,8 @@ mod tests {
 
         assert!(
             summaries <= 40 / RECENT_ROUNDS_KEPT + 1,
-            "a summary every {} rounds or so was expected, and there were {summaries}",
-            RECENT_ROUNDS_KEPT
+            "a summary every {RECENT_ROUNDS_KEPT} rounds or so was expected, and there were \
+             {summaries}"
         );
         assert!(summaries > 0, "the longest turn there is never compacted");
     }

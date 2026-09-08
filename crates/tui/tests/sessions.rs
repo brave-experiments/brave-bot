@@ -1001,8 +1001,7 @@ fn session_records_and_audit_trails_are_written_mode_0600() {
     assert_eq!(
         dir_mode & 0o077,
         0,
-        "group or other can access session directory: {:o}",
-        dir_mode
+        "group or other can access session directory: {dir_mode:o}"
     );
 
     let parent = dir.parent().expect("sessions parent");
@@ -1013,8 +1012,7 @@ fn session_records_and_audit_trails_are_written_mode_0600() {
     assert_eq!(
         parent_mode & 0o077,
         0,
-        "group or other can access parent sessions directory: {:o}",
-        parent_mode
+        "group or other can access parent sessions directory: {parent_mode:o}"
     );
 
     let record_path = dir.join(format!("{}.json", handle.id()));
@@ -1025,8 +1023,7 @@ fn session_records_and_audit_trails_are_written_mode_0600() {
     assert_eq!(
         record_mode & 0o077,
         0,
-        "group or other can read session record: {:o}",
-        record_mode
+        "group or other can read session record: {record_mode:o}"
     );
 
     let audit_path = dir.join(format!("{}.audit.jsonl", handle.id()));
@@ -1037,8 +1034,7 @@ fn session_records_and_audit_trails_are_written_mode_0600() {
     assert_eq!(
         audit_mode & 0o077,
         0,
-        "group or other can read session audit: {:o}",
-        audit_mode
+        "group or other can read session audit: {audit_mode:o}"
     );
 }
 
@@ -1105,8 +1101,7 @@ fn pre_existing_session_files_and_directories_are_tightened_on_write() {
     assert_eq!(
         dir_mode & 0o077,
         0,
-        "directory was not tightened to 0700: {:o}",
-        dir_mode
+        "directory was not tightened to 0700: {dir_mode:o}"
     );
 
     let record_mode = std::fs::metadata(&record_path)
@@ -1116,8 +1111,7 @@ fn pre_existing_session_files_and_directories_are_tightened_on_write() {
     assert_eq!(
         record_mode & 0o077,
         0,
-        "record was not tightened to 0600: {:o}",
-        record_mode
+        "record was not tightened to 0600: {record_mode:o}"
     );
 
     let audit_mode = std::fs::metadata(&audit_path)
@@ -1127,7 +1121,6 @@ fn pre_existing_session_files_and_directories_are_tightened_on_write() {
     assert_eq!(
         audit_mode & 0o077,
         0,
-        "audit was not tightened to 0600: {:o}",
-        audit_mode
+        "audit was not tightened to 0600: {audit_mode:o}"
     );
 }

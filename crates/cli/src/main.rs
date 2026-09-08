@@ -399,8 +399,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     //
     // Bypass trusts the workspace the same way the interactive opening prompt would: otherwise
     // every read and shell line is quarantined and an unattended run cannot see its own inputs.
-    let trust = bravebot_tui::trust_prompt::answered_by(permission_mode)
-        .unwrap_or_else(TrustStore::new);
+    let trust = bravebot_tui::trust_prompt::answered_by(permission_mode).unwrap_or_default();
     let outcome = match mode {
         Mode::Turn => turn::run_cancellable(
             &config,

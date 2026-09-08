@@ -445,9 +445,8 @@ impl Egress {
                         url: request.url.clone(),
                     });
                 }
-                let location = location.ok_or_else(|| EgressError::MissingLocation {
-                    url: url.clone(),
-                })?;
+                let location =
+                    location.ok_or_else(|| EgressError::MissingLocation { url: url.clone() })?;
                 // Resolved against the current URL so a relative Location is checked
                 // as the absolute URL it will actually resolve to.
                 url = resolve(&url, &location)?;
