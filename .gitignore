@@ -31,6 +31,7 @@ __pycache__/
 .claude/
 .agents/
 .bravebot/
+bravebot-export-*.md
 /AGENTS.md
 
 # Editors
