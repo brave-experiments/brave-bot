@@ -56,6 +56,7 @@ mode-bypass = ⏵⏵ bypass permissions on
 cli-options-heading = Options:
 cli-option-file = Include a workspace file as context (repeatable)
 cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
+cli-option-model = The model this run asks for, in place of the configured one
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
 cli-option-incognito = Write nothing to ~/.bravebot: no history, no session record, no preference
@@ -70,6 +71,13 @@ cli-option-version = Show the version
 cli-unknown-option = unknown option: { $flag }
 cli-file-needs-a-path = --file requires a path
 cli-mode-needs-a-name = --mode requires one of { $names }
+cli-model-needs-a-name = --model requires the name of a model
+# `/model` records a choice for the interface. A one-shot run takes its model from
+# configuration, so without this a scripted run could ask for a model the person who picked
+# one in a session has no reason to expect, with nothing said.
+cli-stored-model-not-read =
+    { $stored } was chosen with /model, which a one-shot run does not read: this one asks for
+    { $model }. Name a model with --model, or set model in settings.json.
 cli-unexpected-argument = unexpected argument: { $argument }
 cli-task-required = a task is required
 cli-configuration-problem = configuration error: { $problem }
@@ -105,6 +113,7 @@ doctor-key-id = key id
 doctor-model = model
 doctor-model-chosen = { $model } (chosen with /model)
 doctor-model-default = { $model } (default)
+doctor-model-session = session
 doctor-key-name = key
 doctor-key = { $key } (never transmitted)
 # Both are reported when both are reachable, so this names one of the two rather than the backend.

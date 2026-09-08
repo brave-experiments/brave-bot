@@ -66,7 +66,7 @@ fn main() -> ExitCode {
         },
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
-        Some("-p" | "--print" | "--mode" | "--file" | "--trace") => {
+        Some("-p" | "--print" | "--mode" | "--model" | "--file" | "--trace") => {
             run_task(&args, skip_permissions)
         }
         Some("doctor") => doctor(),
@@ -160,6 +160,7 @@ fn print_help() {
     for (flags, description) in [
         ("--file <path>", t!(cli_option_file)),
         ("--mode <mode>", t!(cli_option_mode)),
+        ("--model <name>", t!(cli_option_model)),
         ("-p, --print", t!(cli_option_print)),
         ("--trace", t!(cli_option_trace)),
         ("--incognito", t!(cli_option_incognito)),
@@ -195,15 +196,19 @@ struct Invocation {
     prompt: String,
     files: Vec<String>,
     mode: Mode,
+    /// The model the command line named. `None` leaves the configured one in force rather than
+    /// standing for a model of its own.
+    model: Option<String>,
     trace: bool,
     print: bool,
 }
 
-/// Parse `<prompt> [--file path]... [--mode name] [--trace] [-p]`.
+/// Parse `<prompt> [--file path]... [--mode name] [--model name] [--trace] [-p]`.
 fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     let mut prompt = String::new();
     let mut files = Vec::new();
     let mut mode = Mode::default();
+    let mut model = None;
     let mut trace = false;
     let mut print = false;
     let mut index = 0;
@@ -219,6 +224,17 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
                 None => {
                     return Err(t!(cli_mode_needs_a_name, names = Mode::NAMES.join(", ")));
                 }
+            },
+            // A blank name is refused rather than read as no choice. A stored one is allowed to
+            // be blank, where it means the file holds nothing and the configured model answers,
+            // but a script that computed an empty variable asked for a model and would otherwise
+            // be given whatever was configured without being told.
+            "--model" => match args.get(index + 1).map(|name| name.trim()) {
+                Some(name) if !name.is_empty() => {
+                    model = Some(bravebot_config::normalize_model(name).to_string());
+                    index += 2;
+                }
+                _ => return Err(t!(cli_model_needs_a_name).to_string()),
             },
             "--file" => match args.get(index + 1) {
                 Some(path) => {
@@ -247,6 +263,7 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
         prompt,
         files,
         mode,
+        model,
         trace,
         print,
     })
@@ -264,6 +281,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         prompt,
         files,
         mode,
+        model,
         trace,
         print,
     } = invocation;
@@ -308,9 +326,6 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    // The same choice the interface records. A preference about which model to think with is the
-    // user's, not the interface's, so a one-shot run honours it rather than reverting to the
-    // default the environment happens to name.
     // The rules the settings file carried. A one-shot run refuses every write anyway, so what
     // these add here is the deny list: a rule keeping a file from being read holds for a run
     // nobody is watching exactly as it does for a session. Anything unreadable is named on stderr,
@@ -339,7 +354,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     };
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
-        .with_model(bravebot_tui::store::load_model())
+        .with_model(model)
         .with_effort(bravebot_tui::store::load_effort())
         .with_permissions(permissions)
         .with_permission_mode(permission_mode);
@@ -383,6 +398,17 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         .as_deref()
         .unwrap_or(&config.default_model)
         .to_string();
+
+    // Said before the turn rather than after it, so somebody who meant to pin a model reads it
+    // while the run is still worth stopping.
+    if let Some(line) = stored_model_not_read(
+        task.model.as_deref(),
+        bravebot_tui::store::load_model().as_deref(),
+        &model,
+    ) {
+        eprintln!("{}", t!(cli_notice, notice = line));
+    }
+
     // The sign-in's own lines go to stderr as they arrive, beside every other progress line, which
     // keeps stdout the reply and nothing else. A URL and a code are no use after the fact, so they
     // are printed while the command that wrote them is still waiting.
@@ -442,21 +468,37 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             } else {
                 None
             };
+            // What was asked for against what answered. A model this run cannot be served is
+            // substituted rather than refused: one that needs a subscription comes back as
+            // whatever the free tier serves, with a 200 and an ordinary reply, so the name the
+            // server reports is the only trace of it. Which name the service was actually asked
+            // for, and whether it reports that name at all, are the backend's questions and are
+            // put to it here, where the configuration is in hand.
+            let asked = task
+                .model
+                .as_deref()
+                .map(|named| bravebot_agent::backend::Backend::name_as_asked(&config, named));
+            let comparable = task.model.as_deref().is_some_and(|named| {
+                bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(&config, named)
+            });
+            let not_served = model_not_served(asked.as_deref(), comparable, &outcome.model);
+
+            let finished = Finished {
+                reply: outcome.reply_for_display(),
+                notices: &outcome.notices,
+                attempt: attempt.as_deref(),
+                trail: trace.then_some((&sink, outcome.model.as_str())),
+                clean: outcome.clean,
+                not_served: not_served.as_deref(),
+            };
             report(
                 &mut std::io::stdout().lock(),
                 &mut std::io::stderr().lock(),
-                &Finished {
-                    reply: outcome.reply_for_display(),
-                    notices: &outcome.notices,
-                    attempt: attempt.as_deref(),
-                    trail: trace.then_some((&sink, outcome.model.as_str())),
-                    clean: outcome.clean,
-                },
+                &finished,
             );
-            if outcome.clean {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+            match finished.succeeded() {
+                true => ExitCode::SUCCESS,
+                false => ExitCode::FAILURE,
             }
         }
         // A run that stopped is the one worth looking at, so what it produced is printed
@@ -480,6 +522,55 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A line about the model choice a one-shot run does not read, or nothing worth saying.
+///
+/// `/model` records a choice for the interface that recorded it, and a run nobody is watching
+/// takes its model from configuration instead. Where the two name different models, saying so is
+/// the whole of what keeps that from being one model silently swapped for another.
+///
+/// Nothing where the command line named a model: somebody who typed one is not surprised by what
+/// answers, and a script that pins a model would carry the line on every run it ever made.
+///
+/// Nothing where they agree either, and nothing where no choice was ever recorded. A line naming
+/// the model that is answering anyway reports a difference that does not exist, and it would be
+/// printed on every run for the rest of the life of the machine.
+fn stored_model_not_read(
+    named: Option<&str>,
+    stored: Option<&str>,
+    in_force: &str,
+) -> Option<String> {
+    if named.is_some() {
+        return None;
+    }
+    let stored = stored.filter(|chosen| *chosen != in_force)?;
+    Some(t!(
+        cli_stored_model_not_read,
+        stored = stored,
+        model = in_force
+    ))
+}
+
+/// The complaint a run has when it named a model and another one answered, if it has one.
+///
+/// The endpoint substitutes rather than refusing, so the reported name is the only trace there is.
+///
+/// Nothing where the run named no model, since there was nothing to substitute for. Nothing where
+/// the name asks for whichever model the server picks rather than for a particular one, because
+/// resolving to a model is what that name is for. Nothing where the backend does not report the
+/// name it was asked for either, where a reply that says something else is the indirection
+/// working rather than a different model answering.
+fn model_not_served(asked: Option<&str>, comparable: bool, served: &str) -> Option<String> {
+    let asked = asked.filter(|_| comparable)?;
+    if asked == bravebot_config::DEFAULT_MODEL || asked == served {
+        return None;
+    }
+    Some(t!(
+        session_model_substituted,
+        asked = asked,
+        served = served
+    ))
 }
 
 /// What a pipe may carry before it is refused.
@@ -539,6 +630,19 @@ struct Finished<'a> {
     trail: Option<(&'a RecordingSink, &'a str)>,
     /// Whether no gate refused anything during the turn.
     clean: bool,
+    /// What to say where the run named a model and another one answered.
+    not_served: Option<&'a str>,
+}
+
+impl Finished<'_> {
+    /// Whether the run did what it was asked, which is what the process exits on.
+    ///
+    /// A turn that was refused something did not, and neither did one answered by a model other
+    /// than the one it named. Both are invisible to a script reading stdout, which is what makes
+    /// the status the only thing that can carry them.
+    fn succeeded(&self) -> bool {
+        self.clean && self.not_served.is_none()
+    }
 }
 
 /// Write a finished turn: the reply to `reply`, every other word to `beside`.
@@ -550,6 +654,9 @@ struct Finished<'a> {
 fn report(reply: &mut impl Write, beside: &mut impl Write, run: &Finished<'_>) {
     for notice in run.notices {
         let _ = writeln!(beside, "{}", t!(cli_notice, notice = notice));
+    }
+    if let Some(complaint) = run.not_served {
+        let _ = writeln!(beside, "{complaint}");
     }
     let _ = writeln!(reply, "{}", run.reply);
     if let Some(attempt) = run.attempt {
@@ -1076,14 +1183,11 @@ fn doctor() -> ExitCode {
                 report_gateway(provider);
             }
 
-            // What a run would actually request, since a choice made with `/model` overrides the
-            // configured default and reporting only the default would explain the wrong thing.
-            match bravebot_tui::store::load_model() {
-                Some(chosen) => fact(t!(doctor_model), t!(doctor_model_chosen, model = chosen)),
-                None => fact(
-                    t!(doctor_model),
-                    t!(doctor_model_default, model = &config.default_model),
-                ),
+            for (name, value) in model_facts(
+                &config.default_model,
+                bravebot_tui::store::load_model().as_deref(),
+            ) {
+                fact(name, value);
             }
 
             // Only where a subscription means something. A Leo credential is what the premium half of
@@ -1212,6 +1316,29 @@ fn aligned(name: impl AsRef<str>, value: impl AsRef<str>, column: usize) -> Stri
     let name = name.as_ref();
     let gap = column.saturating_sub(name.chars().count()).max(1);
     format!("  {name}{}{}", " ".repeat(gap), value.as_ref())
+}
+
+/// What `doctor` says about the model, given the configured one and the interface's own record.
+///
+/// Two lines where they differ, because they answer two questions. A run started from a script
+/// asks for the configured model; a session asks for whatever `/model` last recorded. One line
+/// naming a single model would answer one of those wrongly, and the person reading `doctor` is
+/// usually reading it because a model they did not expect answered.
+///
+/// One line where they agree, or where nothing was ever recorded: naming the same model twice
+/// explains nothing.
+fn model_facts(configured: &str, stored: Option<&str>) -> Vec<(String, String)> {
+    let mut facts = vec![(
+        t!(doctor_model).to_string(),
+        t!(doctor_model_default, model = configured),
+    )];
+    if let Some(chosen) = stored.filter(|chosen| *chosen != configured) {
+        facts.push((
+            t!(doctor_model_session).to_string(),
+            t!(doctor_model_chosen, model = chosen),
+        ));
+    }
+    facts
 }
 
 fn fact(name: impl AsRef<str>, value: impl AsRef<str>) {
@@ -1449,6 +1576,7 @@ mod tests {
             attempt: None,
             trail: Some((&sink, "qwen-3-235b")),
             clean: false,
+            not_served: None,
         });
 
         assert_eq!(reply, "ok\n");
@@ -1467,6 +1595,7 @@ mod tests {
             attempt: None,
             trail: None,
             clean: true,
+            not_served: None,
         });
 
         assert_eq!(reply, "ok\n");
@@ -1669,6 +1798,192 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_model_flag_names_the_model_a_run_asks_for() {
+        let invocation =
+            parse_invocation(&args(&["--model", "some-model", "do a thing"])).expect("parses");
+        assert_eq!(invocation.model.as_deref(), Some("some-model"));
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    /// A run that named no model leaves the configured one in force, which is the whole of how
+    /// `--model` ranks above configuration without standing in for it.
+    #[test]
+    fn a_run_that_named_no_model_names_nothing() {
+        let invocation = parse_invocation(&args(&["do a thing"])).expect("parses");
+        assert_eq!(invocation.model, None);
+    }
+
+    /// `automatic` is what an older choice and an older settings file spell the routing entry, and
+    /// a name this product does not send would be reset by the server rather than obeyed.
+    #[test]
+    fn the_older_name_for_the_routing_entry_is_rewritten() {
+        let invocation =
+            parse_invocation(&args(&["--model", "automatic", "do a thing"])).expect("parses");
+        assert_eq!(
+            invocation.model.as_deref(),
+            Some(bravebot_config::DEFAULT_MODEL)
+        );
+    }
+
+    #[test]
+    fn a_model_flag_with_no_name_is_refused() {
+        let err = parse_invocation(&args(&["--model"])).expect_err("must refuse");
+        assert!(err.contains("--model"), "{err}");
+    }
+
+    /// A script that computed an empty variable asked for a model. Reading the blank as no choice
+    /// would answer it with whatever was configured and say nothing, which is the substitution
+    /// this flag exists to make impossible.
+    #[test]
+    fn a_blank_model_is_refused_rather_than_read_as_no_choice() {
+        for typed in [
+            args(&["--model", "", "do a thing"]),
+            args(&["--model", "   ", "do a thing"]),
+        ] {
+            let err = parse_invocation(&typed).expect_err("must refuse");
+            assert!(err.contains("--model"), "{typed:?}: {err}");
+        }
+    }
+
+    /// A stored choice that names something other than what is about to answer is the case this
+    /// line exists for: nothing else in a scripted run reports it.
+    #[test]
+    fn a_stored_choice_the_run_does_not_read_is_named() {
+        let line = stored_model_not_read(None, Some("chosen-in-a-session"), "what-answers")
+            .expect("a line about the difference");
+        assert!(line.contains("chosen-in-a-session"), "{line}");
+        assert!(line.contains("what-answers"), "{line}");
+    }
+
+    /// Nothing to report where the recorded choice is the model that answers anyway, or where
+    /// nobody ever recorded one. Either would be a line on every run, forever, about nothing.
+    #[test]
+    fn a_stored_choice_that_agrees_with_the_run_says_nothing() {
+        assert_eq!(
+            stored_model_not_read(None, Some("same-model"), "same-model"),
+            None
+        );
+        assert_eq!(stored_model_not_read(None, None, "same-model"), None);
+    }
+
+    /// A person who typed `--model` has answered the question the line asks, and a script that
+    /// pins a model would otherwise carry it on every run it ever made.
+    #[test]
+    fn a_run_that_named_its_own_model_says_nothing_about_the_record() {
+        assert_eq!(
+            stored_model_not_read(Some("named-on-the-command-line"), Some("chosen"), "named"),
+            None
+        );
+    }
+
+    /// `doctor` is read by somebody explaining a model they did not expect, and a scripted run and
+    /// a session ask for different ones. Reporting a single model would answer that wrongly for
+    /// one of them.
+    #[test]
+    fn doctor_reports_the_session_model_beside_the_one_a_run_requests() {
+        let facts = model_facts("configured-model", Some("chosen-in-a-session"));
+        assert_eq!(facts.len(), 2, "{facts:?}");
+        assert!(facts[0].1.contains("configured-model"), "{facts:?}");
+        assert!(facts[1].1.contains("chosen-in-a-session"), "{facts:?}");
+    }
+
+    #[test]
+    fn doctor_names_one_model_where_there_is_only_one_to_name() {
+        assert_eq!(model_facts("same-model", Some("same-model")).len(), 1);
+        assert_eq!(model_facts("same-model", None).len(), 1);
+    }
+
+    /// A run that named a model and was answered by another did not do what it was asked. Nothing
+    /// on stdout says so, and a script pinned a model for a reason.
+    #[test]
+    fn a_model_a_run_named_and_did_not_get_is_reported() {
+        let complaint = model_not_served(Some("a-premium-model"), true, "a-free-one")
+            .expect("a complaint about the substitution");
+        assert!(complaint.contains("a-premium-model"), "{complaint}");
+        assert!(complaint.contains("a-free-one"), "{complaint}");
+    }
+
+    /// A run that named no model asked for nothing in particular, so whatever answered is what it
+    /// asked for.
+    #[test]
+    fn a_run_that_named_no_model_is_not_failed_by_the_one_that_answered() {
+        assert_eq!(model_not_served(None, true, "whatever-answered"), None);
+    }
+
+    /// The routing entry asks for whichever model the server picks, so a concrete name coming back
+    /// is that name working rather than a model standing in for another.
+    #[test]
+    fn a_routing_entry_answered_by_a_model_is_not_a_substitution() {
+        assert_eq!(
+            model_not_served(
+                Some(bravebot_config::DEFAULT_MODEL),
+                true,
+                "the-model-picked"
+            ),
+            None
+        );
+    }
+
+    /// A backend asked by an opaque handle answers with a name that never matched what went in, so
+    /// comparing them would fail every run ever made against one.
+    #[test]
+    fn a_backend_that_does_not_report_what_it_was_asked_is_not_compared() {
+        assert_eq!(
+            model_not_served(Some("an-opaque-handle"), false, "some-model"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_model_that_answered_as_asked_is_no_complaint() {
+        assert_eq!(
+            model_not_served(Some("same-model"), true, "same-model"),
+            None
+        );
+    }
+
+    /// The complaint is about the run rather than part of what the run produced, so a pipe of
+    /// stdout carries the reply and nothing else whichever way the run went.
+    #[test]
+    fn a_substituted_model_is_reported_beside_the_reply_never_in_it() {
+        let (reply, beside) = written(&Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: None,
+            trail: None,
+            clean: true,
+            not_served: Some("a-premium-model was not served"),
+        });
+
+        assert_eq!(reply, "ok\n");
+        assert!(
+            beside.contains("a-premium-model was not served"),
+            "{beside}"
+        );
+    }
+
+    /// The status is the only part of a finished run a script is certain to read, so a model that
+    /// was not served has to reach it. A turn nothing refused is not enough on its own.
+    #[test]
+    fn a_run_answered_by_another_model_does_not_succeed() {
+        let substituted = Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: None,
+            trail: None,
+            clean: true,
+            not_served: Some("a-premium-model was not served"),
+        };
+        let served = Finished {
+            not_served: None,
+            ..substituted
+        };
+
+        assert!(!substituted.succeeded());
+        assert!(served.succeeded());
+    }
+
     /// Turn is what an unqualified run has always been, so an omitted `--mode` has to stay that.
     #[test]
     fn the_default_mode_is_the_turn_loop() {
@@ -1704,6 +2019,7 @@ mod tests {
             attempt: Some("manifest proposed, which was not usable\n  not JSON\n"),
             trail: None,
             clean: true,
+            not_served: None,
         });
         assert_eq!(reply, "ok\n");
         assert!(beside.contains("not usable"), "got: {beside}");

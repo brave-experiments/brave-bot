@@ -129,3 +129,68 @@ is all that remains of a document nobody can see. The plan never shares stdout w
 `verified-by: bravebot_cli::main::an_unknown_mode_is_refused_rather_than_guessed`
 `verified-by: bravebot_cli::main::a_failed_plan_is_printed_beside_the_reply`
 `verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`
+
+<a id="CLI-9"></a>
+### CLI-9: a one-shot run's model is named on the command line, or configured
+
+`--model <name>` names the model for one run. Where no flag names one, the model is the configured
+one: an exported `BRAVE_AI_CHAT_DEFAULT_MODEL`, then the settings file's `model` key, then the
+default the build was made with. The choice `/model` records belongs to the interactive session
+that recorded it, and a one-shot run does not take its model from there. Where no flag named a
+model and that record names something other than what the run is about to ask for, both names are
+said on stderr before the turn, and `doctor` reports them as two facts rather than one. A `--model`
+with no name after it, or a blank one, is refused rather than read as no choice.
+
+**Why.** A scripted run whose model is whatever somebody last picked in a terminal is not
+reproducible. Nothing in the script changed, nothing reports the difference, and which model
+answered decides both what the run costs and what its output is worth. Every other route to a model
+can be committed beside the script; a picker's record cannot, and it cannot vary from one
+invocation to the next either, which is what the flag is for.
+
+The line on stderr is what keeps this from being one model quietly standing in for another: it
+names both, so somebody who chose one in a session can see which one a script asks for. It is said
+only where no flag named a model, since a person who typed one is not surprised by what answers,
+and a script that pins a model would otherwise carry the line on every run it ever made. A blank
+name is refused on the same reasoning: a script that computed an empty variable asked for a model,
+and reading the blank as no choice would answer it with whatever was configured and say nothing.
+
+`verified-by: bravebot_cli::main::a_model_flag_names_the_model_a_run_asks_for`
+`verified-by: bravebot_cli::main::a_run_that_named_no_model_names_nothing`
+`verified-by: bravebot_cli::main::the_older_name_for_the_routing_entry_is_rewritten`
+`verified-by: bravebot_cli::main::a_model_flag_with_no_name_is_refused`
+`verified-by: bravebot_cli::main::a_blank_model_is_refused_rather_than_read_as_no_choice`
+`verified-by: bravebot_cli::main::a_stored_choice_the_run_does_not_read_is_named`
+`verified-by: bravebot_cli::main::a_stored_choice_that_agrees_with_the_run_says_nothing`
+`verified-by: bravebot_cli::main::a_run_that_named_its_own_model_says_nothing_about_the_record`
+`verified-by: bravebot_cli::main::doctor_reports_the_session_model_beside_the_one_a_run_requests`
+`verified-by: bravebot_cli::main::doctor_names_one_model_where_there_is_only_one_to_name`
+
+<a id="CLI-10"></a>
+### CLI-10: a model a run named, and did not get, fails the run
+
+Where `--model` named a model and the endpoint answered with a different one, both names are said
+on stderr and the run exits non-zero. The reply still goes to stdout, and stdout carries nothing
+else. Three cases are not this: a run that named no model, a name that asks for whichever model the
+server picks rather than for a particular one, and a backend that does not report the name it was
+asked for.
+
+**Why.** A model a run cannot be served is substituted rather than refused. One that needs a
+subscription is answered by whatever the free tier serves, with an ordinary reply and nothing to
+distinguish it, so the name the server reports is the only trace there is. A person watching a
+session is shown that line and can act on it; a script sees a reply that looks exactly like the one
+it wanted, and a model is pinned in the first place because of what a run costs or how good its
+output has to be. The status is the part of a finished run a script is certain to read, which is
+what makes it the thing that has to carry this.
+
+The three exclusions are the cases where a different name is not a substitution. A run that named
+no model asked for nothing in particular. A routing entry resolves to a model per request, which is
+what it is for. A backend asked by an opaque handle answers with a name that never matched what
+went in, so comparing them would fail every run made against one.
+
+`verified-by: bravebot_cli::main::a_model_a_run_named_and_did_not_get_is_reported`
+`verified-by: bravebot_cli::main::a_model_that_answered_as_asked_is_no_complaint`
+`verified-by: bravebot_cli::main::a_run_that_named_no_model_is_not_failed_by_the_one_that_answered`
+`verified-by: bravebot_cli::main::a_routing_entry_answered_by_a_model_is_not_a_substitution`
+`verified-by: bravebot_cli::main::a_backend_that_does_not_report_what_it_was_asked_is_not_compared`
+`verified-by: bravebot_cli::main::a_substituted_model_is_reported_beside_the_reply_never_in_it`
+`verified-by: bravebot_cli::main::a_run_answered_by_another_model_does_not_succeed`
