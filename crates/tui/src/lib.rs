@@ -7,6 +7,7 @@
 pub mod app;
 pub mod ask;
 pub mod audit;
+pub mod checkpoints;
 pub mod clipboard;
 pub mod confirm;
 pub mod dropped;

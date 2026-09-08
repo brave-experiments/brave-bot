@@ -1177,8 +1177,15 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "read_file" => read_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
-        "write_file" => write_file(policy, tools, confirmer, &arguments),
-        "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
+        "write_file" => write_file(policy, tools, confirmer, reporter, &arguments),
+        "edit_file" => edit_file(
+            policy,
+            tools.workspace,
+            tools.slots,
+            confirmer,
+            reporter,
+            &arguments,
+        ),
         "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         // A delegate is never offered this, so a call to it from one is answered the way any
@@ -1844,10 +1851,11 @@ fn quarantined_body<S: Sink>(
 /// The order matters: the user sees the exact path and body *before* any grant exists, and
 /// the grant is issued only for what they saw. Issuing it earlier would mean approving a
 /// value that could still change.
-fn write_file<S: Sink, C: Confirmer>(
+fn write_file<S: Sink, C: Confirmer, R: Reporter>(
     policy: &mut Policy<'_, S>,
     tools: &mut Tools<'_>,
     confirmer: &mut C,
+    reporter: &mut R,
     arguments: &Value,
 ) -> Produced {
     let workspace = tools.workspace;
@@ -1973,6 +1981,33 @@ fn write_file<S: Sink, C: Confirmer>(
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(intent, existing.as_deref(), &shown, replaced_age);
 
+            // After the write, not before: a refused or failed write leaves nothing to undo, and
+            // a checkpoint for one would offer to restore a file to what it still holds.
+            //
+            // `existing` is None where the path held no file, and that distinction is the whole
+            // value of recording a creation: putting an empty file back where there was none
+            // leaves something behind that was never there.
+            //
+            // The counts come from the same diff the reviewer saw, so the list cannot say one
+            // thing while the approval said another.
+            reporter.checkpoint(crate::report::Written {
+                path: proposed_path.clone(),
+                prior: existing.clone(),
+                verb: if intent == Intent::Create {
+                    crate::report::WroteHow::Created
+                } else {
+                    crate::report::WroteHow::Replaced
+                },
+                added: changes
+                    .iter()
+                    .filter(|c| matches!(c, crate::diff::Change::Added(_)))
+                    .count(),
+                removed: changes
+                    .iter()
+                    .filter(|c| matches!(c, crate::diff::Change::Removed(_)))
+                    .count(),
+            });
+
             // What the model is told, which is what its own account of the turn will repeat. It
             // used to be told "wrote" either way, and would go on to say it had created a file
             // it had in fact replaced, which is the opposite of what the user needed to hear.
@@ -2015,11 +2050,12 @@ fn write_file<S: Sink, C: Confirmer>(
 /// The file is read through the gates rather than peeked at, so the read is recorded and
 /// the contents carry their label. The replacement then happens on released bytes, and the
 /// result is written back only if the file still matches what was read.
-fn edit_file<S: Sink, C: Confirmer>(
+fn edit_file<S: Sink, C: Confirmer, R: Reporter>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
     slots: &SlotStore,
     confirmer: &mut C,
+    reporter: &mut R,
     arguments: &Value,
 ) -> Produced {
     let found = match path_argument(policy, "edit_file", Purpose::Effect, slots, arguments) {
@@ -2109,6 +2145,22 @@ fn edit_file<S: Sink, C: Confirmer>(
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(Intent::Edit, Some(&current), &shown, None);
+
+            // `prior` is always Some here: an edit locates a passage in a file already there, so
+            // there is no creating case for the absence to stand for.
+            reporter.checkpoint(crate::report::Written {
+                path: proposed_path.clone(),
+                prior: Some(current.clone()),
+                verb: crate::report::WroteHow::Edited,
+                added: changes
+                    .iter()
+                    .filter(|c| matches!(c, crate::diff::Change::Added(_)))
+                    .count(),
+                removed: changes
+                    .iter()
+                    .filter(|c| matches!(c, crate::diff::Change::Removed(_)))
+                    .count(),
+            });
             confirmed(
                 format!("edited {shown_path}: {occurrences} replacement(s)"),
                 note,

@@ -10195,3 +10195,169 @@ fn what_a_command_printed_reaches_the_person_watching() {
         "the row does not say how the run ended"
     );
 }
+
+/// A rewind is only possible if something kept what the file held first, and the turn is the only
+/// place that sees a file immediately before it is written over.
+#[test]
+fn overwriting_a_file_announces_what_it_held_first() {
+    let scratch = Scratch::new("checkpoint-overwrite");
+    std::fs::write(scratch.path.join("a.txt"), "the original").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"a.txt","contents":"replaced"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("replace a.txt"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let kept = &reporter.checkpointed;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].path, "a.txt");
+    assert_eq!(kept[0].prior, Some("the original".to_string()));
+    assert_eq!(
+        kept[0].verb,
+        bravebot_agent::report::WroteHow::Replaced,
+        "a file already there was not recorded as replaced"
+    );
+}
+
+/// Restoring a creation means removing the file, so the absence has to be recorded as an absence.
+/// An empty string here would put back something that was never there.
+#[test]
+fn creating_a_file_announces_that_the_path_held_nothing() {
+    let scratch = Scratch::new("checkpoint-create");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"new.txt","contents":"fresh"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("create new.txt"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let kept = &reporter.checkpointed;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].path, "new.txt");
+    assert_eq!(
+        kept[0].prior, None,
+        "a path that held no file was not recorded as holding none"
+    );
+    assert_eq!(kept[0].verb, bravebot_agent::report::WroteHow::Created);
+}
+
+/// An edit reads the file to locate the passage, so its prior contents are already in hand and
+/// there is no excuse for losing them.
+#[test]
+fn editing_a_file_announces_what_it_held_first() {
+    let scratch = Scratch::new("checkpoint-edit");
+    std::fs::write(scratch.path.join("a.txt"), "one two three").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"two","new_text":"TWO"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("edit a.txt"),
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let kept = &reporter.checkpointed;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].path, "a.txt");
+    assert_eq!(kept[0].prior, Some("one two three".to_string()));
+    assert_eq!(kept[0].verb, bravebot_agent::report::WroteHow::Edited);
+    assert!(
+        kept[0].added > 0 && kept[0].removed > 0,
+        "an edit that replaced a passage counted no lines: {:?}",
+        kept[0]
+    );
+}
+
+/// A refused write leaves nothing to undo, and a checkpoint for one would offer to restore a file
+/// to what it still holds.
+#[test]
+fn a_refused_write_leaves_nothing_to_return_to() {
+    let scratch = Scratch::new("checkpoint-refused");
+    std::fs::write(scratch.path.join("a.txt"), "untouched").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"a.txt","contents":"nope"}"#),
+        reply_with("refused"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+    let mut refusing = RecordingConfirmer {
+        seen: Vec::new(),
+        decision: bravebot_agent::Decision::Reject,
+    };
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("try to replace a.txt"),
+        &mut refusing,
+        &mut reporter,
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        reporter.checkpointed.is_empty(),
+        "a refused write left a checkpoint behind: {:?}",
+        reporter.checkpointed
+    );
+}

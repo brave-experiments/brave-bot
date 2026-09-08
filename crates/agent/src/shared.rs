@@ -24,7 +24,7 @@ use crate::confirm::{
     Confirmer, Decision, OutputRequest, RunDecision, RunRequest, VouchRequest, WriteRequest,
 };
 use crate::report::{
-    Activity, DelegateId, Delegation, Landing, Phase, Printed, Reported, Reporter, Shown,
+    Activity, DelegateId, Delegation, Landing, Phase, Printed, Reported, Reporter, Shown, Written,
 };
 use bravebot_core::ask::{Answer, Asking};
 use bravebot_core::event::{Event, Sink};
@@ -139,6 +139,7 @@ impl<T: Reporter + ?Sized> Reporter for Borrowed<'_, '_, T> {
         fn tool_finished(&mut self, activity: Activity);
         fn interjected(&mut self, said: String);
         fn delegate_started(&mut self, delegation: Delegation);
+        fn checkpoint(&mut self, written: Written);
     }
 
     /// Not through the macro: whose report this is was settled when the handle was made, and a

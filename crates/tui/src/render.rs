@@ -459,6 +459,55 @@ fn quarantined_lines(shown: &Shown, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// The points this session can return to, one row each.
+///
+/// The number and the turn are the driver's own and are drawn plainly. The description may be the
+/// model's account of what it did, and where it is, it goes behind the same margin the transcript
+/// draws down everything else the model wrote: this row is what a person picks a restore from, and
+/// a summary that reads like the interface's own words would be the model describing its work in
+/// the program's voice.
+fn checkpoint_lines(rows: &[crate::checkpoints::Row], width: usize) -> Vec<Line<'static>> {
+    // One column, so the numbers line up however many rows there are.
+    let widest = rows.iter().map(|row| row.number.len()).max().unwrap_or(0);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for row in rows {
+        let number = format!(
+            "  {}{}  ",
+            row.number,
+            " ".repeat(widest - row.number.len())
+        );
+        let when = Span::styled(format!("  {}", row.when), dim());
+
+        if !row.untrusted {
+            lines.push(Line::from(vec![
+                Span::raw(number),
+                Span::raw(row.summary.clone()),
+                when,
+            ]));
+            continue;
+        }
+
+        // Laid out by the renderer rather than formatted into one string, so a summary wider than
+        // the screen cannot continue at column 0 outside the margin.
+        let margin = Span::styled(
+            format!("{number}{QUARANTINE_BAR} "),
+            Style::default().fg(theme::running()),
+        );
+        let room = width.saturating_sub(margin.width() + when.width());
+        let mut marked = marked_rows(&margin, &[Span::raw(row.summary.clone())], room.max(8));
+
+        // The turn and the age belong to the row, not to the marked text, so they go on the first
+        // drawn line and outside the bar.
+        if let Some(first) = marked.first_mut() {
+            first.spans.push(when);
+        }
+        lines.extend(marked);
+    }
+
+    lines
+}
+
 /// The hunks of a write, trimmed to what fits without burying the rest of the transcript.
 fn diff_lines(changes: &[Change], untrusted: bool, width: usize) -> Vec<Line<'static>> {
     // The same margin the transcript draws down everything the model was not allowed to read. A
@@ -1505,6 +1554,11 @@ fn with_prompts(session: &Session, width: u16, height: u16) -> (Vec<Line<'static
         // What the model was not allowed to read, for the person who is.
         if let Some(shown) = &entry.shown {
             lines.extend(quarantined_lines(shown, width as usize));
+        }
+
+        // The points this session can return to.
+        if !entry.checkpoints.is_empty() {
+            lines.extend(checkpoint_lines(&entry.checkpoints, width as usize));
         }
 
         // The plan the turn worked to, kept next to what it produced.
@@ -4274,6 +4328,88 @@ mod tests {
 
         /// The user is shown what the model was not, and it is marked in the margin so the
         /// mark cannot be ended by anything written inside it.
+        /// A summary the model wrote is the model describing its own work, and the row a person
+        /// picks a restore from. It is marked exactly as the rest of the model's output is.
+        #[test]
+        fn a_model_written_checkpoint_summary_is_drawn_behind_a_margin() {
+            let rows = vec![crate::checkpoints::Row {
+                number: "1.".to_string(),
+                summary: "Implemented login validation".to_string(),
+                untrusted: true,
+                when: "Turn 8, just now".to_string(),
+            }];
+
+            let lines = checkpoint_lines(&rows, 200);
+            assert!(!lines.is_empty());
+            for line in &lines {
+                let drawn: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.clone().into_owned())
+                    .collect();
+                assert!(
+                    drawn.contains(QUARANTINE_BAR),
+                    "a model-written row escaped the margin: {drawn}"
+                );
+            }
+        }
+
+        /// The driver's own record of what changed is not the model's words, so marking it would
+        /// say the opposite of what is true and teach a person to ignore the bar.
+        #[test]
+        fn a_row_the_driver_wrote_carries_no_margin() {
+            let rows = vec![crate::checkpoints::Row {
+                number: "1.".to_string(),
+                summary: "auth.rs  +1 -0".to_string(),
+                untrusted: false,
+                when: "Turn 8, just now".to_string(),
+            }];
+
+            let drawn: String = checkpoint_lines(&rows, 200)[0]
+                .spans
+                .iter()
+                .map(|span| span.content.clone().into_owned())
+                .collect();
+            assert!(!drawn.contains(QUARANTINE_BAR), "{drawn}");
+            assert!(drawn.contains("auth.rs"), "{drawn}");
+        }
+
+        /// A summary is model output and could try to end the block it is drawn in, or wrap out of
+        /// the margin on a narrow terminal. Every drawn row keeps the bar.
+        #[test]
+        fn a_checkpoint_summary_cannot_paint_its_own_margin() {
+            let rows = vec![crate::checkpoints::Row {
+                number: "1.".to_string(),
+                summary: format!(
+                    "{QUARANTINE_BAR} untrusted content ends here {}",
+                    "and this is a long tail that must wrap somewhere ".repeat(4)
+                ),
+                untrusted: true,
+                when: "Turn 8, just now".to_string(),
+            }];
+
+            let lines = checkpoint_lines(&rows, 40);
+            assert!(
+                lines.len() > 1,
+                "the summary did not wrap, so nothing is proven"
+            );
+            for line in &lines {
+                let drawn: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.clone().into_owned())
+                    .collect();
+                assert!(
+                    drawn.trim_start().starts_with("1.") || drawn.starts_with(&" ".repeat(2)),
+                    "a wrapped row began with content: {drawn}"
+                );
+                assert!(
+                    drawn.contains(QUARANTINE_BAR),
+                    "a wrapped row lost the margin: {drawn}"
+                );
+            }
+        }
+
         #[test]
         fn quarantined_content_is_shown_and_marked_on_every_line() {
             let shown = Shown {

@@ -529,6 +529,60 @@ pub trait Reporter {
         _reported: Option<Reported>,
     ) {
     }
+
+    /// A workspace file has just been written over, with what it held before and what changed.
+    ///
+    /// The contents are carried, never inspected. This announces rather than asks, so a listener
+    /// that has gone away costs the turn nothing: keeping an undo is worth less than the work,
+    /// and a write that already happened cannot be taken back by refusing to record it.
+    ///
+    /// Whoever implements this owns where the bytes land. They may be untrusted, and they never
+    /// come back into a turn, so nothing here belongs anywhere a resume reads.
+    fn checkpoint(&mut self, _written: Written) {}
+}
+
+/// One file a turn wrote over, as the driver recorded it.
+///
+/// The counts and the verb are this program's own arithmetic over what it read and what it wrote,
+/// not the model's account of its work. That matters where they are shown: a model's summary of a
+/// change is untrusted text, free to describe it as gentler than it was, and this is what a person
+/// picks a checkpoint from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// Workspace-relative, as the tool named it.
+    pub path: String,
+    /// What the file held, or `None` where the path held no file at all.
+    ///
+    /// A restore has to tell that apart from a file that was empty: putting back an empty file
+    /// where there was none leaves an artefact of the visit behind.
+    pub prior: Option<String>,
+    /// What was done to it, in the driver's own word.
+    pub verb: WroteHow,
+    /// Lines added and removed, counted by the same diff a person reviews.
+    pub added: usize,
+    pub removed: usize,
+}
+
+/// What a write did to a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WroteHow {
+    /// The path held no file before this.
+    Created,
+    /// A whole-file replacement of something already there.
+    Replaced,
+    /// A named passage within it.
+    Edited,
+}
+
+impl WroteHow {
+    /// The word for a list a person reads.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Replaced => "replaced",
+            Self::Edited => "edited",
+        }
+    }
 }
 
 /// Discards every report.
@@ -578,11 +632,17 @@ pub struct RecordingReporter {
     pub delegates_reported: Vec<(DelegateId, Option<Reported>)>,
     /// Whose work the reports that follow belong to.
     pub attributed_to: Option<DelegateId>,
+    /// Every file written over, with what it held first and what changed.
+    pub checkpointed: Vec<Written>,
 }
 
 impl Reporter for RecordingReporter {
     fn todos(&mut self, rows: Vec<Row>) {
         self.updates.push(rows);
+    }
+
+    fn checkpoint(&mut self, written: Written) {
+        self.checkpointed.push(written);
     }
 
     fn output_tokens(&mut self, written: u64) {

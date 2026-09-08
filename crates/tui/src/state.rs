@@ -196,6 +196,12 @@ pub struct Entry {
     /// once, so lines interleaved with the turn's could not be read in either direction: whose
     /// each one was would be a guess from the words, and the words are prose a model wrote.
     pub delegate: Option<Delegate>,
+    /// The checkpoint list, where this entry is one.
+    ///
+    /// Rows rather than a formatted block, because part of each row is the model's own account of
+    /// a turn and part is the driver's arithmetic. The renderer marks the first and not the
+    /// second, which it cannot do once they are one string.
+    pub checkpoints: Vec<crate::checkpoints::Row>,
 }
 
 impl Entry {
@@ -207,6 +213,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: None,
             delegate: None,
         }
@@ -220,6 +227,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: None,
             delegate: None,
         }
@@ -233,6 +241,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: None,
             delegate: None,
         }
@@ -247,6 +256,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: None,
             delegate: None,
         }
@@ -261,6 +271,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: None,
             delegate: None,
         }
@@ -278,6 +289,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: Some(activity),
             delegate: None,
         }
@@ -297,6 +309,7 @@ impl Entry {
             todos: Vec::new(),
             landing: None,
             shown: None,
+            checkpoints: Vec::new(),
             activity: None,
             delegate: None,
         }
@@ -658,6 +671,11 @@ pub struct Session {
     /// Whether `--dangerously-skip-permissions` was given, which is what puts the fourth rung on the
     /// ladder above. Fixed for the session: it comes from the command line.
     bypass_available: bool,
+    /// What each turn changed, so it can be put back.
+    ///
+    /// Detached until the session knows its own name, because a checkpoint belongs to a
+    /// session rather than to the directory it ran in.
+    pub checkpoints: crate::checkpoints::Store,
     /// What the configuration says about the tier, drawn beside the confinement on the opening
     /// screen.
     ///
@@ -930,6 +948,7 @@ impl Session {
             // the only thing that can: the flag is the record that somebody accepted the cost.
             permission_mode: bravebot_agent::PermissionMode::default(),
             bypass_available: false,
+            checkpoints: crate::checkpoints::Store::detached(),
             // The free tier until a caller says otherwise, which is what a build with no premium
             // host has and what a test that does not care about tiers should see.
             tier: t!(status_free_tier).to_string(),
@@ -993,6 +1012,14 @@ impl Session {
     /// names that name nothing, or worse, name a different file of the same name.
     pub fn now_in_workspace(&mut self, root: impl Into<std::path::PathBuf>) {
         self.workspace = root.into();
+    }
+
+    /// Keep what each turn changes, under this session's own name.
+    ///
+    /// Not part of [`Session::new`] because the name is not known until the record exists, and a
+    /// session that never learns one keeps nothing rather than writing somewhere shared.
+    pub fn keep_checkpoints(&mut self, project: &std::path::Path, session: &str) {
+        self.checkpoints = crate::checkpoints::Store::open(project, session);
     }
 
     /// Say what the configuration allows, for the opening screen to draw.
@@ -3422,6 +3449,29 @@ impl Session {
             );
             self.note(format!("{label}  {value}  {}", line.note));
         }
+    }
+
+    /// Draw the checkpoint list, or say there is nothing to return to.
+    ///
+    /// Its own entry rather than notes, because one column of each row is the model's account of a
+    /// turn and has to be drawn inside a margin. A note is one string and could not be marked in
+    /// part.
+    pub fn show_checkpoints(&mut self, rows: Vec<crate::checkpoints::Row>) {
+        self.scroll = 0;
+
+        // Whatever list was drawn earlier goes, rather than a second copy arriving below it.
+        // Asking twice is how a person checks whether a turn left a point behind, and a report
+        // that stacks up answers the question three times over while burying the transcript it
+        // was asked about. The rows are the same rows: nothing is lost by dropping the old one.
+        self.transcript.retain(|entry| entry.checkpoints.is_empty());
+
+        if rows.is_empty() {
+            self.note(t!(checkpoints_none));
+            return;
+        }
+        let mut entry = Entry::system("");
+        entry.checkpoints = rows;
+        self.transcript.push(entry);
     }
 
     /// Say something once for the whole session, ignoring it if it has been said already.

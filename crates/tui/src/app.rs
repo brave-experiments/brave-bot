@@ -90,6 +90,8 @@ const RENAME_COMMAND: &str = "/rename";
 
 /// The line that repeats a prompt, taking the prompt and any interval as its argument.
 const LOOP_COMMAND: &str = "/loop";
+/// The line that lists the points this session can return to.
+const CHECKPOINTS_COMMAND: &str = "/checkpoints";
 
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
@@ -116,7 +118,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 13] {
+pub fn commands() -> [Command; 14] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -177,6 +179,11 @@ pub fn commands() -> [Command; 13] {
             name: UNDO_COMMAND,
             argument: "",
             description: t!(command_undo),
+        },
+        Command {
+            name: CHECKPOINTS_COMMAND,
+            argument: "",
+            description: t!(command_checkpoints),
         },
         Command {
             name: EXIT_COMMAND,
@@ -257,6 +264,8 @@ pub enum Action {
     Rename(String),
     /// Report what this session is. Needs the workspace and the trust map, which the loop owns.
     Status,
+    /// List the points this session can return to. Needs the store, which the session owns.
+    Checkpoints,
     /// Run a command the user typed in shell mode. Needs the workspace and the conversation.
     Run(String),
     /// Put the transcript in front of the user in their editor. Needs the terminal, which the
@@ -851,6 +860,10 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input().trim() == COMPACT_COMMAND => {
             session.clear_input();
             Action::Compact
+        }
+        KeyCode::Enter if session.input().trim() == CHECKPOINTS_COMMAND => {
+            session.clear_input();
+            Action::Checkpoints
         }
         KeyCode::Enter if session.input().trim() == CLEAR_COMMAND => {
             session.clear_input();
@@ -1710,6 +1723,10 @@ fn event_loop(
         }
     };
 
+    // Now that the record exists there is a name to keep checkpoints under. Before this the store
+    // is detached, which is why nothing a turn does can land in another session's history.
+    session.keep_checkpoints(workspace.root(), stored.id());
+
     // Settled once, before any turn. Nothing means the user left at the question, and a session
     // they never agreed to have must not begin behind it.
     let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), inherited_trust)
@@ -1977,6 +1994,11 @@ fn event_loop(
                 session.report(report);
                 needs_draw = true;
             }
+            Action::Checkpoints => {
+                let listed = session.checkpoints.list();
+                session.show_checkpoints(crate::checkpoints::rows(&listed));
+                needs_draw = true;
+            }
             Action::Compact => {
                 // The snapshot holds the conversation as it was before it was shortened.
                 session.close_rewind_window();
@@ -2067,6 +2089,10 @@ fn event_loop(
                     )?;
 
                     session.last_turn_backups = workspace.take_backups();
+                    // The turn is over, so what it changed is one point to return to rather than
+                    // a growing pile. A turn that wrote no file leaves nothing, which is why a
+                    // conversation that only asked questions offers nothing to rewind to.
+                    session.checkpoints.finish_turn(session.turns);
 
                     // Written after each turn rather than at the end, because the end may never
                     // come: the session worth resuming is the one whose machine slept and never
@@ -3166,6 +3192,12 @@ fn run_turn_animated(
                 }
                 let _ = answer_tx.send(crate::remote_confirm::Reply::Vouch(answer.decision()));
             }
+            crate::remote_confirm::ToMain::Checkpoint(written) => {
+                // Kept, never drawn. The contents may be untrusted, and the only thing they are
+                // for is putting the file back; a note saying a file was captured would be one
+                // line per write for a facility nobody asked about yet.
+                session.checkpoints.capture(written);
+            }
             crate::remote_confirm::ToMain::Ask(asking) => {
                 // A planner that loops back over the same decision should not make the user
                 // restate it. The note is what keeps that from being invisible: an answer given
@@ -3392,6 +3424,12 @@ fn fold_outcome(
     match outcome {
         Ok(outcome) => {
             let trail = sink.bare();
+            // The same words the person is about to read, so a checkpoint row cannot say
+            // something the transcript never said. Untrusted either way, and marked as such
+            // wherever it is drawn.
+            session
+                .checkpoints
+                .summarised_by(outcome.reply_for_display());
             session.complete(
                 outcome.reply_for_display().to_string(),
                 trail,

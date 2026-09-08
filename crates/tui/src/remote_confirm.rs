@@ -128,6 +128,11 @@ pub enum ToMain {
     /// Sent before each report rather than worked out at the other end. Several runs report at
     /// once, so the order lines arrive in says nothing about whose they are.
     ReportingFor(Option<DelegateId>),
+    /// A file was written over, with what it held before and what changed. No reply.
+    ///
+    /// The contents may be untrusted, so the main thread writes them to the checkpoint store and
+    /// nowhere else: they are never drawn, never summarised, and never put back into a turn.
+    Checkpoint(bravebot_agent::report::Written),
 }
 
 /// What the main thread sends back, tagged with what it answers.
@@ -304,6 +309,10 @@ impl Reporter for RemoteReporter {
             failed,
             reported,
         });
+    }
+
+    fn checkpoint(&mut self, written: bravebot_agent::report::Written) {
+        let _ = self.outbound.send(ToMain::Checkpoint(written));
     }
 }
 
@@ -641,6 +650,7 @@ mod tests {
                     ToMain::DelegateStarted(_) => seen.push("delegate started"),
                     ToMain::DelegateFinished { .. } => seen.push("delegate finished"),
                     ToMain::ReportingFor(_) => seen.push("reporting for"),
+                    ToMain::Checkpoint(_) => seen.push("checkpoint"),
                     ToMain::Write(_) => {
                         seen.push("write");
                         answer_tx

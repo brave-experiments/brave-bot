@@ -575,7 +575,23 @@ command-clear = Start a new session here, keeping this one resumable
 command-loop = Send a prompt again and again, on your interval or at a pace each turn sets
 command-export = Export the session transcript to a markdown file
 command-undo = Rewind the last turn and restore files
+command-checkpoints = List the points this session can return to
 command-exit = Leave
+
+
+## Checkpoints: the points a session can return to
+
+checkpoint-unnamed = checkpoint { $number }
+checkpoints-none = nothing to return to yet: a checkpoint is kept for each turn that changes a file
+checkpoints-heading = Checkpoints
+checkpoint-created = created { $path }
+checkpoint-changed = { $path }  +{ $added } -{ $removed }
+checkpoint-and-others = { $first }  and { $others } more
+checkpoints-number-and-age = checkpoint { $number }, { $age }
+checkpoints-files = { $count ->
+    [one] { $count } file
+   *[other] { $count } files
+    }
 
 
 ## What the session says back
