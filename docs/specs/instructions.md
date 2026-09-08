@@ -169,6 +169,34 @@ exactly that.
 `verified-by: bravebot_agent::preamble::punctuation_around_the_name_is_not_part_of_it`
 `verified-by: bravebot_agent::preamble::a_short_file_naming_nothing_is_not_a_pointer`
 
+<a id="INSTR-9"></a>
+### INSTR-9: where the planner is working is stated, and is not read through the trust gate
+
+The system prompt says the working directory, whether the tree is a git repository, the platform,
+the OS version, the shell and today's date. These are facts about the machine, and the prompt says
+so: they are not instructions and nothing is asked of the planner on their account.
+
+They do not pass `read_trusted_content`, and that is the difference between them and every other
+source here. There is no file behind any of them. The root is where the user pointed the session,
+and the rest comes from the kernel and this process's own environment, which is the provenance
+[ROUTE-*](routing.md) relies on for a command the user typed. So there is nothing to vouch for and
+no label to refuse. Nothing read out of the workspace may be added to this block, because the whole
+argument for skipping the gate is that no source in the tree contributes to it.
+
+Composed per turn like everything else here, so `/cd` ([TRUST-13](trust-map.md#TRUST-13)) is
+followed: the next turn states where the session went.
+
+**Why.** Each of these otherwise costs a `run` to discover, and a run costs two prompts, not one:
+the plan is approved, and then the output comes back quarantined so the planner has to ask to be
+shown it. A planner that does not know its own working directory reaches for `pwd`, which is that
+whole exchange for a value the driver has had since startup. The date is stated for a different
+reason: a model's sense of it comes from its training and is wrong by however long ago that was.
+
+`verified-by: bravebot_agent::preamble::the_working_directory_is_stated_so_nothing_has_to_run_pwd`
+`verified-by: bravebot_agent::preamble::the_environment_is_stated_even_with_no_instructions_to_read`
+`verified-by: bravebot_agent::preamble::whether_the_tree_is_a_git_repository_is_said_either_way`
+`verified-by: bravebot_agent::preamble::moving_the_working_directory_restates_it`
+
 ## Known costs
 
 Accepted deliberately. Do not "fix" one without changing this spec first.
@@ -178,6 +206,9 @@ Accepted deliberately. Do not "fix" one without changing this spec first.
   which is a second thing to be wrong about how the filesystem looks.
 - **A pointer that points at a pointer is not followed twice.** A chain is a mistake in the project
   rather than a layout to support, and the second read is where a cycle would become a hang.
+- **The date is UTC, not local.** The offset is not knowable without a timezone database, and a
+  dependency for one line of the prompt is the worse trade. A planner near midnight may be a day
+  out, which matters to nothing that is not already asking the user.
 - **A project cannot turn off a global `AGENTS.md`.** The project's file has the last word, but
   the global one is still in front of the planner and can still be followed where the project
   says nothing that contradicts it. Deleting the global file, or narrowing it, is the only way to

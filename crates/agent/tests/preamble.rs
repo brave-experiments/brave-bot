@@ -296,3 +296,110 @@ fn a_pointer_that_names_nothing_readable_leaves_the_file_standing() {
         preamble.text
     );
 }
+
+/// The whole reason the block exists. Without it a planner has to run `pwd` to learn where it is,
+/// which costs a prompt to approve the run and a second one to be shown the answer, because a
+/// command's output comes back quarantined.
+#[test]
+fn the_working_directory_is_stated_so_nothing_has_to_run_pwd() {
+    let scratch = Scratch::new("cwd");
+    let project = scratch.directory("project");
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+    };
+
+    assert!(
+        preamble
+            .text
+            .contains(&workspace.root().display().to_string()),
+        "the working directory is not in the preamble: {}",
+        preamble.text
+    );
+}
+
+/// A project with no AGENTS.md and no skills still gets the block. These are facts about the
+/// machine rather than anything read out of the tree, so there is nothing for an empty project to
+/// be missing.
+#[test]
+fn the_environment_is_stated_even_with_no_instructions_to_read() {
+    let scratch = Scratch::new("bare");
+    let project = scratch.directory("project");
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+    };
+
+    for fact in ["Working directory:", "Platform:", "Today's date:"] {
+        assert!(
+            preamble.text.contains(fact),
+            "`{fact}` is missing from a preamble with no instructions: {}",
+            preamble.text
+        );
+    }
+}
+
+/// Said from the tree rather than assumed. A planner told a checkout is not a repository would
+/// avoid git in one that is, and the answer has to come from what is on disk.
+#[test]
+fn whether_the_tree_is_a_git_repository_is_said_either_way() {
+    let scratch = Scratch::new("git");
+    let plain = scratch.directory("plain");
+    let checkout = scratch.directory("checkout");
+    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+
+    let mut sink = RecordingSink::new();
+    let described = |workspace: &Workspace, sink: &mut RecordingSink| {
+        let mut policy = policy(sink, &["."]);
+        preamble::compose(&mut policy, workspace, None, &Catalogue::default(), None).text
+    };
+
+    let in_checkout = described(&Workspace::new(&checkout).expect("workspace"), &mut sink);
+    assert!(
+        in_checkout.contains("Is a git repository: true"),
+        "a checkout was not reported as one: {in_checkout}"
+    );
+
+    let in_plain = described(&Workspace::new(&plain).expect("workspace"), &mut sink);
+    assert!(
+        in_plain.contains("Is a git repository: false"),
+        "a directory with no .git was reported as a repository: {in_plain}"
+    );
+}
+
+/// `/cd` moves the working directory, and the block is composed per turn, so the next turn states
+/// where the session went. A value read once at startup would go stale the moment it moved.
+#[test]
+fn moving_the_working_directory_restates_it() {
+    let scratch = Scratch::new("moved");
+    let first = scratch.directory("first");
+    let second = scratch.directory("second");
+
+    let mut sink = RecordingSink::new();
+    let described = |workspace: &Workspace, sink: &mut RecordingSink| {
+        let mut policy = policy(sink, &["."]);
+        preamble::compose(&mut policy, workspace, None, &Catalogue::default(), None).text
+    };
+
+    let here = Workspace::new(&first).expect("workspace");
+    let there = Workspace::new(&second).expect("workspace");
+
+    let before = described(&here, &mut sink);
+    let after = described(&there, &mut sink);
+
+    assert!(before.contains(&here.root().display().to_string()));
+    assert!(
+        after.contains(&there.root().display().to_string()),
+        "the preamble did not follow the working directory: {after}"
+    );
+    assert!(
+        !after.contains(&here.root().display().to_string()),
+        "the preamble still names the directory the session left: {after}"
+    );
+}

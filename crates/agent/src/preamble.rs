@@ -1,8 +1,14 @@
 //! Standing instructions, and the skills on offer, as text for the system prompt.
 //!
-//! Two things reach the planner before it is asked anything: `AGENTS.md`, which says how work is
-//! done here, and the name and description of every skill it may load. Both are instructions, so
-//! both are exactly the kind of input this repository is careful about.
+//! Two kinds of thing reach the planner before it is asked anything, and they are not alike.
+//!
+//! **Instructions**, which are `AGENTS.md` and the name and description of every skill it may
+//! load. These are exactly the kind of input this repository is careful about, and they go through
+//! the gate below.
+//!
+//! **Facts about where it is working**, which are the working directory, the platform and the
+//! date. These are not instructions and there is no file behind them: see [`environment`] for why
+//! they do not go through the gate, and why nothing read out of the workspace may join them.
 //!
 //! # One way in, and it refuses
 //!
@@ -69,6 +75,8 @@ pub fn compose<S: Sink>(
 ) -> Preamble {
     let mut preamble = Preamble::default();
 
+    preamble.text.push_str(&environment(workspace));
+
     let mut standing = String::new();
     if let Some(home) = home
         && let Some(text) = read_home_agents(policy, home)
@@ -130,6 +138,114 @@ pub fn compose<S: Sink>(
     }
 
     preamble
+}
+
+/// Where the planner is working, as facts rather than instructions.
+///
+/// Every one of these costs a `run` and two prompts to discover: the plan has to be approved, and
+/// then the output comes back quarantined, so the planner has to ask again to read it. A planner
+/// that does not know its own working directory reaches for `pwd` to find out, which is a poor
+/// trade for a value the driver has had all along.
+///
+/// **Not read through the trust gate, and that is the point.** Everything else here is file
+/// content somebody may have written into the tree, so it goes through
+/// `Policy::read_trusted_content` and may be refused. None of this is: the root is where the user
+/// pointed the session, and the rest comes from the kernel and this process's own environment.
+/// That is the provenance `Policy::label_user_command_output` rests on, so there is no file to
+/// vouch for and nothing for the gate to decide. Do not extend this with anything read out of the
+/// workspace.
+fn environment(workspace: &Workspace) -> String {
+    let mut out = String::from(
+        "\n\nWhere you are working. These are facts about this machine, not instructions.\n\n",
+    );
+    out.push_str(&format!(
+        "- Working directory: {}\n",
+        workspace.root().display()
+    ));
+    out.push_str(&format!(
+        "- Is a git repository: {}\n",
+        is_git_repository(workspace.root())
+    ));
+    out.push_str(&format!("- Platform: {}\n", std::env::consts::OS));
+    if let Some(release) = os_release() {
+        out.push_str(&format!("- OS version: {release}\n"));
+    }
+    out.push_str(&format!("- Shell: {}\n", crate::shell::shell()));
+    out.push_str(&format!("- Today's date: {}\n", today()));
+    out.push_str(
+        "\nA relative path means one under the working directory, and `run` compiles a line \
+         there. You do not need to run `pwd`, `uname` or `date` to learn any of the above.\n",
+    );
+    out
+}
+
+/// Whether this tree is under version control, walking up the way git itself does.
+///
+/// A worktree and a submodule keep a `.git` file pointing at the real directory rather than a
+/// directory, so both spellings count: a planner told "no" in a worktree would avoid git in a
+/// checkout that has one.
+fn is_git_repository(directory: &Path) -> bool {
+    directory
+        .ancestors()
+        .any(|candidate| candidate.join(".git").exists())
+}
+
+/// The kernel's release string, which is what a person means by the OS version.
+///
+/// `None` off unix, where there is no `uname` and the platform line already says as much.
+#[cfg(unix)]
+fn os_release() -> Option<String> {
+    Some(
+        rustix::system::uname()
+            .release()
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[cfg(not(unix))]
+fn os_release() -> Option<String> {
+    None
+}
+
+/// Today's date, UTC, as `YYYY-MM-DD`.
+///
+/// Stated because a model's sense of the date comes from its training and is wrong by however long
+/// ago that was, which matters the moment anything reasons about what is recent. UTC rather than
+/// local time: the offset is not knowable without a timezone database, and being off by a day at
+/// the edges is better than a dependency for one line.
+fn today() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Convert a count of days since 1970-01-01 to a civil date.
+///
+/// Howard Hinnant's `civil_from_days`, exact for every date this will see and needing no leap-year
+/// table. Duplicated from `crate::subscription` rather than shared: that one is part of the
+/// credential protocol's wire format, and coupling a line of the system prompt to it would mean a
+/// change for one had to answer for the other.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = (z - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    } as u32;
+
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 /// `~/.bravebot/AGENTS.md`, trusted for sitting where it sits.

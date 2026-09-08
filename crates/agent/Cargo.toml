@@ -20,3 +20,7 @@ base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# uname(2), for the platform and OS version the preamble states. rustix rather than libc so
+# the call does not need unsafe at this crate.
+rustix = { workspace = true, features = ["system"] }

@@ -107,6 +107,7 @@ dependencies = [
  "bravebot-i18n",
  "bravebot-net",
  "bravebot-skus",
+ "rustix",
  "serde",
  "serde_json",
 ]

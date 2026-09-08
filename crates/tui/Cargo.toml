@@ -33,4 +33,4 @@ unicode-width = { workspace = true }
 # terminal never sends one. Crossterm drops those replies, and a blocking read would
 # stall startup on a terminal that does not answer. rustix rather than libc so the
 # same syscalls do not need unsafe at this crate.
-rustix = { version = "1", features = ["event"] }
+rustix = { workspace = true, features = ["event"] }
