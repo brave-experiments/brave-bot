@@ -1,0 +1,23 @@
+#!/bin/sh
+# Refuse a push that CI could fail for a reason this machine cannot see.
+#
+# A push is what starts CI, so it is the last moment a toolchain older than the one CI lints with
+# is still worth knowing about, and it is rare enough that a check here is not the per-commit noise
+# people learn to pass --no-verify to.
+#
+# Nothing here compiles anything. `make check` is still what has to pass before a push; this only
+# says when the clippy that ran during `make check` was weaker than the one CI will run.
+
+# Git hooks do not inherit direnv, and this needs nothing from it, but keeping the two hooks alike
+# means a check added here later behaves the way the same check does in pre-commit.
+if command -v direnv >/dev/null 2>&1; then
+    eval "$(direnv export bash)"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+    if ! python3 contrib/check-toolchain.py; then
+        echo >&2
+        echo "pre-push: the toolchain. See above, or set BRAVEBOT_ALLOW_STALE_TOOLCHAIN=1." >&2
+        exit 1
+    fi
+fi

@@ -15,10 +15,10 @@ help:
 	@echo
 	@echo "Development:"
 	@echo "  make init           Configure bravebot, Claude Code, Codex and Cursor; install hooks"
-	@echo "  make hooks          Point git at the checked-in pre-commit hook"
+	@echo "  make hooks          Point git at the checked-in git hooks"
 	@echo "  make build          Debug build"
 	@echo "  make test           Run all tests"
-	@echo "  make check          Format check, clippy, and tests"
+	@echo "  make check          Format check, clippy, tests, and toolchain age"
 	@echo "  make check-spec     Check docs/specs against the implementation"
 	@echo "  make locales        What each translation has, and what it is missing"
 	@echo "  make check-linux    The same checks on Linux, current stable toolchain"
@@ -48,8 +48,8 @@ help:
 init: hooks
 	python3 agents/setup.py link
 
-# .git/hooks is not versioned, so a fresh clone commits with nothing checking it until this
-# runs. Idempotent, and part of `init` so nobody has to know it exists.
+# .git/hooks is not versioned, so a fresh clone commits and pushes with nothing checking it
+# until this runs. Idempotent, and part of `init` so nobody has to know it exists.
 .PHONY: hooks
 hooks:
 	git config core.hooksPath .githooks
@@ -79,11 +79,22 @@ aws-logout:
 	aws sso logout
 
 # Everything CI enforces, runnable locally before pushing.
+#
+# The toolchain check is last so a run that has something to say says it after the results
+# rather than in front of them, and it fails rather than warns: this target's whole claim is
+# that passing it means CI passes, and on a toolchain several releases behind that is not true.
 .PHONY: check
 check:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
 	cargo test --all
+	@python3 contrib/check-toolchain.py
+
+# Whether clippy here knows the lints CI will fail on. Run by `check` and by the pre-push
+# hook; on its own it costs nothing and answers immediately.
+.PHONY: check-toolchain
+check-toolchain:
+	@python3 contrib/check-toolchain.py
 
 # The mechanical half of the spec check: clause numbering, the tests each clause names,
 # the paths it governs, the symbols it guards, and the table in the specs README. No model

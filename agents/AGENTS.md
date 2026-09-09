@@ -143,6 +143,14 @@ what CI runs, not what to run between two edits to the same file, and never twic
 same thing. Reaching for it out of caution is not free: it is the difference between a review that
 takes a minute and one that takes twenty, and the reviewer is the person waiting.
 
+**Clippy here is not the clippy CI runs.** CI installs whatever stable is current on the day it
+runs, and clippy gains lints with every release, so a host a few releases behind passes a warning
+CI fails on, and the first report of it is a red build on code that was checked before it was
+pushed. `make check-toolchain` measures that gap from the release date rustc states; `make check`
+and the pre-push hook both run it. When it fires, the answer is `make check-linux`, which runs fmt,
+clippy and the tests on current stable in a container. Another local `cargo clippy` is not: it is
+the same weaker lint set a second time.
+
 Read what a command exits with rather than a filter over it: `make check | grep error` reports
 success on a formatting failure, because a fmt diff says nothing matching that pattern and grep
 exited happily. If a check cannot pass for a reason outside the change, say so in the commit

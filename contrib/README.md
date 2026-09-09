@@ -3,6 +3,29 @@
 Tools that are useful for working on bravebot but are not part of it. Nothing here is built, shipped,
 or run by CI, and nothing in `crates/` depends on any of it.
 
+## check-toolchain.py
+
+Answers whether clippy on this machine knows the lints CI will fail on.
+
+CI installs whatever stable is on the day it runs, and clippy gains lints with every release, so a
+host a few releases behind passes a lint CI fails. Nothing in a diff shows this, and the first
+report of it is a red build on code that was checked before it was pushed.
+
+Rust ships every six weeks and rustc states its own release date, so the gap is measurable without
+asking the network what stable is today. Anything under a release old passes silently.
+
+```sh
+make check-toolchain          # or contrib/check-toolchain.py
+```
+
+`make check` runs it last and fails on it, since that target's claim is that passing it means CI
+passes, and the pre-push hook runs it for the same reason: a push is what starts CI. Neither
+compiles anything for it. `--warn` prints the same thing and exits zero, and
+`BRAVEBOT_ALLOW_STALE_TOOLCHAIN=1` skips it, for a host that cannot have the newer toolchain.
+
+`make check-linux` is the way to run CI's fmt, clippy and tests on current stable regardless of
+what the host has.
+
 ## drive_tui.py
 
 Drives the terminal interface from a script, so the parts of it that a unit test cannot reach can
