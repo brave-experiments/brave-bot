@@ -25,9 +25,22 @@ puts it in `/usr/local/bin`, asking for sudo only if that directory is not yours
 curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
-Running the line again is how an install made this way is updated.
+Running the line again is how an install made this way is updated: it remembers where the last
+one went, so a second run replaces that binary rather than leaving two on your PATH.
 
 To build from source instead, see [development.md](development.md).
+
+## Staying current
+
+A session started on a version that has been superseded says so, once, under the trust question,
+and gives the line that updates the copy you are running: the npm command for an npm install and
+the script again for a script install. A build from source is left alone, since neither line would
+update one.
+
+Nothing about that waits: the notice comes from an answer written down on an earlier launch, and
+the request that refreshes it, at most one a day, runs behind the session and is for the next one.
+A machine that is offline, or a first run with nothing recorded yet, says nothing. An incognito
+session neither records an answer nor asks for one, and a build from source never asks at all.
 
 ## Using it
 

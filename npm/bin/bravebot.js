@@ -17,7 +17,14 @@ if (!fs.existsSync(binaryPath)) {
   process.exit(1);
 }
 
-const result = spawnSync(binaryPath, process.argv.slice(2), { stdio: "inherit" });
+// The binary is an ordinary executable in whatever directory npm unpacked it into, so this
+// launcher is the only thing that knows the package it belongs to. It says so, and that is what
+// lets bravebot offer the npm command when a newer release is out rather than one that would
+// install a second copy somewhere else.
+const result = spawnSync(binaryPath, process.argv.slice(2), {
+  stdio: "inherit",
+  env: { ...process.env, BRAVEBOT_INSTALLED_VIA: "npm" },
+});
 
 if (result.error) {
   console.error(`Failed to run bravebot: ${result.error.message}`);

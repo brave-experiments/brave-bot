@@ -671,6 +671,11 @@ session-trusting-unasked =
     trusting { $directory } (--dangerously-skip-permissions, so you were not asked)
 session-not-trusting = this directory is not trusted; every write will be shown to you
 session-vouched-for = trusting { $path } for this session
+# Said once at the top of a session when a newer release has been published. The command is
+# passed in rather than written here: it is a line somebody pastes into a shell, and which one it
+# is depends on how this copy was installed, so it is not a translator's to reword.
+update-available =
+    bravebot { $version } is out (this is { $running }); update with: { $command }
 session-started-server = running the { $language } language server for this session ({ $program })
 session-answered-already = answered already: { $question }
 session-something-was-refused = a policy gate refused something during that turn

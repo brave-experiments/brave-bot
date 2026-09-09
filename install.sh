@@ -7,13 +7,17 @@
 #
 # The checksum check is not optional: without it a network-fetched executable would run on the
 # strength of TLS alone, and a substituted release asset would be indistinguishable from a good
-# one. Running this again is also how an install made this way is updated.
+# one. Running this again is also how an install made this way is updated, so it writes down where
+# the binary went: that is what lets bravebot name the command that updates this copy, and what
+# puts a later run in the same place rather than beside it.
 
 set -eu
 
 REPO="brave-experiments/brave-bot"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 BIN_NAME="bravebot"
+STATE_DIR="${HOME:-}/.bravebot"
+INSTALLED_BY="${STATE_DIR}/installed-by"
 DEFAULT_INSTALL_DIR="/usr/local/bin"
 
 fail() {
@@ -71,6 +75,14 @@ fi
 
 ASSET_NAME="${BIN_NAME}-${OS_KEY}-${ARCH_KEY}"
 
+# Where the last install put it, so running this again updates that copy instead of leaving a
+# second one somewhere else on the PATH. INSTALL_DIR wins, for a person who is moving it.
+if [ -z "${INSTALL_DIR:-}" ] && [ -r "$INSTALLED_BY" ]; then
+  recorded="$(head -n 1 "$INSTALLED_BY" 2>/dev/null || true)"
+  if [ -n "$recorded" ]; then
+    INSTALL_DIR="$(dirname "$recorded")"
+  fi
+fi
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 
 TAG="$(curl -fsSL "$API_URL" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
@@ -122,6 +134,12 @@ if [ -w "$INSTALL_DIR" ]; then
 else
   need_cmd sudo
   sudo mv "$BIN_PATH" "$DEST_PATH"
+fi
+
+# What bravebot reads to know it can offer the command that updates this copy. A machine with no
+# HOME gets the binary and no notice about later releases, which is the same as no record at all.
+if [ -n "${HOME:-}" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
+  printf '%s\n' "$DEST_PATH" > "$INSTALLED_BY" 2>/dev/null || true
 fi
 
 echo "Installed ${BIN_NAME} ${TAG} to ${DEST_PATH}"

@@ -98,3 +98,13 @@ pub const SUBPROCESS_ENV_SCRUB: &str = "BRAVEBOT_SUBPROCESS_ENV_SCRUB";
 /// ask for and a name-matching filter cannot tell one of those from an exfiltration. What holds
 /// here is narrow and exact: this agent's own secrets are not handed to programs it starts.
 pub const SCRUBBED: [&str; 2] = [SIGNING_KEY, KEY_ID];
+
+/// How this copy of bravebot was installed, set by a launcher that knows.
+///
+/// The npm package's launcher sets it to `npm` before it starts the binary, which is the only way
+/// the binary could tell: what npm unpacked is an ordinary executable in an ordinary directory.
+/// It decides which update command a person is shown at startup and nothing else, so a value
+/// nothing here recognises leaves the startup screen as it would have been.
+///
+/// Absent from ALL: it describes one installation rather than the build.
+pub const INSTALLED_VIA: &str = "BRAVEBOT_INSTALLED_VIA";

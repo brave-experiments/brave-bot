@@ -605,6 +605,9 @@ session-trusting-unasked =
 session-not-trusting =
     ce répertoire n'est pas approuvé ; chaque écriture vous sera montrée
 session-vouched-for = { $path } approuvé pour cette session
+update-available =
+    bravebot { $version } est disponible (celle-ci est { $running }) ; pour la mettre à jour :
+    { $command }
 session-answered-already = déjà répondu : { $question }
 session-something-was-refused =
     un contrôle de la politique a refusé quelque chose pendant ce tour

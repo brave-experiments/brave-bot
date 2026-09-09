@@ -270,3 +270,39 @@ fn no_audit_trail_is_written() {
         "an incognito session wrote an audit trail"
     );
 }
+
+/// UPDATE-8: an incognito session still reads what an ordinary one wrote down about updating.
+///
+/// The mode is about what survives a session rather than about what it may know, and a private
+/// session that stopped telling somebody their bravebot was superseded would be crippled rather
+/// than private. Nothing new is recorded and the answer already there is left as it was: asking
+/// again is decided by whether this session may write at all, and the write itself resolves the
+/// directory through the writing answer, as every other write to it does.
+#[test]
+fn the_answer_about_updating_is_still_read() {
+    let scratch = Scratch::incognito("updates");
+    // The binary this test is running as, which is what makes the seeded record name it.
+    let running = std::env::current_exe().expect("the test binary");
+    scratch.seed("installed-by", &format!("{}\n", running.display()));
+    scratch.seed("update-check", "1700000000\treleases\t99.0.0\n");
+
+    let said = bravebot_tui::update::at_startup().expect("a version this far ahead is an update");
+    assert!(
+        said.contains("99.0.0"),
+        "the recorded answer was not read back: {said}"
+    );
+
+    let mut expected = vec!["installed-by".to_string(), "update-check".to_string()];
+    expected.sort();
+    assert_eq!(
+        scratch.contents(),
+        expected,
+        "an incognito session recorded something about updating"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.own_directory().join("update-check"))
+            .expect("the seeded file"),
+        "1700000000\treleases\t99.0.0\n",
+        "an incognito session overwrote the recorded answer"
+    );
+}

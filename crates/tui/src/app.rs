@@ -1798,6 +1798,14 @@ fn event_loop(
         return Ok(left_behind(&stored));
     };
 
+    // After the trust answer, because that question is the first thing on the screen and an aside
+    // about a newer release does not come before it. Nothing is fetched here: the line is read off
+    // what an earlier launch wrote down, and the ask that answers the next launch runs behind the
+    // session rather than in front of it.
+    if let Some(newer) = crate::update::at_startup() {
+        session.note(newer);
+    }
+
     // The rules the user wrote in advance, read once for the session: a person editing the file
     // mid-session is describing the next one, and rules that changed halfway through a turn would
     // be the harder thing to explain. Every turn below is given these.

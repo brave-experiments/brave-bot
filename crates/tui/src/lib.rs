@@ -34,6 +34,7 @@ pub mod table;
 pub mod theme;
 pub mod theme_prompt;
 pub mod trust_prompt;
+pub mod update;
 
 /// What this build is: the version, the commit it was built from, and whether the tree had
 /// uncommitted changes at the time.
