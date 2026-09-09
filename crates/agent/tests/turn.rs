@@ -9333,6 +9333,52 @@ fn an_exchange_to_ask_beside() -> bravebot_agent::Conversation {
     conversation
 }
 
+/// What `/goal` runs when a turn ends, over its own path like `/btw`'s: a policy it builds
+/// itself, one request with no tools offered, and a verdict the driver is allowed to read.
+///
+/// Nothing else in the suite sends the judge's request. Without this the call could be one the
+/// endpoint does not answer and every other goal test would still pass, because they build the
+/// request and read verdict strings without ever putting one on the wire.
+#[test]
+fn a_goal_check_reaches_the_model_and_comes_back_as_a_verdict() {
+    let (endpoint, received) =
+        serve_sequence(vec![reply_with("MET\nthe second listing shows a.txt")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let conversation = an_exchange_to_ask_beside();
+    let before = conversation.len();
+
+    let assessed = turn::goal(
+        &config,
+        &egress,
+        bravebot_agent::goal::Check::of(&conversation, "a.txt exists"),
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+    )
+    .expect("judging a stopping condition must not be refused");
+
+    assert_eq!(
+        assessed.verdict,
+        bravebot_agent::goal::Verdict::Met {
+            reason: "the second listing shows a.txt".to_string()
+        }
+    );
+    assert_eq!(
+        conversation.len(),
+        before,
+        "judging the condition changed the exchange it was judged against"
+    );
+
+    let body = received.recv().expect("the check's request");
+    assert!(
+        body.contains("a.txt exists"),
+        "the condition did not reach the judge: {body}"
+    );
+}
+
 /// What `/btw` runs. Its own path, like `/compact`'s: a policy it builds itself, so it has to
 /// grant itself what reaching the model needs, and one request with no tools offered.
 #[test]

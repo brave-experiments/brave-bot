@@ -274,7 +274,11 @@ pub fn assess<S: Sink>(
         client = client.with_subscription(subscription);
     }
 
-    let completion = client.complete(policy, &request)?;
+    // Streaming, like every other request this program makes, including the aside this is modelled
+    // on. Nothing here shows the answer arriving, so the progress is dropped: what the streaming
+    // call buys is the one path the endpoint actually answers. One request either way, with no
+    // round for anything to steer.
+    let completion = client.complete_streaming(policy, &request, |_| {})?;
 
     // Relabelled from the context the way a round's own words are: what comes back from the client
     // carries the label the network gave it, and the kernel is the only thing that knows what this
