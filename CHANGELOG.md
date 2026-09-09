@@ -1,3 +1,8 @@
+## [0.5.1](https://github.com/brave-experiments/brave-bot/releases/tag/v0.5.1)
+
+ - Added an install script for macOS and Linux, so a machine without npm can install bravebot without building it: `curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh`. It lands in `/usr/local/bin` unless `INSTALL_DIR` says otherwise, and the download is checked against its published checksum.
+ - Added a notice at startup when a newer version has been published, giving the line that updates the copy you are running: the npm command where npm installed it, the install script where that did. The check runs in the background at most once a day, so nothing waits on it, and a build from source is left quiet.
+
 ## [0.5.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.5.0)
 
  - Added code navigation through a language server: jump to a definition, find references, read a hover, list the symbols in a file or the workspace, and follow a call in either direction. The server runs with your access once you allow it, and its index is cached so later sessions start fast.
