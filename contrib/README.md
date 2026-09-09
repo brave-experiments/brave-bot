@@ -19,8 +19,7 @@ make check-toolchain          # or contrib/check-toolchain.py
 ```
 
 `make check` runs it last and fails on it, since that target's claim is that passing it means CI
-passes, and the pre-push hook runs it for the same reason: a push is what starts CI. Neither
-compiles anything for it. `--warn` prints the same thing and exits zero, and
+passes. It compiles nothing. `--warn` prints the same thing and exits zero, and
 `BRAVEBOT_ALLOW_STALE_TOOLCHAIN=1` skips it, for a host that cannot have the newer toolchain.
 
 `make check-linux` is the way to run CI's fmt, clippy and tests on current stable regardless of

@@ -48,7 +48,7 @@ help:
 init: hooks
 	python3 agents/setup.py link
 
-# .git/hooks is not versioned, so a fresh clone commits and pushes with nothing checking it
+# .git/hooks is not versioned, so a fresh clone commits with nothing checking it
 # until this runs. Idempotent, and part of `init` so nobody has to know it exists.
 .PHONY: hooks
 hooks:
@@ -90,8 +90,8 @@ check:
 	cargo test --all
 	@python3 contrib/check-toolchain.py
 
-# Whether clippy here knows the lints CI will fail on. Run by `check` and by the pre-push
-# hook; on its own it costs nothing and answers immediately.
+# Whether clippy here knows the lints CI will fail on. Run by `check`; on its own it costs
+# nothing and answers immediately.
 .PHONY: check-toolchain
 check-toolchain:
 	@python3 contrib/check-toolchain.py
