@@ -236,7 +236,7 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
             // be given whatever was configured without being told.
             "--model" => match args.get(index + 1).map(|name| name.trim()) {
                 Some(name) if !name.is_empty() => {
-                    model = Some(bravebot_config::normalize_model(name).to_string());
+                    model = Some(name.to_string());
                     index += 2;
                 }
                 _ => return Err(t!(cli_model_needs_a_name).to_string()),
@@ -376,9 +376,14 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         true => bravebot_agent::PermissionMode::Bypass,
         false => bravebot_agent::PermissionMode::Ask,
     };
+    // Resolved against the configuration rather than at parse, since a tier word names a model
+    // only the configuration knows: the AWS account's ARN for that tier where it named one, and
+    // Brave's name for it otherwise. The settings key this flag outranks accepts those words, so a
+    // flag that did not would refuse a spelling the file it overrides takes.
+    let named = model.map(|name| config.model_named(&name));
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
-        .with_model(model_asked_for(model, bravebot_tui::store::load_model()))
+        .with_model(model_asked_for(named, bravebot_tui::store::load_model()))
         .with_effort(bravebot_tui::store::load_effort())
         .with_permissions(permissions)
         .with_permission_mode(permission_mode);
@@ -1851,15 +1856,36 @@ mod tests {
         assert_eq!(invocation.model, None);
     }
 
-    /// `automatic` is what an older choice and an older settings file spell the routing entry, and
-    /// a name this product does not send would be reset by the server rather than obeyed.
+    /// The name is carried as typed, since what a tier word and an older spelling of the routing
+    /// entry name is a question for the configuration and there is none at parse.
     #[test]
-    fn the_older_name_for_the_routing_entry_is_rewritten() {
+    fn a_model_name_is_carried_as_it_was_typed() {
         let invocation =
             parse_invocation(&args(&["--model", "automatic", "do a thing"])).expect("parses");
+        assert_eq!(invocation.model.as_deref(), Some("automatic"));
+    }
+
+    /// A tier word in the settings key this flag outranks resolves to a model that exists, so a
+    /// flag that sent the word as written would refuse a spelling the file it overrides takes and
+    /// be answered by whatever the service substitutes for a name it has never heard of.
+    #[test]
+    fn a_tier_word_on_the_command_line_names_the_model_the_settings_key_would() {
+        let config = bravebot_config::Config::from_lookup(|key| match key {
+            "BRAVE_AI_CHAT_ENDPOINT" => Some("https://example.invalid".into()),
+            "BRAVE_SERVICES_KEY_ID" => Some("test-key-id".into()),
+            "SERVICES_KEY_AICHAT" => Some("test-signing-key".into()),
+            _ => None,
+        })
+        .expect("a configuration");
+
+        let named = parse_invocation(&args(&["--model", "opus", "do a thing"]))
+            .expect("parses")
+            .model
+            .map(|name| config.model_named(&name));
+
         assert_eq!(
-            invocation.model.as_deref(),
-            Some(bravebot_config::DEFAULT_MODEL)
+            named.as_deref(),
+            Some(bravebot_config::bedrock::Tier::Opus.brave_model())
         );
     }
 

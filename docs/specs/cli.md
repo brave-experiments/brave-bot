@@ -137,8 +137,10 @@ is all that remains of a document nobody can see. The plan never shares stdout w
 one, the model is the one a session opening in the same directory would ask for: the choice
 `/model` recorded, then the configured model, which is an exported
 `BRAVE_AI_CHAT_DEFAULT_MODEL`, then the settings file's `model` key, then the default the build was
-made with. A `--model` with no name after it, or a blank one, is refused rather than read as no
-choice.
+made with. A name is resolved against the configuration wherever it was written: `opus`, `sonnet`
+and `haiku` name the tier's own model and the older spelling of the routing entry names the current
+one, so the flag and the settings key it outranks accept the same spellings. A `--model` with no
+name after it, or a blank one, is refused rather than read as no choice.
 
 **Why.** A script that cannot name a model has only one route to a particular one, which is for
 somebody to open the interface and pick it, and in a pipeline that is not a route at all. The flag
@@ -151,6 +153,12 @@ models by the same names and a script needs no interactive step to use the one s
 chose. Ranking configuration above the record instead would mean a person who picked a model could
 not run a script with it, and a script wanting a different one from the picked one has the flag.
 
+Resolving against the configuration rather than at parse, because a tier word names a model only
+the configuration knows: the AWS account's own model for that tier where it named one, and Brave's
+name for it otherwise. A flag that sent such a word as written would refuse a spelling the file it
+overrides takes, and be answered by whatever the service substitutes for a name it has never heard
+of.
+
 A blank name is refused because a script that computed an empty variable asked for a model.
 Reading the blank as no choice would answer it with whatever was recorded or configured and say
 nothing about having done so, which is the substitution the flag exists to make impossible.
@@ -160,6 +168,9 @@ nothing about having done so, which is the substitution the flag exists to make 
 `verified-by: bravebot_cli::main::the_command_line_outranks_the_record_a_session_would_read`
 `verified-by: bravebot_cli::main::a_run_that_named_no_model_reads_the_record_a_session_would`
 `verified-by: bravebot_cli::main::a_run_with_nothing_to_go_on_leaves_the_configured_model_in_force`
+`verified-by: bravebot_cli::main::a_model_name_is_carried_as_it_was_typed`
+`verified-by: bravebot_cli::main::a_tier_word_on_the_command_line_names_the_model_the_settings_key_would`
+`verified-by: bravebot_config::lib::a_name_from_anywhere_resolves_as_the_settings_key_does`
 `verified-by: bravebot_cli::main::a_model_flag_with_no_name_is_refused`
 `verified-by: bravebot_cli::main::a_blank_model_is_refused_rather_than_read_as_no_choice`
 
