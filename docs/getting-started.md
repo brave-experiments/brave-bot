@@ -9,8 +9,25 @@ npm install -g @brave/bravebot
 ```
 
 This downloads the release binary for your platform and verifies its checksum. macOS, Linux,
-and Windows on both x86_64 and arm64 are supported. To build from source instead, see
-[development.md](development.md).
+and Windows on both x86_64 and arm64 are supported.
+
+On macOS and Linux there is an install script, for a machine with no npm on it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh
+```
+
+It fetches the newest release for your platform, checks it against the published checksum, and
+puts it in `/usr/local/bin`, asking for sudo only if that directory is not yours to write to.
+`INSTALL_DIR` puts it somewhere else:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+Running the line again is how an install made this way is updated.
+
+To build from source instead, see [development.md](development.md).
 
 ## Using it
 

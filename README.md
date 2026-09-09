@@ -14,8 +14,25 @@ OpenCode. Brave has always shipped user agents, and this one is the user's agent
 
 ## Getting started
 
-`npm install -g @brave/bravebot`, then run `bravebot` in a repository. See
-[docs/getting-started.md](docs/getting-started.md) for installing, running, and what it asks you.
+```sh
+npm install -g @brave/bravebot
+```
+
+Or on macOS and Linux, without npm:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh
+```
+
+That puts the binary in `/usr/local/bin`, and takes `INSTALL_DIR` for somewhere else:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+Either way, run `bravebot` in a repository afterwards. Both installers verify the release
+checksum. See [docs/getting-started.md](docs/getting-started.md) for installing, running, and what
+it asks you.
 
 The documentation site at
 [brave-experiments.github.io/brave-bot-docs](https://brave-experiments.github.io/brave-bot-docs/)

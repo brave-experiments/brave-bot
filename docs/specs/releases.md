@@ -7,6 +7,7 @@ governs:
   - .github/workflows/ci.yml
   - .github/workflows/publish-npm.yml
   - npm/scripts/postinstall.js
+  - install.sh
   - package.json
   - package-lock.json
 ---
@@ -19,6 +20,10 @@ release, what refuses one, and what an installer trusts about what it fetched.
 Building for a platform is not this topic. Reproducible cross-builds are ordinary code, described
 in [../development.md](../development.md). This file governs only the path from a version to a
 published asset, and the checks along it.
+
+Two installers fetch what is published: the npm package's install step, and the shell script
+served from the trunk of this repository. Both are governed here. Learning from a running copy
+that a newer release exists is [updates.md](updates.md).
 
 GitHub Actions compiles and tests. It does not create a GitHub release. Signed, configured
 binaries are built and published by the Jenkins job `brave-bot-build` in the devops repository.
@@ -143,16 +148,16 @@ distinguish a bad download from a good one now fires on every good one.
 <a id="RELEASE-9"></a>
 ### RELEASE-9: a downloaded binary is checked against its published checksum before it is installed
 
-The installer fetches the published checksum, compares it against what it downloaded, and writes
+Each installer fetches the published checksum, compares it against what it downloaded, and writes
 no executable when the two differ or the checksum is not well formed. Well formed is the digest
 and nothing else: sixty-four hex digits, with no filename beside them.
 
 **Why.** Without this the binary runs on the strength of the transport alone, and a substituted
 release asset is indistinguishable from a good one. Signing proves who produced the Darwin and
-Windows binaries; the checksum is what the installer can check on every platform, including
+Windows binaries; the checksum is what an installer can check on every platform, including
 Linux.
 
-`verified-by: by-construction (the install step hashes what it downloaded, compares it against the published value, and exits without writing on a mismatch)`
+`verified-by: by-construction (each installer hashes what it downloaded, compares it against the published value, and exits without writing when they differ or the published value is not sixty-four hex digits)`
 
 <a id="RELEASE-10"></a>
 ### RELEASE-10: the npm package is published by hand, after that version's GitHub release exists
