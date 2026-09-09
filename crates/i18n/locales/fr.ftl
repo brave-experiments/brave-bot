@@ -294,6 +294,12 @@ run-stages = { $count ->
     }
 run-in-directory = dans { $directory }
 watching-list-command = commande
+watching-list-aside = aparté
+watching-aside-head = une question posée à côté du travail
+watching-aside-question = vous avez demandé
+watching-aside-answer = la réponse, que la conversation n'a pas lue
+watching-aside-not-kept = cette réponse n'est que sur votre écran : la conversation avait lu quelque chose de non fiable, donc l'enregistrement ne la garde pas
+watching-aside-gone = l'enregistrement n'a pas pu garder cette réponse, elle n'est donc pas revenue avec la session
 watching-lines = { $count ->
     [one] 1 ligne
    *[other] { $count } lignes
@@ -303,6 +309,8 @@ watching-output-read = le modèle a lu ceci
 watching-output-kept = le modèle n'a pas lu ceci
 watching-row-read = lu
 watching-row-kept = non lu
+watching-row-kept-answer = gardée
+watching-row-screen-only = écran seulement
 watching-output-more = { $count ->
     [one] 1 ligne de plus a été affichée et n'est pas conservée
    *[other] { $count } lignes de plus ont été affichées et ne sont pas conservées
@@ -551,6 +559,7 @@ command-add-dir = Ouvrir un autre répertoire, et l'approuver pour cette session
 command-cd = Travailler désormais dans un autre répertoire, et l'approuver pour cette session
 command-rename = Appeler cette conversation autrement
 command-compact = Résumer la conversation jusqu'ici, en gardant la partie récente
+command-btw = Demander quelque chose à côté du travail, sans le mettre dans la conversation
 command-clear = Démarrer une nouvelle session ici, celle-ci restant reprenable
 command-loop = Renvoyer une consigne encore et encore, à votre intervalle ou au rythme de chaque tour
 command-export = Exporter la transcription de la session vers un fichier markdown
@@ -670,6 +679,11 @@ compact-done =
 compact-nothing-to-do = il n'y a encore rien à résumer
 compact-failed = la conversation n'a pas pu être résumée : { $problem }
 turn-ended-unexpectedly = le tour s'est terminé de façon inattendue
+btw-needs-a-question = /btw prend la question à poser, que la conversation ne lira pas
+btw-uninterruptible = la question ne peut pas être interrompue ; elle prend une requête
+btw-ended-unexpectedly = la question s'est terminée de façon inattendue
+btw-answered = demandé à côté du travail, et répondu là ; ctrl-l l'ouvre à nouveau
+btw-failed = la question n'a pas pu recevoir de réponse : { $problem }
 
 
 ## L'écran d'accueil

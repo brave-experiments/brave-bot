@@ -1079,6 +1079,59 @@ pub fn compact<S: Sink, R: Reporter>(
     done
 }
 
+/// Answer one question asked beside the work, outside any turn.
+///
+/// What `/btw` runs. No conversation reaches here at all: [`crate::aside::Question`] is the
+/// request, taken off the exchange by the caller, and there is nothing here that could push a
+/// message back into one. That is the whole of what makes the question an aside rather than a
+/// turn.
+///
+/// The same shape as [`compact`], and for the same reasons. Its routing is the request the user
+/// made by typing the command, which is their own words in the same sense a prompt is. No
+/// workspace, no confirmer, and one capability: nothing here reads a file, writes one, or asks
+/// anybody anything, and [`Capability::WebFetch`] is granted because reaching the model is egress
+/// and the gate asks.
+///
+/// The integrity is inherited, because a fresh policy is not a fresh context: the answer is a
+/// function of everything the exchange has held, and it is that inheritance that decides whether
+/// the answer may be written down.
+#[allow(clippy::too_many_arguments)]
+pub fn aside<S: Sink, R: Reporter>(
+    config: &Config,
+    egress: &Egress,
+    question: crate::aside::Question,
+    model: Option<&str>,
+    reporter: &mut R,
+    sink: &mut S,
+    trust: TrustStore,
+    watching: impl FnMut(&str),
+) -> Result<crate::aside::Answered, crate::aside::AsideError> {
+    let mut routing = Routing::new();
+    routing.insert_trusted("task", "answer a question asked beside the work");
+
+    let capabilities = CapabilitySet::from_iter([Capability::WebFetch]);
+    let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)?
+        .with_trust(trust)
+        .resuming(question.context());
+
+    let mut subscription = discover_subscription(config, reporter);
+    let mut chat = crate::processor::Chat {
+        config,
+        egress,
+        subscription: subscription
+            .as_mut()
+            .map(|s| s as &mut dyn bravebot_aichat::Subscription),
+        model,
+        // One request with no round for a stop to land between, so there is nothing here that a
+        // stop could reach.
+        cancel: None,
+    };
+
+    let done = crate::aside::ask(&mut policy, &mut chat, question, watching);
+    policy.finish();
+    done
+}
+
 /// Find the subscription this turn will spend, and say so where one could not be read.
 ///
 /// Shared with [`crate::manifest`] rather than written twice, because the thing worth reporting is

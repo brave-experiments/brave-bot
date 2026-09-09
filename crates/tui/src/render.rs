@@ -612,6 +612,9 @@ fn draw_watching(frame: &mut Frame, session: &Session) -> Laid {
     if session.listing_delegates() {
         return draw_delegate_list(frame, session);
     }
+    if let Some(aside) = session.watched_aside() {
+        return draw_aside(frame, session, aside);
+    }
     if let Some(output) = session.watched_output() {
         return draw_output(frame, session, output);
     }
@@ -634,6 +637,92 @@ fn draw_watching(frame: &mut Frame, session: &Session) -> Laid {
     }
 
     laid
+}
+
+/// Draw a question asked beside the work, and the answer it came back with.
+///
+/// The same shape as a delegate's view and a command's: a header saying what this is, the thing
+/// itself, and a footer with the way out. What differs is that both halves are drawn, because a
+/// question with no answer under it is half of what a person came here to read, and the answer
+/// alone stops making sense the moment there is more than one aside in the list.
+///
+/// The question is drawn the way a prompt is drawn in the transcript and the answer the way a
+/// reply is, so somebody arriving here reads it as the exchange it is. That it is an exchange the
+/// conversation never had is what the header says.
+fn draw_aside(frame: &mut Frame, session: &Session, aside: &crate::state::Aside) -> Laid {
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // what this is, and whether the record keeps it
+            Constraint::Min(1),    // the question and the answer
+            Constraint::Length(1), // footer
+        ])
+        .split(frame.area());
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    format!("{TURN_MARKER} "),
+                    Style::default().fg(theme::brand_primary()),
+                ),
+                Span::styled(
+                    t!(watching_aside_head),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            // Said here as well as on the row, because the row is a line in a list and this is
+            // the screen somebody reads the answer on. An answer the record will not keep is
+            // worth knowing about while it is still on the screen to copy.
+            Line::from(Span::styled(
+                match aside.kept {
+                    true => format!("  {}", t!(watching_aside_answer)),
+                    false => format!("  {}", t!(watching_aside_not_kept)),
+                },
+                match aside.kept {
+                    true => dim(),
+                    false => Style::default().fg(theme::running()),
+                },
+            )),
+        ]),
+        areas[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  {}", t!(watching_aside_question)),
+        dim(),
+    )));
+    for (index, text) in aside.question.lines().enumerate() {
+        let prefix = if index == 0 { "> " } else { "  " };
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{text}"),
+            Style::default().fg(theme::brand_primary()),
+        )));
+    }
+    lines.push(Line::raw(""));
+    match &aside.answer {
+        Some(answer) => lines.extend(assistant_lines(answer, areas[1].width)),
+        // A resumed aside whose answer the record could not hold. Said rather than drawn as an
+        // empty screen, which reads as an answer that was never given.
+        None => lines.push(Line::from(Span::styled(
+            format!("  {}", t!(watching_aside_gone)),
+            dim(),
+        ))),
+    }
+
+    // Counted back from the end, the way the transcript is, so the same keys walk back through a
+    // long answer.
+    let total = lines.len() as u16;
+    let max_offset = total.saturating_sub(areas[1].height);
+    let offset = max_offset.saturating_sub(session.scroll.min(max_offset));
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), areas[1]);
+
+    draw_watching_footer(frame, areas[2], session);
+    if let Some(selection) = &session.selection {
+        crate::select::highlight(frame.buffer_mut(), selection);
+    }
+    Laid::default()
 }
 
 /// Draw what one command printed, in full as far as it is kept.
@@ -809,6 +898,16 @@ fn draw_watching_footer(frame: &mut Frame, area: Rect, session: &Session) {
             };
             (t!(watching_list_command).to_string(), standing, colour)
         }
+        // An aside is answered by the time it is a row, so what the standing says is whether the
+        // record keeps it, which is the one thing about it a person cannot work out from the bytes.
+        Some(Watched::Aside(aside)) => {
+            let (standing, colour) = if aside.kept {
+                (t!(watching_row_kept_answer), theme::ok())
+            } else {
+                (t!(watching_row_screen_only), theme::running())
+            };
+            (t!(watching_list_aside).to_string(), standing, colour)
+        }
         None => return,
     };
 
@@ -898,6 +997,7 @@ fn draw_delegate_list(frame: &mut Frame, session: &Session) -> Laid {
         .chain(watchable.iter().enumerate().map(|(index, row)| {
             let highlighted = at == index + 1;
             match row {
+                Watched::Aside(aside) => aside_row(aside, highlighted, width),
                 Watched::Delegate(delegate) => delegate_row(delegate, highlighted, width),
                 Watched::Output(output) => output_row(output, highlighted, width),
             }
@@ -1005,6 +1105,61 @@ fn session_row(highlighted: bool, width: usize) -> Line<'static> {
 /// Wide enough for the longest kind and a two-digit number, so every task starts in one column
 /// and the rows read as a table rather than as a ragged list.
 const NAME_COLUMN: usize = 14;
+
+/// One row for a question asked beside the work: what was asked, and whether the answer is kept.
+///
+/// The question is on the row for the reason a delegate's task is on its own: two asides are
+/// otherwise identical, and which one somebody wants is the whole question the list is answering.
+///
+/// The mark is the one a delegate that answered carries, because that is what happened: the
+/// question was asked and came back. What the word beside it says is whether the answer outlives
+/// the session, which is the one thing about an aside a person cannot see by reading it.
+fn aside_row(aside: &crate::state::Aside, highlighted: bool, width: usize) -> Line<'static> {
+    let (standing, standing_colour) = if aside.kept {
+        (t!(watching_row_kept_answer), theme::ok())
+    } else {
+        (t!(watching_row_screen_only), theme::running())
+    };
+
+    let name = t!(watching_list_aside);
+
+    let spent = 4 + NAME_COLUMN + STANDING_COLUMN + 4;
+    let room = width.saturating_sub(spent);
+    let question = one_line(&aside.question);
+    let question = if question.chars().count() > room {
+        question
+            .chars()
+            .take(room.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    } else {
+        let padding = room.saturating_sub(question.chars().count());
+        question + &" ".repeat(padding)
+    };
+
+    let (mark_style, name_style, detail, standing_style) = if highlighted {
+        let on_bar = Style::default().fg(theme::on_primary());
+        (on_bar, on_bar.add_modifier(Modifier::BOLD), on_bar, on_bar)
+    } else {
+        (
+            Style::default().fg(theme::ok()),
+            Style::default().fg(theme::text()),
+            dim(),
+            Style::default().fg(standing_colour),
+        )
+    };
+
+    let line = Line::from(vec![
+        Span::styled("  ✓ ".to_string(), mark_style),
+        Span::styled(format!("{name:<NAME_COLUMN$}"), name_style),
+        Span::styled(format!("{question}  "), detail),
+        Span::styled(format!("{standing:<STANDING_COLUMN$}"), standing_style),
+    ]);
+    match highlighted {
+        true => line.style(Style::default().bg(theme::brand_primary())),
+        false => line,
+    }
+}
 
 fn delegate_row(delegate: &Delegate, highlighted: bool, width: usize) -> Line<'static> {
     // The glyph carries the standing on the bar as well as off it, so the row under the cursor
@@ -3117,6 +3272,91 @@ mod tests {
             assert!(screen.contains("command"), "{screen}");
             assert!(screen.contains("cargo test"), "{screen}");
             assert!(screen.contains("reader"), "{screen}");
+        }
+
+        fn asked(session: &mut Session, question: &str, answer: &str, kept: bool) {
+            session.asked_aside(crate::state::Aside {
+                question: question.to_string(),
+                answer: Some(answer.to_string()),
+                kept,
+            });
+        }
+
+        /// The list holds three kinds now, so a row has to say which it is: an aside and a
+        /// command are both a line of text with a sentence beside it.
+        #[test]
+        fn the_list_names_an_aside_row_as_an_aside() {
+            let mut session = Session::new("kernel-enforced");
+            asked(&mut session, "why recursive?", "because of nesting", true);
+            ran(&mut session, "cargo test", true, &["ok"], 1);
+            session.watch();
+            assert!(
+                session.listing_delegates(),
+                "two rows did not open the list"
+            );
+
+            let screen = rendered(&session);
+            assert!(screen.contains("aside"), "{screen}");
+            assert!(screen.contains("why recursive?"), "{screen}");
+            assert!(screen.contains("command"), "{screen}");
+        }
+
+        /// Both halves, because a question with no answer under it is half of what a person came
+        /// here to read, and an answer alone stops making sense as soon as there are two asides.
+        #[test]
+        fn an_asides_view_draws_the_question_and_the_answer() {
+            let mut session = Session::new("kernel-enforced");
+            asked(
+                &mut session,
+                "why is the parser recursive?",
+                "because the grammar nests",
+                true,
+            );
+
+            let screen = rendered(&session);
+            assert!(screen.contains("why is the parser recursive?"), "{screen}");
+            assert!(screen.contains("because the grammar nests"), "{screen}");
+        }
+
+        /// An answer the record cannot hold is on the screen and nowhere else, so it is said while
+        /// the words are still there to copy rather than discovered by resuming and finding them
+        /// gone.
+        #[test]
+        fn an_asides_view_says_when_the_answer_is_not_written_down() {
+            let mut session = Session::new("kernel-enforced");
+            asked(
+                &mut session,
+                "why recursive?",
+                "because the grammar nests",
+                false,
+            );
+
+            let screen = rendered(&session);
+            assert!(screen.contains("on your screen only"), "{screen}");
+            assert!(
+                screen.contains("because the grammar nests"),
+                "the answer itself was withheld from the person: {screen}"
+            );
+        }
+
+        /// A resumed aside whose answer the record could not keep. Said out loud, because an
+        /// empty screen under a question reads as an answer that was never given.
+        #[test]
+        fn a_resumed_aside_with_no_answer_says_the_record_did_not_keep_it() {
+            let mut session = Session::new("kernel-enforced");
+            session.restore_asides(vec![crate::state::Aside {
+                question: "why recursive?".to_string(),
+                answer: None,
+                kept: false,
+            }]);
+            session.watch();
+
+            let screen = rendered(&session);
+            assert!(screen.contains("why recursive?"), "{screen}");
+            assert!(
+                screen.contains("could not keep this answer"),
+                "an aside with no answer was drawn as an empty screen: {screen}"
+            );
         }
 
         /// The whole of what a delegate did ends with it, so what it answered is the only thing

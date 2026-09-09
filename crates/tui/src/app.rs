@@ -91,6 +91,9 @@ const CLEAR_COMMAND: &str = "/clear";
 /// The line that renames this session, taking the new name as its argument.
 const RENAME_COMMAND: &str = "/rename";
 
+/// The line that asks a question beside the work, taking the question as its argument.
+const BTW_COMMAND: &str = "/btw";
+
 /// The line that repeats a prompt, taking the prompt and any interval as its argument.
 const LOOP_COMMAND: &str = "/loop";
 
@@ -119,7 +122,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 14] {
+pub fn commands() -> [Command; 15] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -165,6 +168,11 @@ pub fn commands() -> [Command; 14] {
             name: COMPACT_COMMAND,
             argument: "",
             description: t!(command_compact),
+        },
+        Command {
+            name: BTW_COMMAND,
+            argument: "<question>",
+            description: t!(command_btw),
         },
         Command {
             name: CLEAR_COMMAND,
@@ -261,6 +269,9 @@ pub enum Action {
     /// Summarise the conversation so far. Needs the conversation and the network, which the loop
     /// owns.
     Compact,
+    /// Ask something beside the work, over a copy of the conversation. Needs the conversation and
+    /// the network, which the loop owns, and gives the conversation nothing back.
+    Aside(String),
     /// Start a new session here. Needs the conversation and the session record, which the loop owns.
     Clear,
     /// Call this session something else. Needs the session record, which the loop owns.
@@ -912,6 +923,15 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
         KeyCode::Enter if session.input().trim() == COMPACT_COMMAND => {
             session.clear_input();
             Action::Compact
+        }
+        // The question is taken verbatim and never sent as a prompt: it goes out over a copy of
+        // the conversation and the copy is thrown away, so nothing about it joins the exchange.
+        KeyCode::Enter if argument_to(session.input(), BTW_COMMAND).is_some() => {
+            let question = argument_to(session.input(), BTW_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            Action::Aside(question)
         }
         KeyCode::Enter if session.input().trim() == CLEAR_COMMAND => {
             session.clear_input();
@@ -1945,6 +1965,7 @@ fn event_loop(
                                 timing: session.timing_by_turn(),
                                 model: session.served_model(),
                                 todos: &session.todos_by_turn(),
+                                asides: session.asides(),
                                 trust: &trust,
                                 programs: &programs,
                                 directories: workspace.added_directories(),
@@ -2027,6 +2048,7 @@ fn event_loop(
                             timing: session.timing_by_turn(),
                             model: session.served_model(),
                             todos: &session.todos_by_turn(),
+                            asides: session.asides(),
                             trust: &trust,
                             programs: &programs,
                             directories: workspace.added_directories(),
@@ -2092,6 +2114,7 @@ fn event_loop(
                         timing: session.timing_by_turn(),
                         model: session.served_model(),
                         todos: &session.todos_by_turn(),
+                        asides: session.asides(),
                         trust: &trust,
                         programs: &programs,
                         directories: workspace.added_directories(),
@@ -2099,6 +2122,54 @@ fn event_loop(
                     },
                 );
                 stored.append_audit(session.turns, &events);
+                needs_draw = true;
+            }
+            Action::Aside(question) => {
+                if question.is_empty() {
+                    session.note(t!(btw_needs_a_question));
+                } else {
+                    // The snapshot holds the spend and the timing as they were before the turn,
+                    // and an aside is charged to that turn: rewinding to it would un-charge a
+                    // request that really went out. The same reason `/compact` closes it.
+                    session.close_rewind_window();
+                    let events = aside_animated(
+                        terminal,
+                        &mut session,
+                        config,
+                        &conversation,
+                        &trust,
+                        &question,
+                    )?;
+
+                    // Written now rather than at the end of the next turn, for the reason a
+                    // compaction is: the aside is the change, and a session that asked something
+                    // and then slept should resume with the answer still there.
+                    //
+                    // Nothing yet where no turn has been had, as everywhere else that writes
+                    // outside a turn: a session opened and abandoned should leave no record, and
+                    // a question asked before the first prompt was asked over an empty exchange.
+                    if session.turns > 0 {
+                        let title = stored.title().to_string();
+                        stored.save(
+                            &title,
+                            crate::sessions::Standing {
+                                conversation: &conversation.snapshot(),
+                                turns: session.turns,
+                                tokens: session.tokens,
+                                spend: session.spend_by_turn(),
+                                timing: session.timing_by_turn(),
+                                model: session.served_model(),
+                                todos: &session.todos_by_turn(),
+                                asides: session.asides(),
+                                trust: &trust,
+                                programs: &programs,
+                                directories: workspace.added_directories(),
+                                manifest: None,
+                            },
+                        );
+                        stored.append_audit(session.turns, &events);
+                    }
+                }
                 needs_draw = true;
             }
             Action::Clear => {
@@ -2176,6 +2247,7 @@ fn event_loop(
                             timing: session.timing_by_turn(),
                             model: session.served_model(),
                             todos: &session.todos_by_turn(),
+                            asides: session.asides(),
                             trust: &trust,
                             programs: &programs,
                             directories: workspace.added_directories(),
@@ -2210,6 +2282,7 @@ fn event_loop(
                         timing: session.timing_by_turn(),
                         model: session.served_model(),
                         todos: &session.todos_by_turn(),
+                        asides: session.asides(),
                         trust: &trust,
                         programs: &programs,
                         directories: workspace.added_directories(),
@@ -3050,6 +3123,140 @@ fn compact_animated(
     }
 
     Ok((conversation, sink.events().to_vec()))
+}
+
+/// Ask one question beside the work, redrawing while it is answered.
+///
+/// The same shape as `compact_animated`, and for the same reasons: one request, off the thread
+/// that owns the terminal, with the loop below drawing so a slow answer does not read as a hang.
+///
+/// The conversation is lent by reference and comes back unchanged, which is the whole of what
+/// makes this an aside. Nothing here can push a message, so there is no path by which the question
+/// or its answer reaches the exchange a later turn resumes.
+///
+/// A question that could not be answered leaves a line in the transcript rather than a row with
+/// nothing in it. The gates it did pass are still returned, since they decided about a request
+/// that really went out.
+fn aside_animated(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    config: &Config,
+    conversation: &Conversation,
+    trust: &TrustStore,
+    question: &str,
+) -> io::Result<Vec<Stamped>> {
+    // For the reason a turn and a summary both do it: this is one request to the same backend,
+    // and a sign-in is not something a worker thread can ask for.
+    sign_in_if_needed(terminal, session, config)?;
+
+    let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
+
+    let worker_config = config.clone();
+    let worker_trust = trust.clone();
+    let model = session.model().map(str::to_string);
+    // Taken here, before the worker starts, because that is what crosses to it: the request, not
+    // the conversation. The conversation stays on this thread and is not touched again, so there
+    // is no path by which an aside could add anything to it.
+    let asking = bravebot_agent::aside::Question::about(conversation, question);
+    let asked = question.to_string();
+
+    session.begin_aside();
+
+    let streaming = to_main.clone();
+    let worker = thread::spawn(move || {
+        let mut sink = Trail::new();
+        let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main);
+        let egress = Egress::new();
+        // Reduced to what a person can be told before it crosses back, since the error types are
+        // the kernel's and this thread is the only place they mean anything.
+        let done = turn::aside(
+            &worker_config,
+            &egress,
+            asking,
+            model.as_deref(),
+            &mut reporter,
+            &mut sink,
+            worker_trust,
+            |written| {
+                let _ = streaming.send(crate::remote_confirm::ToMain::Streaming(
+                    written.to_string(),
+                ));
+            },
+        )
+        .map_err(|e| e.to_string());
+        (done, sink)
+    });
+
+    loop {
+        redraw(terminal, session)?;
+
+        // Input is still read for the reason a summary reads it: a long answer must not leave the
+        // interface deaf, and the frame's waiting is done here so a key press wakes the loop
+        // rather than queueing behind the worker.
+        if event::poll(FRAME)? {
+            while event::poll(Duration::ZERO)? {
+                match event::read()? {
+                    // One request, so there is no round for a cancel to land between and nothing
+                    // here can stop it. The one press that still means something is the one that
+                    // leaves, since leaving is all it can mean.
+                    TermEvent::Key(key) if is_ctrl_c(key) && !session.scrolling() => {
+                        session.quit();
+                    }
+                    TermEvent::Key(key) if wants_cancel(key) && !session.scrolling() => {
+                        session.note_once(t!(btw_uninterruptible));
+                    }
+                    TermEvent::Key(key) => {
+                        handle_key_while_working(session, key);
+                    }
+                    TermEvent::Paste(text) => handle_paste_while_working(session, &text),
+                    TermEvent::Mouse(mouse) => {
+                        let action = handle_mouse(session, mouse);
+                        if action == Action::Copy {
+                            copy_selection(terminal, session)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let carrying_on = drain_worker(&from_worker, Duration::ZERO, |message| match message {
+            crate::remote_confirm::ToMain::Phase(phase) => session.set_phase(phase),
+            crate::remote_confirm::ToMain::Notice(text) => session.note_once(text),
+            crate::remote_confirm::ToMain::Streaming(text) => session.streaming(&text),
+            _ => {}
+        });
+
+        if !carrying_on {
+            break;
+        }
+    }
+
+    let (done, sink) = worker
+        .join()
+        .unwrap_or_else(|_| (Err(t!(btw_ended_unexpectedly).to_string()), Trail::new()));
+
+    match done {
+        Ok(answered) => {
+            session.end_aside(answered.usage.total());
+            // The row and the view carry the answer; the transcript carries a line saying it
+            // happened. Both are wanted: the view is what the person is reading a moment from
+            // now, and the note is what tells them afterwards that there was an aside here at
+            // all, since nothing else about it is in the transcript.
+            session.asked_aside(crate::state::Aside {
+                question: asked,
+                answer: Some(answered.shown),
+                kept: answered.kept.is_some(),
+            });
+            session.note(t!(btw_answered));
+        }
+        Err(message) => {
+            session.end_aside(0);
+            session.note(t!(btw_failed, problem = message));
+        }
+    }
+
+    Ok(sink.events().to_vec())
 }
 
 /// Run a turn on a worker thread, redrawing while it works.
@@ -6392,6 +6599,64 @@ mod tests {
         assert_eq!(
             handle_key(&mut session, key(KeyCode::Enter)),
             Action::Submit("how does /compact work".to_string())
+        );
+    }
+
+    /// The question is what the command acts on, so the whole of what was typed after the word
+    /// has to arrive, spaces and punctuation included.
+    #[test]
+    fn the_btw_command_carries_its_question() {
+        let mut session = Session::new("none");
+        for c in "/btw why is the parser recursive?".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Aside("why is the parser recursive?".to_string())
+        );
+    }
+
+    /// With no question there is nothing to ask, and the loop says so rather than spending a
+    /// request to find out.
+    #[test]
+    fn the_bare_btw_command_is_still_the_command() {
+        let mut session = Session::new("none");
+        for c in BTW_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Aside(String::new())
+        );
+    }
+
+    /// A sentence mentioning it is a thing to say to the planner, and the word this one claims is
+    /// short enough that it will be said.
+    #[test]
+    fn a_prompt_containing_the_btw_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /btw do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /btw do".to_string())
+        );
+    }
+
+    #[test]
+    fn a_longer_word_starting_with_btw_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/btwice is not a word".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/btwice is not a word".to_string())
         );
     }
 

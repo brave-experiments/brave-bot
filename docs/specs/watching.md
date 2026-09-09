@@ -1,19 +1,21 @@
 ---
 id: WATCH
-title: Seeing a delegate work
+title: Seeing what happened outside the transcript
 status: normative
 governs:
   - crates/tui/src/state.rs
   - crates/tui/src/render.rs
   - crates/tui/src/app.rs
+  - crates/agent/src/aside.rs
 ---
 
 ## Scope
 
-What a person sees of work a turn did outside the transcript: the delegates it started and the
-commands it ran, where their lines go, how much of them is kept, the mode Ctrl-L opens over them,
-and what that mode does not offer. What a delegate is, how many run at once and what crosses back
-to the planner is [delegation.md](delegation.md); what a command line may do is
+What a person sees of what happened outside the transcript: the delegates a turn started, the
+commands it ran, and the questions a person asked beside the work, where their lines go, how much
+of them is kept, the mode Ctrl-L opens over them, and what that mode does not offer. What a
+delegate is, how many run at once and what crosses back to the planner is
+[delegation.md](delegation.md); what a command line may do is
 [tools/command-line.md](tools/command-line.md). Nothing here changes either: the subject is what
 reaches a screen, not what reaches a model.
 
@@ -34,6 +36,12 @@ owns the directory is left with "12 lines, quarantined" about a program their ag
 Several delegates run at once, so there is no single thing to look at. Each is drawn on the
 screen the person is already reading, and the whole of what any one of them is doing is a key
 away.
+
+A question asked beside the work is here for the opposite reason. It has no shortage of room in
+the transcript: it is kept out of the transcript on purpose, because it is kept out of the
+conversation. An aside asked as a prompt would be a turn, read back by every turn after it, and
+the digression would be in front of the planner for the rest of the session. Answered here, the
+question and its answer are the person's, and this is the one screen they exist on.
 
 ## Clauses
 
@@ -239,8 +247,8 @@ The list carries its own title and its own key row, and fills the row that would
 edge rather than marking it.
 
 Once the view has anything to open, the hint line names the key and says how many rows there are,
-counting the delegates and the commands together. The key is in the shortcut list. No other row
-names it, including the one that reports what the turn is doing.
+counting every kind of row together. The key is in the shortcut list. No other row names it,
+including the one that reports what the turn is doing.
 
 **Why.** The turn's transcript shows one block and three rows of a delegate, and a preview and a
 count of what a command printed, so somebody who does not already know the key has no way to find
@@ -249,7 +257,7 @@ turn, and what the view holds is most worth opening afterwards: what a delegate 
 sentence about work nobody has read. The count is there because a key with nothing behind it does
 nothing, and that line is read at a glance.
 
-**Why both kinds in one count.** The key opens one list and the count stands for what is in it. A
+**Why every kind in one count.** The key opens one list and the count stands for what is in it. A
 count of delegates alone leaves a session that ran commands and spawned none with a key that opens
 something and no line on the screen saying so, which is the case the hint exists for.
 
@@ -267,21 +275,32 @@ foot, reads as two things to press. The line that is always drawn is the one to 
 `verified-by: bravebot_tui::render::the_shortcut_list_names_the_key_that_watches`
 
 <a id="WATCH-12"></a>
-### WATCH-12: none of this reaches a model, and none of it is written down
+### WATCH-12: none of this reaches a model, and a delegate's work is not written down
 
 A delegate's lines go to a screen and stop there. The planner that asked is told the report and
 nothing else, and no delegate is part of the record a session is resumed from, so a resumed
-session has no delegates in it. Starting a new conversation forgets them and what the commands
-printed, and the mode standing over any of it closes with them.
+session has no delegates in it. What a command printed is not written down either. Starting a new
+conversation forgets both, and the mode standing over any of it closes with them.
+
+An aside is the one row that is written down, and it reaches no model either: the record keeps the
+question and the answer, a resume puts them back into this view, and there is no path from the
+record into a conversation. What the record may hold is [sessions.md](sessions.md)'s.
 
 **Why.** A screen is not a context. The person owns the directory and may see what their agent
 did in it; what must not happen is those lines reaching a planner's context by any route. A
-record read back into a later turn is such a route, which is why nothing here is written down.
+record read back into a later turn is such a route, so a delegate's lines and a command's output
+are never written at all: both are content the planner may never have been shown, and neither can
+be told apart from the other once it is bytes in a file.
+
+An aside is different in kind rather than by exception. Its question is a line the person typed,
+and its answer is only ever written where the gate that decides what the planner may hold said it
+could: nothing lands in the record that could not have been in the exchange beside it.
 
 `verified-by: bravebot_agent::turn::what_a_delegate_read_never_reaches_the_planner_that_asked`
 `verified-by: bravebot_tui::state::clearing_forgets_the_delegates`
 `verified-by: bravebot_tui::state::clearing_closes_the_view_over_a_delegate`
-`verified-by: by-construction (a session's record is built from the conversation, which holds the turn's messages; a delegate's lines and what a command printed are held only by the interface and nothing writes them)`
+`verified-by: bravebot_tui::sessions::a_question_asked_beside_the_work_survives_a_resume`
+`verified-by: by-construction (a session's record is built from the conversation and the asides; a delegate's lines and what a command printed are held only by the interface and nothing writes them)`
 
 <a id="WATCH-13"></a>
 ### WATCH-13: a report the planner may not read is drawn in the marked block
@@ -353,13 +372,15 @@ when things happened would move the row under them every time a command finished
 ### WATCH-16: the view says which kind of thing it is showing
 
 The header and the footer name it: a delegate by its kind and its number, a command as a command
-with the line that ran. Stepping from one kind to the other changes what they say. A command's view
-also says whether the planner read what it printed.
+with the line that ran, an aside as an aside. Stepping from one kind to another changes what they
+say. A command's view also says whether the planner read what it printed, and an aside's whether
+the record keeps its answer.
 
-**Why.** One list holds both, and the keys that move through it do not ask what a row is. With
-nothing saying so, stepping from a delegate onto a command reads as the same view showing different
-lines, and a person cannot tell work their agent handed on from work it did itself. Whether the
-planner read something is the one thing about it that cannot be worked out from the bytes.
+**Why.** One list holds all of them, and the keys that move through it do not ask what a row is.
+With nothing saying so, stepping from a delegate onto a command reads as the same view showing
+different lines, and a person cannot tell work their agent handed on from work it did itself.
+Whether the planner read something, or will read it back, is the one thing about it that cannot be
+worked out from the bytes.
 
 `verified-by: bravebot_tui::render::the_view_says_which_kind_of_thing_it_is_showing`
 `verified-by: bravebot_tui::render::the_view_says_whether_the_model_read_what_a_command_printed`
@@ -388,6 +409,69 @@ about the program that is not true.
 `verified-by: bravebot_tui::render::a_commands_view_says_how_the_run_ended`
 `verified-by: bravebot_agent::turn::what_a_command_printed_reaches_the_person_watching`
 
+<a id="WATCH-18"></a>
+### WATCH-18: a question asked beside the work is one of the rows the view opens
+
+Every `/btw` is a row in the same list, before the delegates and the commands and in the order
+they were asked. Opening one draws the question above the answer, the question in the shape a
+prompt is drawn in and the answer in the shape a reply is. The row says whether the record keeps
+the answer.
+
+Neither half is anywhere else. Nothing about an aside is drawn among the turn's own lines, because
+neither half is in the conversation: the planner has read neither the question nor the answer, and
+an exchange drawn in the transcript is one a reader takes the planner to have had.
+
+**Why.** The answer exists nowhere else at all, so a row is not a convenience here: without it the
+person would have asked a question and been shown nothing. Both halves are drawn because a
+question with no answer under it is half of what somebody came to read, and an answer on its own
+stops meaning anything as soon as the list holds two.
+
+**Why before the delegates.** An aside is the only row that survives a resume, so a resumed
+session's list is asides alone. Put last, every delegate a later turn spawned would be inserted
+above them and move their places; put first, everything the session goes on to do appends after
+them.
+
+`verified-by: bravebot_tui::state::an_aside_is_something_the_view_can_open`
+`verified-by: bravebot_tui::state::an_aside_keeps_its_place_when_a_delegate_is_spawned_after_it`
+`verified-by: bravebot_tui::state::neither_half_of_an_aside_reaches_the_transcript`
+`verified-by: bravebot_tui::state::opening_an_aside_does_not_draw_a_delegates_lines`
+`verified-by: bravebot_tui::render::the_list_names_an_aside_row_as_an_aside`
+`verified-by: bravebot_tui::render::an_asides_view_draws_the_question_and_the_answer`
+`verified-by: bravebot_agent::turn::asking_beside_the_work_reaches_the_model_and_leaves_the_conversation_alone`
+
+<a id="WATCH-19"></a>
+### WATCH-19: the view opens on an aside the moment it is answered
+
+An answered question puts its own row on the screen, and leaving the mode puts the turn's own view
+back where it was left. This is the one thing that opens the mode without a person pressing the
+key.
+
+**Why.** WATCH-10 keeps the screen still because the events it is about are a turn's, and a person
+reading one delegate did not ask for another to take the screen. An aside is not one of those: the
+person typed the question a moment ago, and the press that asked for it came from the input box,
+which this mode does not draw. An answer left behind a key they have not been told about is not an
+answer.
+
+`verified-by: bravebot_tui::state::answering_a_question_beside_the_work_opens_the_view_on_it`
+
+<a id="WATCH-20"></a>
+### WATCH-20: an answer the record cannot hold is said to be on the screen only
+
+Where the gate that decides what the planner may hold quarantined the answer, the person is still
+shown it and the view says it is not written down. A resumed aside whose answer the record could
+not keep draws the question and says the answer did not come back, rather than drawing nothing
+under it.
+
+**Why.** Such an answer exists only for as long as the window is open, and that is worth knowing
+while the words are still there to copy rather than on the next resume when they are gone. An
+empty screen under a question is worse than either: it reads as a question that was never
+answered.
+
+`verified-by: bravebot_tui::render::an_asides_view_says_when_the_answer_is_not_written_down`
+`verified-by: bravebot_tui::render::a_resumed_aside_with_no_answer_says_the_record_did_not_keep_it`
+`verified-by: bravebot_tui::sessions::an_answer_the_planner_could_not_have_held_is_not_written_down`
+`verified-by: bravebot_agent::turn::an_answer_over_an_untrusted_exchange_is_shown_and_not_written_down`
+
 ## Known costs
 
 - **A delegate that runs long enough loses its oldest work.** Several hundred calls in, the start
@@ -403,6 +487,16 @@ about the program that is not true.
   answered, so a delegate that reports several paragraphs takes several paragraphs of the turn's
   own sequence. Capping it would cut the conclusion, which is the one part of a delegate nobody
   can get back any other way.
+
+- **An aside cannot be asked about.** It is one question and one answer, with no box to follow up
+  in: a person who wants to press further asks a second `/btw`, over an exchange that still knows
+  nothing of the first. The alternative is a second conversation to hold, resume and shorten, which
+  is a session rather than an aside.
+
+- **An aside taken over an untrusted exchange lasts as long as the window.** The answer is the
+  planner's own words over a context that has read something untrusted, so the record does not keep
+  it and a resume brings back the question alone. Keeping it would put bytes in the record that the
+  planner could not have held.
 
 - **The view says what a delegate is doing and not how it is going.** One row changes several
   times a second while a delegate works, and nothing on the screen says whether those calls are

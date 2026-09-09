@@ -111,6 +111,29 @@ pub struct Output {
     pub outcome: bravebot_agent::report::Outcome,
 }
 
+/// A question asked beside the work, and the answer it came back with.
+///
+/// Never in the conversation. The question forked the exchange, was answered over the copy, and
+/// the copy went: the planner picking the work up has read neither half, which is what makes an
+/// aside a question rather than a turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aside {
+    /// What the person asked, in their own words.
+    pub question: String,
+    /// The answer, as the person may read it.
+    ///
+    /// `None` for one brought back from a record that could not hold it, where the view says so
+    /// rather than drawing an answer that is not there. Absence rather than emptiness, because a
+    /// model that answered with nothing at all is a different thing from an answer that did not
+    /// come back, and the interface must not have to tell the two apart by reading the words.
+    pub answer: Option<String>,
+    /// Whether the record keeps the answer, so that a resume brings it back.
+    ///
+    /// `false` where the exchange had met something untrusted when the question was asked: the
+    /// planner's own words are quarantined then, like anything else, and a record is read back.
+    pub kept: bool,
+}
+
 /// Something the delegate view can open.
 ///
 /// One list rather than two, because a person pressing the key is asking to see work that is not
@@ -118,6 +141,8 @@ pub struct Output {
 /// for a second key.
 #[derive(Debug, Clone, Copy)]
 pub enum Watched<'a> {
+    /// A question asked beside the work, and its answer.
+    Aside(&'a Aside),
     /// A delegate's own work.
     Delegate(&'a Delegate),
     /// What a command printed.
@@ -722,6 +747,12 @@ pub struct Session {
     /// whole session the way it lists delegates, and an entry is the wrong place to look for the
     /// third command when the second one scrolled away.
     outputs: Vec<Output>,
+    /// Every question asked beside the work this session, oldest first.
+    ///
+    /// Held here rather than in the transcript, because none of it is in the conversation: an
+    /// aside drawn among the turn's own lines would read as an exchange the planner had, and the
+    /// planner has read neither half of it.
+    asides: Vec<Aside>,
     /// Where the turn's own view was when somebody went to look at a delegate.
     ///
     /// Held rather than recomputed, so coming back puts them where they were reading instead of
@@ -1020,6 +1051,7 @@ impl Session {
             scroller: None,
             watching: None,
             outputs: Vec::new(),
+            asides: Vec::new(),
             held_view: None,
             history_search: None,
             laid: Laid::default(),
@@ -1351,6 +1383,10 @@ impl Session {
         // than in it, so it is dropped here by name: a conversation nobody remembers leaving its
         // commands openable is the one case the view could show work from a session that is gone.
         self.outputs.clear();
+        // An aside is a question about a particular exchange, asked over a copy of it. The
+        // exchange is gone, so the question no longer has anything to be about, and a row that
+        // outlived it would offer an answer to a conversation nobody can read.
+        self.asides.clear();
         self.watching = None;
         self.held_view = None;
     }
@@ -1543,15 +1579,58 @@ impl Session {
         &self.outputs
     }
 
+    /// Keep a question asked beside the work, and open the view on it.
+    ///
+    /// Opened rather than left behind a key, because the person asked a question and an answer
+    /// they are not shown is not an answer. Nothing moves under a reader doing it: the press that
+    /// asked came from the input box, which this mode does not draw.
+    pub fn asked_aside(&mut self, aside: Aside) {
+        self.asides.push(aside);
+        let at = self.asides.len() - 1;
+        self.held_view = Some(self.scroll);
+        self.scroll = 0;
+        self.watching = Some(Watching {
+            at,
+            listing: false,
+            on_session: false,
+        });
+    }
+
+    /// Put back the asides a resumed session had, oldest first.
+    ///
+    /// The one thing the view holds that outlives the session that produced it. A delegate's
+    /// lines and what a command printed are not written down at all, so a resume brings back
+    /// these and nothing else.
+    pub fn restore_asides(&mut self, asides: Vec<Aside>) {
+        self.asides = asides;
+    }
+
+    /// Every question asked beside the work, oldest first.
+    pub fn asides(&self) -> &[Aside] {
+        &self.asides
+    }
+
+    /// The aside the view is on, where the row it is on is one.
+    pub fn watched_aside(&self) -> Option<&Aside> {
+        match self.watched() {
+            Some(Watched::Aside(aside)) => Some(aside),
+            _ => None,
+        }
+    }
+
     /// Everything the view can open, in the order the list draws it.
     ///
-    /// The delegates first and the commands after them, so a row's place does not move when the
-    /// next command runs. Both are work that happened outside the transcript, which is what the
-    /// view is for.
+    /// Grouped by kind rather than ordered by when each happened, so a row's place does not move
+    /// when the next thing of a different kind arrives. The asides come first because they are
+    /// the only rows that survive a resume: a resumed session's list is asides alone, and every
+    /// delegate and command the session goes on to produce appends after them.
+    ///
+    /// All three are work that happened outside the transcript, which is what the view is for.
     pub fn watchable(&self) -> Vec<Watched<'_>> {
-        self.delegates()
-            .into_iter()
-            .map(Watched::Delegate)
+        self.asides
+            .iter()
+            .map(Watched::Aside)
+            .chain(self.delegates().into_iter().map(Watched::Delegate))
             .chain(self.outputs.iter().map(Watched::Output))
             .collect()
     }
@@ -1720,12 +1799,16 @@ impl Session {
     /// The single place the two views part company, so everything that lays out a transcript does
     /// it the same way for both and neither can drift from the other.
     pub fn viewed(&self) -> &[Entry] {
-        match self.watching.filter(|watching| !watching.listing) {
-            Some(watching) => match self.delegates().get(watching.at).copied() {
-                Some(delegate) => &delegate.lines,
-                None => &self.transcript,
-            },
-            None => &self.transcript,
+        if self.watching.is_none_or(|watching| watching.listing) {
+            return &self.transcript;
+        }
+        // Through the list rather than into the delegates, because a position is a place in the
+        // list and the list holds three kinds of row. Indexing the delegates with it would draw
+        // one delegate's lines under another kind of row every time the rows before it were not
+        // delegates.
+        match self.watched() {
+            Some(Watched::Delegate(delegate)) => &delegate.lines,
+            _ => &self.transcript,
         }
     }
 
@@ -3358,6 +3441,11 @@ impl Session {
                 self.transcript[index].todos = todos.clone();
             }
         }
+
+        // Into the view and not into the transcript, which is the whole of what an aside is: the
+        // planner has read neither the question nor the answer, so a resumed transcript holding
+        // either would show the person an exchange the session never had.
+        self.restore_asides(recalled.asides.clone());
     }
 
     /// Begin sweeping a selection where the button went down.
@@ -4479,6 +4567,11 @@ impl Session {
     /// per-turn figures while still counting it in the total, so the two would not add up.
     pub fn end_aside(&mut self, tokens: u64) {
         self.status = Status::Idle;
+        // An aside that wrote something as it went has been drawing it at the tail, where the
+        // turn's own half-written reply is drawn. Left up it would read as the planner having
+        // said it, which the planner has not: what an aside wrote is the aside's, and the row it
+        // becomes is where it is drawn.
+        self.streaming.clear();
         // Read before the timer is cleared. A `/compact` is a model call and nothing else, so all
         // of it is inference: charged to the turn it interrupted, exactly as its tokens are, and to
         // both figures rather than only to the wall clock, or an aside would read as time the
@@ -5347,6 +5440,162 @@ mod tests {
             }
             session.open_watched();
             assert!(session.watched_output().is_some());
+        }
+
+        fn asked(session: &mut Session, question: &str, answer: &str, kept: bool) {
+            session.asked_aside(Aside {
+                question: question.to_string(),
+                answer: Some(answer.to_string()),
+                kept,
+            });
+        }
+
+        /// The answer is drawn nowhere else at all: it is not in the conversation and not in the
+        /// transcript, so a row in this list is the only place a person can read it back.
+        #[test]
+        fn an_aside_is_something_the_view_can_open() {
+            let mut session = Session::new("none");
+            assert!(!session.watch(), "the key opened on nothing");
+
+            asked(&mut session, "why recursive?", "because of nesting", true);
+            assert!(matches!(session.watched(), Some(Watched::Aside(_))));
+            assert_eq!(
+                session.watched_aside().map(|a| a.question.as_str()),
+                Some("why recursive?")
+            );
+        }
+
+        /// An answer nobody is shown is not an answer. The person typed a question, so the thing
+        /// that answers it is what they are looking at when it arrives.
+        #[test]
+        fn answering_a_question_beside_the_work_opens_the_view_on_it() {
+            let mut session = Session::new("none");
+            session.scroll = 7;
+            asked(&mut session, "why recursive?", "because of nesting", true);
+
+            assert!(
+                session.watching_a_delegate(),
+                "the answer was left behind a key"
+            );
+            assert!(
+                !session.listing_delegates(),
+                "the person was shown a list rather than their answer"
+            );
+            assert_eq!(
+                session.watched_aside().and_then(|a| a.answer.as_deref()),
+                Some("because of nesting")
+            );
+
+            session.stop_watching();
+            assert_eq!(session.scroll, 7, "coming out lost the turn's own view");
+        }
+
+        /// Asides come first because they are the only rows that outlive the session that made
+        /// them: a resumed list is asides alone, and everything the session goes on to do appends
+        /// after them rather than under somebody reading one.
+        #[test]
+        fn an_aside_keeps_its_place_when_a_delegate_is_spawned_after_it() {
+            let mut session = Session::new("none");
+            asked(&mut session, "why recursive?", "because of nesting", true);
+            let before = session.list_highlight();
+
+            spawn(&mut session, "reader", "find the parser");
+            ran(&mut session, "cargo test", true);
+
+            let rows = session.watchable();
+            assert!(matches!(rows[0], Watched::Aside(_)));
+            assert!(matches!(rows[1], Watched::Delegate(_)));
+            assert!(matches!(rows[2], Watched::Output(_)));
+            assert_eq!(
+                session.list_highlight(),
+                before,
+                "the row moved under somebody reading it"
+            );
+        }
+
+        /// Neither half of an aside is in the conversation, so neither half may be drawn among
+        /// the turn's own lines: a person reading it there would take it for an exchange the
+        /// planner had, and the planner has read none of it.
+        #[test]
+        fn neither_half_of_an_aside_reaches_the_transcript() {
+            let mut session = Session::new("none");
+            session.transcript.push(Entry::user("add the feature"));
+            asked(&mut session, "why recursive?", "because of nesting", true);
+
+            let drawn: Vec<&str> = session
+                .transcript
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect();
+            assert!(
+                !drawn.iter().any(|text| text.contains("recursive")),
+                "the question was drawn as part of the conversation: {drawn:?}"
+            );
+            assert!(
+                !drawn.iter().any(|text| text.contains("nesting")),
+                "the answer was drawn as part of the conversation: {drawn:?}"
+            );
+        }
+
+        /// A row for an aside opens its own screen rather than the delegate that happens to sit
+        /// at the same position, which is what indexing the delegates with a place in the list
+        /// would draw.
+        #[test]
+        fn opening_an_aside_does_not_draw_a_delegates_lines() {
+            let mut session = Session::new("none");
+            asked(&mut session, "why recursive?", "because of nesting", true);
+            spawn(&mut session, "reader", "find the parser");
+            session.start_activity(Activity::running("Read", "parser.rs"));
+
+            session.watch();
+            session.watch_previous();
+            while session.list_highlight() > 1 {
+                session.watch_previous();
+            }
+            session.open_watched();
+
+            assert!(session.watched_aside().is_some(), "the aside did not open");
+            assert!(
+                !session
+                    .viewed()
+                    .iter()
+                    .any(|entry| entry.text.contains("parser.rs")),
+                "a delegate's lines were drawn under an aside's row"
+            );
+        }
+
+        /// A question about a particular exchange, asked over a copy of it. The exchange is gone,
+        /// so an answer left openable would be an answer to a conversation nobody can read.
+        #[test]
+        fn clearing_forgets_the_asides() {
+            let mut session = Session::new("none");
+            asked(&mut session, "why recursive?", "because of nesting", true);
+
+            session.clear();
+            assert!(
+                session.asides().is_empty(),
+                "an aside outlived its exchange"
+            );
+            assert!(session.watching().is_none(), "the view outlived its aside");
+        }
+
+        /// The one thing this view holds that outlives the session that produced it, and the
+        /// whole reason the record keeps it: a person comes back to a session and their question
+        /// is still answered.
+        #[test]
+        fn a_resumed_session_brings_its_asides_back() {
+            let mut session = Session::new("none");
+            session.restore_asides(vec![Aside {
+                question: "why recursive?".to_string(),
+                answer: Some("because of nesting".to_string()),
+                kept: true,
+            }]);
+
+            assert!(session.watch(), "a resumed aside was not something to open");
+            assert_eq!(
+                session.watched_aside().and_then(|a| a.answer.as_deref()),
+                Some("because of nesting")
+            );
         }
 
         /// The point of delegating is that the reading lands somewhere else, and the interface
@@ -8068,6 +8317,7 @@ mod tests {
                 crate::sessions::Recalled {
                     trails: trails.clone(),
                     todos: BTreeMap::new(),
+                    asides: Vec::new(),
                 },
             )
         }
@@ -8179,6 +8429,7 @@ mod tests {
                 crate::sessions::Recalled {
                     trails: BTreeMap::new(),
                     todos: BTreeMap::from([(2, plan.clone())]),
+                    asides: Vec::new(),
                 },
             );
 
@@ -8228,6 +8479,7 @@ mod tests {
                 crate::sessions::Recalled {
                     trails: BTreeMap::new(),
                     todos: written,
+                    asides: Vec::new(),
                 },
             );
             let second = transcript

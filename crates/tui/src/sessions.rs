@@ -162,6 +162,20 @@ pub struct Record {
     pub build: Option<String>,
     /// The conversation, which is what resuming restores.
     pub conversation: Snapshot,
+    /// Questions asked beside the work, and their answers, oldest first.
+    ///
+    /// Beside the conversation and never in it. A resume puts these back into the view a person
+    /// opens with Ctrl-L, and there is no path from here into a conversation: an aside the planner
+    /// went on to read would be the digression the whole feature exists to keep out of its
+    /// context.
+    ///
+    /// An answer is written only where the planner could have held it, which is what keeps
+    /// SESSION-2 true of this field as much as of the conversation above it. Where it could not,
+    /// the question is still recorded and the answer is not.
+    ///
+    /// Empty for a record written before this was kept.
+    #[serde(default)]
+    pub asides: Vec<StoredAside>,
     /// What a manifest run produced, where this was one.
     ///
     /// Its presence is what makes a record a manifest run, and its absence a turn session. A
@@ -174,6 +188,43 @@ pub struct Record {
     /// one that stopped.
     #[serde(default)]
     pub manifest: Option<StoredManifest>,
+}
+
+/// A question asked beside the work, as it is written down.
+///
+/// Its own type rather than the interface's, because a record on disk outlives the shape of a
+/// struct in memory, and because the two hold different things: the interface holds the answer it
+/// is drawing, and this holds the answer the planner could have held.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredAside {
+    /// What the person asked, which is their own typed line.
+    pub question: String,
+    /// The answer, where it was one the planner could have held.
+    ///
+    /// `None` where the exchange had met something untrusted, so the answer was quarantined like
+    /// any other model output over such a context. The question is still here: that it was asked
+    /// is worth keeping even where what came back is not.
+    #[serde(default)]
+    pub answer: Option<String>,
+}
+
+impl StoredAside {
+    /// Write one down, keeping the answer only where the record may hold it.
+    fn of(aside: &crate::state::Aside) -> Self {
+        Self {
+            question: aside.question.clone(),
+            answer: aside.kept.then(|| aside.answer.clone()).flatten(),
+        }
+    }
+
+    /// Read one back, for the view rather than for any conversation.
+    fn into_aside(self) -> crate::state::Aside {
+        crate::state::Aside {
+            kept: self.answer.is_some(),
+            answer: self.answer,
+            question: self.question,
+        }
+    }
 }
 
 /// A manifest run as it is written down.
@@ -381,6 +432,8 @@ pub struct Standing<'a> {
     /// The model the server reported answering with, or `None` before a turn reached one.
     pub model: Option<&'a str>,
     pub todos: &'a BTreeMap<usize, Vec<Row>>,
+    /// Questions asked beside the work, oldest first.
+    pub asides: &'a [crate::state::Aside],
     pub trust: &'a TrustStore,
     pub programs: &'a TrustedPrograms,
     pub directories: &'a [PathBuf],
@@ -595,6 +648,7 @@ impl Handle {
                 .collect(),
             build: Some(crate::BUILD.to_string()),
             conversation: standing.conversation.clone(),
+            asides: standing.asides.iter().map(StoredAside::of).collect(),
             manifest: standing.manifest.cloned(),
         };
 
@@ -830,6 +884,8 @@ pub fn load(project: &Path, id: &str) -> Option<Record> {
 pub struct Recalled {
     pub trails: BTreeMap<usize, Vec<crate::audit::TrailLine>>,
     pub todos: BTreeMap<usize, Vec<Row>>,
+    /// Questions asked beside the work, oldest first, for the view rather than the transcript.
+    pub asides: Vec<crate::state::Aside>,
 }
 
 /// Everything a resumed transcript needs beyond the conversation itself.
@@ -837,6 +893,12 @@ pub fn recall(project: &Path, record: &Record) -> Recalled {
     Recalled {
         trails: audit_of(project, &record.id),
         todos: record.todo_rows(),
+        asides: record
+            .asides
+            .iter()
+            .cloned()
+            .map(StoredAside::into_aside)
+            .collect(),
     }
 }
 
@@ -1558,6 +1620,7 @@ mod tests {
             programs: Vec::new(),
             directories: Vec::new(),
             build: None,
+            asides: Vec::new(),
             conversation: Snapshot {
                 messages: Vec::new(),
                 context: "trusted".to_string(),

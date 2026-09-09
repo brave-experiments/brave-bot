@@ -4,6 +4,7 @@
 //! from precommitted routing, never from model output, so a turn cannot be redirected
 //! by the content it processes.
 
+pub mod aside;
 pub mod backend;
 pub mod cmdline;
 pub mod compact;

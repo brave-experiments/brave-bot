@@ -9255,6 +9255,130 @@ fn the_trail_says_what_a_compaction_gave_up_and_what_it_cost() {
     );
 }
 
+/// A short exchange to ask a question beside.
+fn an_exchange_to_ask_beside() -> bravebot_agent::Conversation {
+    let mut conversation = bravebot_agent::Conversation::new();
+    conversation.push(bravebot_aichat::protocol::Message::user(
+        "port the parser to the new grammar",
+    ));
+    conversation.push(bravebot_aichat::protocol::Message::assistant(
+        "done, it is recursive now",
+    ));
+    conversation
+}
+
+/// What `/btw` runs. Its own path, like `/compact`'s: a policy it builds itself, so it has to
+/// grant itself what reaching the model needs, and one request with no tools offered.
+#[test]
+fn asking_beside_the_work_reaches_the_model_and_leaves_the_conversation_alone() {
+    let (endpoint, received) = serve_sequence(vec![reply_with("because the grammar nests")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let conversation = an_exchange_to_ask_beside();
+    let before = conversation.len();
+
+    let mut watched = String::new();
+    let answered = turn::aside(
+        &config,
+        &egress,
+        bravebot_agent::aside::Question::about(&conversation, "why is the parser recursive?"),
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+        |written| watched.push_str(written),
+    )
+    .expect("asking beside the work must not be refused");
+
+    assert_eq!(answered.shown, "because the grammar nests");
+    assert_eq!(
+        conversation.len(),
+        before,
+        "asking a question changed the exchange it was asked beside"
+    );
+
+    let body = received.recv().expect("the question's request");
+    assert!(
+        body.contains("port the parser to the new grammar"),
+        "{body}"
+    );
+    assert!(body.contains("why is the parser recursive?"), "{body}");
+    // No tools, which is what keeps this from being a turn: a request that offers none is one
+    // nothing can be steered into calling.
+    assert!(
+        !body.contains("\"tools\""),
+        "the question was sent with tools it could call: {body}"
+    );
+
+    // Watched as it arrived, so a person waiting on an answer sees it being written.
+    assert_eq!(watched, "because the grammar nests");
+}
+
+/// The answer goes into the record, so it goes past the gate that decides what the planner may
+/// hold: only what came back visible may be written, because a record is read back into a later
+/// turn's context.
+#[test]
+fn an_answer_over_a_trusted_exchange_may_be_written_down() {
+    let (endpoint, _received) = serve_sequence(vec![reply_with("because the grammar nests")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let answered = turn::aside(
+        &config,
+        &egress,
+        bravebot_agent::aside::Question::about(&an_exchange_to_ask_beside(), "why recursive?"),
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+        |_| {},
+    )
+    .expect("asking beside the work must not be refused");
+
+    assert_eq!(
+        answered.kept.as_deref(),
+        Some("because the grammar nests"),
+        "an answer the planner could have held was withheld from the record"
+    );
+}
+
+/// And over an exchange that has read something untrusted it may not be. The planner's own words
+/// are quarantined then, like any other model output over such a context, so the person reads the
+/// answer and the record keeps the question alone.
+#[test]
+fn an_answer_over_an_untrusted_exchange_is_shown_and_not_written_down() {
+    let (endpoint, _received) = serve_sequence(vec![reply_with("because the grammar nests")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut conversation = an_exchange_to_ask_beside();
+    conversation.observed(bravebot_core::label::Integrity::Untrusted);
+
+    let answered = turn::aside(
+        &config,
+        &egress,
+        bravebot_agent::aside::Question::about(&conversation, "why recursive?"),
+        None,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+        |_| {},
+    )
+    .expect("asking beside the work must not be refused");
+
+    assert_eq!(
+        answered.shown, "because the grammar nests",
+        "the person was kept from an answer to their own question"
+    );
+    assert!(
+        answered.kept.is_none(),
+        "an answer the planner could not have held was offered for the record"
+    );
+}
+
 /// Where a compaction landed is most of what a reader wants afterwards, because it is the point
 /// the turn stopped being able to remember what it had done. A compaction forced by the budget
 /// happens in the middle of a turn's rounds, and the round it happened on is the part that cannot

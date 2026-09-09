@@ -295,6 +295,13 @@ run-stages = { $count ->
     }
 run-in-directory = in { $directory }
 watching-list-command = command
+# The row and the view for a question asked beside the work, which is what /btw sends.
+watching-list-aside = aside
+watching-aside-head = a question asked beside the work
+watching-aside-question = you asked
+watching-aside-answer = the answer, which the conversation has not read
+watching-aside-not-kept = this answer is on your screen only: the conversation had read something untrusted, so the record does not keep it
+watching-aside-gone = the record could not keep this answer, so it did not come back with the session
 watching-lines = { $count ->
     [one] 1 line
    *[other] { $count } lines
@@ -306,6 +313,10 @@ watching-output-kept = the model has not read this
 # the view the row opens.
 watching-row-read = read
 watching-row-kept = not read
+# The same column on an aside's row, where the question is not whether the model read the answer
+# but whether the record keeps it.
+watching-row-kept-answer = kept
+watching-row-screen-only = screen only
 watching-output-more = { $count ->
     [one] 1 more line was printed and is not kept
    *[other] { $count } more lines were printed and are not kept
@@ -592,8 +603,8 @@ watching-calls = { $count ->
     }
 # Said on the bottom line once the view has anything to open, which is the one row that outlasts
 # the turn that drew it. The count is there because a key with nothing behind it is not worth
-# pressing. Delegates and commands are counted together, since one key opens the list holding both
-# and naming either kind here would undercount the other.
+# pressing. Every kind of row is counted together, since one key opens the list holding all of
+# them and naming one kind here would undercount the rest.
 watching-hint = ctrl-l { $count } to open
 
 
@@ -608,6 +619,7 @@ command-add-dir = Open another directory, and trust it for this session
 command-cd = Work in another directory from now on, and trust it for this session
 command-rename = Call this conversation something else
 command-compact = Summarise the conversation so far, keeping the recent part
+command-btw = Ask something beside the work, without putting it in the conversation
 command-clear = Start a new session here, keeping this one resumable
 command-loop = Send a prompt again and again, on your interval or at a pace each turn sets
 command-export = Export the session transcript to a markdown file
@@ -739,6 +751,15 @@ compact-done =
 compact-nothing-to-do = there is nothing to summarise yet
 compact-failed = the conversation could not be summarised: { $problem }
 turn-ended-unexpectedly = the turn ended unexpectedly
+
+
+## Asking something beside the work
+
+btw-needs-a-question = /btw takes the question to ask, which the conversation will not read
+btw-uninterruptible = the question cannot be interrupted; it takes one request
+btw-ended-unexpectedly = the question ended unexpectedly
+btw-answered = asked beside the work, and answered there; ctrl-l opens it again
+btw-failed = the question could not be answered: { $problem }
 
 
 ## The opening screen

@@ -32,7 +32,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [terminal-input.md](terminal-input.md) | `INPUT` | 30 | what the user types into: the box, the keys, and where a terminal's own limits show through |
 | [commands.md](commands.md) | `CMD` | 7 | a line beginning with `/`: where one may come from, when a line is one, and what it does to the line |
 | [terminal-transcript.md](terminal-transcript.md) | `VIEW` | 19 | what is drawn back: the transcript, a resumed session, and how content reaches the screen |
-| [watching.md](watching.md) | `WATCH` | 17 | work done outside the transcript: a delegate's own lines, what a command printed, and the mode Ctrl-L opens over them |
+| [watching.md](watching.md) | `WATCH` | 20 | work done outside the transcript: a delegate's own lines, what a command printed, a question asked beside it, and the mode Ctrl-L opens over them |
 | [scroller.md](scroller.md) | `SCROLL` | 9 | reading back through what happened: the mode Ctrl-O opens over the transcript, and the keys inside it |
 | [premium-credentials.md](premium-credentials.md) | `PREM` | 9 | importing a Leo Premium subscription and spending its credentials |
 | [sandboxing.md](sandboxing.md) | `SANDBOX` | 5 | operating-system confinement for processes running code we did not write |
@@ -41,7 +41,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [backends.md](backends.md) | `BACKEND` | 27 | which service answers a request, and what a person may choose between |
 | [compaction.md](compaction.md) | `COMPACT` | 10 | shortening a long conversation into a summary of itself, in the request only |
 | [loop.md](loop.md) | `LOOP` | 13 | sending one prompt again and again until somebody stops it |
-| [sessions.md](sessions.md) | `SESSION` | 19 | what is kept between runs: the record of a session, and the prompts a person typed |
+| [sessions.md](sessions.md) | `SESSION` | 20 | what is kept between runs: the record of a session, the questions asked beside it, and the prompts a person typed |
 | [incognito.md](incognito.md) | `INCOG` | 8 | a session that runs normally and adds nothing to `~/.bravebot` |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |

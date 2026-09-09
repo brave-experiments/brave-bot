@@ -16,8 +16,9 @@ the line once it is.
 
 Not what any particular command then does. `/add-dir`, `/cd` and `/status` are the trust map's, in
 [trust-map.md](trust-map.md); `/compact` is [compaction.md](compaction.md)'s; `/clear` begins a
-session, which is [sessions.md](sessions.md)'s. The `!` prompt is a different surface entirely and
-is [shell-mode.md](shell-mode.md).
+session, which is [sessions.md](sessions.md)'s; `/btw` asks something the conversation never sees,
+and where its answer is drawn is [watching.md](watching.md)'s. The `!` prompt is a different
+surface entirely and is [shell-mode.md](shell-mode.md).
 
 **Skills are not on this surface.** Other agents let a person type a skill's name after a slash,
 and this one does not: a skill is advertised to the planner by name and description, and its body
@@ -79,6 +80,9 @@ stay a question. Prefix matching would have made `/add-dirs are useful` open a d
 `verified-by: bravebot_tui::app::a_prompt_containing_the_cd_command_is_still_a_prompt`
 `verified-by: bravebot_tui::app::a_longer_word_starting_with_cd_is_a_prompt`
 `verified-by: bravebot_tui::app::the_bare_cd_command_is_still_the_command`
+`verified-by: bravebot_tui::app::a_prompt_containing_the_btw_command_is_still_a_prompt`
+`verified-by: bravebot_tui::app::a_longer_word_starting_with_btw_is_a_prompt`
+`verified-by: bravebot_tui::app::the_bare_btw_command_is_still_the_command`
 
 
 <a id="CMD-3"></a>
@@ -103,8 +107,9 @@ must not answer by talking about shortening itself, and a session asked to clear
 by asking what to clear.
 
 That a command may go on to start a request of its own is a separate thing: `/compact` sends a
-conversation to be summarised, which [compaction.md](compaction.md) governs, and `/model` reaches
-the network to list models. Neither sends the typed line.
+conversation to be summarised, which [compaction.md](compaction.md) governs, `/btw` sends a copy of
+the conversation with a question on the end of it, which [watching.md](watching.md) governs, and
+`/model` reaches the network to list models. None of them sends the typed line.
 
 `verified-by: bravebot_tui::app::typing_the_status_command_reports_rather_than_prompting`
 `verified-by: bravebot_tui::app::typing_the_clear_command_starts_a_new_session`
@@ -119,6 +124,7 @@ the network to list models. Neither sends the typed line.
 `verified-by: bravebot_tui::app::typing_the_exit_command_quits`
 `verified-by: bravebot_tui::app::the_loop_command_sends_what_is_left_after_the_interval`
 `verified-by: bravebot_tui::app::the_cd_command_carries_its_directory`
+`verified-by: bravebot_tui::app::the_btw_command_carries_its_question`
 
 
 <a id="CMD-5"></a>
@@ -136,6 +142,7 @@ exactly those characters have to arrive.
 `verified-by: bravebot_tui::app::the_rename_command_carries_the_whole_name`
 `verified-by: bravebot_tui::app::the_add_dir_command_carries_its_directory`
 `verified-by: bravebot_tui::app::the_cd_command_carries_its_directory`
+`verified-by: bravebot_tui::app::the_btw_command_carries_its_question`
 `verified-by: bravebot_tui::app::a_tilde_is_expanded_only_as_a_whole_first_segment`
 
 

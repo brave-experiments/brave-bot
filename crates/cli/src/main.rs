@@ -673,6 +673,9 @@ fn record_manifest_run(
             timing: &timing,
             model: outcome.as_ref().ok().map(|o| o.model.as_str()),
             todos: &todos,
+            // None, and there can be none: an aside is a question a person types beside a
+            // conversation, and a manifest run has neither.
+            asides: &[],
             trust: &trust,
             programs: &programs,
             directories: &[],

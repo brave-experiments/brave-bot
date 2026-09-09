@@ -8,13 +8,15 @@ governs:
   - crates/tui/src/history.rs
   - crates/tui/src/store.rs
   - crates/cli/src/main.rs
+  - crates/agent/src/aside.rs
 ---
 
 ## Scope
 
-What is kept between runs: the record of a session so it can be picked up again, the prompts a
-person typed so they can be recalled, and what a session says on its way out about being picked up.
-What a resume does to standing permissions is [prompting.md](prompting.md); what the trail contains
+What is kept between runs: the record of a session so it can be picked up again, the questions a
+person asked beside it, the prompts they typed so they can be recalled, and what a session says on
+its way out about being picked up. What a resume does to standing permissions is
+[prompting.md](prompting.md); what the trail contains
 is [trace.md](trace.md). Everything else the command line does is [cli.md](cli.md), which governs
 the same file for its own topic.
 
@@ -61,8 +63,9 @@ design exists to close.
 ### SESSION-3: the record carries what a resume needs and nothing more
 
 The conversation, the plan each turn worked to, what the session has spent, the branch it ran on,
-and the standing permissions its user granted. A session can be named, renaming rewrites the record
-immediately, a chosen name survives the next turn, and an empty name is refused.
+the questions asked beside the work, and the standing permissions its user granted. A session can
+be named, renaming rewrites the record immediately, a chosen name survives the next turn, and an
+empty name is refused.
 
 `verified-by: bravebot_tui::sessions::renaming_a_session_rewrites_the_record_immediately`
 `verified-by: bravebot_tui::sessions::a_chosen_name_survives_the_next_turn`
@@ -399,8 +402,8 @@ there. A path that will not go back is named on the line that reports the rewind
 the rewind still happens.
 
 One turn is as far back as it goes, and the window closes when the next turn begins. Anything
-else that changes the session outside a turn closes it as well: `/clear`, `/compact`, `/rename`,
-`/add-dir`, `/cd`, and a shell-mode command, whose writes the workspace never saw. `/undo` then
+else that changes the session outside a turn closes it as well: `/clear`, `/compact`, `/btw`,
+`/rename`, `/add-dir`, `/cd`, and a shell-mode command, whose writes the workspace never saw. `/undo` then
 says there is nothing left to undo rather than rewinding to a snapshot that describes a different
 session.
 
@@ -423,6 +426,39 @@ until the turn after it.
 `verified-by: bravebot_tui::sessions::truncating_an_audit_log_removes_events_from_undone_turns`
 `verified-by: bravebot_tui::state::clearing_drops_the_transcript_and_what_it_spent`
 `verified-by: bravebot_tui::state::closing_the_rewind_window_leaves_nothing_to_rewind_to`
+
+<a id="SESSION-20"></a>
+### SESSION-20: a question asked beside the work is recorded, and comes back into the view alone
+
+`/btw` asks something over a copy of the conversation and puts neither half into it. Both halves
+are written into the record, and a resume puts them back into the mode Ctrl-L opens, which
+[watching.md](watching.md) governs. Nothing reads them into a conversation, so a resumed session
+carries on from the exchange it had and not from the questions asked beside it.
+
+The answer is written only where the gate that decides what the planner may hold returned it
+visible. Where that gate quarantined it, which is a conversation that has met something untrusted,
+the question is recorded and the answer is not. A record written before this was kept reads as a
+session with no questions beside it, which is what such a session was.
+
+A session that has had no turn yet writes nothing, as it does anywhere else that writes outside a
+turn.
+
+**Why.** The reason for keeping them is that the answer exists nowhere else: it is drawn on one
+screen, in one mode, and losing it on a resume would mean a person could only read their own
+question once. The reason for keeping only what the planner could have held is SESSION-2: a record
+holding more than that is a route into a later turn's context, and an aside is written into the
+same file as the conversation.
+
+**Why not into the conversation.** Putting it back would undo the whole of what asking it there
+achieved. A person asks beside the work precisely so the digression is not in front of the planner
+for the rest of the session, and a resume that folded it in would make `/btw` a turn that took one
+run to arrive.
+
+`verified-by: bravebot_tui::sessions::a_question_asked_beside_the_work_survives_a_resume`
+`verified-by: bravebot_tui::sessions::an_answer_the_planner_could_not_have_held_is_not_written_down`
+`verified-by: bravebot_tui::state::a_resumed_session_brings_its_asides_back`
+`verified-by: bravebot_agent::turn::an_answer_over_a_trusted_exchange_may_be_written_down`
+`verified-by: bravebot_agent::turn::an_answer_over_an_untrusted_exchange_is_shown_and_not_written_down`
 
 
 ## Known costs
