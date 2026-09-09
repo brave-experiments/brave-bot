@@ -583,7 +583,7 @@ impl Handle {
         };
         // Beside and renamed, as `save` does, so an interrupted rename leaves the record it had.
         let temporary = directory.join(format!("{}.tmp", self.id));
-        if write_secure(&temporary, &body).is_ok() {
+        if bravebot_agent::home::write_file(&temporary, &body).is_ok() {
             let _ = std::fs::rename(&temporary, path);
         }
     }
@@ -659,7 +659,7 @@ impl Handle {
         // Written beside and renamed, so a session killed mid-write leaves the last good record
         // rather than half of a new one.
         let temporary = directory.join(format!("{}.tmp", self.id));
-        if write_secure(&temporary, &body).is_ok()
+        if bravebot_agent::home::write_file(&temporary, &body).is_ok()
             && std::fs::rename(&temporary, directory.join(format!("{}.json", self.id))).is_ok()
         {
             self.wrote = true;
@@ -691,21 +691,8 @@ impl Handle {
         }
 
         let path = directory.join(format!("{}.audit.jsonl", self.id));
-        let mut options = std::fs::OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let _ = options.open(&path).and_then(|mut file| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-            }
-            file.write_all(body.as_bytes())
-        });
+        let _ = bravebot_agent::home::append_to_file(&path)
+            .and_then(|mut file| file.write_all(body.as_bytes()));
     }
 
     /// Drop what the turns from `from_turn` on decided.
@@ -733,7 +720,7 @@ impl Handle {
             kept.push_str(line);
             kept.push('\n');
         }
-        let _ = write_secure(&path, kept.as_bytes());
+        let _ = bravebot_agent::home::write_file(&path, kept.as_bytes());
     }
 
     /// Remove what this session wrote, for a rewind that went back past its first turn.
@@ -756,57 +743,8 @@ impl Handle {
         // incognito session that left an empty directory behind would have recorded which projects
         // were worked on and when, which is most of what the record was for.
         let directory = writable_project_directory(&self.project)?;
-        ensure_dir_secure(&directory).ok()?;
+        bravebot_agent::home::create_directory(&directory).ok()?;
         Some(directory)
-    }
-}
-
-/// Write a session file with mode 0600 on Unix.
-///
-/// Created mode 0600 before content is written, matching credentials and scratch files,
-/// rather than written and then tightened: the other order leaves conversation content
-/// world-readable for the moment in between. An existing file is tightened on write as well.
-fn write_secure(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-    }
-    file.write_all(content)?;
-    file.flush()
-}
-
-/// Ensure a directory exists with mode 0700 permissions on Unix.
-///
-/// Created mode 0700 so that conversation records under it are only reachable by the user.
-/// Existing directories are tightened to mode 0700 as well.
-fn ensure_dir_secure(directory: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        use std::os::unix::fs::PermissionsExt;
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true).mode(0o700);
-        builder.create(directory)?;
-        let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
-        if let Some(parent) = directory.parent()
-            && parent.file_name().is_some_and(|n| n == SESSIONS)
-        {
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(directory)
     }
 }
 
@@ -1203,7 +1141,7 @@ pub fn export(
         std::fs::create_dir_all(parent)?;
     }
 
-    write_secure(&target, content.as_bytes())?;
+    bravebot_agent::home::write_file(&target, content.as_bytes())?;
     Ok(target)
 }
 
@@ -1229,7 +1167,7 @@ pub fn fork(project: &Path, source_id: &str) -> Option<Record> {
         let path = directory.join(format!("{}.json", record.id));
 
         if let Ok(body) = serde_json::to_vec_pretty(&record) {
-            let _ = write_secure(&path, &body);
+            let _ = bravebot_agent::home::write_file(&path, &body);
         }
 
         // The prefix is shared, so what its gates decided is the fork's history too. A fork
@@ -1237,7 +1175,7 @@ pub fn fork(project: &Path, source_id: &str) -> Option<Record> {
         let old_audit_path = directory.join(format!("{}.audit.jsonl", old_id));
         let new_audit_path = directory.join(format!("{}.audit.jsonl", record.id));
         if let Ok(content) = std::fs::read(&old_audit_path) {
-            let _ = write_secure(&new_audit_path, &content);
+            let _ = bravebot_agent::home::write_file(&new_audit_path, &content);
         }
     }
 

@@ -43,6 +43,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [loop.md](loop.md) | `LOOP` | 13 | sending one prompt again and again until somebody stops it |
 | [goal.md](goal.md) | `GOAL` | 16 | one condition a person set, judged after every turn, until it holds |
 | [sessions.md](sessions.md) | `SESSION` | 20 | what is kept between runs: the record of a session, the questions asked beside it, and the prompts a person typed |
+| [state-directory.md](state-directory.md) | `STATE` | 2 | `~/.bravebot`, and who on the machine may read what is written into it |
 | [incognito.md](incognito.md) | `INCOG` | 8 | a session that runs normally and adds nothing to `~/.bravebot` |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |
 | [localization.md](localization.md) | `LOCALE` | 7 | every word said to a person, and which of them change with the reader's language |

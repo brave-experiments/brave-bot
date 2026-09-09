@@ -203,14 +203,25 @@ pub fn path() -> Result<PathBuf, StoreError> {
 #[cfg(unix)]
 pub fn save(credentials: &StoredCredentials) -> Result<(), StoreError> {
     use std::io::Write;
+    use std::os::unix::fs::DirBuilderExt;
     use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::PermissionsExt;
 
     let path = path()?;
     let unusable = |detail: String| StoreError::Unusable { detail };
 
+    // Created reachable only by this user, and narrowed where it is already there. The state
+    // directory is made by whichever subsystem writes to it first, so one that made it at the
+    // umask would decide the mode for the prompt history and the session records too. Spelled out
+    // here rather than shared with the crates that have their own helper for it: this crate
+    // depends on nothing, and an auth-only crate is not worth a dependency for four lines.
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
             .map_err(|e| unusable(format!("{}: {e}", parent.display())))?;
+        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
     }
 
     let mut file = std::fs::OpenOptions::new()
@@ -724,6 +735,41 @@ mod tests {
                 0,
                 "group or other can reach {}",
                 path.display()
+            );
+        });
+    }
+
+    /// The state directory is shared with the prompt history and the session records, and whichever
+    /// subsystem writes first is the one that creates it. A credential store that made it at the
+    /// umask would decide the mode for everything else kept there.
+    #[cfg(unix)]
+    #[test]
+    fn the_directory_it_is_kept_in_is_not_reachable_by_anyone_else() {
+        with_temp_home("parent-mode", || {
+            use std::os::unix::fs::PermissionsExt;
+
+            let parent = path()
+                .expect("a home")
+                .parent()
+                .expect("a parent")
+                .to_path_buf();
+            // As a build with no opinion about modes would have left it, which is the case that
+            // has to be narrowed rather than kept.
+            std::fs::create_dir_all(&parent).expect("the directory");
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755))
+                .expect("loosen");
+
+            save(&batch()).expect("a write");
+
+            let mode = std::fs::metadata(&parent)
+                .expect("the directory")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "group or other can reach {}",
+                parent.display()
             );
         });
     }
