@@ -1,3 +1,7 @@
+## [0.6.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.6.0)
+
+ - Added `/btw`, which asks a question beside the work. It sends a copy of the conversation with your question on the end and puts neither half back, so the digression is not in front of the agent for the rest of the session. The answer opens under Ctrl-L as a row of its own, and a resume brings it back there.
+
 ## [0.5.1](https://github.com/brave-experiments/brave-bot/releases/tag/v0.5.1)
 
  - Added an install script for macOS and Linux, so a machine without npm can install bravebot without building it: `curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh`. It lands in `/usr/local/bin` unless `INSTALL_DIR` says otherwise, and the download is checked against its published checksum.
