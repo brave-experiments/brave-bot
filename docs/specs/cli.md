@@ -131,39 +131,37 @@ is all that remains of a document nobody can see. The plan never shares stdout w
 `verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`
 
 <a id="CLI-9"></a>
-### CLI-9: a one-shot run's model is named on the command line, or configured
+### CLI-9: a one-shot run names its own model, or asks for the one a session would
 
-`--model <name>` names the model for one run. Where no flag names one, the model is the configured
-one: an exported `BRAVE_AI_CHAT_DEFAULT_MODEL`, then the settings file's `model` key, then the
-default the build was made with. The choice `/model` records belongs to the interactive session
-that recorded it, and a one-shot run does not take its model from there. Where no flag named a
-model and that record names something other than what the run is about to ask for, both names are
-said on stderr before the turn, and `doctor` reports them as two facts rather than one. A `--model`
-with no name after it, or a blank one, is refused rather than read as no choice.
+`--model <name>` names the model for one run and outranks everything else. Where no flag names
+one, the model is the one a session opening in the same directory would ask for: the choice
+`/model` recorded, then the configured model, which is an exported
+`BRAVE_AI_CHAT_DEFAULT_MODEL`, then the settings file's `model` key, then the default the build was
+made with. A `--model` with no name after it, or a blank one, is refused rather than read as no
+choice.
 
-**Why.** A scripted run whose model is whatever somebody last picked in a terminal is not
-reproducible. Nothing in the script changed, nothing reports the difference, and which model
-answered decides both what the run costs and what its output is worth. Every other route to a model
-can be committed beside the script; a picker's record cannot, and it cannot vary from one
-invocation to the next either, which is what the flag is for.
+**Why.** A script that cannot name a model has only one route to a particular one, which is for
+somebody to open the interface and pick it, and in a pipeline that is not a route at all. The flag
+is that route, and it ranks above every other because it names a model for one invocation and
+nothing else: two scripts in the same checkout can ask for different models, which nothing a file
+records can do.
 
-The line on stderr is what keeps this from being one model quietly standing in for another: it
-names both, so somebody who chose one in a session can see which one a script asks for. It is said
-only where no flag named a model, since a person who typed one is not surprised by what answers,
-and a script that pins a model would otherwise carry the line on every run it ever made. A blank
-name is refused on the same reasoning: a script that computed an empty variable asked for a model,
-and reading the blank as no choice would answer it with whatever was configured and say nothing.
+Below the flag, a run resolves a model the way a session does, so the two surfaces reach the same
+models by the same names and a script needs no interactive step to use the one somebody already
+chose. Ranking configuration above the record instead would mean a person who picked a model could
+not run a script with it, and a script wanting a different one from the picked one has the flag.
+
+A blank name is refused because a script that computed an empty variable asked for a model.
+Reading the blank as no choice would answer it with whatever was recorded or configured and say
+nothing about having done so, which is the substitution the flag exists to make impossible.
 
 `verified-by: bravebot_cli::main::a_model_flag_names_the_model_a_run_asks_for`
 `verified-by: bravebot_cli::main::a_run_that_named_no_model_names_nothing`
-`verified-by: bravebot_cli::main::the_older_name_for_the_routing_entry_is_rewritten`
+`verified-by: bravebot_cli::main::the_command_line_outranks_the_record_a_session_would_read`
+`verified-by: bravebot_cli::main::a_run_that_named_no_model_reads_the_record_a_session_would`
+`verified-by: bravebot_cli::main::a_run_with_nothing_to_go_on_leaves_the_configured_model_in_force`
 `verified-by: bravebot_cli::main::a_model_flag_with_no_name_is_refused`
 `verified-by: bravebot_cli::main::a_blank_model_is_refused_rather_than_read_as_no_choice`
-`verified-by: bravebot_cli::main::a_stored_choice_the_run_does_not_read_is_named`
-`verified-by: bravebot_cli::main::a_stored_choice_that_agrees_with_the_run_says_nothing`
-`verified-by: bravebot_cli::main::a_run_that_named_its_own_model_says_nothing_about_the_record`
-`verified-by: bravebot_cli::main::doctor_reports_the_session_model_beside_the_one_a_run_requests`
-`verified-by: bravebot_cli::main::doctor_names_one_model_where_there_is_only_one_to_name`
 
 <a id="CLI-10"></a>
 ### CLI-10: a model a run named, and did not get, fails the run

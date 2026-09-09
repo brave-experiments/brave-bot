@@ -378,7 +378,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     };
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
-        .with_model(model)
+        .with_model(model_asked_for(model, bravebot_tui::store::load_model()))
         .with_effort(bravebot_tui::store::load_effort())
         .with_permissions(permissions)
         .with_permission_mode(permission_mode);
@@ -422,16 +422,6 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         .as_deref()
         .unwrap_or(&config.default_model)
         .to_string();
-
-    // Said before the turn rather than after it, so somebody who meant to pin a model reads it
-    // while the run is still worth stopping.
-    if let Some(line) = stored_model_not_read(
-        task.model.as_deref(),
-        bravebot_tui::store::load_model().as_deref(),
-        &model,
-    ) {
-        eprintln!("{}", t!(cli_notice, notice = line));
-    }
 
     // The sign-in's own lines go to stderr as they arrive, beside every other progress line, which
     // keeps stdout the reply and nothing else. A URL and a code are no use after the fact, so they
@@ -572,32 +562,17 @@ fn open_directories(workspace: &mut Workspace, directories: &[String]) -> Result
     Ok(())
 }
 
-/// A line about the model choice a one-shot run does not read, or nothing worth saying.
+/// The model a run asks for: the one the command line named, else the one a session would read.
 ///
-/// `/model` records a choice for the interface that recorded it, and a run nobody is watching
-/// takes its model from configuration instead. Where the two name different models, saying so is
-/// the whole of what keeps that from being one model silently swapped for another.
+/// A run started from a script resolves a model the way a session opening in the same directory
+/// does, so a script reaches the model somebody already chose without an interactive step, and
+/// neither surface has a model the other cannot ask for. Below both is the configured model,
+/// which is what an absent record leaves in force.
 ///
-/// Nothing where the command line named a model: somebody who typed one is not surprised by what
-/// answers, and a script that pins a model would carry the line on every run it ever made.
-///
-/// Nothing where they agree either, and nothing where no choice was ever recorded. A line naming
-/// the model that is answering anyway reports a difference that does not exist, and it would be
-/// printed on every run for the rest of the life of the machine.
-fn stored_model_not_read(
-    named: Option<&str>,
-    stored: Option<&str>,
-    in_force: &str,
-) -> Option<String> {
-    if named.is_some() {
-        return None;
-    }
-    let stored = stored.filter(|chosen| *chosen != in_force)?;
-    Some(t!(
-        cli_stored_model_not_read,
-        stored = stored,
-        model = in_force
-    ))
+/// The command line outranks the record because it names a model for one run and nothing else,
+/// which is the only way a script can pin one against a choice made elsewhere.
+fn model_asked_for(named: Option<String>, stored: Option<String>) -> Option<String> {
+    named.or(stored)
 }
 
 /// The complaint a run has when it named a model and another one answered, if it has one.
@@ -1231,11 +1206,14 @@ fn doctor() -> ExitCode {
                 report_gateway(provider);
             }
 
-            for (name, value) in model_facts(
-                &config.default_model,
-                bravebot_tui::store::load_model().as_deref(),
-            ) {
-                fact(name, value);
+            // What a run would actually request, since a choice made with `/model` overrides the
+            // configured default and reporting only the default would explain the wrong thing.
+            match bravebot_tui::store::load_model() {
+                Some(chosen) => fact(t!(doctor_model), t!(doctor_model_chosen, model = chosen)),
+                None => fact(
+                    t!(doctor_model),
+                    t!(doctor_model_default, model = &config.default_model),
+                ),
             }
 
             // Only where a subscription means something. A Leo credential is what the premium half of
@@ -1364,29 +1342,6 @@ fn aligned(name: impl AsRef<str>, value: impl AsRef<str>, column: usize) -> Stri
     let name = name.as_ref();
     let gap = column.saturating_sub(name.chars().count()).max(1);
     format!("  {name}{}{}", " ".repeat(gap), value.as_ref())
-}
-
-/// What `doctor` says about the model, given the configured one and the interface's own record.
-///
-/// Two lines where they differ, because they answer two questions. A run started from a script
-/// asks for the configured model; a session asks for whatever `/model` last recorded. One line
-/// naming a single model would answer one of those wrongly, and the person reading `doctor` is
-/// usually reading it because a model they did not expect answered.
-///
-/// One line where they agree, or where nothing was ever recorded: naming the same model twice
-/// explains nothing.
-fn model_facts(configured: &str, stored: Option<&str>) -> Vec<(String, String)> {
-    let mut facts = vec![(
-        t!(doctor_model).to_string(),
-        t!(doctor_model_default, model = configured),
-    )];
-    if let Some(chosen) = stored.filter(|chosen| *chosen != configured) {
-        facts.push((
-            t!(doctor_model_session).to_string(),
-            t!(doctor_model_chosen, model = chosen),
-        ));
-    }
-    facts
 }
 
 fn fact(name: impl AsRef<str>, value: impl AsRef<str>) {
@@ -1928,52 +1883,35 @@ mod tests {
         }
     }
 
-    /// A stored choice that names something other than what is about to answer is the case this
-    /// line exists for: nothing else in a scripted run reports it.
+    /// The flag names a model for one run, which is the only thing a script can pin a model
+    /// against a choice recorded elsewhere with.
     #[test]
-    fn a_stored_choice_the_run_does_not_read_is_named() {
-        let line = stored_model_not_read(None, Some("chosen-in-a-session"), "what-answers")
-            .expect("a line about the difference");
-        assert!(line.contains("chosen-in-a-session"), "{line}");
-        assert!(line.contains("what-answers"), "{line}");
-    }
-
-    /// Nothing to report where the recorded choice is the model that answers anyway, or where
-    /// nobody ever recorded one. Either would be a line on every run, forever, about nothing.
-    #[test]
-    fn a_stored_choice_that_agrees_with_the_run_says_nothing() {
+    fn the_command_line_outranks_the_record_a_session_would_read() {
         assert_eq!(
-            stored_model_not_read(None, Some("same-model"), "same-model"),
-            None
-        );
-        assert_eq!(stored_model_not_read(None, None, "same-model"), None);
-    }
-
-    /// A person who typed `--model` has answered the question the line asks, and a script that
-    /// pins a model would otherwise carry it on every run it ever made.
-    #[test]
-    fn a_run_that_named_its_own_model_says_nothing_about_the_record() {
-        assert_eq!(
-            stored_model_not_read(Some("named-on-the-command-line"), Some("chosen"), "named"),
-            None
+            model_asked_for(
+                Some("named-on-the-command-line".into()),
+                Some("chosen".into())
+            )
+            .as_deref(),
+            Some("named-on-the-command-line")
         );
     }
 
-    /// `doctor` is read by somebody explaining a model they did not expect, and a scripted run and
-    /// a session ask for different ones. Reporting a single model would answer that wrongly for
-    /// one of them.
+    /// A run that named no model asks for what a session opening in the same directory would, so
+    /// reaching a model somebody already chose needs no interactive step and no flag.
     #[test]
-    fn doctor_reports_the_session_model_beside_the_one_a_run_requests() {
-        let facts = model_facts("configured-model", Some("chosen-in-a-session"));
-        assert_eq!(facts.len(), 2, "{facts:?}");
-        assert!(facts[0].1.contains("configured-model"), "{facts:?}");
-        assert!(facts[1].1.contains("chosen-in-a-session"), "{facts:?}");
+    fn a_run_that_named_no_model_reads_the_record_a_session_would() {
+        assert_eq!(
+            model_asked_for(None, Some("chosen".into())).as_deref(),
+            Some("chosen")
+        );
     }
 
+    /// Nothing recorded and nothing named leaves the configured model in force, which is what a
+    /// person who has never picked one gets in either surface.
     #[test]
-    fn doctor_names_one_model_where_there_is_only_one_to_name() {
-        assert_eq!(model_facts("same-model", Some("same-model")).len(), 1);
-        assert_eq!(model_facts("same-model", None).len(), 1);
+    fn a_run_with_nothing_to_go_on_leaves_the_configured_model_in_force() {
+        assert_eq!(model_asked_for(None, None), None);
     }
 
     /// A run that named a model and was answered by another did not do what it was asked. Nothing
