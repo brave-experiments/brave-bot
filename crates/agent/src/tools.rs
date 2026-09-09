@@ -2288,14 +2288,12 @@ fn write_file<S: Sink, C: Confirmer>(
                     format!("replaced {shown_path}, which was already there")
                 }
                 (Intent::Create, Destination::Reference) => format!(
-                    "created the file {shown_path} names, from {}. It is written; do not write \
-                     {shown_path} again.",
-                    body_from
+                    "created the file {shown_path} names, from {body_from}. It is written; do not \
+                     write {shown_path} again."
                 ),
                 (_, Destination::Reference) => format!(
-                    "replaced the file {shown_path} names, which was already there, from {}. It \
-                     is written; do not write {shown_path} again.",
-                    body_from
+                    "replaced the file {shown_path} names, which was already there, from \
+                     {body_from}. It is written; do not write {shown_path} again."
                 ),
             };
             confirmed(done, note)

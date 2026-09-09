@@ -5012,8 +5012,7 @@ fn quarantined_content_reaches_the_person_and_not_the_planner() {
     for shown in &reporter.shown {
         assert!(
             shown.label.contains("U"),
-            "the block did not say the content is untrusted: {:?}",
-            shown
+            "the block did not say the content is untrusted: {shown:?}"
         );
     }
 

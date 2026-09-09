@@ -29,6 +29,7 @@
 
 ## [0.4.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.4.0)
 
+ - Fixed chat requests treating HTTP 503/429 as a hard transport failure instead of waiting out `Retry-After` and retrying while the guard or backend is overloaded.
  - Added a command line to `run`, with pipes, `&&`, `||`, `;`, redirections and brace, glob and tilde expansion, compiled here rather than handed to a shell and put in front of you as a plan naming every file it would write.
  - Added shift-tab, which cycles a session between asking about every write, accepting edits, planning, and bypassing, and draws the mode in force under the prompt.
  - Added `--dangerously-skip-permissions`, which answers a write, a run, a command's output and vouching for a quarantined file without asking, while deny rules from the settings file still refuse.

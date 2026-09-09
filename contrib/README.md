@@ -95,3 +95,9 @@ default is a hundred thousand tokens and a scripted session will not reach it.
 
 Sessions it runs are real: they are written to `~/.bravebot/sessions` like any other, and a script that
 approves a write will write the file. Run it somewhere disposable.
+
+## worker/
+
+General-purpose Docker image that loops bravebot against an S3 inputs/outputs
+layout (for Jobs or similar), with a practical CLI/Python/Node toolkit. See
+[worker/README.md](worker/README.md).
