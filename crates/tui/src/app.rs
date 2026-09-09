@@ -4056,10 +4056,10 @@ fn fold_outcome(
             // survived it would send the next prompt as though nothing had been said.
             if matches!(error, turn::TurnError::Cancelled) {
                 session.stop_loop();
-                // And the goal, for the same reason. A condition that survived a stop would judge
-                // the turn the person had just interrupted, find it unfinished, and send the work
-                // straight back: the key that stops things would start one.
-                session.clear_goal();
+                // Not the goal, which outlives one turn by design. A stopped turn is recorded as
+                // failed, so it is not judged and the work is not sent straight back, and the
+                // person who stops a turn going the wrong way keeps the condition they set: the
+                // key means "stop this", and a second press with nothing running takes it off.
             } else {
                 // Any other failure is a tick that ended, and a self-paced loop that was told
                 // nothing falls back to the driver's own wait. A loop must not end because one
@@ -8968,11 +8968,12 @@ mod tests {
         assert_eq!(session.fullness(), Some(45));
     }
 
-    /// A condition that survived a stop would judge the turn the person had just interrupted,
-    /// find it unfinished, and send the work straight back. The key that stops things would start
-    /// one.
+    /// A goal is a condition for a session and not for one turn, so stopping a turn going the
+    /// wrong way has to leave it: a person who has to retype the condition every time they
+    /// interrupt cannot steer the work at all. The stopped turn is recorded as failed, which is
+    /// what keeps it from being judged and sent straight back.
     #[test]
-    fn stopping_a_turn_takes_the_goal_off_with_it() {
+    fn stopping_a_turn_leaves_the_goal_set() {
         let mut session = Session::new("none");
         session.start_goal("cargo test exits 0".to_string());
         let asked = Asked {
@@ -8994,7 +8995,15 @@ mod tests {
             asked,
         );
 
-        assert!(session.goal().is_none(), "the goal survived the stop");
+        assert_eq!(
+            session.goal().map(crate::goals::Running::condition),
+            Some("cargo test exits 0"),
+            "the stop took the goal off with the turn"
+        );
+        assert!(
+            session.finished.is_some_and(|turn| turn.failed),
+            "a stopped turn was not recorded as failed, so it would be judged"
+        );
     }
 
     /// A request that never came back says nothing about whether the work is finished, so the
