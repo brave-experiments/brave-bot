@@ -97,6 +97,10 @@ const BTW_COMMAND: &str = "/btw";
 /// The line that repeats a prompt, taking the prompt and any interval as its argument.
 const LOOP_COMMAND: &str = "/loop";
 
+/// The line that sets the condition a session works towards, taking that condition as its
+/// argument.
+const GOAL_COMMAND: &str = "/goal";
+
 /// The one line that ends the session instead of starting a turn.
 const EXIT_COMMAND: &str = "/exit";
 
@@ -122,7 +126,7 @@ pub struct Command {
 /// The one place they are written down. The hint line, the completion list and the key handler all
 /// read from here, so a command that is renamed or added cannot leave any of them advertising
 /// something that no longer works.
-pub fn commands() -> [Command; 15] {
+pub fn commands() -> [Command; 16] {
     [
         Command {
             name: STATUS_COMMAND,
@@ -183,6 +187,11 @@ pub fn commands() -> [Command; 15] {
             name: LOOP_COMMAND,
             argument: "[interval] <prompt>",
             description: t!(command_loop),
+        },
+        Command {
+            name: GOAL_COMMAND,
+            argument: "[<condition> | clear]",
+            description: t!(command_goal),
         },
         Command {
             name: EXPORT_COMMAND,
@@ -810,6 +819,12 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
             session.stop_loop();
             Action::Redraw
         }
+        // For the reason the loop is here: a goal is a thing still happening, and a person
+        // reaching for the key that stops things must be able to stop it without leaving.
+        KeyCode::Char('c') if ctrl && session.goal().is_some() => {
+            session.clear_goal();
+            Action::Redraw
+        }
         KeyCode::Char('c') if ctrl => {
             session.quit();
             Action::Quit
@@ -991,6 +1006,24 @@ pub fn handle_key(session: &mut Session, key: KeyEvent) -> Action {
                     Action::Redraw
                 }
             }
+        }
+        // The command that sends nothing. A goal is a condition and not a prompt, so setting one
+        // arms it and waits: what it keeps going is whatever the person asks for next.
+        KeyCode::Enter if argument_to(session.input(), GOAL_COMMAND).is_some() => {
+            let argument = argument_to(session.input(), GOAL_COMMAND)
+                .expect("the guard just matched")
+                .to_string();
+            session.clear_input();
+            match crate::goals::parse(&argument) {
+                crate::goals::Asked::Report => session.report_goal(),
+                crate::goals::Asked::Clear => {
+                    if !session.clear_goal() {
+                        session.note(t!(goal_none));
+                    }
+                }
+                crate::goals::Asked::Set(condition) => session.start_goal(condition),
+            }
+            Action::Redraw
         }
         // A half-typed command, after every arm that recognises a whole one. Enter takes the
         // highlighted row rather than sending "/mod" to the planner, which is never what was meant.
@@ -2090,6 +2123,7 @@ fn event_loop(
                     trust: &trust,
                     programs: &programs,
                     looping: session.looping(),
+                    goal: session.goal(),
                 });
                 session.report(report);
                 needs_draw = true;
@@ -2200,8 +2234,11 @@ fn event_loop(
                 // typed, and so does anything typed during that one. Looping here rather than
                 // going back round the outer loop keeps a queued prompt from waiting on a key
                 // press that nobody is there to make.
-                let mut sending = Some(prompt);
-                while let Some(prompt) = sending {
+                // Whose line each one is, which decides whether a `@path` in it vouches for a
+                // file. Everything the person typed or queued is theirs; the sentence a goal
+                // carries the work on with is this program's.
+                let mut sending = Some((prompt, Wrote::ThePerson));
+                while let Some((prompt, wrote)) = sending {
                     session.previous_turn = Some(crate::state::TurnSnapshot {
                         conversation: conversation.snapshot(),
                         turns: session.turns,
@@ -2226,6 +2263,7 @@ fn event_loop(
                         config,
                         &workspace,
                         &prompt,
+                        wrote,
                         conversation,
                         trust,
                         programs,
@@ -2257,10 +2295,26 @@ fn event_loop(
                     stored.append_audit(session.turns, &events);
 
                     // Nothing waiting goes out after somebody has asked to leave.
+                    //
+                    // What the person queued goes before the goal is put to a judge. Their own
+                    // prompts are the session, and a condition judged before they have been sent
+                    // would be judged against an exchange that is missing them.
                     sending = if session.is_quitting() {
                         None
+                    } else if let Some(queued) = session.send_queued() {
+                        Some((queued, Wrote::ThePerson))
                     } else {
-                        session.send_queued()
+                        let (carrying_on, checked) = goal_check_animated(
+                            terminal,
+                            &mut session,
+                            config,
+                            &conversation,
+                            &trust,
+                        )?;
+                        // The check is a request that really went out, and a refusal in one is
+                        // exactly what somebody reading the trail afterwards wants to find.
+                        stored.append_audit(session.turns, &checked);
+                        carrying_on.map(|prompt| (prompt, Wrote::TheDriver))
                     };
                 }
             }
@@ -3259,6 +3313,180 @@ fn aside_animated(
     Ok(sink.events().to_vec())
 }
 
+/// Put the session's stopping condition to a judge, and give back the prompt that carries the work
+/// on where it is not met yet.
+///
+/// `None` whenever nothing should happen: no goal is set, or the turn that just ended produced no
+/// answer to judge. A turn that failed leaves the goal armed and is not judged, because a request
+/// that never came back says nothing about whether the work is finished; the next turn is judged
+/// instead.
+///
+/// The same shape as `aside_animated`, and for the same reasons: one request, off the thread that
+/// owns the terminal, with the loop below drawing so a slow answer does not read as a hang. The
+/// conversation is lent by reference and comes back unchanged. What goes back into it is the
+/// driver's own sentence, sent as an ordinary prompt by the caller, so the exchange only ever
+/// grows the way it grows for anything else.
+fn goal_check_animated(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut Session,
+    config: &Config,
+    conversation: &Conversation,
+    trust: &TrustStore,
+) -> io::Result<(Option<String>, Vec<Stamped>)> {
+    if session.goal().is_none() {
+        return Ok((None, Vec::new()));
+    }
+    // Read rather than assumed: `begin_aside` below sets the session working again, and after that
+    // there is no telling a turn that answered from one that did not.
+    if session.finished.is_none_or(|turn| turn.failed) {
+        return Ok((None, Vec::new()));
+    }
+    let condition = session
+        .goal()
+        .expect("the goal was there a moment ago")
+        .condition()
+        .to_string();
+
+    // For the reason a turn and an aside both do it: this is one request to the same backend, and
+    // a sign-in is not something a worker thread can ask for.
+    sign_in_if_needed(terminal, session, config)?;
+
+    let (to_main, from_worker) = mpsc::channel::<crate::remote_confirm::ToMain>();
+
+    let worker_config = config.clone();
+    let worker_trust = trust.clone();
+    let model = session.model().map(str::to_string);
+    // Taken here, before the worker starts, because that is what crosses to it: the request, not
+    // the conversation. The conversation stays on this thread and is not touched again.
+    let check = bravebot_agent::goal::Check::of(conversation, &condition);
+
+    session.begin_aside();
+
+    let worker = thread::spawn(move || {
+        let mut sink = Trail::new();
+        let mut reporter = crate::remote_confirm::RemoteReporter::new(to_main);
+        let egress = Egress::new();
+        // Reduced to what a person can be told before it crosses back, since the error types are
+        // the kernel's and this thread is the only place they mean anything.
+        let done = turn::goal(
+            &worker_config,
+            &egress,
+            check,
+            model.as_deref(),
+            &mut reporter,
+            &mut sink,
+            worker_trust,
+        )
+        .map_err(|e| e.to_string());
+        (done, sink)
+    });
+
+    loop {
+        redraw(terminal, session)?;
+
+        // Input is still read for the reason an aside reads it: a slow answer must not leave the
+        // interface deaf, and the frame's waiting is done here so a key press wakes the loop
+        // rather than queueing behind the worker.
+        if event::poll(FRAME)? {
+            while event::poll(Duration::ZERO)? {
+                match event::read()? {
+                    // Both keys mean stop, and there is something here to stop. The request in
+                    // flight is one round with nothing to cancel between, but the goal behind it
+                    // is the thing a person watching this actually wants off: without this, the
+                    // key pressed at the ninth round would leave the session rather than end the
+                    // goal, and the tenth would go out anyway.
+                    TermEvent::Key(key)
+                        if (is_ctrl_c(key) || wants_cancel(key))
+                            && !session.scrolling()
+                            && session.goal().is_some() =>
+                    {
+                        session.clear_goal();
+                        session.note_once(t!(goal_uninterruptible));
+                    }
+                    // With the goal already off, Ctrl-C means what it means everywhere else.
+                    TermEvent::Key(key) if is_ctrl_c(key) && !session.scrolling() => {
+                        session.quit();
+                    }
+                    // Escape with the goal already off has nothing left to ask for, and the
+                    // request in flight is not something it can reach.
+                    TermEvent::Key(key) if wants_cancel(key) && !session.scrolling() => {}
+                    TermEvent::Key(key) => {
+                        handle_key_while_working(session, key);
+                    }
+                    TermEvent::Paste(text) => handle_paste_while_working(session, &text),
+                    TermEvent::Mouse(mouse) => {
+                        let action = handle_mouse(session, mouse);
+                        if action == Action::Copy {
+                            copy_selection(terminal, session)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let carrying_on = drain_worker(&from_worker, Duration::ZERO, |message| match message {
+            crate::remote_confirm::ToMain::Phase(phase) => session.set_phase(phase),
+            crate::remote_confirm::ToMain::Notice(text) => session.note_once(text),
+            _ => {}
+        });
+
+        if !carrying_on {
+            break;
+        }
+    }
+
+    let (done, sink) = worker
+        .join()
+        .unwrap_or_else(|_| (Err(t!(goal_ended_unexpectedly).to_string()), Trail::new()));
+
+    let assessed = match done {
+        Ok(assessed) => assessed,
+        Err(message) => {
+            session.end_aside(0);
+            session.drop_goal();
+            session.note(t!(goal_failed, problem = message));
+            return Ok((None, sink.events().to_vec()));
+        }
+    };
+    session.end_aside(assessed.usage.total());
+
+    // A goal taken off while the check was in flight is a person having said stop. The verdict is
+    // about a goal that no longer exists, so it is not acted on and not reported: telling them the
+    // condition cannot be met, a moment after they cleared it, describes a session they are no
+    // longer in.
+    if session.goal().is_none() {
+        return Ok((None, sink.events().to_vec()));
+    }
+
+    // Four of the five verdicts end the goal, and the person is told which one it was in each
+    // case. Only one sends the work back, and even that one stops where the rounds are spent.
+    let carrying_on = match assessed.verdict {
+        bravebot_agent::goal::Verdict::NotMet { reason } => session.goal_not_met(reason),
+        bravebot_agent::goal::Verdict::Met { reason } => {
+            session.goal_met(reason);
+            None
+        }
+        bravebot_agent::goal::Verdict::Impossible { reason } => {
+            session.drop_goal();
+            session.note(t!(goal_impossible, reason = &reason));
+            None
+        }
+        bravebot_agent::goal::Verdict::Unreadable => {
+            session.drop_goal();
+            session.note(t!(goal_unreadable));
+            None
+        }
+        bravebot_agent::goal::Verdict::Quarantined => {
+            session.drop_goal();
+            session.note(t!(goal_quarantined));
+            None
+        }
+    };
+
+    Ok((carrying_on, sink.events().to_vec()))
+}
+
 /// Run a turn on a worker thread, redrawing while it works.
 ///
 /// The turn itself blocks on network requests, so running it here would freeze the indicator on
@@ -3274,6 +3502,7 @@ fn run_turn_animated(
     config: &Config,
     workspace: &Workspace,
     prompt: &str,
+    wrote: Wrote,
     conversation: Conversation,
     trust: TrustStore,
     programs: TrustedPrograms,
@@ -3326,7 +3555,7 @@ fn run_turn_animated(
     // path and their keystroke is what vouches for it, exactly as `--file` does on the command
     // line. Read back out of the prompt rather than tracked while it is typed, so the line that was
     // sent and the files that came with it cannot disagree.
-    for file in crate::entries::referenced(prompt) {
+    for file in files_named_in(prompt, wrote) {
         task = task.with_file(file);
     }
     // Dropped files, read back out of the line the same way and for the same reason: a marker the
@@ -3698,6 +3927,35 @@ fn is_ctrl_c(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'))
 }
 
+/// Whose line a turn is running.
+///
+/// A `@path` in a prompt is a person vouching for a file with their keystroke, so it is read out
+/// of a line they typed and out of no other. Every prompt was one until a goal could write the
+/// sentence that carries the work on: that sentence is this program's, quoting a judge, and an
+/// `@` inside it names nothing and vouches for nobody.
+///
+/// A loop tick is the person's, because the line a tick sends is the one they typed into `/loop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wrote {
+    /// The person, at the box, or a loop repeating the line they typed there.
+    ThePerson,
+    /// This program, carrying the work on towards a condition the person set.
+    TheDriver,
+}
+
+/// The files a prompt vouches for by naming them with `@`.
+///
+/// Out of a line the person wrote, and out of no other. The keystroke is the whole of what vouches
+/// for the path, so a sentence this program wrote has nothing to vouch with: an `@` a judge
+/// happened to put in a reason would otherwise open a file on its own say-so, wearing an
+/// endorsement nobody gave.
+fn files_named_in(prompt: &str, wrote: Wrote) -> Vec<String> {
+    match wrote {
+        Wrote::ThePerson => crate::entries::referenced(prompt),
+        Wrote::TheDriver => Vec::new(),
+    }
+}
+
 /// What the last turn asked its backend for, for comparing against what answered.
 ///
 /// The two travel together because either alone is misleading: a name means nothing without knowing
@@ -3793,6 +4051,10 @@ fn fold_outcome(
             // survived it would send the next prompt as though nothing had been said.
             if matches!(error, turn::TurnError::Cancelled) {
                 session.stop_loop();
+                // And the goal, for the same reason. A condition that survived a stop would judge
+                // the turn the person had just interrupted, find it unfinished, and send the work
+                // straight back: the key that stops things would start one.
+                session.clear_goal();
             } else {
                 // Any other failure is a tick that ended, and a self-paced loop that was told
                 // nothing falls back to the driver's own wait. A loop must not end because one
@@ -6782,6 +7044,142 @@ mod tests {
         }
     }
 
+    /// A goal is a condition, not a prompt. Setting one that started a turn would send a line
+    /// nobody typed, and there is no line: the argument is what stops the work, not what starts
+    /// it.
+    #[test]
+    fn the_goal_command_sets_a_condition_without_sending_anything() {
+        let mut session = Session::new("none");
+        for c in "/goal cargo test exits 0".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Redraw
+        );
+        assert_eq!(
+            session.goal().map(crate::goals::Running::condition),
+            Some("cargo test exits 0")
+        );
+    }
+
+    /// CMD-5's rule, on the one command whose argument is a whole sentence: the condition a judge
+    /// is given has to be the characters the person endorsed.
+    #[test]
+    fn the_goal_command_carries_the_whole_condition() {
+        let mut session = Session::new("none");
+        for c in "/goal every test in bravebot-tui passes and clippy is clean".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut session, key(KeyCode::Enter));
+
+        assert_eq!(
+            session.goal().map(crate::goals::Running::condition),
+            Some("every test in bravebot-tui passes and clippy is clean")
+        );
+    }
+
+    #[test]
+    fn the_goal_command_takes_the_goal_off_again() {
+        let mut session = Session::new("none");
+        session.start_goal("cargo test exits 0".to_string());
+
+        for c in "/goal clear".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Redraw
+        );
+        assert!(session.goal().is_none());
+    }
+
+    /// With no condition there is no goal to set, and the interface says what it needs rather
+    /// than quietly doing nothing.
+    #[test]
+    fn the_bare_goal_command_is_still_the_command() {
+        let mut session = Session::new("none");
+        for c in GOAL_COMMAND.chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Redraw
+        );
+        assert!(session.goal().is_none(), "the bare word set a goal");
+        assert_eq!(session.transcript.len(), 1, "the bare word said nothing");
+    }
+
+    /// A `@path` is a person vouching for a file with their keystroke. The sentence a goal sends
+    /// the work back with is this program's, quoting a judge, so a word beginning with `@` in one
+    /// is prose: reading it as a path would open a file on the say-so of a model, wearing an
+    /// endorsement nobody gave.
+    #[test]
+    fn a_path_named_in_a_sentence_the_driver_wrote_vouches_for_nothing() {
+        let carrying_on = bravebot_agent::goal::carry_on(
+            "cargo test exits 0",
+            "the failure is in @crates/core/src/policy.rs",
+        );
+
+        assert!(
+            files_named_in(&carrying_on, Wrote::TheDriver).is_empty(),
+            "a sentence this program wrote opened a file"
+        );
+        assert_eq!(
+            files_named_in("look at @crates/core/src/policy.rs", Wrote::ThePerson),
+            vec!["crates/core/src/policy.rs".to_string()],
+            "a line the person typed stopped naming its files"
+        );
+    }
+
+    /// A sentence mentioning it is a thing to say to the planner.
+    #[test]
+    fn a_prompt_containing_the_goal_command_is_still_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "what does /goal do".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("what does /goal do".to_string())
+        );
+        assert!(session.goal().is_none());
+    }
+
+    #[test]
+    fn a_longer_word_starting_with_goal_is_a_prompt() {
+        let mut session = Session::new("none");
+        for c in "/goals are useful".chars() {
+            handle_key(&mut session, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(
+            handle_key(&mut session, key(KeyCode::Enter)),
+            Action::Submit("/goals are useful".to_string())
+        );
+        assert!(session.goal().is_none());
+    }
+
+    /// The key that stops things has to stop this one too, or a person watching a goal go wrong
+    /// has to leave the session to get out of it.
+    #[test]
+    fn interrupting_takes_the_goal_off_before_it_leaves() {
+        let mut session = Session::new("none");
+        session.start_goal("cargo test exits 0".to_string());
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Redraw);
+        assert!(session.goal().is_none());
+        assert!(
+            !session.is_quitting(),
+            "the press that stopped it also left"
+        );
+
+        assert_eq!(handle_key(&mut session, ctrl('c')), Action::Quit);
+    }
+
     /// A sentence mentioning it is a thing to say to the planner.
     #[test]
     fn a_prompt_containing_the_loop_command_is_still_a_prompt() {
@@ -8563,6 +8961,66 @@ mod tests {
             }
         );
         assert_eq!(session.fullness(), Some(45));
+    }
+
+    /// A condition that survived a stop would judge the turn the person had just interrupted,
+    /// find it unfinished, and send the work straight back. The key that stops things would start
+    /// one.
+    #[test]
+    fn stopping_a_turn_takes_the_goal_off_with_it() {
+        let mut session = Session::new("none");
+        session.start_goal("cargo test exits 0".to_string());
+        let asked = Asked {
+            name: "test-model".to_string(),
+            comparable: true,
+        };
+
+        fold_outcome(
+            &mut session,
+            Err(turn::TurnError::Cancelled),
+            Trail::new(),
+            TrustStore::new(),
+            TrustedPrograms::new(),
+            Occupied {
+                budget: 100_000,
+                guessed: false,
+                last_request_tokens: 0,
+            },
+            asked,
+        );
+
+        assert!(session.goal().is_none(), "the goal survived the stop");
+    }
+
+    /// A request that never came back says nothing about whether the work is finished, so the
+    /// goal waits for a turn there is something to judge rather than being thrown away.
+    #[test]
+    fn a_turn_that_failed_leaves_the_goal_where_it_was() {
+        let mut session = Session::new("none");
+        session.start_goal("cargo test exits 0".to_string());
+        let asked = Asked {
+            name: "test-model".to_string(),
+            comparable: true,
+        };
+
+        fold_outcome(
+            &mut session,
+            Err(turn::TurnError::Precommit("failed".to_string())),
+            Trail::new(),
+            TrustStore::new(),
+            TrustedPrograms::new(),
+            Occupied {
+                budget: 100_000,
+                guessed: false,
+                last_request_tokens: 0,
+            },
+            asked,
+        );
+
+        assert!(
+            session.goal().is_some(),
+            "one failed request ended the goal"
+        );
     }
 
     #[test]

@@ -908,6 +908,16 @@ pub struct Session {
     /// outlived the session that set it would start sending prompts at somebody who resumed a
     /// conversation to read it.
     looping: Option<crate::loops::Running>,
+    /// The condition this session is working towards, where the person set one.
+    ///
+    /// Private for the reason the loop is: the condition, the rounds spent and the last verdict
+    /// move together, and a field anybody could set would let a goal send the work back without
+    /// having counted the round it spent doing so.
+    ///
+    /// Not in [`crate::sessions::Standing`] either. A goal that outlived its session would take a
+    /// conversation somebody resumed to read and keep working it, with nothing in the transcript
+    /// to say why.
+    goal: Option<crate::goals::Running>,
     /// The same prompts, resolved, for the turn in flight to take between rounds.
     ///
     /// Shared with the worker rather than sent down a channel, because a queued prompt can be
@@ -1084,6 +1094,7 @@ impl Session {
             running: None,
             queued: Vec::new(),
             looping: None,
+            goal: None,
             last_turn_backups: Vec::new(),
             previous_turn: None,
             pending: crate::remote_confirm::Interjections::new(),
@@ -1378,6 +1389,10 @@ impl Session {
         // session that knows nothing about it would send a prompt whose context has been thrown
         // away, which is neither what was asked for nor recognisable as a mistake.
         self.looping = None;
+        // The goal goes the same way, and for a sharper version of the same reason: a condition
+        // judged against an exchange that has been thrown away is judged against nothing, and the
+        // first turn of the new session would be sent back for failing a test nobody set here.
+        self.goal = None;
         // The delegates went with the transcript that held them, so the mode standing over one
         // is standing over nothing. What the commands printed is kept beside the transcript rather
         // than in it, so it is dropped here by name: a conversation nobody remembers leaving its
@@ -4202,6 +4217,11 @@ impl Session {
         if self.looping.is_some() {
             self.note(t!(loop_replaced));
         }
+        // The other half of the rule `start_goal` states: one thing at a time, whichever of the
+        // two was asked for second.
+        if self.goal.take().is_some() {
+            self.note(t!(loop_replaces_goal));
+        }
 
         match request.adjusted {
             Some(crate::loops::Held::Raised(every)) => {
@@ -4230,6 +4250,104 @@ impl Session {
             self.note(t!(loop_stopped));
         }
         stopped
+    }
+
+    /// The condition this session is working towards, where one is set.
+    pub fn goal(&self) -> Option<&crate::goals::Running> {
+        self.goal.as_ref()
+    }
+
+    /// Work towards a condition from the next turn on.
+    ///
+    /// Nothing is sent. A goal has a condition and no prompt, so there is no line here that
+    /// anybody endorsed and nothing for a turn to be about: what a goal keeps going is whatever
+    /// the person asks for next.
+    pub fn start_goal(&mut self, condition: String) {
+        if self.goal.is_some() {
+            self.note(t!(goal_replaced));
+        }
+        // One at a time. Both of these keep a session working without anybody typing, and a loop
+        // whose ticks were each held open by a goal is neither of the two things a person asked
+        // for: the interval stops meaning anything, and the condition is judged against a turn
+        // that was going to be repeated anyway.
+        if self.looping.take().is_some() {
+            self.note(t!(goal_replaces_loop));
+        }
+        self.note(t!(goal_set, condition = &condition));
+        self.goal = Some(crate::goals::Running::begin(condition));
+    }
+
+    /// Take the goal off without saying anything, and say whether there was one.
+    ///
+    /// For the endings that have their own sentence. A message is chosen by a name written in the
+    /// source rather than passed in, so the caller that knows which ending this is is the caller
+    /// that has to say it.
+    pub fn drop_goal(&mut self) -> bool {
+        self.goal.take().is_some()
+    }
+
+    /// Take the goal off because somebody asked, and say whether there was one.
+    pub fn clear_goal(&mut self) -> bool {
+        let cleared = self.drop_goal();
+        if cleared {
+            self.note(t!(goal_cleared));
+        }
+        cleared
+    }
+
+    /// Take the goal off because it has been met, and say so.
+    pub fn goal_met(&mut self, reason: String) {
+        if !self.drop_goal() {
+            return;
+        }
+        if reason.is_empty() {
+            self.note(t!(goal_met_unsaid));
+        } else {
+            self.note(t!(goal_met, reason = &reason));
+        }
+    }
+
+    /// Say what the goal is, or that there is none.
+    ///
+    /// What the bare command answers. The last verdict is part of it: a goal that has been judged
+    /// three times and keeps hearing the same thing is one a person wants to reword rather than
+    /// wait out.
+    pub fn report_goal(&mut self) {
+        let Some(goal) = self.goal.as_ref() else {
+            self.note(t!(goal_none));
+            return;
+        };
+        let condition = goal.condition().to_string();
+        let last = goal.last_reason().map(str::to_string);
+        self.note(t!(goal_active, condition = &condition));
+        match last {
+            Some(reason) => self.note(t!(goal_last_check, reason = &reason)),
+            None => self.note(t!(goal_never_checked)),
+        }
+    }
+
+    /// Record that the goal was not met, and give back the prompt that sends the work back.
+    ///
+    /// `None` where the goal has spent its rounds, which ends it. The reason is kept either way,
+    /// so a goal that has just given up can still say what it kept hearing.
+    pub fn goal_not_met(&mut self, reason: String) -> Option<String> {
+        let goal = self.goal.as_mut()?;
+        let condition = goal.condition().to_string();
+        if !goal.not_met(reason.clone()) {
+            let rounds = goal.rounds();
+            self.goal = None;
+            self.note(t!(goal_spent, rounds = rounds));
+            return None;
+        }
+        if reason.is_empty() {
+            self.note(t!(goal_not_met_unsaid));
+        } else {
+            self.note(t!(goal_not_met, reason = &reason));
+        }
+        // The driver's own sentence with the judge's reason quoted inside it, which is why it is
+        // not a message from the catalog: it goes to a model rather than to a reader.
+        let prompt = bravebot_agent::goal::carry_on(&condition, &reason);
+        Some(self.begin_turn(prompt, (Vec::new(), Vec::new())))
     }
 
     /// Send the next tick, if one is due and the session is free to take it.
@@ -6949,6 +7067,130 @@ mod tests {
         s.start_loop(crate::loops::parse("5m watch").expect("a request"));
         assert!(s.stop_loop());
         assert!(s.looping().is_none());
+    }
+
+    /// A goal is a stopping condition. Arming one that also started work would send a line
+    /// nobody typed, and there is no line to send: what a goal keeps going is the person's own
+    /// next request.
+    #[test]
+    fn setting_a_goal_starts_no_turn() {
+        let mut s = session();
+        s.start_goal("cargo test exits 0".to_string());
+
+        assert_eq!(
+            s.goal().map(crate::goals::Running::condition),
+            Some("cargo test exits 0")
+        );
+        assert_eq!(s.status, Status::Idle);
+        assert_eq!(s.turns, 0);
+    }
+
+    #[test]
+    fn clearing_a_goal_says_so_and_says_nothing_when_there_was_none() {
+        let mut s = session();
+        assert!(!s.clear_goal());
+        assert!(s.transcript.is_empty());
+
+        s.start_goal("cargo test exits 0".to_string());
+        assert!(s.clear_goal());
+        assert!(s.goal().is_none());
+    }
+
+    /// A condition judged against an exchange that has been thrown away is judged against
+    /// nothing, and the first turn of the new session would be sent back for failing a test
+    /// nobody set here.
+    #[test]
+    fn clearing_the_session_takes_the_goal_off() {
+        let mut s = session();
+        s.start_goal("cargo test exits 0".to_string());
+        s.clear();
+        assert!(s.goal().is_none());
+    }
+
+    /// Both of these keep a session working without anybody typing. Together, the interval stops
+    /// meaning anything and the condition is judged against a turn that was going to repeat
+    /// anyway, so whichever was asked for second is the one that stands.
+    #[test]
+    fn a_goal_and_a_loop_are_never_both_running() {
+        let mut s = session();
+        s.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        s.start_goal("cargo test exits 0".to_string());
+        assert!(s.looping().is_none(), "the loop outlived the goal");
+        assert!(s.goal().is_some());
+
+        let mut s = session();
+        s.start_goal("cargo test exits 0".to_string());
+        s.start_loop(crate::loops::parse("5m watch").expect("a request"));
+        assert!(s.goal().is_none(), "the goal outlived the loop");
+        assert!(s.looping().is_some());
+    }
+
+    /// The prompt that carries the work on is the driver's own sentence with the judge's reason
+    /// inside it. A bare reason arriving as a user message would read as the person having typed
+    /// it, and the planner has to know a condition it did not choose is holding the session open.
+    #[test]
+    fn a_goal_that_is_not_met_sends_the_work_back_with_the_condition_and_the_reason() {
+        let mut s = session();
+        s.start_goal("cargo test exits 0".to_string());
+
+        let sent = s
+            .goal_not_met("nothing above runs the tests".to_string())
+            .expect("the work goes back");
+
+        assert!(sent.contains("cargo test exits 0"), "{sent}");
+        assert!(sent.contains("nothing above runs the tests"), "{sent}");
+        assert_eq!(s.status, Status::Working);
+        assert_eq!(s.goal().map(crate::goals::Running::rounds), Some(1));
+    }
+
+    /// A condition nobody can satisfy would otherwise spend the session's whole budget, since
+    /// every round is a turn with the conversation re-sent.
+    #[test]
+    fn a_goal_that_runs_out_of_rounds_stops_rather_than_sending_the_work_back_again() {
+        let mut s = session();
+        s.start_goal("cargo test exits 0".to_string());
+
+        let mut sent = 0;
+        while s.goal_not_met("still nothing".to_string()).is_some() {
+            sent += 1;
+            s.complete("still going", Vec::new(), 0);
+            assert!(sent < 1_000, "the goal never gave up");
+        }
+
+        assert!(sent > 0, "the goal gave up before sending anything");
+        assert!(s.goal().is_none(), "a goal that gave up is still armed");
+    }
+
+    /// A verdict about a goal nobody set is a verdict about nothing, and acting on one would send
+    /// a prompt after the person had just taken the goal off.
+    #[test]
+    fn a_verdict_against_no_goal_sends_nothing() {
+        let mut s = session();
+        assert!(s.goal_not_met("still nothing".to_string()).is_none());
+        assert_eq!(s.status, Status::Idle);
+    }
+
+    /// The case that reaches the one above: a check is one request and cannot be stopped part
+    /// way, so a person who presses a key while one is in flight has the goal taken off under a
+    /// verdict that is still on its way back.
+    #[test]
+    fn a_goal_cleared_while_a_check_was_in_flight_takes_no_more_turns() {
+        let mut s = session();
+        s.start_goal("cargo test exits 0".to_string());
+        s.clear_goal();
+
+        assert!(
+            s.goal_not_met("nothing above runs the tests".to_string())
+                .is_none()
+        );
+        s.goal_met("the run above exits 0".to_string());
+
+        assert!(s.goal().is_none());
+        assert_eq!(s.status, Status::Idle);
+        assert_eq!(
+            s.turns, 0,
+            "a verdict against a cleared goal started a turn"
+        );
     }
 
     #[test]

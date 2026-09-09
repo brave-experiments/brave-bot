@@ -449,6 +449,11 @@ status-loop-self-paced = paced by each turn
 status-loop-next = next in { $next }
 status-loop-running = running now
 status-loop-unpaced = waiting for the turn to say when
+status-goal = Goal
+status-goal-rounds = { $rounds ->
+    [one] sent back { $rounds } time, { $left } left
+   *[other] sent back { $rounds } times, { $left } left
+    }
 # Drawn only where a mode other than asking is in force. Asking is the ordinary state and needs no
 # line: a panel reporting "permissions: enforced" on every session teaches people to skim past the
 # one that says otherwise.
@@ -622,6 +627,7 @@ command-compact = Summarise the conversation so far, keeping the recent part
 command-btw = Ask something beside the work, without putting it in the conversation
 command-clear = Start a new session here, keeping this one resumable
 command-loop = Send a prompt again and again, on your interval or at a pace each turn sets
+command-goal = Keep working until a condition you set is judged met
 command-export = Export the session transcript to a markdown file
 command-undo = Rewind the last turn and restore files
 command-exit = Leave
@@ -720,6 +726,44 @@ loop-stopped = the loop is stopped
 loop-aged-out = the loop has run for a week and stopped itself
 loop-unpaced = that turn did not say when to run again, so the loop has stopped
 loop-busy = /loop starts with a turn of its own, so it waits until this one is done
+loop-replaces-goal =
+    the goal that was set has been cleared: a session works towards one thing at a time
+
+
+## Working towards a condition
+
+goal-set =
+    working towards: { $condition }. Nothing runs until you send something; from then on each
+    turn is judged against it. Ctrl-c takes it off, and so does leaving
+goal-replaced = the goal that was set has been replaced
+goal-cleared = the goal is cleared
+goal-none =
+    no goal is set. /goal <condition> sets one, as in /goal cargo test exits 0, and /goal clear
+    takes it off again
+goal-active = working towards: { $condition }
+goal-last-check = the last check said: { $reason }
+goal-never-checked = nothing has been judged against it yet
+goal-not-met = the goal is not met yet: { $reason }
+goal-not-met-unsaid = the goal is not met yet, and the check did not say what is missing
+goal-met = the goal is met: { $reason }
+goal-met-unsaid = the goal is met
+goal-impossible = the goal cannot be met, so it is cleared: { $reason }
+goal-unreadable =
+    the check did not answer with a verdict, so there is nothing to act on and the goal is
+    cleared
+goal-quarantined =
+    this conversation has met untrusted content, so a verdict about it is not something this
+    program may act on; the goal is cleared
+goal-spent =
+    the goal has sent the work back { $rounds } times without being met, and has stopped rather
+    than carrying on
+goal-failed = the goal could not be checked ({ $problem }), so it is cleared
+goal-uninterruptible =
+    the check already in flight is one request and cannot be stopped part way, but nothing
+    more will be sent
+goal-ended-unexpectedly = the goal check ended unexpectedly
+goal-replaces-loop =
+    the loop that was running has been stopped: a session works towards one thing at a time
 
 
 ## Pasting, dropping and attaching

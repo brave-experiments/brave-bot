@@ -1132,6 +1132,59 @@ pub fn aside<S: Sink, R: Reporter>(
     done
 }
 
+/// Judge one stopping condition against the exchange, outside any turn.
+///
+/// What `/goal` runs when a turn ends. No conversation reaches here at all: [`crate::goal::Check`]
+/// is the request, taken off the exchange by the caller, so there is nothing here that could push
+/// a message back into one. The words that do go back into the exchange are the driver's own, and
+/// the caller sends them as an ordinary prompt.
+///
+/// The same shape as [`aside`], and for the same reasons. Its routing is the condition the user
+/// typed, which is their own words in the same sense a prompt is. No workspace, no confirmer, and
+/// one capability: nothing here reads a file, writes one, or asks anybody anything, and
+/// [`Capability::WebFetch`] is granted because reaching the model is egress and the gate asks.
+///
+/// The integrity is inherited, because a fresh policy is not a fresh context. Here that decides
+/// more than whether the verdict may be written down: it decides whether the driver may read the
+/// verdict at all, since acting on one is a branch.
+pub fn goal<S: Sink, R: Reporter>(
+    config: &Config,
+    egress: &Egress,
+    check: crate::goal::Check,
+    model: Option<&str>,
+    reporter: &mut R,
+    sink: &mut S,
+    trust: TrustStore,
+) -> Result<crate::goal::Assessed, crate::goal::GoalError> {
+    let mut routing = Routing::new();
+    routing.insert_trusted(
+        "task",
+        "judge whether the session's stopping condition is met",
+    );
+
+    let capabilities = CapabilitySet::from_iter([Capability::WebFetch]);
+    let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, sink)?
+        .with_trust(trust)
+        .resuming(check.context());
+
+    let mut subscription = discover_subscription(config, reporter);
+    let mut chat = crate::processor::Chat {
+        config,
+        egress,
+        subscription: subscription
+            .as_mut()
+            .map(|s| s as &mut dyn bravebot_aichat::Subscription),
+        model,
+        // One request with no round for a stop to land between, so there is nothing here that a
+        // stop could reach.
+        cancel: None,
+    };
+
+    let done = crate::goal::assess(&mut policy, &mut chat, check);
+    policy.finish();
+    done
+}
+
 /// Find the subscription this turn will spend, and say so where one could not be read.
 ///
 /// Shared with [`crate::manifest`] rather than written twice, because the thing worth reporting is

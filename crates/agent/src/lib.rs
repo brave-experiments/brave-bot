@@ -14,6 +14,7 @@ pub mod delegate;
 pub mod diff;
 pub mod exec;
 pub mod glob;
+pub mod goal;
 pub mod home;
 pub mod lsp;
 pub mod manifest;

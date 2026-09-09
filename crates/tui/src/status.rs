@@ -103,6 +103,10 @@ pub struct Facts<'a> {
     /// line saying a thing is not happening is a line on every report for the sake of the few
     /// where it is.
     pub looping: Option<&'a crate::loops::Running>,
+    /// The condition the session is working towards, where the person set one.
+    ///
+    /// Left out when there is none, for the reason the loop is.
+    pub goal: Option<&'a crate::goals::Running>,
 }
 
 /// What to call a permission mode, or `None` for the one that needs no name.
@@ -241,6 +245,17 @@ pub fn report(facts: &Facts<'_>) -> Report {
             None => t!(status_loop_unpaced).to_string(),
         };
         lines.push(Line::new(t!(status_loop), pace).with_note(when));
+    }
+
+    // The other thing that happens without anybody typing. Beside the loop because it answers the
+    // same question, and the count is the part a person cannot read off the transcript: a goal on
+    // its ninth round is one turn from giving up.
+    if let Some(goal) = facts.goal {
+        let note = match goal.rounds() {
+            0 => t!(goal_never_checked).to_string(),
+            rounds => t!(status_goal_rounds, rounds = rounds, left = goal.left()),
+        };
+        lines.push(Line::new(t!(status_goal), goal.condition()).with_note(note));
     }
 
     lines.push(Line::new(
@@ -456,7 +471,53 @@ mod tests {
             // Nothing repeating, which is every session that has not been asked to. Tests about
             // the loop line set this themselves.
             looping: None,
+            // Nothing to work towards, on the same footing.
+            goal: None,
         }
+    }
+
+    /// The other thing that happens without anybody typing. The count is the part a person
+    /// cannot read off the transcript: a goal on its ninth round is one turn from giving up.
+    #[test]
+    fn the_report_says_what_the_session_is_working_towards_and_how_many_rounds_are_left() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+        let mut goal = crate::goals::Running::begin("cargo test exits 0".to_string());
+        goal.not_met("nothing above runs the tests".to_string());
+
+        let mut facts = facts(&config, &trust);
+        facts.goal = Some(&goal);
+        let report = report(&facts);
+
+        let line = report
+            .lines
+            .iter()
+            .find(|line| line.label.trim() == t!(status_goal))
+            .expect("the goal is on the report");
+        assert!(
+            line.value.contains("cargo test exits 0"),
+            "{:?}",
+            line.value
+        );
+        assert!(
+            line.note.contains('1'),
+            "the report did not say how many rounds had gone: {}",
+            line.note
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_goal_does_not_mention_one() {
+        let config = config_for("http://127.0.0.1:1", None);
+        let trust = trusting();
+
+        let report = report(&facts(&config, &trust));
+        assert!(
+            !report
+                .lines
+                .iter()
+                .any(|line| line.label.trim() == t!(status_goal))
+        );
     }
 
     /// The one thing about a session that cannot be read off the transcript: what is going to
