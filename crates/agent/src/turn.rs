@@ -584,6 +584,17 @@ pub struct Task {
     /// cannot say what the next tick asks, because the line belongs to the person who typed it
     /// and the caller holds it.
     pub tick: Option<Tick>,
+    /// The condition this session is working towards, where a person set one.
+    ///
+    /// `None` for a turn with no goal. It changes one thing: the planner is told what the session
+    /// is working towards, so the turn aims at it rather than being judged against a condition it
+    /// was never shown. Whether it holds is decided after the turn, by the caller, and there is no
+    /// tool here that reads or writes this.
+    ///
+    /// A turn cannot edit it, because the line belongs to the person who typed it and the caller
+    /// holds it. A delegate carries none: it has a job of its own, given to it by the turn that
+    /// spawned it.
+    pub working_towards: Option<String>,
     /// What this turn is a delegate of, where it is one rather than a person's.
     ///
     /// `None` for every turn somebody typed the prompt for. Where it is set, four things come
@@ -630,6 +641,7 @@ impl Task {
             model: None,
             effort: None,
             tick: None,
+            working_towards: None,
             // Bounded unless a caller says otherwise. The unbounded case needs somebody watching,
             // and a default cannot know whether anybody is, so the default is the one that is
             // wrong in the cheaper direction.
@@ -724,6 +736,12 @@ impl Task {
     /// Say which tick of a loop this turn is.
     pub fn ticking(mut self, tick: Option<Tick>) -> Self {
         self.tick = tick;
+        self
+    }
+
+    /// Say what condition the session is working towards, where a person set one.
+    pub fn working_towards(mut self, condition: Option<String>) -> Self {
+        self.working_towards = condition;
         self
     }
 
@@ -1506,6 +1524,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
         task.home.as_deref(),
         &catalogue,
         task.tick,
+        task.working_towards.as_deref(),
     );
     notices.extend(preamble.notices.iter().cloned());
 

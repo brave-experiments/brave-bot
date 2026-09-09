@@ -4,6 +4,7 @@ title: Working towards a condition
 status: normative
 governs:
   - crates/agent/src/goal.rs
+  - crates/agent/src/preamble.rs
   - crates/tui/src/goals.rs
   - crates/tui/src/app.rs
   - crates/tui/src/state.rs
@@ -20,10 +21,10 @@ guards:
 until the condition holds. What the condition is, who decides whether it holds, what the driver may
 do with that decision, and what ends a goal.
 
-Not what a turn then does, which is a turn like any other. The judge is one request over a copy of
-the exchange, which is the shape [watching.md](watching.md) describes for a question asked beside
-the work. That a `/` line is a command at all, and that only a key press produces one, is
-[commands.md](commands.md).
+Not how a turn goes about it: what a turn is told about the condition is here, and the work itself
+is a turn like any other. The judge is one request over a copy of the exchange, which is the shape
+[watching.md](watching.md) describes for a question asked beside the work. That a `/` line is a
+command at all, and that only a key press produces one, is [commands.md](commands.md).
 
 **A goal never gets ahead of the person.** A prompt they queued while a turn ran is sent before the
 judge is asked, so the condition is judged against an exchange holding everything they have said.
@@ -249,6 +250,28 @@ about to give up.
 
 `verified-by: bravebot_tui::status::the_report_says_what_the_session_is_working_towards_and_how_many_rounds_are_left`
 `verified-by: bravebot_tui::status::a_session_with_no_goal_does_not_mention_one`
+
+## What a turn is told
+
+<a id="GOAL-14"></a>
+### GOAL-14: every turn under a goal is told the condition
+
+While a goal stands, each turn's system prompt states the condition, says the turn is judged
+against it once it ends, and says the turn cannot change it. The first round carries it as much as
+the tenth. A turn with no goal is told nothing about one.
+
+**Why.** The driver is the only thing that knows a goal is set. A turn that is not told works on
+whatever the person's line said and is then judged against a condition it never saw, so the first
+round goes somewhere unrelated and comes back with a reason about work that was never aimed at
+the condition. Stating it is the difference between ten rounds converging and ten rounds of a judge
+explaining the condition to a turn that cannot hear it.
+
+**Why the system prompt rather than a message.** [GOAL-1](#GOAL-1) is what makes this the right
+place: the condition is settled, so it is the same sentence every turn, and a message would leave
+one copy of it in the conversation per round.
+
+`verified-by: bravebot_agent::turn::a_turn_under_a_goal_is_told_the_condition_it_is_working_towards`
+`verified-by: bravebot_agent::turn::a_turn_with_no_goal_is_told_nothing_about_a_condition`
 
 ## Known costs
 

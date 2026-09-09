@@ -80,6 +80,7 @@ fn the_home_agents_file_is_read_before_the_project_one() {
             Some(&home),
             &Catalogue::default(),
             None,
+            None,
         )
     };
 
@@ -115,7 +116,14 @@ fn an_added_directory_contributes_no_standing_instructions() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     assert!(
@@ -137,7 +145,14 @@ fn a_file_written_after_one_turn_is_read_by_the_next() {
     let mut sink = RecordingSink::new();
     let before = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
     assert!(
         !before.text.contains("LATE-CONVENTION"),
@@ -148,7 +163,14 @@ fn a_file_written_after_one_turn_is_read_by_the_next() {
 
     let after = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
     assert!(
         after.text.contains("LATE-CONVENTION"),
@@ -177,7 +199,14 @@ fn the_project_file_may_be_named_claude_md() {
         let mut sink = RecordingSink::new();
         let preamble = {
             let mut policy = policy(&mut sink, &["."]);
-            preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+            preamble::compose(
+                &mut policy,
+                &workspace,
+                None,
+                &Catalogue::default(),
+                None,
+                None,
+            )
         };
 
         assert!(
@@ -201,7 +230,14 @@ fn only_the_first_project_file_that_exists_is_read() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     assert!(preamble.text.contains("THE-REAL-ONE"));
@@ -230,7 +266,14 @@ fn a_project_file_that_only_names_another_is_followed() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     assert!(
@@ -264,7 +307,14 @@ fn a_project_file_that_merely_cites_another_is_read_as_itself() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     assert!(preamble.text.contains("THE-REAL-CONVENTIONS"));
@@ -287,7 +337,14 @@ fn a_pointer_that_names_nothing_readable_leaves_the_file_standing() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     assert!(
@@ -309,7 +366,14 @@ fn the_working_directory_is_stated_so_nothing_has_to_run_pwd() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     assert!(
@@ -333,7 +397,14 @@ fn the_environment_is_stated_even_with_no_instructions_to_read() {
     let mut sink = RecordingSink::new();
     let preamble = {
         let mut policy = policy(&mut sink, &["."]);
-        preamble::compose(&mut policy, &workspace, None, &Catalogue::default(), None)
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
     };
 
     for fact in ["Working directory:", "Platform:", "Today's date:"] {
@@ -357,7 +428,15 @@ fn whether_the_tree_is_a_git_repository_is_said_either_way() {
     let mut sink = RecordingSink::new();
     let described = |workspace: &Workspace, sink: &mut RecordingSink| {
         let mut policy = policy(sink, &["."]);
-        preamble::compose(&mut policy, workspace, None, &Catalogue::default(), None).text
+        preamble::compose(
+            &mut policy,
+            workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
+        .text
     };
 
     let in_checkout = described(&Workspace::new(&checkout).expect("workspace"), &mut sink);
@@ -384,7 +463,15 @@ fn moving_the_working_directory_restates_it() {
     let mut sink = RecordingSink::new();
     let described = |workspace: &Workspace, sink: &mut RecordingSink| {
         let mut policy = policy(sink, &["."]);
-        preamble::compose(&mut policy, workspace, None, &Catalogue::default(), None).text
+        preamble::compose(
+            &mut policy,
+            workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            None,
+        )
+        .text
     };
 
     let here = Workspace::new(&first).expect("workspace");

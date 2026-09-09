@@ -1055,6 +1055,72 @@ fn a_tick_is_told_that_it_is_one_and_which_kind_of_loop_it_is_in() {
     }
 }
 
+/// The driver is the only thing that knows a goal is set, and a turn that is not told the
+/// condition is a turn judged against something it was never shown. The first round is the one
+/// this matters most for: it decides what the work is about, and nothing sends it back to be
+/// aimed again except a whole further round.
+#[test]
+fn a_turn_under_a_goal_is_told_the_condition_it_is_working_towards() {
+    let scratch = Scratch::new("goal-preamble");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("done"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("go").working_towards(Some("a.txt exists".to_string()));
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let request = received.recv().expect("the request");
+    assert!(
+        request.contains("a.txt exists"),
+        "the condition did not reach the planner: {request}"
+    );
+    assert!(
+        request.contains("judged against it"),
+        "the turn was given the condition without being told it is judged on it: {request}"
+    );
+}
+
+/// A turn with no goal is an ordinary turn, and telling one about a stopping condition it has
+/// not got would have it working towards a sentence nobody wrote.
+#[test]
+fn a_turn_with_no_goal_is_told_nothing_about_a_condition() {
+    let scratch = Scratch::new("goal-preamble-absent");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(&reply_with("done"));
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("go");
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    let request = received.recv().expect("the request");
+    assert!(
+        !request.contains("Condition:"),
+        "a turn with no goal was told about one: {request}"
+    );
+}
+
 /// Every other turn is offered no way to schedule one,/// Every other turn is offered no way to schedule one, and a call to it is answered the way any
 /// other name nobody offered is. A tool that quietly worked where it was not offered would let a
 /// turn nobody is looping schedule itself.

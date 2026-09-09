@@ -3539,6 +3539,10 @@ fn run_turn_animated(
     // Which tick of a loop this is, where it is one at all. A prompt the person typed in the
     // middle of a loop is not a tick of it and carries nothing.
     let tick = session.looping().and_then(|running| running.tick());
+    // And what the session is working towards, where a person set a condition. Every turn under a
+    // goal carries it, the first one included: the round that sets the direction is the one that
+    // most needs to know what it is aiming at.
+    let working_towards = session.goal().map(|goal| goal.condition().to_string());
     // Read once, here, so the mode the planner is told about and the mode the confirmer enforces are
     // the same one: the person may press the key while this turn runs, and the two halves reading it
     // at different moments is how they would come to disagree.
@@ -3550,7 +3554,8 @@ fn run_turn_animated(
         .with_effort(session.effort_in_force())
         .with_permissions(permissions.clone())
         .with_permission_mode(permission_mode)
-        .ticking(tick);
+        .ticking(tick)
+        .working_towards(working_towards);
     // Every file named with `@` becomes context, which a turn treats as trusted: the user typed the
     // path and their keystroke is what vouches for it, exactly as `--file` does on the command
     // line. Read back out of the prompt rather than tracked while it is typed, so the line that was

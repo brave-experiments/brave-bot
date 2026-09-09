@@ -41,7 +41,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | [backends.md](backends.md) | `BACKEND` | 27 | which service answers a request, and what a person may choose between |
 | [compaction.md](compaction.md) | `COMPACT` | 10 | shortening a long conversation into a summary of itself, in the request only |
 | [loop.md](loop.md) | `LOOP` | 13 | sending one prompt again and again until somebody stops it |
-| [goal.md](goal.md) | `GOAL` | 13 | one condition a person set, judged after every turn, until it holds |
+| [goal.md](goal.md) | `GOAL` | 14 | one condition a person set, judged after every turn, until it holds |
 | [sessions.md](sessions.md) | `SESSION` | 20 | what is kept between runs: the record of a session, the questions asked beside it, and the prompts a person typed |
 | [incognito.md](incognito.md) | `INCOG` | 8 | a session that runs normally and adds nothing to `~/.bravebot` |
 | [trace.md](trace.md) | `TRACE` | 6 | what is recorded about every decision the system makes, and what that record may contain |

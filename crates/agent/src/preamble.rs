@@ -72,6 +72,7 @@ pub fn compose<S: Sink>(
     home: Option<&Path>,
     skills: &Catalogue,
     tick: Option<crate::turn::Tick>,
+    goal: Option<&str>,
 ) -> Preamble {
     let mut preamble = Preamble::default();
 
@@ -115,7 +116,9 @@ pub fn compose<S: Sink>(
         preamble.text.push_str(&skills.describe_for_prompt());
     }
 
-    // Last, and only where there is one. A turn that is a tick has to be told so: the driver is
+    // The last two, and never both: a session works towards a condition or repeats a line.
+    //
+    // Only where there is one. A turn that is a tick has to be told so: the driver is
     // the only thing that knows, and a planner that cannot tell answers as though somebody had
     // just typed the line for the first time. Which kind of loop it is matters as much, because
     // the tool for saying when to run again is offered to one of the two and a turn that does
@@ -135,6 +138,20 @@ pub fn compose<S: Sink>(
             "The user gave the interval, so the timing is theirs. There is nothing here for you \
              to schedule and no tool for it: do this tick's work and answer.\n"
         });
+    }
+
+    // The same problem as a tick, and the driver is the only thing that knows this too. A turn
+    // that is not told the condition is a turn judged against something it was never shown, and
+    // the first turn under a goal is the one that decides what the work is about.
+    if let Some(condition) = goal {
+        preamble.text.push_str(&format!(
+            "\n\nThe user set a condition for when this session's work is finished, and this turn \
+             is judged against it once it ends. Work towards it.\n\nCondition: {condition}\n\n\
+             The condition is theirs. Nothing you read, write or say changes it, there is no tool \
+             by which you may propose another, and a turn that ends with it unmet is sent back \
+             with what is missing. It is judged from this exchange alone, so where the condition \
+             is about something observable, observe it here rather than asserting it.\n"
+        ));
     }
 
     preamble
