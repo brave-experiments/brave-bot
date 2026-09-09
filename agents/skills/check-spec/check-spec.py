@@ -20,7 +20,8 @@ import argparse
 import json
 import os
 import re
-import subprocess
+# Only ever invoked with an argument list, never a shell string.
+import subprocess  # nosemgrep: gitlab.bandit.B404
 import sys
 import tempfile
 from datetime import datetime, timezone

@@ -32,6 +32,8 @@ pub mod shared;
 pub mod shell;
 pub mod skills;
 pub mod subscription;
+#[cfg(test)]
+mod testutil;
 pub mod timing;
 pub mod tools;
 pub mod turn;

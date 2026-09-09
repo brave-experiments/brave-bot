@@ -174,6 +174,9 @@ fn installed_how() -> Option<Install> {
         std::env::var(bravebot_config::env_var::INSTALLED_VIA)
             .ok()
             .as_deref(),
+        // Compared against the known install locations to report how bravebot was installed.
+        // A wrong answer downgrades to "unknown"; nothing is granted on the strength of it.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         std::env::current_exe().ok().as_deref(),
         recorded_install().as_deref(),
     )

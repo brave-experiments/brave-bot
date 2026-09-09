@@ -629,7 +629,7 @@ mod tests {
     /// Nothing is there to read on a fresh machine, which is the common case and must be quiet.
     #[test]
     fn a_missing_file_is_not_an_error() {
-        let missing = std::env::temp_dir().join("bravebot-settings-absent");
+        let missing = crate::testutil::scratch_dir("bravebot-settings-absent");
         assert!(Settings::from_home(Some(missing)).is_empty());
     }
 
@@ -812,7 +812,7 @@ mod tests {
     impl Layers {
         /// A scratch home and working directory, empty of every layer.
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("bravebot-layers-{name}"));
+            let root = crate::testutil::scratch_dir(&format!("bravebot-layers-{name}"));
             let _ = std::fs::remove_dir_all(&root);
             let home = root.join("home");
             let project = root.join("cwd").join(PROJECT_DIR);

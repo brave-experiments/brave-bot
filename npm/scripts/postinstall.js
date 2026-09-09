@@ -136,6 +136,11 @@ function get(url, redirects, callback) {
       const { statusCode, headers } = response;
       if (statusCode >= 300 && statusCode < 400 && headers.location) {
         response.resume();
+        // Ordinary redirect resolution, not an origin check: release downloads redirect to
+        // objects.githubusercontent.com, so pinning the origin here would break installs.
+        // The chain starts at an https:// URL, every hop is TLS-verified, the redirect count
+        // is capped above, and the payload is checksum-verified before it is written.
+        // nosemgrep: url-constructor-base
         get(new URL(headers.location, url).toString(), redirects + 1, callback);
         return;
       }

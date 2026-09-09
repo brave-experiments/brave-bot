@@ -1,6 +1,8 @@
 BINARY = bravebot
 VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)
 TAG = v$(VERSION)
+# The minimum toolchain CI builds against, declared once in Cargo.toml.
+MSRV = $(shell sed -nE 's/^rust-version[[:space:]]*=[[:space:]]*"([0-9.]+)".*/\1/p' Cargo.toml | head -n 1)
 # Every file that states the version, which is what a bump rewrites and commits.
 VERSION_FILES = Cargo.toml Cargo.lock package.json package-lock.json
 
@@ -14,16 +16,21 @@ help:
 	@echo "bravebot $(VERSION)"
 	@echo
 	@echo "Development:"
-	@echo "  make init           Configure bravebot, Claude Code, Codex and Cursor; install hooks"
-	@echo "  make hooks          Point git at the checked-in git hooks"
-	@echo "  make build          Debug build"
-	@echo "  make test           Run all tests"
-	@echo "  make check          Format check, clippy, tests, and toolchain age"
-	@echo "  make check-spec     Check docs/specs against the implementation"
-	@echo "  make locales        What each translation has, and what it is missing"
-	@echo "  make check-linux    The same checks on Linux, current stable toolchain"
-	@echo "  make fmt            Apply formatting"
-	@echo "  make aws-logout     End every cached AWS SSO session, to test signing in again"
+	@echo "  make init                  Configure bravebot, Claude Code, Codex and Cursor; install hooks"
+	@echo "  make hooks                 Point git at the checked-in git hooks"
+	@echo "  make build                 Debug build"
+	@echo "  make test                  Run all tests"
+	@echo "  make check                 Format check, clippy, tests, and toolchain age"
+	@echo "  make check-spec            Check docs/specs against the implementation"
+	@echo "  make check-reviewdog       The PR security scan, on this branch's changes"
+	@echo "  make check-reviewdog-full  The same scan, over the whole tree"
+	@echo "  make check-npm             Install from the lockfile and lint it, as CI does"
+	@echo "  make check-msrv            Build against the declared minimum toolchain ($(MSRV))"
+	@echo "  make check-all             Every check any CI enforces, including the security scan"
+	@echo "  make locales               What each translation has, and what it is missing"
+	@echo "  make check-linux           The same checks on Linux, current stable toolchain"
+	@echo "  make fmt                   Apply formatting"
+	@echo "  make aws-logout            End every cached AWS SSO session, to test signing in again"
 	@echo
 	@echo "Reproducible cross-builds (requires Docker):"
 	@echo "  make all-platforms  Every target below"
@@ -87,7 +94,7 @@ aws-logout:
 check:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
-	cargo test --all
+	cargo test --all --locked
 	@python3 contrib/check-toolchain.py
 
 # Whether clippy here knows the lints CI will fail on. Run by `check`; on its own it costs
@@ -109,6 +116,51 @@ check-spec:
 # What each catalog has of the reference, and what it is missing. The build says so too, in a
 # warning, but a warning is only printed when the build script actually runs, so a translator
 # working through a file learns nothing from a cached build. This always answers.
+# The security scan that comments on our pull requests, before pushing rather than
+# after. Nothing here configures it: it arrives as an organization-level workflow
+# calling brave/security-action, so contrib/check-reviewdog.sh clones that repository
+# and drives its reviewdog runners against this checkout, pinning the tool versions
+# its action.yml pins. First run downloads opengrep, reviewdog and the rule set into
+# ~/.cache; later runs re-use them and take about half a minute.
+#
+# The two targets are the action's own two modes. On a pull request it scans what the
+# branch changed; on workflow_dispatch it scans everything. A finding here is one the
+# bot would post, so the full scan reports plenty that predates any given branch --
+# check-reviewdog is the one to run before pushing.
+#
+# No model is involved, so both are deterministic.
+.PHONY: check-reviewdog
+check-reviewdog:
+	@contrib/check-reviewdog.sh
+
+.PHONY: check-reviewdog-full
+check-reviewdog-full:
+	@contrib/check-reviewdog.sh --full
+
+# The npm-lockfile job. The published package is a thin wrapper that downloads the
+# release binary, so the lockfile is the whole supply chain surface it has.
+.PHONY: check-npm
+check-npm:
+	npm ci --ignore-scripts
+	npm run lint:lockfile
+
+# The minimum-toolchain job. Built in a container pinned to the declared MSRV, because
+# rustup is not a given here and a Homebrew or distro Rust cannot switch toolchains.
+# Catches a feature that only compiles on a newer toolchain than the release build has.
+.PHONY: check-msrv
+check-msrv:
+	docker run --rm --platform linux/amd64 -e BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=1 \
+		-v "$(PWD):/src:ro" -w /work rust:$(MSRV)-slim sh -c '\
+		cp -r /src/. /work && \
+		cargo build --all --locked'
+
+# Everything any CI enforces, in one target: the four jobs in ci.yml plus the security
+# scan the organization-level workflow runs. Slower than `check` by a lot -- two
+# container builds and a scan -- so `check` stays the inner loop and this is the
+# before-you-push pass.
+.PHONY: check-all
+check-all: check check-spec check-npm check-msrv check-reviewdog
+
 .PHONY: locales
 locales:
 	@ref=crates/i18n/locales/en-US.ftl; \
@@ -126,14 +178,22 @@ locales:
 # Runs the same checks on Linux with the current stable toolchain. Worth doing before
 # pushing platform-specific code: a macOS host never compiles the Linux backend, and
 # clippy gains lints between releases, so both can fail in CI while passing locally.
+# The environment the container needs: the build script refuses an unconfigured build
+# without the first, and the shell-mode test reads `$$USER` the way a terminal would, which
+# a bare container does not set. Both are set for CI in ci.yml.
+#
+# Threads are capped because several turn tests stand up a mock HTTP server on an ephemeral
+# port, and at the container's default parallelism enough of them race that a different one
+# fails each run. A native runner has the headroom; Docker here does not.
 .PHONY: check-linux
 check-linux:
-	docker run --rm --platform linux/amd64 -v "$(PWD):/src:ro" -w /work rust:slim sh -c '\
+	docker run --rm --platform linux/amd64 -e BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=1 -e USER=root \
+		-v "$(PWD):/src:ro" -w /work rust:slim sh -c '\
 		cp -r /src/. /work && \
 		rustup component add clippy rustfmt >/dev/null 2>&1 && \
 		cargo fmt --all -- --check && \
 		cargo clippy --all-targets --all-features -- -D warnings && \
-		cargo test --all'
+		cargo test --all -- --test-threads=4'
 
 .PHONY: darwin-arm64
 darwin-arm64:

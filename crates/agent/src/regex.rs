@@ -427,6 +427,8 @@ impl Parser<'_> {
             branches.push(self.concatenation()?);
         }
         if branches.len() == 1 {
+            // The length was checked on the line above.
+            // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
             return Ok(branches.pop().expect("one branch"));
         }
         Ok(Node::Alt(branches))
@@ -443,6 +445,8 @@ impl Parser<'_> {
         }
         match nodes.len() {
             0 => Ok(Node::Empty),
+            // The arm matched on the length, so the pop is checked by construction.
+            // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
             1 => Ok(nodes.pop().expect("one node")),
             _ => Ok(Node::Concat(nodes)),
         }

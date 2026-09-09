@@ -519,7 +519,7 @@ mod tests {
     /// Point `HOME` at a scratch directory, so no test can read or write the developer's own
     /// credentials.
     fn with_temp_home<T>(name: &str, body: impl FnOnce() -> T) -> T {
-        let dir = std::env::temp_dir().join(format!("bravebot-skus-{name}"));
+        let dir = crate::testutil::scratch_dir(&format!("bravebot-skus-{name}"));
         with_home(Some(dir), body)
     }
 
@@ -538,14 +538,18 @@ mod tests {
         let previous = std::env::var_os("HOME");
         // SAFETY: single-threaded within the lock, and restored before returning.
         match &dir {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             Some(dir) => unsafe { std::env::set_var("HOME", dir) },
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             None => unsafe { std::env::remove_var("HOME") },
         }
 
         let result = body();
 
         match previous {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             Some(value) => unsafe { std::env::set_var("HOME", value) },
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             None => unsafe { std::env::remove_var("HOME") },
         }
         if let Some(dir) = &dir {

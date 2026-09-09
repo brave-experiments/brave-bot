@@ -11,7 +11,8 @@ asking the network what stable is today.
 
 import os
 import re
-import subprocess
+# Only ever invoked with an argument list, never a shell string.
+import subprocess  # nosemgrep: gitlab.bandit.B404
 import sys
 from datetime import date, datetime
 

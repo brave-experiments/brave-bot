@@ -1623,6 +1623,8 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
 
         for index in 0..task.attachments.len() {
             let key = format!("attachment_{index}");
+            // The routing table was precommitted from these same indices.
+            // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
             let path = policy
                 .routing()
                 .get(&key)
@@ -2245,6 +2247,8 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             &origin,
                             &output.text,
                             conversation.quarantine(),
+                            // The arm's guard is `output.picture.is_some()`.
+                            // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
                             output.picture.as_deref().expect("just checked"),
                         ),
                         None => policy.present(

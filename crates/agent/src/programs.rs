@@ -133,7 +133,7 @@ mod tests {
     /// will run in rather than from wherever this process happens to be.
     #[test]
     fn a_relative_path_resolves_against_the_working_directory() {
-        let scratch = std::env::temp_dir().join("bravebot-programs-relative");
+        let scratch = crate::testutil::scratch_dir("bravebot-programs-relative");
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
         let script = scratch.join("tool.sh");
@@ -158,7 +158,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_file_without_the_executable_bit_is_not_a_program() {
-        let scratch = std::env::temp_dir().join("bravebot-programs-notexec");
+        let scratch = crate::testutil::scratch_dir("bravebot-programs-notexec");
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
         let plain = scratch.join("notes.txt");

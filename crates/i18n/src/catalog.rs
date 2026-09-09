@@ -200,6 +200,8 @@ pub fn parse(source: &str) -> Result<Vec<Message>, Error> {
 
 /// `{ $count -> [one] one thing *[other] { $count } things }`, written across lines.
 fn parse_select(block: &[&str], number: usize) -> Result<Value, Error> {
+    // The caller checked the brace before handing the block over.
+    // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
     let head = block[0]
         .strip_prefix('{')
         .expect("the caller checked the brace")

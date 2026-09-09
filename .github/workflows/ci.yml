@@ -27,6 +27,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
+        # Pinned to a full commit SHA, which is the control this rule is really after.
+        # dtolnay/rust-toolchain publishes no semver release to name alongside it: its refs
+        # are branches (`stable`, `master`, `1.104.0`) plus a single `v1` tag.
+        # nosemgrep: brave-third-party-action-not-pinned-to-commit-sha
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -80,6 +84,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Rust ${{ steps.msrv.outputs.version }}
+        # Pinned to a full commit SHA; see the note in the `check` job above.
+        # nosemgrep: brave-third-party-action-not-pinned-to-commit-sha
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ steps.msrv.outputs.version }}

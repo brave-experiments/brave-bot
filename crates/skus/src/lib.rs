@@ -38,6 +38,8 @@
 pub mod device;
 pub mod profile;
 pub mod store;
+#[cfg(test)]
+mod testutil;
 
 pub use device::{DeviceError, Registration};
 pub use profile::{Channel, LeoOrder, ProfileError, find_leo_order};

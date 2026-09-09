@@ -94,7 +94,8 @@ def drive(argv, steps, env=None, cols=120, rows=40, quiet=1.5, settle=5.0):
     if child == 0:
         os.environ.update(env or {})
         os.environ["TERM"] = "xterm-256color"
-        os.execvp(argv[0], argv)
+        # argv is built by this script, and passed as a list rather than through a shell.
+        os.execvp(argv[0], argv)  # nosemgrep: gitlab.bandit.B606
 
     # Set before the first draw, since the interface measures the terminal once at startup and
     # lays every frame out against what it found.

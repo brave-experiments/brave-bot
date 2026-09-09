@@ -3341,6 +3341,8 @@ fn goal_check_animated(
     if session.finished.is_none_or(|turn| turn.failed) {
         return Ok((None, Vec::new()));
     }
+    // An invariant of the branch above, not a runtime condition.
+    // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
     let condition = session
         .goal()
         .expect("the goal was there a moment ago")
@@ -5503,7 +5505,7 @@ mod tests {
     /// hand over the picture it is about.
     #[test]
     fn a_file_dropped_while_a_turn_is_running_is_attached() {
-        let directory = std::env::temp_dir().join("bravebot-app-drop-while-working");
+        let directory = crate::testutil::scratch_dir("bravebot-app-drop-while-working");
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("scratch");
         let file = directory.join("shot.png");
@@ -8762,7 +8764,7 @@ mod tests {
     /// workspace, which is what `../shared` in a file about a project says.
     #[test]
     fn a_settings_file_directory_is_opened_and_trusted_like_one_typed() {
-        let root = std::env::temp_dir().join("bravebot-settings-dir-test");
+        let root = crate::testutil::scratch_dir("bravebot-settings-dir-test");
         let outside = root.join("shared");
         let project = root.join("project");
         std::fs::create_dir_all(&outside).expect("scratch");
@@ -8795,7 +8797,7 @@ mod tests {
     /// moved to is vouched for, which is what a relative path means and what decides a write there.
     #[test]
     fn changing_directory_moves_the_workspace_and_vouches_for_where_it_moved() {
-        let root = std::env::temp_dir().join("bravebot-cd-test");
+        let root = crate::testutil::scratch_dir("bravebot-cd-test");
         let project = root.join("project");
         let other = root.join("other");
         std::fs::create_dir_all(&project).expect("scratch");
@@ -8827,7 +8829,7 @@ mod tests {
     /// become a yes for the one arrived at, which is what carrying it across unchanged would do.
     #[test]
     fn changing_directory_leaves_the_previous_answer_where_it_was_given() {
-        let root = std::env::temp_dir().join("bravebot-cd-rules-test");
+        let root = crate::testutil::scratch_dir("bravebot-cd-rules-test");
         let project = root.join("project");
         let other = root.join("other");
         std::fs::create_dir_all(project.join("vendor")).expect("scratch");
@@ -8869,7 +8871,7 @@ mod tests {
     /// somebody has already refused.
     #[test]
     fn moving_into_a_directory_keeps_the_answers_given_inside_it() {
-        let root = std::env::temp_dir().join("bravebot-cd-inner-test");
+        let root = crate::testutil::scratch_dir("bravebot-cd-inner-test");
         let project = root.join("project");
         std::fs::create_dir_all(project.join("src/vendor")).expect("scratch");
 
@@ -8902,7 +8904,7 @@ mod tests {
     /// vouching for a directory it is not in.
     #[test]
     fn a_directory_that_is_not_there_moves_nothing() {
-        let root = std::env::temp_dir().join("bravebot-cd-missing-test");
+        let root = crate::testutil::scratch_dir("bravebot-cd-missing-test");
         std::fs::create_dir_all(&root).expect("scratch");
 
         let mut workspace = Workspace::new(&root).expect("workspace");

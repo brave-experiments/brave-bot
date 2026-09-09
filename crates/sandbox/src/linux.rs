@@ -33,6 +33,8 @@ const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 /// version without creating a ruleset. A negative result means Landlock is absent.
 fn landlock_abi_version() -> libc::c_long {
     const LANDLOCK_CREATE_RULESET_VERSION: libc::c_ulong = 1;
+    // Landlock has no libc wrapper, so the syscall is issued directly.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe {
         libc::syscall(
             SYS_LANDLOCK_CREATE_RULESET,
@@ -121,6 +123,9 @@ impl Sandbox for LandlockSandbox {
 
         // Landlock applies to the calling thread and is inherited across exec, so the
         // ruleset is installed in the child between fork and exec.
+        // `pre_exec` is unsafe by definition: its closure runs in the forked child, where
+        // only async-signal-safe work is allowed.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             command.pre_exec(move || {
                 use std::io::Error;

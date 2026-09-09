@@ -4,6 +4,9 @@
 //! interface holds transcript and input state only: no policy outlives a turn, so
 //! conversation history can never become routing for a later one.
 
+#[cfg(test)]
+mod testutil;
+
 pub mod app;
 pub mod ask;
 pub mod audit;

@@ -143,6 +143,10 @@ fn scratch(kind: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
         .unwrap_or(0);
+    // The name carries the pid and a nanosecond stamp, and `write_scratch` below creates it
+    // with `create_new` and mode 0600 -- the secure creation this rule asks for, and the
+    // reason a name already taken is refused rather than reused.
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
     std::env::temp_dir().join(format!("bravebot-{kind}-{}-{stamp}.md", std::process::id()))
 }
 
@@ -383,7 +387,7 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("bravebot-editor-{name}"));
+            let path = crate::testutil::scratch_dir(&format!("bravebot-editor-{name}"));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("create");
             Self { path }

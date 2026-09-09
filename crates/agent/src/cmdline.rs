@@ -2382,7 +2382,7 @@ mod tests {
 
     impl Tree {
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("bravebot-cmdline-{name}"));
+            let root = crate::testutil::scratch_dir(&format!("bravebot-cmdline-{name}"));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("a scratch directory");
             Self { root }

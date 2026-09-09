@@ -16,6 +16,8 @@ pub mod env_var {
 
 mod obfuscate;
 mod settings;
+#[cfg(test)]
+mod testutil;
 
 pub use settings::Settings;
 

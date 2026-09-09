@@ -769,6 +769,9 @@ pub fn start_steps(steps: &[Step], directory: &std::path::Path) -> Result<Backgr
     let steps = children.len();
     Ok(Background {
         children,
+        // An invariant of the loop above, not a runtime condition: an error return here
+        // would invent a failure mode no caller could act on.
+        // nosemgrep: trailofbits.rs.panic-in-function-returning-result.panic-in-function-returning-result
         stdout: tail.expect("the last step's output is always collected"),
         stderr: draining,
         codes: vec![None; steps],

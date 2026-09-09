@@ -21,6 +21,9 @@ fn main() -> ExitCode {
     // on. Nothing else in the tree consults the environment about a language.
     bravebot_i18n::init_from_environment();
 
+    // The process's own argv, parsed below into the documented flags. There is no other
+    // way for a command line tool to learn what it was asked to do.
+    // nosemgrep: rust.lang.security.args.args
     let mut args: Vec<String> = std::env::args().skip(1).collect();
 
     // Engaged here rather than deeper in because it must be true before the first thing that could

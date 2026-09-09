@@ -4640,7 +4640,7 @@ mod tests {
     /// tell a screenshot from a private key.
     #[test]
     fn an_attached_file_is_named_under_the_box() {
-        let directory = std::env::temp_dir().join("bravebot-render-attached");
+        let directory = crate::testutil::scratch_dir("bravebot-render-attached");
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("scratch");
         std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
@@ -4759,7 +4759,7 @@ mod tests {
     /// a file is going that is not.
     #[test]
     fn deleting_the_marker_takes_the_row_out_from_under_the_box() {
-        let directory = std::env::temp_dir().join("bravebot-render-attached-deleted");
+        let directory = crate::testutil::scratch_dir("bravebot-render-attached-deleted");
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("scratch");
         std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
@@ -4792,7 +4792,7 @@ mod tests {
     /// of, which reads as though it went with one of them.
     #[test]
     fn what_is_attached_is_drawn_above_what_is_waiting() {
-        let directory = std::env::temp_dir().join("bravebot-render-attached-order");
+        let directory = crate::testutil::scratch_dir("bravebot-render-attached-order");
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("scratch");
         std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");
@@ -4924,7 +4924,7 @@ mod tests {
     /// box now.
     #[test]
     fn what_is_stashed_is_drawn_between_the_attachments_and_the_queue() {
-        let directory = std::env::temp_dir().join("bravebot-render-stash-order");
+        let directory = crate::testutil::scratch_dir("bravebot-render-stash-order");
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("scratch");
         std::fs::write(directory.join("shot.png"), [0x89u8, 0x50]).expect("write");

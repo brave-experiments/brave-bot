@@ -1375,7 +1375,7 @@ mod tests {
     /// A scratch checkout, so the test says what the code reads rather than what this machine
     /// happens to have checked out.
     fn fake_checkout(name: &str, head: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("bravebot-sessions-{name}"));
+        let root = crate::testutil::scratch_dir(&format!("bravebot-sessions-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".git")).expect("create scratch");
         std::fs::write(root.join(".git").join("HEAD"), head).expect("write HEAD");
@@ -1673,6 +1673,9 @@ mod tests {
     /// Not every directory is a checkout, and that is not a failure to report.
     #[test]
     fn a_directory_that_is_not_a_checkout_has_no_branch() {
+        // The one scratch directory that cannot live under `target/`: this asserts a
+        // directory is *not* inside a checkout, and `target/` is inside this one.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
         let root = std::env::temp_dir().join("bravebot-sessions-not-a-checkout");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create scratch");
@@ -1682,7 +1685,7 @@ mod tests {
 
     #[test]
     fn exporting_a_transcript_is_confined_to_the_project_root() {
-        let root = std::env::temp_dir().join("bravebot-export-test-confined");
+        let root = crate::testutil::scratch_dir("bravebot-export-test-confined");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
 
@@ -1697,7 +1700,7 @@ mod tests {
 
     #[test]
     fn exporting_refuses_traversal_components() {
-        let root = std::env::temp_dir().join("bravebot-export-test-traversal");
+        let root = crate::testutil::scratch_dir("bravebot-export-test-traversal");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
 
@@ -1715,7 +1718,7 @@ mod tests {
 
     #[test]
     fn exporting_refuses_to_overwrite_an_existing_file() {
-        let root = std::env::temp_dir().join("bravebot-export-test-overwrite");
+        let root = crate::testutil::scratch_dir("bravebot-export-test-overwrite");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
 
@@ -1731,7 +1734,7 @@ mod tests {
 
     #[test]
     fn exporting_creates_intermediate_directories() {
-        let root = std::env::temp_dir().join("bravebot-export-test-subdirs");
+        let root = crate::testutil::scratch_dir("bravebot-export-test-subdirs");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
 
@@ -1750,7 +1753,7 @@ mod tests {
 
     #[test]
     fn forking_a_manifest_session_is_refused() {
-        let root = std::env::temp_dir().join("bravebot-fork-manifest");
+        let root = crate::testutil::scratch_dir("bravebot-fork-manifest");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
 
@@ -1782,7 +1785,7 @@ mod tests {
 
     #[test]
     fn truncating_an_audit_log_removes_events_from_undone_turns() {
-        let root = std::env::temp_dir().join("bravebot-audit-truncate");
+        let root = crate::testutil::scratch_dir("bravebot-audit-truncate");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
 
@@ -1816,8 +1819,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn exporting_refuses_a_path_through_a_symlinked_directory() {
-        let root = std::env::temp_dir().join("bravebot-export-test-symlink-dir");
-        let outside = std::env::temp_dir().join("bravebot-export-test-symlink-dir-outside");
+        let root = crate::testutil::scratch_dir("bravebot-export-test-symlink-dir");
+        let outside = crate::testutil::scratch_dir("bravebot-export-test-symlink-dir-outside");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&root).expect("create");
@@ -1838,8 +1841,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn exporting_refuses_a_path_that_is_a_dangling_symlink() {
-        let root = std::env::temp_dir().join("bravebot-export-test-symlink-file");
-        let outside = std::env::temp_dir().join("bravebot-export-test-symlink-file-outside");
+        let root = crate::testutil::scratch_dir("bravebot-export-test-symlink-file");
+        let outside = crate::testutil::scratch_dir("bravebot-export-test-symlink-file-outside");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&outside);
         std::fs::create_dir_all(&root).expect("create");
