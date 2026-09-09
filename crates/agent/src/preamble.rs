@@ -156,7 +156,11 @@ pub fn compose<S: Sink>(
              sleep, look again, repeat. run compiles the command line itself and refuses control \
              flow, so a shell loop is not the way. Answering in order to be sent back spends one \
              of the goal's rounds and a judge's reading of the whole conversation, and waiting \
-             here spends neither.\n"
+             here spends neither.\n\n\
+             The condition is what to work on, so do not stop to ask what to do or whether to \
+             carry on: a question the condition has already answered spends a round and comes \
+             back declined. A question that is genuinely the user's to settle is still worth \
+             asking.\n"
         ));
     }
 

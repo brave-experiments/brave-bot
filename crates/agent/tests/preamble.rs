@@ -527,3 +527,38 @@ fn a_turn_under_a_goal_is_told_how_to_wait_for_something_outside_the_session() {
         preamble.text
     );
 }
+
+/// The failure this heads off is a turn that stops to ask what it should be working on, which
+/// under a goal is a question the condition has already answered. Where nobody is watching it
+/// comes back declined and the turn guesses, which is how a goal ends up doing something
+/// unrelated with confidence.
+#[test]
+fn a_turn_under_a_goal_is_told_the_condition_is_what_to_work_on() {
+    let scratch = Scratch::new("goal-asking");
+    let project = scratch.directory("project");
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            Some("a.txt exists"),
+        )
+    };
+
+    assert!(
+        preamble.text.contains("do not stop to ask what to do"),
+        "the turn was not told the condition is what to work on: {}",
+        preamble.text
+    );
+    assert!(
+        preamble.text.contains("genuinely the user's to settle"),
+        "the turn was told never to ask anything: {}",
+        preamble.text
+    );
+}

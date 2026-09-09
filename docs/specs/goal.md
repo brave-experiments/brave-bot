@@ -297,6 +297,23 @@ does not compile, and reads the refusal as there being no way to wait at all.
 
 `verified-by: bravebot_agent::preamble::a_turn_under_a_goal_is_told_how_to_wait_for_something_outside_the_session`
 
+<a id="GOAL-16"></a>
+### GOAL-16: a turn is told that the condition is what to work on
+
+The same words say not to stop and ask what to do or whether to carry on, and that a question
+genuinely the person's to settle is still worth asking.
+
+**Why.** A goal is set so the work carries on without the person driving each turn, and a turn
+that asks what to work on is asking something the condition has already answered. Where nobody is
+watching, that question comes back declined and the turn guesses, which is how a goal ends up
+doing something unrelated with confidence.
+
+**Why not a refusal instead of a sentence.** A fork only the person can settle is what the
+question is for, and a goal is not a reason to guess at one. The rule is about the question the
+condition answers, not about asking.
+
+`verified-by: bravebot_agent::preamble::a_turn_under_a_goal_is_told_the_condition_is_what_to_work_on`
+
 ## Known costs
 
 - **The judge reads the transcript, not the world.** It cannot run a command or open a file, so a
