@@ -381,6 +381,10 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     // Brave's name for it otherwise. The settings key this flag outranks accepts those words, so a
     // flag that did not would refuse a spelling the file it overrides takes.
     let named = model.map(|name| config.model_named(&name));
+    // Held onto because it is what separates a substitution worth reporting from one worth failing
+    // the run over: below the flag the model is whatever was recorded or configured, and a script
+    // that never named one did not ask for what it did not get.
+    let named_on_the_command_line = named.is_some();
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
         .with_model(model_asked_for(named, bravebot_tui::store::load_model()))
@@ -493,14 +497,16 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             // server reports is the only trace of it. Which name the service was actually asked
             // for, and whether it reports that name at all, are the backend's questions and are
             // put to it here, where the configuration is in hand.
-            let asked = task
-                .model
-                .as_deref()
-                .map(|named| bravebot_agent::backend::Backend::name_as_asked(&config, named));
-            let comparable = task.model.as_deref().is_some_and(|named| {
-                bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(&config, named)
-            });
-            let not_served = model_not_served(asked.as_deref(), comparable, &outcome.model);
+            //
+            // Against the model in force rather than the flag alone. A model pinned in the
+            // settings file is the one a repository commits beside its scripts, so a substitution
+            // of that is the case the reporting is for, and a session is told about it whatever
+            // named the model.
+            let asked = bravebot_agent::backend::Backend::name_as_asked(&config, &model);
+            let comparable = bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(
+                &config, &model,
+            );
+            let not_served = model_not_served(&asked, comparable, &outcome.model);
 
             let finished = Finished {
                 reply: outcome.reply_for_display(),
@@ -509,6 +515,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
                 trail: trace.then_some((&sink, outcome.model.as_str())),
                 clean: outcome.clean,
                 not_served: not_served.as_deref(),
+                named_on_the_command_line,
             };
             report(
                 &mut std::io::stdout().lock(),
@@ -580,18 +587,18 @@ fn model_asked_for(named: Option<String>, stored: Option<String>) -> Option<Stri
     named.or(stored)
 }
 
-/// The complaint a run has when it named a model and another one answered, if it has one.
+/// The complaint a run has when one model was asked for and another answered, if it has one.
 ///
 /// The endpoint substitutes rather than refusing, so the reported name is the only trace there is.
+/// About the model in force whatever named it: the flag, a remembered choice and the settings key
+/// all pin a model somebody expects to be answered by.
 ///
-/// Nothing where the run named no model, since there was nothing to substitute for. Nothing where
-/// the name asks for whichever model the server picks rather than for a particular one, because
-/// resolving to a model is what that name is for. Nothing where the backend does not report the
-/// name it was asked for either, where a reply that says something else is the indirection
-/// working rather than a different model answering.
-fn model_not_served(asked: Option<&str>, comparable: bool, served: &str) -> Option<String> {
-    let asked = asked.filter(|_| comparable)?;
-    if asked == bravebot_config::DEFAULT_MODEL || asked == served {
+/// Nothing where the name asks for whichever model the server picks rather than for a particular
+/// one, because resolving to a model is what that name is for. Nothing where the backend does not
+/// report the name it was asked for either, where a reply that says something else is the
+/// indirection working rather than a different model answering.
+fn model_not_served(asked: &str, comparable: bool, served: &str) -> Option<String> {
+    if !comparable || asked == bravebot_config::DEFAULT_MODEL || asked == served {
         return None;
     }
     Some(t!(
@@ -658,18 +665,26 @@ struct Finished<'a> {
     trail: Option<(&'a RecordingSink, &'a str)>,
     /// Whether no gate refused anything during the turn.
     clean: bool,
-    /// What to say where the run named a model and another one answered.
+    /// What to say where one model was asked for and another one answered.
     not_served: Option<&'a str>,
+    /// Whether the command line named the model, which is what makes a substitution a failed run
+    /// rather than a thing to report.
+    named_on_the_command_line: bool,
 }
 
 impl Finished<'_> {
     /// Whether the run did what it was asked, which is what the process exits on.
     ///
     /// A turn that was refused something did not, and neither did one answered by a model other
-    /// than the one it named. Both are invisible to a script reading stdout, which is what makes
-    /// the status the only thing that can carry them.
+    /// than the one the command line named. Both are invisible to a script reading stdout, which
+    /// is what makes the status the only thing that can carry them.
+    ///
+    /// A substitution of a model the command line did not name is reported and not failed. Below
+    /// the flag the model is whatever was recorded or configured, so failing there would have a
+    /// script that names no model start exiting non-zero over a choice made in a terminal, and the
+    /// flag is what a script that cannot tolerate a substitution has.
     fn succeeded(&self) -> bool {
-        self.clean && self.not_served.is_none()
+        self.clean && !(self.named_on_the_command_line && self.not_served.is_some())
     }
 }
 
@@ -1585,6 +1600,7 @@ mod tests {
             trail: Some((&sink, "qwen-3-235b")),
             clean: false,
             not_served: None,
+            named_on_the_command_line: false,
         });
 
         assert_eq!(reply, "ok\n");
@@ -1604,6 +1620,7 @@ mod tests {
             trail: None,
             clean: true,
             not_served: None,
+            named_on_the_command_line: false,
         });
 
         assert_eq!(reply, "ok\n");
@@ -1940,21 +1957,14 @@ mod tests {
         assert_eq!(model_asked_for(None, None), None);
     }
 
-    /// A run that named a model and was answered by another did not do what it was asked. Nothing
-    /// on stdout says so, and a script pinned a model for a reason.
+    /// A run asked for a model and was answered by another. Nothing on stdout says so, and a
+    /// model is pinned for a reason whichever route pinned it.
     #[test]
-    fn a_model_a_run_named_and_did_not_get_is_reported() {
-        let complaint = model_not_served(Some("a-premium-model"), true, "a-free-one")
+    fn a_model_asked_for_and_not_served_is_reported() {
+        let complaint = model_not_served("a-premium-model", true, "a-free-one")
             .expect("a complaint about the substitution");
         assert!(complaint.contains("a-premium-model"), "{complaint}");
         assert!(complaint.contains("a-free-one"), "{complaint}");
-    }
-
-    /// A run that named no model asked for nothing in particular, so whatever answered is what it
-    /// asked for.
-    #[test]
-    fn a_run_that_named_no_model_is_not_failed_by_the_one_that_answered() {
-        assert_eq!(model_not_served(None, true, "whatever-answered"), None);
     }
 
     /// The routing entry asks for whichever model the server picks, so a concrete name coming back
@@ -1962,11 +1972,7 @@ mod tests {
     #[test]
     fn a_routing_entry_answered_by_a_model_is_not_a_substitution() {
         assert_eq!(
-            model_not_served(
-                Some(bravebot_config::DEFAULT_MODEL),
-                true,
-                "the-model-picked"
-            ),
+            model_not_served(bravebot_config::DEFAULT_MODEL, true, "the-model-picked"),
             None
         );
     }
@@ -1976,17 +1982,14 @@ mod tests {
     #[test]
     fn a_backend_that_does_not_report_what_it_was_asked_is_not_compared() {
         assert_eq!(
-            model_not_served(Some("an-opaque-handle"), false, "some-model"),
+            model_not_served("an-opaque-handle", false, "some-model"),
             None
         );
     }
 
     #[test]
     fn a_model_that_answered_as_asked_is_no_complaint() {
-        assert_eq!(
-            model_not_served(Some("same-model"), true, "same-model"),
-            None
-        );
+        assert_eq!(model_not_served("same-model", true, "same-model"), None);
     }
 
     /// The complaint is about the run rather than part of what the run produced, so a pipe of
@@ -2000,6 +2003,7 @@ mod tests {
             trail: None,
             clean: true,
             not_served: Some("a-premium-model was not served"),
+            named_on_the_command_line: true,
         });
 
         assert_eq!(reply, "ok\n");
@@ -2009,10 +2013,11 @@ mod tests {
         );
     }
 
-    /// The status is the only part of a finished run a script is certain to read, so a model that
-    /// was not served has to reach it. A turn nothing refused is not enough on its own.
+    /// The status is the only part of a finished run a script is certain to read, so a model the
+    /// command line named and did not get has to reach it. A turn nothing refused is not enough on
+    /// its own.
     #[test]
-    fn a_run_answered_by_another_model_does_not_succeed() {
+    fn a_run_answered_by_a_model_other_than_the_one_it_named_does_not_succeed() {
         let substituted = Finished {
             reply: "ok",
             notices: &[],
@@ -2020,6 +2025,7 @@ mod tests {
             trail: None,
             clean: true,
             not_served: Some("a-premium-model was not served"),
+            named_on_the_command_line: true,
         };
         let served = Finished {
             not_served: None,
@@ -2028,6 +2034,27 @@ mod tests {
 
         assert!(!substituted.succeeded());
         assert!(served.succeeded());
+    }
+
+    /// Below the flag the model is whatever was recorded or configured, so failing here would have
+    /// a script that names no model exit non-zero over a choice made in a terminal. It is still
+    /// reported, which is the whole of what a person needs to see it.
+    #[test]
+    fn a_substitution_the_command_line_did_not_ask_for_is_reported_and_not_failed() {
+        let substituted = Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: None,
+            trail: None,
+            clean: true,
+            not_served: Some("a-premium-model was not served"),
+            named_on_the_command_line: false,
+        };
+
+        let (reply, beside) = written(&substituted);
+        assert_eq!(reply, "ok\n");
+        assert!(beside.contains("was not served"), "{beside}");
+        assert!(substituted.succeeded());
     }
 
     #[test]
@@ -2135,6 +2162,7 @@ mod tests {
             trail: None,
             clean: true,
             not_served: None,
+            named_on_the_command_line: false,
         });
         assert_eq!(reply, "ok\n");
         assert!(beside.contains("not usable"), "got: {beside}");

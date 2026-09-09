@@ -175,34 +175,40 @@ nothing about having done so, which is the substitution the flag exists to make 
 `verified-by: bravebot_cli::main::a_blank_model_is_refused_rather_than_read_as_no_choice`
 
 <a id="CLI-10"></a>
-### CLI-10: a model a run named, and did not get, fails the run
+### CLI-10: a substituted model is reported, and one the command line named fails the run
 
-Where `--model` named a model and the endpoint answered with a different one, both names are said
-on stderr and the run exits non-zero. The reply still goes to stdout, and stdout carries nothing
-else. Three cases are not this: a run that named no model, a name that asks for whichever model the
-server picks rather than for a particular one, and a backend that does not report the name it was
-asked for.
+Where the endpoint answers with a model other than the one in force, both names are said on
+stderr. Where the model in force is the one `--model` named, the run also exits non-zero. The reply
+still goes to stdout, and stdout carries nothing else. Two cases are neither reported nor failed: a
+name that asks for whichever model the server picks rather than for a particular one, and a backend
+that does not report the name it was asked for.
 
 **Why.** A model a run cannot be served is substituted rather than refused. One that needs a
 subscription is answered by whatever the free tier serves, with an ordinary reply and nothing to
-distinguish it, so the name the server reports is the only trace there is. A person watching a
-session is shown that line and can act on it; a script sees a reply that looks exactly like the one
-it wanted, and a model is pinned in the first place because of what a run costs or how good its
-output has to be. The status is the part of a finished run a script is certain to read, which is
-what makes it the thing that has to carry this.
+distinguish it, so the name the server reports is the only trace there is. Reporting it is about
+the model in force rather than the flag alone, because every route to a model is somebody naming
+one they expect to be answered by: the settings file's key is what a repository commits beside its
+scripts, and a remembered choice is what a person picked and is being shown.
 
-The three exclusions are the cases where a different name is not a substitution. A run that named
-no model asked for nothing in particular. A routing entry resolves to a model per request, which is
-what it is for. A backend asked by an opaque handle answers with a name that never matched what
-went in, so comparing them would fail every run made against one.
+Failing the run is narrower, and the flag is what draws the line. A script that named no model
+takes whatever was recorded or configured, so failing there would have it exit non-zero over a
+choice made in a terminal it has nothing to do with, and a run that named one asked for something
+and did not get it. The status is the part of a finished run a script is certain to read, which is
+what makes it the thing that has to carry that, and the flag is what a script that cannot tolerate
+a substitution has.
 
-`verified-by: bravebot_cli::main::a_model_a_run_named_and_did_not_get_is_reported`
+The two exclusions are the cases where a different name is not a substitution. A routing entry
+resolves to a model per request, which is what it is for. A backend asked by an opaque handle
+answers with a name that never matched what went in, so comparing them would fail every run made
+against one.
+
+`verified-by: bravebot_cli::main::a_model_asked_for_and_not_served_is_reported`
 `verified-by: bravebot_cli::main::a_model_that_answered_as_asked_is_no_complaint`
-`verified-by: bravebot_cli::main::a_run_that_named_no_model_is_not_failed_by_the_one_that_answered`
 `verified-by: bravebot_cli::main::a_routing_entry_answered_by_a_model_is_not_a_substitution`
 `verified-by: bravebot_cli::main::a_backend_that_does_not_report_what_it_was_asked_is_not_compared`
 `verified-by: bravebot_cli::main::a_substituted_model_is_reported_beside_the_reply_never_in_it`
-`verified-by: bravebot_cli::main::a_run_answered_by_another_model_does_not_succeed`
+`verified-by: bravebot_cli::main::a_run_answered_by_a_model_other_than_the_one_it_named_does_not_succeed`
+`verified-by: bravebot_cli::main::a_substitution_the_command_line_did_not_ask_for_is_reported_and_not_failed`
 
 <a id="CLI-11"></a>
 ### CLI-11: `--add-dir` makes a directory reachable, and vouches for nothing
