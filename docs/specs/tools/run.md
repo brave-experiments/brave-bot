@@ -321,6 +321,14 @@ no reader for. Both are refused rather than half-honoured.
 started one. A background program still running after its turn ended would be an effect nobody is
 watching, nobody is being asked about, and nobody can stop.
 
+**Ended means the account is complete.** A job is reported as ended once every step has exited and
+every pipe has reached its end, which are not the same moment: a step can print and exit with its
+output still in the pipe, unread. A caller told a job ended stops asking, so reporting it at the
+first of the two hands over an account missing its last lines and nothing ever hands over the rest.
+Waiting for the pipes is bounded, and one a step's own child is still holding is abandoned exactly
+as [RUN-11](#RUN-11) abandons it: what had been read by then is kept, and a pipeline whose steps
+have all exited is never reported as still running.
+
 **Why.** A program meant to keep running is what [RUN-11](#RUN-11)'s limit cannot serve. Its own
 rationale names the case: a server told to serve serves, prints as it goes, and never exits. Waiting
 for one and killing it at the limit leaves no moment at which it is up and can be used, so the turn
@@ -328,6 +336,7 @@ that started a server could never talk to it.
 
 `verified-by: bravebot_agent::exec::a_background_pipeline_reports_what_it_printed_while_it_is_still_running`
 `verified-by: bravebot_agent::exec::a_background_pipeline_that_finishes_says_so_and_reports_its_code`
+`verified-by: bravebot_agent::exec::a_background_pipeline_reported_as_ended_has_all_of_its_output`
 `verified-by: bravebot_agent::exec::a_killed_background_pipeline_keeps_what_it_printed`
 `verified-by: bravebot_agent::exec::background_stages_are_chained_so_one_feeds_the_next`
 `verified-by: bravebot_agent::exec::dropping_a_background_pipeline_kills_it`

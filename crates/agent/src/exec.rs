@@ -602,13 +602,23 @@ pub struct Background {
     codes: Vec<Option<i32>>,
     finished: Vec<bool>,
     started: Instant,
+    /// When every step was first seen to have exited, which bounds the wait for the pipes.
+    exited: Option<Instant>,
 }
 
 impl Background {
-    /// Whether every step has exited.
+    /// Whether every step has exited and everything it printed has been read.
     ///
     /// Polled rather than waited on, so asking costs nothing and a caller is never blocked by a
-    /// program that is behaving as intended.
+    /// program that is behaving as intended. The exception is the moment the last step exits: the
+    /// pipes are given until [`DRAIN_GRACE`] after that to reach their end, because a step can
+    /// print and exit with its output still in the pipe, unread because the thread reading it has
+    /// not run yet. Reporting ended then would say the account was complete while the last of it
+    /// was still in flight, and a caller told a job ended stops asking.
+    ///
+    /// The grace is a deadline from that moment rather than a wait on each call, so a pipe a
+    /// step's own child is still holding costs it once and does not leave a pipeline whose steps
+    /// have all exited reported as running forever.
     pub fn ended(&mut self) -> bool {
         for (index, child) in self.children.iter_mut().enumerate() {
             if self.finished[index] {
@@ -624,7 +634,20 @@ impl Background {
                 Err(_) => self.finished[index] = true,
             }
         }
-        self.finished.iter().all(|done| *done)
+        if !self.finished.iter().all(|done| *done) {
+            return false;
+        }
+
+        let exited = *self.exited.get_or_insert_with(Instant::now);
+        while exited.elapsed() < DRAIN_GRACE && !self.drained() {
+            std::thread::sleep(TICK);
+        }
+        true
+    }
+
+    /// Whether every pipe has reached its end, so nothing more of the output is to come.
+    fn drained(&self) -> bool {
+        self.stdout.finished() && self.stderr.iter().all(Drain::finished)
     }
 
     /// What it has printed so far, standard output then standard error.
@@ -777,5 +800,6 @@ pub fn start_steps(steps: &[Step], directory: &std::path::Path) -> Result<Backgr
         codes: vec![None; steps],
         finished: vec![false; steps],
         started: Instant::now(),
+        exited: None,
     })
 }

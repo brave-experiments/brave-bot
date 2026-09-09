@@ -952,3 +952,44 @@ fn a_background_pipeline_with_missing_resolutions_does_not_start() {
         .expect_err("nothing starts without a resolution per stage");
     assert!(matches!(error, ExecError::Io(_)));
 }
+
+/// A job reported as ended is one whose account is complete, so whoever is told it ended is told
+/// everything it printed. Nothing here synchronises with the steps: a step can print and exit with
+/// its output still in the pipe, unread because the thread reading it has not run yet.
+///
+/// The pipe held open by a step's own child is the case that makes this observable without racing
+/// the scheduler. It also pins the bound: a pipe that never reaches its end does not leave a
+/// pipeline whose steps have all exited reported as running forever.
+#[test]
+fn a_background_pipeline_reported_as_ended_has_all_of_its_output() {
+    let scratch = Scratch::new("background-ended-output");
+    // The step exits at once, leaving a child that prints a second later and then holds the write
+    // end of the pipe, so what it printed arrives after every step has been reaped.
+    let resolved = script(
+        &scratch.path,
+        "chatty",
+        "#!/bin/sh\n(sleep 1; echo late; sleep 5) &\n",
+    );
+
+    let pipeline = Pipeline::new(vec![Stage::new("chatty", Vec::new())]);
+    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+
+    let mut ended = false;
+    for _ in 0..100 {
+        if job.ended() {
+            ended = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        ended,
+        "a pipeline whose every step had exited was never reported as ended"
+    );
+
+    let printed = job.printed();
+    assert!(
+        printed.contains("late"),
+        "a job reported as ended was missing what it printed: {printed:?}"
+    );
+}
