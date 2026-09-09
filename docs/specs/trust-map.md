@@ -244,7 +244,7 @@ outlive the answer that allowed it.
 ### TRUST-10: no rule extends reach; reading, writing and listing stay confined
 
 Reading, writing, editing, listing and searching are confined to the working directory and to
-whatever `/add-dir` has opened. `..` and an absolute path outside those are refused rather than
+whatever has been opened beside it. `..` and an absolute path outside those are refused rather than
 resolved, in an added directory exactly as in the project, and a symlink leaving one is refused.
 A relative path always means the project, so no file has two spellings. Naming a directory
 includes nothing, since a directory is somewhere to type through rather than a file to read.

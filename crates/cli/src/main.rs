@@ -66,7 +66,7 @@ fn main() -> ExitCode {
         },
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
-        Some("-p" | "--print" | "--mode" | "--file" | "--trace") => {
+        Some("-p" | "--print" | "--mode" | "--model" | "--file" | "--add-dir" | "--trace") => {
             run_task(&args, skip_permissions)
         }
         Some("doctor") => doctor(),
@@ -159,7 +159,9 @@ fn print_help() {
     println!("{}", t!(cli_options_heading));
     for (flags, description) in [
         ("--file <path>", t!(cli_option_file)),
+        ("--add-dir <path>", t!(cli_option_add_dir)),
         ("--mode <mode>", t!(cli_option_mode)),
+        ("--model <name>", t!(cli_option_model)),
         ("-p, --print", t!(cli_option_print)),
         ("--trace", t!(cli_option_trace)),
         ("--incognito", t!(cli_option_incognito)),
@@ -195,15 +197,23 @@ struct Invocation {
     prompt: String,
     files: Vec<String>,
     mode: Mode,
+    /// The model the command line named. `None` leaves the configured one in force rather than
+    /// standing for a model of its own.
+    model: Option<String>,
+    /// Directories outside the working one that this run may reach into.
+    directories: Vec<String>,
     trace: bool,
     print: bool,
 }
 
-/// Parse `<prompt> [--file path]... [--mode name] [--trace] [-p]`.
+/// Parse `<prompt> [--file path]... [--add-dir path]... [--mode name] [--model name]
+/// [--trace] [-p]`.
 fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     let mut prompt = String::new();
     let mut files = Vec::new();
     let mut mode = Mode::default();
+    let mut model = None;
+    let mut directories = Vec::new();
     let mut trace = false;
     let mut print = false;
     let mut index = 0;
@@ -220,12 +230,32 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
                     return Err(t!(cli_mode_needs_a_name, names = Mode::NAMES.join(", ")));
                 }
             },
+            // A blank name is refused rather than read as no choice. A stored one is allowed to
+            // be blank, where it means the file holds nothing and the configured model answers,
+            // but a script that computed an empty variable asked for a model and would otherwise
+            // be given whatever was configured without being told.
+            "--model" => match args.get(index + 1).map(|name| name.trim()) {
+                Some(name) if !name.is_empty() => {
+                    model = Some(name.to_string());
+                    index += 2;
+                }
+                _ => return Err(t!(cli_model_needs_a_name).to_string()),
+            },
             "--file" => match args.get(index + 1) {
                 Some(path) => {
                     files.push(path.clone());
                     index += 2;
                 }
                 None => return Err(t!(cli_file_needs_a_path).to_string()),
+            },
+            // Repeatable, since reaching one sibling checkout is no more natural than reaching
+            // two, and a flag that could only be given once would be a rule about typing.
+            "--add-dir" => match args.get(index + 1).map(|path| path.trim()) {
+                Some(path) if !path.is_empty() => {
+                    directories.push(path.to_string());
+                    index += 2;
+                }
+                _ => return Err(t!(cli_add_dir_needs_a_path).to_string()),
             },
             "--trace" => {
                 trace = true;
@@ -247,6 +277,8 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
         prompt,
         files,
         mode,
+        model,
+        directories,
         trace,
         print,
     })
@@ -264,6 +296,8 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         prompt,
         files,
         mode,
+        model,
+        directories,
         trace,
         print,
     } = invocation;
@@ -297,7 +331,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         }
     };
 
-    let workspace = match current_workspace() {
+    let mut workspace = match current_workspace() {
         Ok(w) => w,
         Err(err) => {
             eprintln!("{}", t!(cli_workspace_problem, problem = err));
@@ -305,12 +339,17 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         }
     };
 
+    // Fatal rather than said and carried on with. A session leaves the person to retype it; a
+    // script that asked to reach a directory and did not gets a turn that fails somewhere further
+    // in, over a file it was told it could open.
+    if let Err(problem) = open_directories(&mut workspace, &directories) {
+        eprintln!("{problem}");
+        return ExitCode::FAILURE;
+    }
+
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    // The same choice the interface records. A preference about which model to think with is the
-    // user's, not the interface's, so a one-shot run honours it rather than reverting to the
-    // default the environment happens to name.
     // The rules the settings file carried. A one-shot run refuses every write anyway, so what
     // these add here is the deny list: a rule keeping a file from being read holds for a run
     // nobody is watching exactly as it does for a session. Anything unreadable is named on stderr,
@@ -337,9 +376,18 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         true => bravebot_agent::PermissionMode::Bypass,
         false => bravebot_agent::PermissionMode::Ask,
     };
+    // Resolved against the configuration rather than at parse, since a tier word names a model
+    // only the configuration knows: the AWS account's ARN for that tier where it named one, and
+    // Brave's name for it otherwise. The settings key this flag outranks accepts those words, so a
+    // flag that did not would refuse a spelling the file it overrides takes.
+    let named = model.map(|name| config.model_named(&name));
+    // Held onto because it is what separates a substitution worth reporting from one worth failing
+    // the run over: below the flag the model is whatever was recorded or configured, and a script
+    // that never named one did not ask for what it did not get.
+    let named_on_the_command_line = named.is_some();
     let mut task = Task::new(prompt)
         .with_home(bravebot_agent::home::directory())
-        .with_model(bravebot_tui::store::load_model())
+        .with_model(model_asked_for(named, bravebot_tui::store::load_model()))
         .with_effort(bravebot_tui::store::load_effort())
         .with_permissions(permissions)
         .with_permission_mode(permission_mode);
@@ -383,6 +431,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         .as_deref()
         .unwrap_or(&config.default_model)
         .to_string();
+
     // The sign-in's own lines go to stderr as they arrive, beside every other progress line, which
     // keeps stdout the reply and nothing else. A URL and a code are no use after the fact, so they
     // are printed while the command that wrote them is still waiting.
@@ -442,21 +491,40 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             } else {
                 None
             };
+            // What was asked for against what answered. A model this run cannot be served is
+            // substituted rather than refused: one that needs a subscription comes back as
+            // whatever the free tier serves, with a 200 and an ordinary reply, so the name the
+            // server reports is the only trace of it. Which name the service was actually asked
+            // for, and whether it reports that name at all, are the backend's questions and are
+            // put to it here, where the configuration is in hand.
+            //
+            // Against the model in force rather than the flag alone. A model pinned in the
+            // settings file is the one a repository commits beside its scripts, so a substitution
+            // of that is the case the reporting is for, and a session is told about it whatever
+            // named the model.
+            let asked = bravebot_agent::backend::Backend::name_as_asked(&config, &model);
+            let comparable = bravebot_agent::backend::Backend::reports_the_model_it_was_asked_for(
+                &config, &model,
+            );
+            let not_served = model_not_served(&asked, comparable, &outcome.model);
+
+            let finished = Finished {
+                reply: outcome.reply_for_display(),
+                notices: &outcome.notices,
+                attempt: attempt.as_deref(),
+                trail: trace.then_some((&sink, outcome.model.as_str())),
+                clean: outcome.clean,
+                not_served: not_served.as_deref(),
+                named_on_the_command_line,
+            };
             report(
                 &mut std::io::stdout().lock(),
                 &mut std::io::stderr().lock(),
-                &Finished {
-                    reply: outcome.reply_for_display(),
-                    notices: &outcome.notices,
-                    attempt: attempt.as_deref(),
-                    trail: trace.then_some((&sink, outcome.model.as_str())),
-                    clean: outcome.clean,
-                },
+                &finished,
             );
-            if outcome.clean {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+            match finished.succeeded() {
+                true => ExitCode::SUCCESS,
+                false => ExitCode::FAILURE,
             }
         }
         // A run that stopped is the one worth looking at, so what it produced is printed
@@ -480,6 +548,64 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Open every directory the command line named, or say which one could not be opened.
+///
+/// Reachability and nothing else. `/add-dir` grants a second thing, recording that the person
+/// vouched for the directory, and this deliberately does not: a run nobody is watching holds an
+/// empty trust map, the directory it was started in included, so a rule trusting a sibling
+/// checkout would leave the tree the run was pointed at more trusted than the one it works in.
+/// Reads there are on the same footing as reads of the project's own files.
+///
+/// `~` is left to the shell, which expands it before this ever sees the path. A path that is not
+/// absolute, does not exist, is not a directory, or lies inside the working one is refused by the
+/// workspace, and the refusal names which.
+fn open_directories(workspace: &mut Workspace, directories: &[String]) -> Result<(), String> {
+    for directory in directories {
+        workspace.add_directory(directory).map_err(|problem| {
+            t!(
+                session_directory_not_added,
+                directory = directory,
+                problem = problem.to_string()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// The model a run asks for: the one the command line named, else the one a session would read.
+///
+/// A run started from a script resolves a model the way a session opening in the same directory
+/// does, so a script reaches the model somebody already chose without an interactive step, and
+/// neither surface has a model the other cannot ask for. Below both is the configured model,
+/// which is what an absent record leaves in force.
+///
+/// The command line outranks the record because it names a model for one run and nothing else,
+/// which is the only way a script can pin one against a choice made elsewhere.
+fn model_asked_for(named: Option<String>, stored: Option<String>) -> Option<String> {
+    named.or(stored)
+}
+
+/// The complaint a run has when one model was asked for and another answered, if it has one.
+///
+/// The endpoint substitutes rather than refusing, so the reported name is the only trace there is.
+/// About the model in force whatever named it: the flag, a remembered choice and the settings key
+/// all pin a model somebody expects to be answered by.
+///
+/// Nothing where the name asks for whichever model the server picks rather than for a particular
+/// one, because resolving to a model is what that name is for. Nothing where the backend does not
+/// report the name it was asked for either, where a reply that says something else is the
+/// indirection working rather than a different model answering.
+fn model_not_served(asked: &str, comparable: bool, served: &str) -> Option<String> {
+    if !comparable || asked == bravebot_config::DEFAULT_MODEL || asked == served {
+        return None;
+    }
+    Some(t!(
+        session_model_substituted,
+        asked = asked,
+        served = served
+    ))
 }
 
 /// What a pipe may carry before it is refused.
@@ -539,6 +665,27 @@ struct Finished<'a> {
     trail: Option<(&'a RecordingSink, &'a str)>,
     /// Whether no gate refused anything during the turn.
     clean: bool,
+    /// What to say where one model was asked for and another one answered.
+    not_served: Option<&'a str>,
+    /// Whether the command line named the model, which is what makes a substitution a failed run
+    /// rather than a thing to report.
+    named_on_the_command_line: bool,
+}
+
+impl Finished<'_> {
+    /// Whether the run did what it was asked, which is what the process exits on.
+    ///
+    /// A turn that was refused something did not, and neither did one answered by a model other
+    /// than the one the command line named. Both are invisible to a script reading stdout, which
+    /// is what makes the status the only thing that can carry them.
+    ///
+    /// A substitution of a model the command line did not name is reported and not failed. Below
+    /// the flag the model is whatever was recorded or configured, so failing there would have a
+    /// script that names no model start exiting non-zero over a choice made in a terminal, and the
+    /// flag is what a script that cannot tolerate a substitution has.
+    fn succeeded(&self) -> bool {
+        self.clean && !(self.named_on_the_command_line && self.not_served.is_some())
+    }
 }
 
 /// Write a finished turn: the reply to `reply`, every other word to `beside`.
@@ -550,6 +697,9 @@ struct Finished<'a> {
 fn report(reply: &mut impl Write, beside: &mut impl Write, run: &Finished<'_>) {
     for notice in run.notices {
         let _ = writeln!(beside, "{}", t!(cli_notice, notice = notice));
+    }
+    if let Some(complaint) = run.not_served {
+        let _ = writeln!(beside, "{complaint}");
     }
     let _ = writeln!(reply, "{}", run.reply);
     if let Some(attempt) = run.attempt {
@@ -1449,6 +1599,8 @@ mod tests {
             attempt: None,
             trail: Some((&sink, "qwen-3-235b")),
             clean: false,
+            not_served: None,
+            named_on_the_command_line: false,
         });
 
         assert_eq!(reply, "ok\n");
@@ -1467,6 +1619,8 @@ mod tests {
             attempt: None,
             trail: None,
             clean: true,
+            not_served: None,
+            named_on_the_command_line: false,
         });
 
         assert_eq!(reply, "ok\n");
@@ -1555,6 +1709,40 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    /// A scratch directory that removes itself, so tests do not leave state behind.
+    ///
+    /// Under this crate's own build directory rather than the system temporary one, which is
+    /// shared between users and where a name this predictable is somebody else's to create first.
+    struct Scratch {
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/scratch")
+                .join(name);
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create scratch");
+            Self {
+                path: path.canonicalize().expect("canonical scratch"),
+            }
+        }
+
+        /// A directory inside the scratch, made ready to be used.
+        fn directory(&self, name: &str) -> PathBuf {
+            let path = self.path.join(name);
+            std::fs::create_dir_all(&path).expect("create directory");
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     /// The mode composes rather than leads: what is left after taking it out is the invocation the
@@ -1669,6 +1857,275 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_model_flag_names_the_model_a_run_asks_for() {
+        let invocation =
+            parse_invocation(&args(&["--model", "some-model", "do a thing"])).expect("parses");
+        assert_eq!(invocation.model.as_deref(), Some("some-model"));
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    /// A run that named no model leaves the configured one in force, which is the whole of how
+    /// `--model` ranks above configuration without standing in for it.
+    #[test]
+    fn a_run_that_named_no_model_names_nothing() {
+        let invocation = parse_invocation(&args(&["do a thing"])).expect("parses");
+        assert_eq!(invocation.model, None);
+    }
+
+    /// The name is carried as typed, since what a tier word and an older spelling of the routing
+    /// entry name is a question for the configuration and there is none at parse.
+    #[test]
+    fn a_model_name_is_carried_as_it_was_typed() {
+        let invocation =
+            parse_invocation(&args(&["--model", "automatic", "do a thing"])).expect("parses");
+        assert_eq!(invocation.model.as_deref(), Some("automatic"));
+    }
+
+    /// A tier word in the settings key this flag outranks resolves to a model that exists, so a
+    /// flag that sent the word as written would refuse a spelling the file it overrides takes and
+    /// be answered by whatever the service substitutes for a name it has never heard of.
+    #[test]
+    fn a_tier_word_on_the_command_line_names_the_model_the_settings_key_would() {
+        let config = bravebot_config::Config::from_lookup(|key| match key {
+            "BRAVE_AI_CHAT_ENDPOINT" => Some("https://example.invalid".into()),
+            "BRAVE_SERVICES_KEY_ID" => Some("test-key-id".into()),
+            "SERVICES_KEY_AICHAT" => Some("test-signing-key".into()),
+            _ => None,
+        })
+        .expect("a configuration");
+
+        let named = parse_invocation(&args(&["--model", "opus", "do a thing"]))
+            .expect("parses")
+            .model
+            .map(|name| config.model_named(&name));
+
+        assert_eq!(
+            named.as_deref(),
+            Some(bravebot_config::bedrock::Tier::Opus.brave_model())
+        );
+    }
+
+    #[test]
+    fn a_model_flag_with_no_name_is_refused() {
+        let err = parse_invocation(&args(&["--model"])).expect_err("must refuse");
+        assert!(err.contains("--model"), "{err}");
+    }
+
+    /// A script that computed an empty variable asked for a model. Reading the blank as no choice
+    /// would answer it with whatever was configured and say nothing, which is the substitution
+    /// this flag exists to make impossible.
+    #[test]
+    fn a_blank_model_is_refused_rather_than_read_as_no_choice() {
+        for typed in [
+            args(&["--model", "", "do a thing"]),
+            args(&["--model", "   ", "do a thing"]),
+        ] {
+            let err = parse_invocation(&typed).expect_err("must refuse");
+            assert!(err.contains("--model"), "{typed:?}: {err}");
+        }
+    }
+
+    /// The flag names a model for one run, which is the only thing a script can pin a model
+    /// against a choice recorded elsewhere with.
+    #[test]
+    fn the_command_line_outranks_the_record_a_session_would_read() {
+        assert_eq!(
+            model_asked_for(
+                Some("named-on-the-command-line".into()),
+                Some("chosen".into())
+            )
+            .as_deref(),
+            Some("named-on-the-command-line")
+        );
+    }
+
+    /// A run that named no model asks for what a session opening in the same directory would, so
+    /// reaching a model somebody already chose needs no interactive step and no flag.
+    #[test]
+    fn a_run_that_named_no_model_reads_the_record_a_session_would() {
+        assert_eq!(
+            model_asked_for(None, Some("chosen".into())).as_deref(),
+            Some("chosen")
+        );
+    }
+
+    /// Nothing recorded and nothing named leaves the configured model in force, which is what a
+    /// person who has never picked one gets in either surface.
+    #[test]
+    fn a_run_with_nothing_to_go_on_leaves_the_configured_model_in_force() {
+        assert_eq!(model_asked_for(None, None), None);
+    }
+
+    /// A run asked for a model and was answered by another. Nothing on stdout says so, and a
+    /// model is pinned for a reason whichever route pinned it.
+    #[test]
+    fn a_model_asked_for_and_not_served_is_reported() {
+        let complaint = model_not_served("a-premium-model", true, "a-free-one")
+            .expect("a complaint about the substitution");
+        assert!(complaint.contains("a-premium-model"), "{complaint}");
+        assert!(complaint.contains("a-free-one"), "{complaint}");
+    }
+
+    /// The routing entry asks for whichever model the server picks, so a concrete name coming back
+    /// is that name working rather than a model standing in for another.
+    #[test]
+    fn a_routing_entry_answered_by_a_model_is_not_a_substitution() {
+        assert_eq!(
+            model_not_served(bravebot_config::DEFAULT_MODEL, true, "the-model-picked"),
+            None
+        );
+    }
+
+    /// A backend asked by an opaque handle answers with a name that never matched what went in, so
+    /// comparing them would fail every run ever made against one.
+    #[test]
+    fn a_backend_that_does_not_report_what_it_was_asked_is_not_compared() {
+        assert_eq!(
+            model_not_served("an-opaque-handle", false, "some-model"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_model_that_answered_as_asked_is_no_complaint() {
+        assert_eq!(model_not_served("same-model", true, "same-model"), None);
+    }
+
+    /// The complaint is about the run rather than part of what the run produced, so a pipe of
+    /// stdout carries the reply and nothing else whichever way the run went.
+    #[test]
+    fn a_substituted_model_is_reported_beside_the_reply_never_in_it() {
+        let (reply, beside) = written(&Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: None,
+            trail: None,
+            clean: true,
+            not_served: Some("a-premium-model was not served"),
+            named_on_the_command_line: true,
+        });
+
+        assert_eq!(reply, "ok\n");
+        assert!(
+            beside.contains("a-premium-model was not served"),
+            "{beside}"
+        );
+    }
+
+    /// The status is the only part of a finished run a script is certain to read, so a model the
+    /// command line named and did not get has to reach it. A turn nothing refused is not enough on
+    /// its own.
+    #[test]
+    fn a_run_answered_by_a_model_other_than_the_one_it_named_does_not_succeed() {
+        let substituted = Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: None,
+            trail: None,
+            clean: true,
+            not_served: Some("a-premium-model was not served"),
+            named_on_the_command_line: true,
+        };
+        let served = Finished {
+            not_served: None,
+            ..substituted
+        };
+
+        assert!(!substituted.succeeded());
+        assert!(served.succeeded());
+    }
+
+    /// Below the flag the model is whatever was recorded or configured, so failing here would have
+    /// a script that names no model exit non-zero over a choice made in a terminal. It is still
+    /// reported, which is the whole of what a person needs to see it.
+    #[test]
+    fn a_substitution_the_command_line_did_not_ask_for_is_reported_and_not_failed() {
+        let substituted = Finished {
+            reply: "ok",
+            notices: &[],
+            attempt: None,
+            trail: None,
+            clean: true,
+            not_served: Some("a-premium-model was not served"),
+            named_on_the_command_line: false,
+        };
+
+        let (reply, beside) = written(&substituted);
+        assert_eq!(reply, "ok\n");
+        assert!(beside.contains("was not served"), "{beside}");
+        assert!(substituted.succeeded());
+    }
+
+    #[test]
+    fn a_directory_flag_names_a_directory_the_run_may_reach() {
+        let invocation = parse_invocation(&args(&["--add-dir", "/somewhere/else", "do a thing"]))
+            .expect("parses");
+        assert_eq!(invocation.directories, vec!["/somewhere/else".to_string()]);
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    /// Reaching one sibling checkout is no more natural than reaching two, and a flag that could
+    /// only be given once would be a rule about typing.
+    #[test]
+    fn the_directory_flag_is_repeatable() {
+        let invocation = parse_invocation(&args(&[
+            "--add-dir",
+            "/one",
+            "--add-dir",
+            "/two",
+            "do a thing",
+        ]))
+        .expect("parses");
+        assert_eq!(
+            invocation.directories,
+            vec!["/one".to_string(), "/two".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_directory_flag_with_no_path_is_refused() {
+        for typed in [
+            args(&["--add-dir"]),
+            args(&["--add-dir", "  ", "do a thing"]),
+        ] {
+            let err = parse_invocation(&typed).expect_err("must refuse");
+            assert!(err.contains("--add-dir"), "{typed:?}: {err}");
+        }
+    }
+
+    /// The point of the flag: a file outside the working directory is unreachable until one is
+    /// opened, and reachable afterwards.
+    #[test]
+    fn a_directory_the_command_line_named_is_reachable() {
+        let scratch = Scratch::new("add-dir-reachable");
+        let project = scratch.directory("project");
+        let beside = scratch.directory("beside");
+        let file = beside.join("notes.md");
+        std::fs::write(&file, "notes").expect("write");
+
+        let mut workspace = Workspace::new(project).expect("a workspace");
+        assert!(
+            workspace.confines(&file).is_err(),
+            "reachable before it was opened"
+        );
+        open_directories(&mut workspace, &[beside.display().to_string()]).expect("opens");
+        assert!(workspace.confines(&file).is_ok(), "not reachable after");
+    }
+
+    /// A script that asked to reach a directory and did not would otherwise fail somewhere further
+    /// in, over a file it was told it could open.
+    #[test]
+    fn a_directory_that_cannot_be_opened_stops_the_run() {
+        let scratch = Scratch::new("add-dir-missing");
+        let mut workspace = Workspace::new(scratch.directory("project")).expect("a workspace");
+        let absent = scratch.path.join("not-here");
+
+        let err = open_directories(&mut workspace, &[absent.display().to_string()])
+            .expect_err("must refuse");
+        assert!(err.contains("not-here"), "{err}");
+    }
+
     /// Turn is what an unqualified run has always been, so an omitted `--mode` has to stay that.
     #[test]
     fn the_default_mode_is_the_turn_loop() {
@@ -1704,6 +2161,8 @@ mod tests {
             attempt: Some("manifest proposed, which was not usable\n  not JSON\n"),
             trail: None,
             clean: true,
+            not_served: None,
+            named_on_the_command_line: false,
         });
         assert_eq!(reply, "ok\n");
         assert!(beside.contains("not usable"), "got: {beside}");

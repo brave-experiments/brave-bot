@@ -60,7 +60,9 @@ mode-bypass = ⏵⏵ permissions contournées
 
 cli-options-heading = Options :
 cli-option-file = Inclure un fichier de l'espace de travail comme contexte (répétable)
+cli-option-add-dir = Accéder à un répertoire hors de celui de travail (répétable)
 cli-option-mode = turn (par défaut) décide étape par étape ; manifest planifie tout le déroulement d'abord
+cli-option-model = Le modèle demandé par cette exécution, à la place de celui mémorisé ou configuré
 cli-option-print = Non interactif. Lit l'entrée redirigée comme contexte en quarantaine
 cli-option-trace = Afficher le journal d'audit
 cli-option-incognito = Ne rien écrire dans ~/.bravebot : ni historique, ni session, ni préférence
@@ -75,7 +77,9 @@ cli-option-version = Afficher la version
 
 cli-unknown-option = option inconnue : { $flag }
 cli-file-needs-a-path = --file demande un chemin
+cli-add-dir-needs-a-path = --add-dir demande le chemin absolu d'un répertoire
 cli-mode-needs-a-name = --mode demande l'un de : { $names }
+cli-model-needs-a-name = --model demande le nom d'un modèle
 cli-unexpected-argument = argument inattendu : { $argument }
 cli-task-required = une tâche est requise
 cli-configuration-problem = erreur de configuration : { $problem }

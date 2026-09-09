@@ -129,3 +129,115 @@ is all that remains of a document nobody can see. The plan never shares stdout w
 `verified-by: bravebot_cli::main::an_unknown_mode_is_refused_rather_than_guessed`
 `verified-by: bravebot_cli::main::a_failed_plan_is_printed_beside_the_reply`
 `verified-by: bravebot_agent::manifest::an_unattended_manifest_run_does_not_write`
+
+<a id="CLI-9"></a>
+### CLI-9: a one-shot run names its own model, or asks for the one a session would
+
+`--model <name>` names the model for one run and outranks everything else. Where no flag names
+one, the model is the one a session opening in the same directory would ask for: the choice
+`/model` recorded, then the configured model, which is an exported
+`BRAVE_AI_CHAT_DEFAULT_MODEL`, then the settings file's `model` key, then the default the build was
+made with. A name is resolved against the configuration wherever it was written: `opus`, `sonnet`
+and `haiku` name the tier's own model and the older spelling of the routing entry names the current
+one, so the flag and the settings key it outranks accept the same spellings. A `--model` with no
+name after it, or a blank one, is refused rather than read as no choice.
+
+**Why.** A script that cannot name a model has only one route to a particular one, which is for
+somebody to open the interface and pick it, and in a pipeline that is not a route at all. The flag
+is that route, and it ranks above every other because it names a model for one invocation and
+nothing else: two scripts in the same checkout can ask for different models, which nothing a file
+records can do.
+
+Below the flag, a run resolves a model the way a session does, so the two surfaces reach the same
+models by the same names and a script needs no interactive step to use the one somebody already
+chose. Ranking configuration above the record instead would mean a person who picked a model could
+not run a script with it, and a script wanting a different one from the picked one has the flag.
+
+Resolving against the configuration rather than at parse, because a tier word names a model only
+the configuration knows: the AWS account's own model for that tier where it named one, and Brave's
+name for it otherwise. A flag that sent such a word as written would refuse a spelling the file it
+overrides takes, and be answered by whatever the service substitutes for a name it has never heard
+of.
+
+A blank name is refused because a script that computed an empty variable asked for a model.
+Reading the blank as no choice would answer it with whatever was recorded or configured and say
+nothing about having done so, which is the substitution the flag exists to make impossible.
+
+`verified-by: bravebot_cli::main::a_model_flag_names_the_model_a_run_asks_for`
+`verified-by: bravebot_cli::main::a_run_that_named_no_model_names_nothing`
+`verified-by: bravebot_cli::main::the_command_line_outranks_the_record_a_session_would_read`
+`verified-by: bravebot_cli::main::a_run_that_named_no_model_reads_the_record_a_session_would`
+`verified-by: bravebot_cli::main::a_run_with_nothing_to_go_on_leaves_the_configured_model_in_force`
+`verified-by: bravebot_cli::main::a_model_name_is_carried_as_it_was_typed`
+`verified-by: bravebot_cli::main::a_tier_word_on_the_command_line_names_the_model_the_settings_key_would`
+`verified-by: bravebot_config::lib::a_name_from_anywhere_resolves_as_the_settings_key_does`
+`verified-by: bravebot_cli::main::a_model_flag_with_no_name_is_refused`
+`verified-by: bravebot_cli::main::a_blank_model_is_refused_rather_than_read_as_no_choice`
+
+<a id="CLI-10"></a>
+### CLI-10: a substituted model is reported, and one the command line named fails the run
+
+Where the endpoint answers with a model other than the one in force, both names are said on
+stderr. Where the model in force is the one `--model` named, the run also exits non-zero. The reply
+still goes to stdout, and stdout carries nothing else. Two cases are neither reported nor failed: a
+name that asks for whichever model the server picks rather than for a particular one, and a backend
+that does not report the name it was asked for.
+
+**Why.** A model a run cannot be served is substituted rather than refused. One that needs a
+subscription is answered by whatever the free tier serves, with an ordinary reply and nothing to
+distinguish it, so the name the server reports is the only trace there is. Reporting it is about
+the model in force rather than the flag alone, because every route to a model is somebody naming
+one they expect to be answered by: the settings file's key is what a repository commits beside its
+scripts, and a remembered choice is what a person picked and is being shown.
+
+Failing the run is narrower, and the flag is what draws the line. A script that named no model
+takes whatever was recorded or configured, so failing there would have it exit non-zero over a
+choice made in a terminal it has nothing to do with, and a run that named one asked for something
+and did not get it. The status is the part of a finished run a script is certain to read, which is
+what makes it the thing that has to carry that, and the flag is what a script that cannot tolerate
+a substitution has.
+
+The two exclusions are the cases where a different name is not a substitution. A routing entry
+resolves to a model per request, which is what it is for. A backend asked by an opaque handle
+answers with a name that never matched what went in, so comparing them would fail every run made
+against one.
+
+`verified-by: bravebot_cli::main::a_model_asked_for_and_not_served_is_reported`
+`verified-by: bravebot_cli::main::a_model_that_answered_as_asked_is_no_complaint`
+`verified-by: bravebot_cli::main::a_routing_entry_answered_by_a_model_is_not_a_substitution`
+`verified-by: bravebot_cli::main::a_backend_that_does_not_report_what_it_was_asked_is_not_compared`
+`verified-by: bravebot_cli::main::a_substituted_model_is_reported_beside_the_reply_never_in_it`
+`verified-by: bravebot_cli::main::a_run_answered_by_a_model_other_than_the_one_it_named_does_not_succeed`
+`verified-by: bravebot_cli::main::a_substitution_the_command_line_did_not_ask_for_is_reported_and_not_failed`
+
+<a id="CLI-11"></a>
+### CLI-11: `--add-dir` makes a directory reachable, and vouches for nothing
+
+`--add-dir <path>` opens a directory outside the working one for the length of the run, and may be
+given more than once. An absolute path that exists, is a directory, and is not already inside the
+working one is opened; anything else is refused by name and the run stops before the turn. The
+run's trust map stays empty, so a file read there is read on the same footing as the project's own
+files: nothing vouched for it. A write there is refused as any other write in an unattended run is,
+and the flag in CLI-1 lifts that exactly as it does elsewhere.
+
+**Why.** A headless task pointed at one checkout often needs to read another, and an absolute path
+outside the working directory is otherwise refused whatever else is true, so without this the task
+cannot be done at all.
+
+Vouching is a separate grant, and it is the one an unattended run cannot make. The interactive
+command of the same name records that a person vouched for the directory, which it can do because a
+person typed it in a session whose map already holds their answer about the directory they are
+working in. A run nobody is watching holds no such answer, its own working directory included, so a
+rule trusting the tree named on the command line would leave it more trusted than the tree the run
+works in. Reaching a directory is what the work needs; trusting what is in it is not.
+
+Stopping rather than carrying on, because the two audiences differ: a session says the path was not
+opened and leaves the person to retype it, and a script that carried on would fail somewhere further
+in, over a file it was told it could open.
+
+`verified-by: bravebot_cli::main::a_directory_flag_names_a_directory_the_run_may_reach`
+`verified-by: bravebot_cli::main::the_directory_flag_is_repeatable`
+`verified-by: bravebot_cli::main::a_directory_flag_with_no_path_is_refused`
+`verified-by: bravebot_cli::main::a_directory_the_command_line_named_is_reachable`
+`verified-by: bravebot_cli::main::a_directory_that_cannot_be_opened_stops_the_run`
+`verified-by: bravebot_core::trust::an_empty_store_trusts_nothing`

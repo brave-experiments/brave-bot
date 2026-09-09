@@ -45,6 +45,38 @@ pub fn normalize_model(name: &str) -> &str {
     }
 }
 
+/// The model a name asks for: a tier word resolved to a model that exists, anything else as written.
+///
+/// `opus`, `sonnet` and `haiku` name a tier rather than a model, which is what those words mean in
+/// the settings file the model key is copied from. Left as the word they reach a service that has
+/// never heard of them, so they are resolved: the tier's own ARN where an AWS account named one,
+/// and the Brave roster's name for that tier otherwise, since every build can reach Brave.
+///
+/// The AWS account wins where it named the tier, because somebody who configured it asked for it
+/// by name. A tier they left unset falls through to Brave rather than being guessed at, an ARN not
+/// being derivable from a word, except on a build that cannot reach Brave: there a Brave name
+/// reaches a service this build cannot sign for, so the strongest tier the AWS account did name is
+/// the only thing that could answer.
+///
+/// Shared by every route to a model rather than belonging to the settings key, so a name means the
+/// same model wherever it was written down. See [`Config::model_named`].
+fn resolved_model(name: &str, bedrock: Option<&bedrock::Bedrock>, reaches_brave: bool) -> String {
+    let named = match bedrock::Tier::from_alias(name) {
+        Some(tier) => match bedrock {
+            Some(bedrock) => bedrock
+                .model_for(tier)
+                .or_else(|| match reaches_brave {
+                    false => bedrock.default_model(),
+                    true => None,
+                })
+                .unwrap_or(tier.brave_model()),
+            None => tier.brave_model(),
+        },
+        None => name,
+    };
+    normalize_model(named).to_string()
+}
+
 /// How many prompt tokens a conversation may reach before it is compacted.
 ///
 /// Low enough to be under any window worth calling a context window, since a budget above the
@@ -335,34 +367,9 @@ impl Config {
         // answers when nobody has picked. The exception is a build that cannot reach Brave at all,
         // where that name reaches a backend with no credentials and the strongest configured tier
         // is the only thing that can answer.
-        let default_model = normalize_model(
+        let default_model = resolved_model(
             &lookup(env_var::DEFAULT_MODEL)
                 .filter(|m| !m.trim().is_empty())
-                // `opus`, `sonnet` and `haiku` name a tier rather than a model, which is what those
-                // words mean in the settings file this key is copied from. Left as the word they reach a
-                // service that has never heard of them, so they are resolved to a model that exists:
-                // the tier's own ARN where an AWS account named one, and the Brave roster's name for
-                // that tier otherwise, since every build can reach Brave.
-                //
-                // The AWS account wins where it named the tier, because somebody who configured it
-                // asked for it by name. A tier they left unset falls through to Brave rather than being
-                // guessed at, an ARN not being derivable from a word, except on a build with no Brave
-                // credentials: there a Brave name reaches a service this build cannot sign for, so the
-                // strongest tier the AWS account did name is the only thing that could answer.
-                .map(|chosen| match bedrock::Tier::from_alias(&chosen) {
-                    Some(tier) => match bedrock.as_ref() {
-                        Some(bedrock) => bedrock
-                            .model_for(tier)
-                            .or_else(|| match endpoint.is_empty() {
-                                true => bedrock.default_model(),
-                                false => None,
-                            })
-                            .unwrap_or(tier.brave_model())
-                            .to_string(),
-                        None => tier.brave_model().to_string(),
-                    },
-                    None => chosen,
-                })
                 .or_else(|| match bedrock.as_ref() {
                     Some(bedrock) if endpoint.is_empty() => {
                         bedrock.default_model().map(str::to_string)
@@ -370,8 +377,9 @@ impl Config {
                     _ => None,
                 })
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-        )
-        .to_string();
+            bedrock.as_ref(),
+            !endpoint.is_empty(),
+        );
 
         // A premium host that is present but malformed is dropped rather than rejected: it only
         // matters to someone who has imported a subscription, and failing every run over it would
@@ -482,6 +490,17 @@ impl Config {
         !self.endpoint.is_empty()
             && !self.key_id.is_empty()
             && !self.signing_key.expose().is_empty()
+    }
+
+    /// The model a name asks for, resolved the way the configured model is.
+    ///
+    /// For every other route to a model: a flag, a remembered choice, anything a person types. The
+    /// three tier words and the older spelling of the routing entry are configuration's business
+    /// rather than the settings key's, so a route that resolved names itself would accept a
+    /// different set of them, and one that resolved none would send a word the service has never
+    /// heard of and be answered by whatever it substitutes.
+    pub fn model_named(&self, name: &str) -> String {
+        resolved_model(name, self.bedrock.as_ref(), !self.endpoint.is_empty())
     }
 
     /// Full URL for the OpenAI-compatible chat completions endpoint.
@@ -1128,6 +1147,30 @@ mod tests {
             .unwrap();
             assert_eq!(config.default_model, name);
         }
+    }
+
+    /// Every route to a model resolves a name the same way, so a flag, a remembered choice and the
+    /// settings key cannot accept different spellings of the same model.
+    #[test]
+    fn a_name_from_anywhere_resolves_as_the_settings_key_does() {
+        let config = Config::from_lookup(|key| match key {
+            env_var::USE_BEDROCK => Some("1".into()),
+            env_var::AWS_REGION => Some("us-west-2".into()),
+            env_var::BEDROCK_OPUS_MODEL => Some("opus-arn".into()),
+            other => complete_env(other),
+        })
+        .unwrap();
+
+        assert_eq!(config.model_named("opus"), "opus-arn");
+        assert_eq!(
+            config.model_named("sonnet"),
+            bedrock::Tier::Sonnet.brave_model()
+        );
+        assert_eq!(config.model_named("automatic"), DEFAULT_MODEL);
+        assert_eq!(
+            config.model_named("llama-3-8b-instruct"),
+            "llama-3-8b-instruct"
+        );
     }
 
     /// Leo's automatic routing name is rewritten to brave-bot's own entry.

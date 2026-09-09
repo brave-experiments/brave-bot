@@ -55,7 +55,9 @@ mode-bypass = ⏵⏵ bypass permissions on
 
 cli-options-heading = Options:
 cli-option-file = Include a workspace file as context (repeatable)
+cli-option-add-dir = Reach into a directory outside the working one (repeatable)
 cli-option-mode = turn (default) decides step by step; manifest plans the whole run first
+cli-option-model = The model this run asks for, in place of the remembered or configured one
 cli-option-print = Non-interactive. Reads piped stdin as quarantined context
 cli-option-trace = Print the audit trail
 cli-option-incognito = Write nothing to ~/.bravebot: no history, no session record, no preference
@@ -69,7 +71,9 @@ cli-option-version = Show the version
 
 cli-unknown-option = unknown option: { $flag }
 cli-file-needs-a-path = --file requires a path
+cli-add-dir-needs-a-path = --add-dir requires an absolute path to a directory
 cli-mode-needs-a-name = --mode requires one of { $names }
+cli-model-needs-a-name = --model requires the name of a model
 cli-unexpected-argument = unexpected argument: { $argument }
 cli-task-required = a task is required
 cli-configuration-problem = configuration error: { $problem }
