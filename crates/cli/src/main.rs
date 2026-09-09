@@ -66,7 +66,7 @@ fn main() -> ExitCode {
         },
         // The task flags may lead: `bravebot -p "task"` and `bravebot --mode manifest "task"`
         // would otherwise be caught below as unknown options.
-        Some("-p" | "--print" | "--mode" | "--model" | "--file" | "--trace") => {
+        Some("-p" | "--print" | "--mode" | "--model" | "--file" | "--add-dir" | "--trace") => {
             run_task(&args, skip_permissions)
         }
         Some("doctor") => doctor(),
@@ -159,6 +159,7 @@ fn print_help() {
     println!("{}", t!(cli_options_heading));
     for (flags, description) in [
         ("--file <path>", t!(cli_option_file)),
+        ("--add-dir <path>", t!(cli_option_add_dir)),
         ("--mode <mode>", t!(cli_option_mode)),
         ("--model <name>", t!(cli_option_model)),
         ("-p, --print", t!(cli_option_print)),
@@ -199,16 +200,20 @@ struct Invocation {
     /// The model the command line named. `None` leaves the configured one in force rather than
     /// standing for a model of its own.
     model: Option<String>,
+    /// Directories outside the working one that this run may reach into.
+    directories: Vec<String>,
     trace: bool,
     print: bool,
 }
 
-/// Parse `<prompt> [--file path]... [--mode name] [--model name] [--trace] [-p]`.
+/// Parse `<prompt> [--file path]... [--add-dir path]... [--mode name] [--model name]
+/// [--trace] [-p]`.
 fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     let mut prompt = String::new();
     let mut files = Vec::new();
     let mut mode = Mode::default();
     let mut model = None;
+    let mut directories = Vec::new();
     let mut trace = false;
     let mut print = false;
     let mut index = 0;
@@ -243,6 +248,15 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
                 }
                 None => return Err(t!(cli_file_needs_a_path).to_string()),
             },
+            // Repeatable, since reaching one sibling checkout is no more natural than reaching
+            // two, and a flag that could only be given once would be a rule about typing.
+            "--add-dir" => match args.get(index + 1).map(|path| path.trim()) {
+                Some(path) if !path.is_empty() => {
+                    directories.push(path.to_string());
+                    index += 2;
+                }
+                _ => return Err(t!(cli_add_dir_needs_a_path).to_string()),
+            },
             "--trace" => {
                 trace = true;
                 index += 1;
@@ -264,6 +278,7 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
         files,
         mode,
         model,
+        directories,
         trace,
         print,
     })
@@ -282,6 +297,7 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         files,
         mode,
         model,
+        directories,
         trace,
         print,
     } = invocation;
@@ -315,13 +331,21 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
         }
     };
 
-    let workspace = match current_workspace() {
+    let mut workspace = match current_workspace() {
         Ok(w) => w,
         Err(err) => {
             eprintln!("{}", t!(cli_workspace_problem, problem = err));
             return ExitCode::FAILURE;
         }
     };
+
+    // Fatal rather than said and carried on with. A session leaves the person to retype it; a
+    // script that asked to reach a directory and did not gets a turn that fails somewhere further
+    // in, over a file it was told it could open.
+    if let Err(problem) = open_directories(&mut workspace, &directories) {
+        eprintln!("{problem}");
+        return ExitCode::FAILURE;
+    }
 
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
@@ -522,6 +546,30 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Open every directory the command line named, or say which one could not be opened.
+///
+/// Reachability and nothing else. `/add-dir` grants a second thing, recording that the person
+/// vouched for the directory, and this deliberately does not: a run nobody is watching holds an
+/// empty trust map, the directory it was started in included, so a rule trusting a sibling
+/// checkout would leave the tree the run was pointed at more trusted than the one it works in.
+/// Reads there are on the same footing as reads of the project's own files.
+///
+/// `~` is left to the shell, which expands it before this ever sees the path. A path that is not
+/// absolute, does not exist, is not a directory, or lies inside the working one is refused by the
+/// workspace, and the refusal names which.
+fn open_directories(workspace: &mut Workspace, directories: &[String]) -> Result<(), String> {
+    for directory in directories {
+        workspace.add_directory(directory).map_err(|problem| {
+            t!(
+                session_directory_not_added,
+                directory = directory,
+                problem = problem.to_string()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// A line about the model choice a one-shot run does not read, or nothing worth saying.
@@ -1686,6 +1734,40 @@ mod tests {
         parts.iter().map(|part| (*part).to_string()).collect()
     }
 
+    /// A scratch directory that removes itself, so tests do not leave state behind.
+    ///
+    /// Under this crate's own build directory rather than the system temporary one, which is
+    /// shared between users and where a name this predictable is somebody else's to create first.
+    struct Scratch {
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/scratch")
+                .join(name);
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create scratch");
+            Self {
+                path: path.canonicalize().expect("canonical scratch"),
+            }
+        }
+
+        /// A directory inside the scratch, made ready to be used.
+        fn directory(&self, name: &str) -> PathBuf {
+            let path = self.path.join(name);
+            std::fs::create_dir_all(&path).expect("create directory");
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
     /// The mode composes rather than leads: what is left after taking it out is the invocation the
     /// person would have typed without it, so every dispatch below sees what it always saw.
     #[test]
@@ -1982,6 +2064,75 @@ mod tests {
 
         assert!(!substituted.succeeded());
         assert!(served.succeeded());
+    }
+
+    #[test]
+    fn a_directory_flag_names_a_directory_the_run_may_reach() {
+        let invocation = parse_invocation(&args(&["--add-dir", "/somewhere/else", "do a thing"]))
+            .expect("parses");
+        assert_eq!(invocation.directories, vec!["/somewhere/else".to_string()]);
+        assert_eq!(invocation.prompt, "do a thing");
+    }
+
+    /// Reaching one sibling checkout is no more natural than reaching two, and a flag that could
+    /// only be given once would be a rule about typing.
+    #[test]
+    fn the_directory_flag_is_repeatable() {
+        let invocation = parse_invocation(&args(&[
+            "--add-dir",
+            "/one",
+            "--add-dir",
+            "/two",
+            "do a thing",
+        ]))
+        .expect("parses");
+        assert_eq!(
+            invocation.directories,
+            vec!["/one".to_string(), "/two".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_directory_flag_with_no_path_is_refused() {
+        for typed in [
+            args(&["--add-dir"]),
+            args(&["--add-dir", "  ", "do a thing"]),
+        ] {
+            let err = parse_invocation(&typed).expect_err("must refuse");
+            assert!(err.contains("--add-dir"), "{typed:?}: {err}");
+        }
+    }
+
+    /// The point of the flag: a file outside the working directory is unreachable until one is
+    /// opened, and reachable afterwards.
+    #[test]
+    fn a_directory_the_command_line_named_is_reachable() {
+        let scratch = Scratch::new("add-dir-reachable");
+        let project = scratch.directory("project");
+        let beside = scratch.directory("beside");
+        let file = beside.join("notes.md");
+        std::fs::write(&file, "notes").expect("write");
+
+        let mut workspace = Workspace::new(project).expect("a workspace");
+        assert!(
+            workspace.confines(&file).is_err(),
+            "reachable before it was opened"
+        );
+        open_directories(&mut workspace, &[beside.display().to_string()]).expect("opens");
+        assert!(workspace.confines(&file).is_ok(), "not reachable after");
+    }
+
+    /// A script that asked to reach a directory and did not would otherwise fail somewhere further
+    /// in, over a file it was told it could open.
+    #[test]
+    fn a_directory_that_cannot_be_opened_stops_the_run() {
+        let scratch = Scratch::new("add-dir-missing");
+        let mut workspace = Workspace::new(scratch.directory("project")).expect("a workspace");
+        let absent = scratch.path.join("not-here");
+
+        let err = open_directories(&mut workspace, &[absent.display().to_string()])
+            .expect_err("must refuse");
+        assert!(err.contains("not-here"), "{err}");
     }
 
     /// Turn is what an unqualified run has always been, so an omitted `--mode` has to stay that.

@@ -194,3 +194,35 @@ went in, so comparing them would fail every run made against one.
 `verified-by: bravebot_cli::main::a_backend_that_does_not_report_what_it_was_asked_is_not_compared`
 `verified-by: bravebot_cli::main::a_substituted_model_is_reported_beside_the_reply_never_in_it`
 `verified-by: bravebot_cli::main::a_run_answered_by_another_model_does_not_succeed`
+
+<a id="CLI-11"></a>
+### CLI-11: `--add-dir` makes a directory reachable, and vouches for nothing
+
+`--add-dir <path>` opens a directory outside the working one for the length of the run, and may be
+given more than once. An absolute path that exists, is a directory, and is not already inside the
+working one is opened; anything else is refused by name and the run stops before the turn. The
+run's trust map stays empty, so a file read there is read on the same footing as the project's own
+files: nothing vouched for it. A write there is refused as any other write in an unattended run is,
+and the flag in CLI-1 lifts that exactly as it does elsewhere.
+
+**Why.** A headless task pointed at one checkout often needs to read another, and an absolute path
+outside the working directory is otherwise refused whatever else is true, so without this the task
+cannot be done at all.
+
+Vouching is a separate grant, and it is the one an unattended run cannot make. The interactive
+command of the same name records that a person vouched for the directory, which it can do because a
+person typed it in a session whose map already holds their answer about the directory they are
+working in. A run nobody is watching holds no such answer, its own working directory included, so a
+rule trusting the tree named on the command line would leave it more trusted than the tree the run
+works in. Reaching a directory is what the work needs; trusting what is in it is not.
+
+Stopping rather than carrying on, because the two audiences differ: a session says the path was not
+opened and leaves the person to retype it, and a script that carried on would fail somewhere further
+in, over a file it was told it could open.
+
+`verified-by: bravebot_cli::main::a_directory_flag_names_a_directory_the_run_may_reach`
+`verified-by: bravebot_cli::main::the_directory_flag_is_repeatable`
+`verified-by: bravebot_cli::main::a_directory_flag_with_no_path_is_refused`
+`verified-by: bravebot_cli::main::a_directory_the_command_line_named_is_reachable`
+`verified-by: bravebot_cli::main::a_directory_that_cannot_be_opened_stops_the_run`
+`verified-by: bravebot_core::trust::an_empty_store_trusts_nothing`
