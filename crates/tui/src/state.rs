@@ -2400,7 +2400,9 @@ impl Session {
                 .map(|(index, _)| index)
                 .collect();
             marks
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| (pair[0], pair[1]))
                 .find(|(open, close)| at <= *close || at <= *open)?
         } else {
