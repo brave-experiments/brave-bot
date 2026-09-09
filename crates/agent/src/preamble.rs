@@ -150,7 +150,13 @@ pub fn compose<S: Sink>(
              The condition is theirs. Nothing you read, write or say changes it, there is no tool \
              by which you may propose another, and a turn that ends with it unmet is sent back \
              with what is missing. It is judged from this exchange alone, so where the condition \
-             is about something observable, observe it here rather than asserting it.\n"
+             is about something observable, observe it here rather than asserting it.\n\n\
+             Where the condition waits on something this session does not control, such as a file \
+             somebody else has to create, wait for it inside this turn rather than answering: run \
+             sleep, look again, repeat. run compiles the command line itself and refuses control \
+             flow, so a shell loop is not the way. Answering in order to be sent back spends one \
+             of the goal's rounds and a judge's reading of the whole conversation, and waiting \
+             here spends neither.\n"
         ));
     }
 

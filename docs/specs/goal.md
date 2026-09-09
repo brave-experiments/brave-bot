@@ -276,6 +276,27 @@ one copy of it in the conversation per round.
 `verified-by: bravebot_agent::turn::a_turn_under_a_goal_is_told_the_condition_it_is_working_towards`
 `verified-by: bravebot_agent::turn::a_turn_with_no_goal_is_told_nothing_about_a_condition`
 
+<a id="GOAL-15"></a>
+### GOAL-15: a turn is told to wait for the world inside the turn
+
+The same words say that a condition waiting on something the session does not control is waited
+for in the turn, by running `sleep` and looking again, and they name `sleep` because that is what
+is available for it.
+
+**Why.** A turn that answers so as to be sent back spends one of the rounds [GOAL-9](#GOAL-9)
+bounds, a judge's reading of the whole conversation, and a whole further turn, and it spends all
+of that on a condition only somebody else can satisfy. Waiting inside the turn
+spends a round of tools. Ten rounds of the first is a goal that gives up minutes before the thing
+it was waiting for happens, which is the ordinary outcome for a condition about a file a person
+has yet to write.
+
+**Why the mechanism is named rather than left to the planner.** The line a `run` call carries is
+compiled here rather than handed to a shell, and control flow is refused: see
+[command-line.md](tools/command-line.md). So a planner working out how to wait writes a loop that
+does not compile, and reads the refusal as there being no way to wait at all.
+
+`verified-by: bravebot_agent::preamble::a_turn_under_a_goal_is_told_how_to_wait_for_something_outside_the_session`
+
 ## Known costs
 
 - **The judge reads the transcript, not the world.** It cannot run a command or open a file, so a
@@ -285,5 +306,9 @@ one copy of it in the conversation per round.
 - **A condition the transcript can never show does not converge.** "The code is clean" has no
   observation that satisfies it, so it spends all ten rounds and gives up. Nothing here can tell
   such a condition from one that is merely not met yet, and nothing warns about it in advance.
+- **A wait costs a round of tools every five minutes.** A `run` is killed at five minutes, so
+  waiting for something slower than that is `sleep` and another look, repeatedly, and each look is
+  a request carrying the conversation. Cheaper than being sent back, and not free: a condition
+  waiting on something hours away is not what a goal is for.
 - **Every round re-sends the conversation.** Ten rounds of a long session cost more than ten
   ordinary turns, because each one carries everything the last one added.

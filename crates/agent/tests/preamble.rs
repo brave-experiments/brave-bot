@@ -490,3 +490,40 @@ fn moving_the_working_directory_restates_it() {
         "the preamble still names the directory the session left: {after}"
     );
 }
+
+/// A condition waiting on something outside the session is the case a goal handles worst if the
+/// turn is left to work it out: answering so as to be sent back spends a round of the goal's
+/// budget and a judge's reading of the whole conversation, and ten of those give up minutes
+/// before the thing being waited for happens. Naming `sleep` matters because a planner reaching
+/// for a shell loop gets a refusal from the command-line compiler and reads it as there being no
+/// way to wait at all.
+#[test]
+fn a_turn_under_a_goal_is_told_how_to_wait_for_something_outside_the_session() {
+    let scratch = Scratch::new("goal-waiting");
+    let project = scratch.directory("project");
+    let workspace = Workspace::new(&project).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let preamble = {
+        let mut policy = policy(&mut sink, &["."]);
+        preamble::compose(
+            &mut policy,
+            &workspace,
+            None,
+            &Catalogue::default(),
+            None,
+            Some("a.txt exists"),
+        )
+    };
+
+    assert!(
+        preamble.text.contains("sleep"),
+        "the turn was not told what to wait with: {}",
+        preamble.text
+    );
+    assert!(
+        preamble.text.contains("rather than answering"),
+        "the turn was not told to wait here rather than be sent back: {}",
+        preamble.text
+    );
+}
