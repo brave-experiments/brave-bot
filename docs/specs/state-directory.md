@@ -40,8 +40,8 @@ itself.
 On Unix, a directory under `~/.bravebot` is created with mode 0700 and a file written into one
 with mode 0600, whichever subsystem is doing the writing. A file's mode is asked for as it is
 created rather than applied once it holds anything, and a directory or file that is already there
-is narrowed rather than left as it was found. Narrowing walks up from what was written as far as
-the state directory and stops there.
+is narrowed as it is written rather than left as it was found. Narrowing walks up from what was
+written as far as the state directory and stops there.
 
 **Why.** The history file is every prompt anybody has typed into this program: the paths they were
 working on, the branch names, and whatever they pasted into one. At the process umask that is
@@ -73,6 +73,10 @@ to belongs to whichever subsystem created it.
 The installer creates the directory too, before the program has run once, so it asks for the same
 modes. A directory left at the umask by an install would otherwise stand until the next write went
 through the helper.
+
+One write through the file helper lands outside the directory: an export
+([SESSION-17](sessions.md#SESSION-17)) writes a transcript into the working directory and asks for
+the same mode, because what it holds is what the record holds.
 
 `verified-by: bravebot_agent::home::a_directory_is_created_reachable_only_by_its_owner`
 `verified-by: bravebot_agent::home::a_directory_left_open_by_an_older_build_is_narrowed`
@@ -118,3 +122,13 @@ whichever crate it happened in.
 `verified-by: bravebot_skus::store::no_home_directory_is_reported_rather_than_guessed`
 `verified-by: bravebot_config::settings::the_state_directory_is_the_home_the_environment_names`
 `verified-by: bravebot_config::settings::an_absent_or_empty_home_yields_no_directory_rather_than_a_guess`
+
+## Known costs
+
+- **A file this program only reads keeps whatever mode it arrived with.** STATE-1 reaches a file as
+  something here writes it, and `settings.json`, the standing instructions and the skills are put in
+  the directory by the user rather than written by this program, so one placed there at the umask
+  stays there. The 0700 on the directory is what covers them: another account cannot open a file
+  inside a directory it cannot traverse. What the file modes add is a second answer for the case
+  where the directory's own mode is wrong, which is the case a machine that has run an older build
+  is in until the first write narrows it.

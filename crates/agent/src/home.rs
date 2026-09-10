@@ -133,7 +133,10 @@ pub fn append_to_file(path: &Path) -> std::io::Result<std::fs::File> {
     open_private(std::fs::OpenOptions::new().append(true), path)
 }
 
-/// Open a file under the state directory, reachable only by this user.
+/// Open a file reachable only by this user.
+///
+/// Almost always one under the state directory. The exception is an exported transcript, which
+/// SESSION-17 gives the same mode as the record it was recounted from.
 fn open_private(options: &mut std::fs::OpenOptions, path: &Path) -> std::io::Result<std::fs::File> {
     options.create(true);
     #[cfg(unix)]
