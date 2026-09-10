@@ -313,7 +313,7 @@ fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");'; \
 
 # Tags the current version and pushes it. GitHub Actions runs CI on the tag.
 # Signed assets and the npm package are published later, each by hand: Jenkins
-# (brave-bot-build with UPLOAD and RELEASE), then Actions → Publish npm.
+# (bravebot-build with UPLOAD and RELEASE), then Actions → Publish npm.
 #
 # A refused push takes the tag with it. A tag left behind locally is one the
 # remote never got, and the next run reports the version as already tagged
@@ -354,9 +354,9 @@ github-release:
 		exit 1; \
 	fi; \
 	echo "pushed $(TAG); GitHub Actions will run CI on the tag"; \
-	echo "publish signed assets later with Jenkins job brave-bot-build (UPLOAD and RELEASE)"; \
+	echo "publish signed assets later with Jenkins job bravebot-build (UPLOAD and RELEASE)"; \
 	echo "then publish npm: gh workflow run publish-npm.yml --ref $(TAG) -f tag=$(TAG)"; \
-	echo "watch CI with: gh run watch --repo brave-experiments/brave-bot"
+	echo "watch CI with: gh run watch --repo brave-experiments/bravebot"
 
 .PHONY: clean
 clean:

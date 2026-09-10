@@ -26,7 +26,7 @@ served from the trunk of this repository. Both are governed here. Learning from 
 that a newer release exists is [updates.md](updates.md).
 
 GitHub Actions compiles and tests. It does not create a GitHub release. Signed, configured
-binaries are built and published by the Jenkins job `brave-bot-build` in the devops repository.
+binaries are built and published by the Jenkins job `bravebot-build` in the devops repository.
 The npm package is published afterwards, from a manually dispatched GitHub Actions workflow,
 once that release exists.
 
@@ -70,7 +70,7 @@ trunk at the remote.
 
 No branch push, no pull request, no tag push, and no manually dispatched GitHub Actions run
 creates a GitHub release or attaches binaries people install. Publication of those assets
-happens in Jenkins, when `brave-bot-build` is run with `UPLOAD` and `RELEASE`. The npm package
+happens in Jenkins, when `bravebot-build` is run with `UPLOAD` and `RELEASE`. The npm package
 is a later step, specified below, and is not a GitHub release.
 
 **Why.** GitHub Actions cannot codesign Darwin or Authenticode-sign Windows. If it published,
@@ -208,7 +208,7 @@ the pipeline that publishes.
   is a Jenkins job in another repository, and a test that shelled out to a real tag push would
   have to publish something to prove anything.
 
-- **Publication lives outside this repository.** `brave-bot-build` in devops is what signs and
+- **Publication lives outside this repository.** `bravebot-build` in devops is what signs and
   attaches assets. A change there can break RELEASE-6 through RELEASE-8 without this tree
   noticing. RELEASE-9 is the installer in this repository: a checksum Jenkins ships in the
   wrong form is refused here, not accepted.

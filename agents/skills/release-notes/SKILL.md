@@ -26,9 +26,9 @@ gets told so rather than padded.
 ## The format
 
 ```markdown
-## [0.2.0](https://github.com/brave-experiments/brave-bot/releases/tag/v0.2.0)
+## [0.2.0](https://github.com/brave-experiments/bravebot/releases/tag/v0.2.0)
 
- - Added `/loop`, which repeats a prompt on an interval or at a pace each turn sets. ([#66](https://github.com/brave-experiments/brave-bot/issues/66))
+ - Added `/loop`, which repeats a prompt on an interval or at a pace each turn sets. ([#66](https://github.com/brave-experiments/bravebot/issues/66))
  - Added ctrl-r, which searches the prompts already sent in this session.
  - Added `/cd`, which moves a session to another directory and carries its trusted paths with it.
  - Changed the Bedrock environment variable to `BRAVEBOT_USE_BEDROCK`. The old name is no longer read.
@@ -53,7 +53,7 @@ Exactly that, clause by clause:
   clearer. The opening verb is what tells a reader which group a bullet is in, so there is
   nothing to label.
 - An issue link goes after the sentence's period, in parentheses:
-  `([#84](https://github.com/brave-experiments/brave-bot/issues/84))`. Only when a commit
+  `([#84](https://github.com/brave-experiments/bravebot/issues/84))`. Only when a commit
   named the issue.
 - Sections stack newest first, and a released section is never edited afterwards.
 

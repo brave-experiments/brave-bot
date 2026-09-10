@@ -52,7 +52,7 @@ const NPM_URL: &str = "https://registry.npmjs.org/@brave/bravebot/latest";
 
 /// The newest release of this repository, which answers with the tag it was published under.
 const RELEASES_URL: &str =
-    "https://api.github.com/repos/brave-experiments/brave-bot/releases/latest";
+    "https://api.github.com/repos/brave-experiments/bravebot/releases/latest";
 
 /// What updates an npm install.
 const NPM_COMMAND: &str = "npm install -g @brave/bravebot@latest";
@@ -60,7 +60,7 @@ const NPM_COMMAND: &str = "npm install -g @brave/bravebot@latest";
 /// What updates a script install: the same line that installed it, which takes the newest release
 /// and puts it where this one already is.
 const SCRIPT_COMMAND: &str =
-    "curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh";
+    "curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | sh";
 
 /// The file the install script writes the installed path into.
 const INSTALLED_BY_FILE: &str = "installed-by";
@@ -326,7 +326,7 @@ fn ask(install: Install) -> Option<Version> {
         .header("accept", "application/json")
         // GitHub answers a request without one with 403, and a name is politer than a library's
         // default to a registry serving this for free.
-        .header("user-agent", "brave-bot");
+        .header("user-agent", "bravebot");
 
     let response = egress
         .fetch(&mut policy, request, Label::untrusted_public())
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(
             method(
                 None,
-                Some(Path::new("/home/someone/brave-bot/target/debug/bravebot")),
+                Some(Path::new("/home/someone/bravebot/target/debug/bravebot")),
                 Some(Path::new("/usr/local/bin/bravebot"))
             ),
             None

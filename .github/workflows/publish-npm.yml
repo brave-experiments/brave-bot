@@ -20,7 +20,7 @@ permissions:
 jobs:
   publish:
     name: Publish @brave/bravebot
-    if: github.repository == 'brave-experiments/brave-bot'
+    if: github.repository == 'brave-experiments/bravebot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +68,7 @@ jobs:
           done
           if [ -n "$missing" ]; then
             echo "error: GitHub release $TAG is missing:$missing"
-            echo "run Jenkins job brave-bot-build (UPLOAD and RELEASE) first"
+            echo "run Jenkins job bravebot-build (UPLOAD and RELEASE) first"
             exit 1
           fi
 

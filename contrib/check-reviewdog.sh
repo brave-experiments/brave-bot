@@ -34,7 +34,7 @@ SECURITY_ACTION_REF="${SECURITY_ACTION_REF:-main}"
 # leaving them out keeps this honest about what CI reports.
 ALL_RUNNERS="safesvg opengrep sveltegrep npm-audit pip-audit"
 
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/brave-bot-reviewdog"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bravebot-reviewdog"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 BASE_REF="origin/main"
 MODE="diff"

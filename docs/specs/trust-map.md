@@ -62,7 +62,7 @@ inside a `vendor` a person marked untrusted, without that answer leaking to its 
 ### TRUST-3: relative and absolute rules are separate namespaces
 
 Keeping two namespaces is a workaround rather than a preference, and
-[issue #24](https://github.com/brave-experiments/brave-bot/issues/24) proposes replacing both with
+[issue #24](https://github.com/brave-experiments/bravebot/issues/24) proposes replacing both with
 one map of full paths, which would remove this clause.
 
 A rule under the working directory decides nothing about a directory opened by absolute path, and

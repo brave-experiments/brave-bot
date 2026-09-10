@@ -51,7 +51,7 @@ GitHub Actions for the npm package. Either can wait days after the tag.
 make bump-version BUMP=bugfix   # or minor, major
 # review the commit it made, land it on main
 make github-release
-# later: Jenkins job brave-bot-build with UPLOAD and RELEASE
+# later: Jenkins job bravebot-build with UPLOAD and RELEASE
 # later: Actions → Publish npm, with tag v<version>
 ```
 
@@ -64,7 +64,7 @@ is clean, the two version files agree, and HEAD is `main` at `origin/main`, then
 
 The tag push does not publish binaries. GitHub Actions still builds and tests on the tag.
 Signed, configured assets are built, notarised, and uploaded by the Jenkins job
-`brave-bot-build` with `UPLOAD` and `RELEASE` enabled. That job builds the tip of the branch it
+`bravebot-build` with `UPLOAD` and `RELEASE` enabled. That job builds the tip of the branch it
 is given. A RELEASE run refuses unless tag `v<version>` from `Cargo.toml` already exists and
 points at that commit, then creates a GitHub release of that name and attaches the signed
 binaries plus the `.sha256` files written after signing. `gh release create` fails if that

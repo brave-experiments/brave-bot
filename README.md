@@ -1,4 +1,4 @@
-# brave-bot
+# bravebot
 
 Brave Bot is a general-purpose agent, meant as a drop-in replacement for Claude Code, Codex and
 OpenCode. Brave has always shipped user agents, and this one is the user's agent in both senses:
@@ -21,13 +21,13 @@ npm install -g @brave/bravebot
 Or on macOS and Linux, without npm:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | sh
 ```
 
 That puts the binary in `/usr/local/bin`, and takes `INSTALL_DIR` for somewhere else:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Either way, run `bravebot` in a repository afterwards. Both installers verify the release
@@ -35,10 +35,10 @@ checksum, and a session started on an old version says so and gives the line tha
 [docs/getting-started.md](docs/getting-started.md) for installing, running, and what it asks you.
 
 The documentation site at
-[brave-experiments.github.io/brave-bot-docs](https://brave-experiments.github.io/brave-bot-docs/)
+[brave-experiments.github.io/bravebot-docs](https://brave-experiments.github.io/bravebot-docs/)
 covers the same ground for somebody using bravebot rather than working on it, and is kept downstream
 of the specs below. Its source is
-[brave-bot-docs](https://github.com/brave-experiments/brave-bot-docs).
+[bravebot-docs](https://github.com/brave-experiments/bravebot-docs).
 
 ## How it works
 
