@@ -90,6 +90,7 @@ up on rather than waited for indefinitely.
 choosing a single number makes one of those two cases wrong.
 
 `verified-by: bravebot_net::egress::a_reply_still_arriving_is_not_cut_off_for_taking_longer_than_it_took_to_start`
+`verified-by: bravebot_net::egress::a_reply_that_takes_longer_than_the_send_bound_to_start_is_not_a_failed_send`
 `verified-by: bravebot_net::egress::a_reply_that_never_comes_gives_up`
 `verified-by: bravebot_net::egress::a_reply_that_stops_arriving_is_given_up_on`
 
@@ -112,3 +113,12 @@ mean the server is temporarily unable are treated as retryable.
   never workspace content or model output, so no labelled value escapes the gate. NET-1 is about
   everything carrying labelled content. A second egress that ever carried content would be a
   violation.
+
+- **Two pairs of phases share a bound rather than having one each.** The transport gives a phase
+  the earliest of its own deadline and those of the phases before it, so a bound tight enough to
+  time one phase precisely cuts the phase after it short as well. Each number it is given
+  therefore covers every phase it governs: resolving a name is allowed as long as connecting, and
+  writing a request body as long as the send and reply bounds together. Both are resolved in
+  favour of the later phase, because that is what the clause is for. A slow answer must not be
+  read as a dead connection, and timing the phase before it precisely at the price of cutting the
+  answer short would be exactly the failure this clause forbids.
