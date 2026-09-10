@@ -3,9 +3,10 @@ name: triage-issues
 description:
   'Go through the open issues and decide, against the code, which are already fixed,
   which have gone stale, and which still stand. Closes the fixed ones citing the
-  commit that fixed them. Triggers on: triage issues, go through all open issues,
+  commit that fixed them, and labels every issue that stays open with an importance,
+  an urgency and a size. Triggers on: triage issues, go through all open issues,
   which issues are already fixed, are these issues still valid, close stale issues,
-  issue backlog.'
+  label the issues, importance and urgency labels, issue backlog.'
 argument-hint: '[issue-number ...] [label:<name>] [dry-run]'
 ---
 
@@ -19,8 +20,10 @@ decides each issue's verdict from the code as it is now, and cites the commit.
 
 - **Full run** (default): every open issue except bot-authored ones.
 - **Scoped run** (`/triage-issues 71 82 93`): those issues only.
-- **Label run** (`/triage-issues label:security`): issues carrying that label.
-- `dry-run` reports and writes nothing to GitHub.
+- **Label run** (`/triage-issues label:security`): issues carrying that label. The
+  axes are labels too, so `/triage-issues label:urgency/p2` is the queue to work down.
+- `dry-run` reports the verdicts and the triple it would apply, writing nothing to
+  GitHub.
 
 ---
 
@@ -55,11 +58,39 @@ about this code and there is nothing to verify against the tree.
 | Verdict | Means | Action |
 |---|---|---|
 | **FIXED** | The thing it asks for exists in the tree now | Comment naming the commit, then close |
-| **STALE** | Some claims are false, the ask survives | Comment; rewrite the body only if it is yours |
-| **STANDS** | The premise holds | Comment only where a specific claim went stale |
+| **STALE** | Some claims are false, the ask survives | Label; comment; rewrite the body only if it is yours |
+| **STANDS** | The premise holds | Label; comment only where a specific claim went stale |
 
 A verdict is a claim about code, so it needs a file, a symbol, or a commit behind it.
 "Looks done" is not a verdict.
+
+---
+
+## Every issue that stays open leaves labelled
+
+A STANDS or STALE issue leaves the run carrying all three axis labels: an `importance`, an
+`urgency`, and a `size`. A FIXED one is closed and needs none.
+
+[docs/development.md](../../../docs/development.md#labelling-an-issue) is the source of
+truth for what a value means. Read it before assigning anything, rather than inferring the
+scale from the labels already on the backlog: those are the output of earlier runs, so
+reading the scale off them lets one misreading spread through everything triaged after it.
+
+**Judge each axis on its own.** A `security` label is not by itself urgent, since most of
+these are reachable only by somebody already inside the workspace. A large `size` says
+nothing about importance, and an `importance/p1` does not make a week of work any smaller.
+
+**Never apply `urgency/p1`.** It asks everybody to put down what they are doing, which is
+a person's call rather than a triage run's. Where an issue looks like one, label it
+`urgency/p2` and say so in the report.
+
+**A value a person set stays.** Change one only where the verdict changed what the issue
+asks for, a STALE issue whose surviving ask is a fraction of the original work, say, and
+name the value that moved and the reason in the comment.
+
+The axes are ordinary labels, so GitHub does not treat their values as exclusive.
+Replacing one means `--remove-label` in the same `gh issue edit` call as the
+`--add-label`, or the issue is left carrying two values on one axis.
 
 ---
 
@@ -127,6 +158,33 @@ gh issue comment N --body "$(cat <<'EOF'
 EOF
 )" && gh issue close N
 ```
+
+An issue that stays open gets its triple in the same pass:
+
+```bash
+gh issue edit N --add-label importance/p3,urgency/p3,size/2
+gh issue edit N --add-label urgency/p2 --remove-label urgency/p4   # a value that moved
+```
+
+### Step 6: check that nothing was left unlabelled
+
+Before writing the report, ask GitHub which open non-bot issues do not carry exactly one
+value on each axis:
+
+```bash
+gh issue list --state open --limit 200 --json number,author,labels \
+  -q '.[] | select(.author.is_bot == false)
+      | . as $i
+      | ["importance/", "urgency/", "size/"]
+      | map(. as $p | [$i.labels[].name | select(startswith($p))] | length)
+      | select(. != [1,1,1])
+      | "#\($i.number) \(.)"'
+```
+
+Each line is a number and its `[importance, urgency, size]` counts, so a `0` is an axis
+the run never reached and a `2` is a replacement that added a value without removing the
+old one. A run that stopped early is caught here rather than found in a query a week
+later.
 
 ---
 
@@ -219,6 +277,12 @@ the commit, the symbol, the clause. "This is fixed" is not a citation.
 
 One table: closed, rescoped, annotated, untouched, with counts. Then the closes with
 their commits, and anything that needs a human decision.
+
+A count per axis by value, too, and the number of every issue whose triple was uncertain.
+The distribution reviews the run as much as it summarises the backlog: `urgency/p2`
+holding a third of the issues means the axis was read as importance a second time, and
+nothing at `size/4` or `size/5` means the large work was sized off issue summaries rather
+than off what it touches.
 
 Say what was **not** covered. An issue nobody was assigned, an ambiguous body whose
 intent you had to guess, a verdict resting on one agent's word: each is worth a line.
