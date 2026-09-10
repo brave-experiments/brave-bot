@@ -114,21 +114,26 @@ impl Language {
     }
 }
 
+/// The directory holding one index per workspace, directly under the state directory.
+const CACHE_ROOT: &str = "lsp";
+
 /// Where a server keeps its index for a workspace.
 ///
 /// LSP-10: under the directory this process already owns, keyed by the workspace, never inside it.
-/// `None` for a session that adds nothing to `~/.bravebot`, which is incognito: the server still runs
-/// and re-indexes, and says its answers are partial until it settles.
+/// `state` is that directory itself, `~/.bravebot` and not the home it sits in, so nothing here
+/// appends the name a second time. `None` for a session that adds nothing to `~/.bravebot`, which is
+/// incognito: the server still runs and re-indexes, and says its answers are partial until it
+/// settles.
 ///
 /// The name is a digest of the canonical path rather than the path flattened into one, so two
 /// checkouts of the same project do not share an index and a directory that moved does not inherit
 /// one. Not a cryptographic requirement: this only has to be stable and collision-resistant enough
 /// that two workspaces on one machine differ.
-pub fn cache_for(home: Option<&Path>, workspace: &Path, incognito: bool) -> Option<PathBuf> {
+pub fn cache_for(state: Option<&Path>, workspace: &Path, incognito: bool) -> Option<PathBuf> {
     if incognito {
         return None;
     }
-    let home = home?;
+    let state = state?;
     let canonical = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
@@ -140,11 +145,7 @@ pub fn cache_for(home: Option<&Path>, workspace: &Path, incognito: bool) -> Opti
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
-    Some(
-        home.join(".bravebot")
-            .join("lsp")
-            .join(format!("{hash:016x}")),
-    )
+    Some(state.join(CACHE_ROOT).join(format!("{hash:016x}")))
 }
 
 /// Whether a message is a server saying its initial index is built.
@@ -677,7 +678,8 @@ pub struct Question<'a> {
 pub struct Servers {
     running: HashMap<Language, Server>,
     root: PathBuf,
-    home: Option<PathBuf>,
+    /// `~/.bravebot` itself, not the home it sits in.
+    state: Option<PathBuf>,
     /// How a program name becomes the file it names.
     ///
     /// Supplied rather than done here, for the reason [`Server::launch`] takes a resolved path:
@@ -702,7 +704,7 @@ impl std::fmt::Debug for Servers {
 impl Servers {
     pub fn new(
         root: impl Into<PathBuf>,
-        home: Option<PathBuf>,
+        state: Option<PathBuf>,
         resolve: fn(&str) -> Option<PathBuf>,
         incognito: bool,
         withheld: Vec<String>,
@@ -710,7 +712,7 @@ impl Servers {
         Self {
             running: HashMap::new(),
             root: root.into(),
-            home,
+            state,
             resolve,
             incognito,
             withheld,
@@ -779,7 +781,7 @@ impl Servers {
                 return Err(LspError::Refused { language });
             }
 
-            let cache = cache_for(self.home.as_deref(), &self.root, self.incognito);
+            let cache = cache_for(self.state.as_deref(), &self.root, self.incognito);
             let server = Server::launch(
                 language,
                 &resolved,
@@ -887,13 +889,17 @@ mod tests {
         );
     }
 
+    /// The state directory, as the host resolves it and hands it over.
+    fn state() -> PathBuf {
+        PathBuf::from("/home/someone/.bravebot")
+    }
+
     /// LSP-10: never inside the workspace, and keyed by it.
     #[test]
     fn the_cache_is_outside_the_workspace() {
-        let home = PathBuf::from("/home/someone");
-        let cache = cache_for(Some(&home), &root(), false).expect("a cache is given");
+        let cache = cache_for(Some(&state()), &root(), false).expect("a cache is given");
         assert!(
-            cache.starts_with(home.join(".bravebot")),
+            cache.starts_with(state()),
             "the cache belongs under the directory this process owns, got {}",
             cache.display()
         );
@@ -904,12 +910,32 @@ mod tests {
         );
     }
 
+    /// The argument is the state directory, so appending its name here would put the index in
+    /// `~/.bravebot/.bravebot`: a directory nothing else writes to, reads or narrows, holding an
+    /// index of the user's source.
+    #[test]
+    fn the_cache_sits_directly_under_the_directory_it_is_given() {
+        let cache = cache_for(Some(&state()), &root(), false).expect("a cache is given");
+
+        let below: Vec<_> = cache
+            .strip_prefix(state())
+            .expect("under the directory it was given")
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            below.len(),
+            2,
+            "one directory for the tool, one per workspace"
+        );
+        assert_eq!(below[0], CACHE_ROOT);
+    }
+
     /// LSP-10: two workspaces do not share an index.
     #[test]
     fn the_cache_is_keyed_by_the_workspace() {
-        let home = PathBuf::from("/home/someone");
-        let one = cache_for(Some(&home), Path::new("/a/project"), false).expect("cache");
-        let two = cache_for(Some(&home), Path::new("/b/project"), false).expect("cache");
+        let one = cache_for(Some(&state()), Path::new("/a/project"), false).expect("cache");
+        let two = cache_for(Some(&state()), Path::new("/b/project"), false).expect("cache");
         assert_ne!(
             one, two,
             "two checkouts must not share an index, or a stale one is read as the other's"
@@ -917,16 +943,15 @@ mod tests {
         // And the same workspace is the same directory every time, or nothing is ever reused.
         assert_eq!(
             one,
-            cache_for(Some(&home), Path::new("/a/project"), false).expect("cache")
+            cache_for(Some(&state()), Path::new("/a/project"), false).expect("cache")
         );
     }
 
     /// LSP-10: incognito adds nothing to `~/.bravebot`, so it is given no cache at all.
     #[test]
     fn an_incognito_session_is_given_no_cache() {
-        let home = PathBuf::from("/home/someone");
         assert!(
-            cache_for(Some(&home), &root(), true).is_none(),
+            cache_for(Some(&state()), &root(), true).is_none(),
             "an incognito session must write no index"
         );
         // And with nowhere to keep one, there is nothing to key.
@@ -945,7 +970,7 @@ mod tests {
     /// through this crate even if it wanted to.
     #[test]
     fn the_cache_is_never_read_by_the_driver() {
-        let cache = cache_for(Some(Path::new("/home/someone")), &root(), false).expect("cache");
+        let cache = cache_for(Some(&state()), &root(), false).expect("cache");
 
         // A path, not a handle and not any bytes. Everything this crate does with it is hand it to a
         // child process, and the type says so: `PathBuf` carries no contents.

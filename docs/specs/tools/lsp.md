@@ -279,6 +279,7 @@ and still answers; it re-indexes each session and says so under [LSP-7](#LSP-7).
 trade incognito already makes for the session record.
 
 `verified-by: bravebot_lsp::server::the_cache_is_outside_the_workspace`
+`verified-by: bravebot_lsp::server::the_cache_sits_directly_under_the_directory_it_is_given`
 `verified-by: bravebot_lsp::server::the_cache_is_keyed_by_the_workspace`
 `verified-by: bravebot_lsp::server::an_incognito_session_is_given_no_cache`
 `verified-by: bravebot_lsp::server::the_cache_is_never_read_by_the_driver`
