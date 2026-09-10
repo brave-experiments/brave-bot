@@ -102,6 +102,13 @@ impl fmt::Display for BedrockError {
 
 impl std::error::Error for BedrockError {}
 
+/// The status AWS answers a request it will not accept the contents of.
+///
+/// A validation refusal, which is what a model that does not do prompt caching answers a request
+/// carrying cache breakpoints. Not worth sending again unchanged, and the one thing worth changing
+/// is the part of the request nobody asked for.
+const REFUSED_CONTENTS_STATUS: u16 = 400;
+
 /// The statuses AWS answers a credential it will not accept with.
 ///
 /// 401 is a credential it did not recognise and 403 one it recognised and refused. Neither is worth
@@ -123,6 +130,17 @@ impl BedrockError {
         matches!(
             self,
             Self::Egress(EgressError::Status { status, .. }) if REFUSED_STATUSES.contains(status)
+        )
+    }
+
+    /// Whether AWS refused this request on what it contained.
+    ///
+    /// Not a decision taken from content, for the same reason the one above is not: a status is the
+    /// transport's own report, and nothing in the body is read to reach it.
+    pub fn is_refused_on_contents(&self) -> bool {
+        matches!(
+            self,
+            Self::Egress(EgressError::Status { status, .. }) if *status == REFUSED_CONTENTS_STATUS
         )
     }
 }
@@ -154,6 +172,11 @@ pub struct BedrockClient<'a> {
     config: &'a Bedrock,
     egress: &'a Egress,
     cancel: Option<Cancel>,
+    /// Whether requests still carry cache breakpoints.
+    ///
+    /// True until a model refuses one, which is the only way to find out that it does not do
+    /// prompt caching: an inference-profile ARN does not say which model is behind it.
+    breakpoints: bool,
 }
 
 impl<'a> BedrockClient<'a> {
@@ -162,6 +185,7 @@ impl<'a> BedrockClient<'a> {
             config,
             egress,
             cancel: None,
+            breakpoints: true,
         }
     }
 
@@ -178,14 +202,46 @@ impl<'a> BedrockClient<'a> {
         request: &ChatRequest,
     ) -> Result<Completion, BedrockError> {
         let mut attempt = 1;
+        let mut probed = false;
         loop {
             match self.complete_once(policy, request) {
+                // Sent again immediately rather than after a wait: nothing is busy, the request was
+                // simply carrying something this model does not take.
+                Err(error) if self.worth_dropping_breakpoints(&error) => {
+                    self.breakpoints = false;
+                    probed = true;
+                }
                 Err(error) if worth_another_attempt(attempt, &error) => {
                     std::thread::sleep(backoff(attempt));
                     attempt += 1;
                 }
-                result => return result,
+                result => {
+                    self.probe_settled(probed, result.is_err());
+                    return result;
+                }
             }
+        }
+    }
+
+    /// Whether this failure is worth sending the same request again without its cache breakpoints.
+    ///
+    /// Only once, since the answer is remembered, and only for a refusal on the request's contents.
+    /// The breakpoints are the one part of a request nobody asked for, so a service that refuses it
+    /// is worth asking without them before the failure is anybody else's.
+    fn worth_dropping_breakpoints(&self, error: &BedrockError) -> bool {
+        self.breakpoints && error.is_refused_on_contents()
+    }
+
+    /// Settle what a probe found, once the request it was part of has finished one way or the other.
+    ///
+    /// A probe that answered leaves the breakpoints dropped, which is the model saying it does not
+    /// read them. A probe that failed as well says they were not what the service refused, so they
+    /// go back: a request can be refused on its contents for reasons that have nothing to do with
+    /// them, and a session that gave them up for one of those pays full price for a prefix the
+    /// service would have read once, every round, for the rest of its life.
+    fn probe_settled(&mut self, probed: bool, failed: bool) {
+        if probed && failed {
+            self.breakpoints = true;
         }
     }
 
@@ -248,8 +304,13 @@ impl<'a> BedrockClient<'a> {
         mut progress: impl FnMut(Progress),
     ) -> Result<Completion, BedrockError> {
         let mut attempt = 1;
+        let mut probed = false;
         loop {
             match self.stream_once(policy, request, attempt, &mut progress) {
+                Err(error) if self.worth_dropping_breakpoints(&error) => {
+                    self.breakpoints = false;
+                    probed = true;
+                }
                 Err(error) if worth_another_attempt(attempt, &error) => {
                     attempt += 1;
                     // Announced before the wait rather than after it, so the pause is explained
@@ -264,7 +325,10 @@ impl<'a> BedrockClient<'a> {
                         return Err(BedrockError::Cancelled);
                     }
                 }
-                result => return result,
+                result => {
+                    self.probe_settled(probed, result.is_err());
+                    return result;
+                }
             }
         }
     }
@@ -412,11 +476,15 @@ impl<'a> BedrockClient<'a> {
     ) -> Result<(Request, String), BedrockError> {
         let model = self.model_for(request)?;
 
-        let body = serde_json::to_vec(
-            &protocol::request_from(&request.messages, request.tools.as_deref())
-                .with_effort(request.effort),
-        )
-        .map_err(|e| BedrockError::Encode(e.to_string()))?;
+        let converse = protocol::request_from(&request.messages, request.tools.as_deref())
+            .with_effort(request.effort);
+        let converse = if self.breakpoints {
+            converse
+        } else {
+            converse.without_breakpoints()
+        };
+        let body =
+            serde_json::to_vec(&converse).map_err(|e| BedrockError::Encode(e.to_string()))?;
 
         let resolved = credentials::resolve(self.config.profile.as_deref())?;
 
@@ -935,6 +1003,83 @@ mod tests {
             "{}",
             BedrockError::TooLong
         );
+    }
+
+    /// Prompt caching is not something every model this backend can reach offers, and an
+    /// inference-profile ARN does not say which model is behind it. A model that refuses the
+    /// breakpoints refuses the whole request, so without asking again without them, every request
+    /// to such a model fails and the tier is unusable.
+    #[test]
+    fn a_request_refused_on_its_contents_is_asked_again_without_the_breakpoints() {
+        let config = config();
+        let egress = Egress::new();
+        let mut client = BedrockClient::new(&config, &egress);
+
+        let refused = BedrockError::Egress(EgressError::Status {
+            url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
+            status: 400,
+        });
+        assert!(client.worth_dropping_breakpoints(&refused));
+
+        // Once only. The answer is remembered, so a second refusal is the caller's rather than a
+        // request sent for a third time carrying nothing new.
+        client.breakpoints = false;
+        assert!(!client.worth_dropping_breakpoints(&refused));
+    }
+
+    /// A request is refused on its contents for reasons that have nothing to do with the
+    /// breakpoints, and asking again without them does not fix one of those. Giving them up anyway
+    /// costs full price for a prefix the service would have read once, every round, for the rest of
+    /// the session, which is the whole expense the breakpoints exist to avoid.
+    #[test]
+    fn a_probe_that_failed_as_well_puts_the_breakpoints_back() {
+        let config = config();
+        let egress = Egress::new();
+        let mut client = BedrockClient::new(&config, &egress);
+
+        // What the loop does: drop them, send again, and find the second attempt refused too.
+        client.breakpoints = false;
+        client.probe_settled(true, true);
+        assert!(
+            client.breakpoints,
+            "a refusal that outlived the breakpoints still cost the session its caching"
+        );
+
+        // A probe that answered is the model saying it does not read them, and they stay dropped.
+        client.breakpoints = false;
+        client.probe_settled(true, false);
+        assert!(!client.breakpoints);
+
+        // A request that never probed is left exactly as it was, whichever way it ended.
+        for failed in [true, false] {
+            client.breakpoints = true;
+            client.probe_settled(false, failed);
+            assert!(client.breakpoints);
+        }
+    }
+
+    /// Every other failure leaves the breakpoints alone. Dropping them on a timeout or an expired
+    /// credential would spend the rest of the session paying full price for a prefix the service
+    /// had already read, for a reason that was never about the request's contents.
+    #[test]
+    fn only_a_refusal_on_the_contents_drops_the_breakpoints() {
+        let config = config();
+        let egress = Egress::new();
+        let client = BedrockClient::new(&config, &egress);
+
+        for status in [401, 403, 429, 500, 503] {
+            let error = BedrockError::Egress(EgressError::Status {
+                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
+                status,
+            });
+            assert!(
+                !client.worth_dropping_breakpoints(&error),
+                "{status} dropped the breakpoints"
+            );
+        }
+
+        assert!(!client.worth_dropping_breakpoints(&BedrockError::Incomplete));
+        assert!(!client.worth_dropping_breakpoints(&BedrockError::TooLong));
     }
 
     /// A reply the service abandoned says why in the frame that ends it. Reported as a truncation,

@@ -429,6 +429,23 @@ impl ConverseRequest {
             effort.map(|effort| json!({ "output_config": { "effort": effort } }));
         self
     }
+
+    /// The same request without its cache breakpoints.
+    ///
+    /// Prompt caching is not something every model this API fronts offers, and one that does not
+    /// refuses the whole request rather than reading past the breakpoints. They are also the one
+    /// part of a request nobody asked for, so they are what a refusal is worth trying without.
+    pub fn without_breakpoints(mut self) -> Self {
+        if let Some(system) = &mut self.system {
+            system.retain(|block| !matches!(block, SystemBlock::CachePoint(_)));
+        }
+        for message in &mut self.messages {
+            message
+                .content
+                .retain(|block| !matches!(block, Block::CachePoint(_)));
+        }
+        self
+    }
 }
 
 /// Build a Bedrock request from the conversation the agent holds.
@@ -1240,6 +1257,50 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A model that does not do prompt caching refuses the whole request rather than reading past
+    /// the breakpoints, so a request has to be expressible without them. Everything else it carries
+    /// was asked for and stays.
+    #[test]
+    fn a_request_without_breakpoints_keeps_everything_that_was_asked_for() {
+        let tools = vec![Tool::function("read_file", "Read a file", json!({}))];
+        let full = request_from(
+            &[
+                Message::system("be helpful"),
+                Message::user("hello"),
+                Message::assistant("hi"),
+                Message::user("again"),
+            ],
+            Some(&tools),
+        )
+        .with_effort(Some(Effort::High));
+
+        let marked = serde_json::to_string(&full).expect("serialises");
+        assert!(
+            marked.contains("cachePoint"),
+            "nothing was marked to begin with"
+        );
+
+        let plain = body_of(&full.without_breakpoints());
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("cachePoint"),
+            "a breakpoint survived: {plain}"
+        );
+        assert_eq!(plain["system"][0]["text"], "be helpful");
+        assert_eq!(plain["system"].as_array().expect("system").len(), 1);
+        assert_eq!(plain["messages"].as_array().expect("messages").len(), 3);
+        assert_eq!(plain["messages"][2]["content"][0]["text"], "again");
+        assert_eq!(
+            plain["toolConfig"]["tools"][0]["toolSpec"]["name"],
+            "read_file"
+        );
+        assert_eq!(
+            plain["additionalModelRequestFields"]["output_config"]["effort"],
+            "high"
+        );
     }
 
     /// A reply can arrive as several text blocks, and they are one answer.

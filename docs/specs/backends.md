@@ -716,6 +716,17 @@ a cache write and nothing else.
 the cache and reports the cached tokens beside it, so the three are added back together on the way
 into a `Usage`. Without that a cached round reads as a conversation that shrank while it grew.
 
+**A model that refuses them is not sent them again.** Prompt caching is not something every model
+this backend can reach offers, and one that does not refuses the whole request rather than reading
+past the breakpoints. A request refused on its contents is therefore sent once more without them,
+and where that answers, no later request in the session carries them. Only a refusal does this:
+every other failure leaves the breakpoints in place.
+
+**Why ask rather than know.** An inference-profile ARN does not say which model is behind it, which
+is the same fact that makes one figure stand in for every tier's context window. Asking costs one
+extra round trip the first time such a model is used; not asking costs every request to it, since
+the breakpoints are a part of the request nobody asked for and the service refuses the lot.
+
 **Only this backend.** The aichat endpoint and an OpenAI-compatible gateway take a different wire
 format, which has no field for this and asks for nothing.
 
@@ -724,6 +735,9 @@ format, which has no field for this and asks for nothing.
 `verified-by: bravebot_bedrock::protocol::a_conversation_ending_in_a_tool_result_is_marked_too`
 `verified-by: bravebot_bedrock::protocol::a_reply_without_a_breakpoint_still_parses`
 `verified-by: bravebot_bedrock::protocol::cached_tokens_are_counted_as_the_prompt_they_were`
+`verified-by: bravebot_bedrock::protocol::a_request_without_breakpoints_keeps_everything_that_was_asked_for`
+`verified-by: bravebot_bedrock::lib::a_request_refused_on_its_contents_is_asked_again_without_the_breakpoints`
+`verified-by: bravebot_bedrock::lib::only_a_refusal_on_the_contents_drops_the_breakpoints`
 
 <a id="BACKEND-28"></a>
 ### BACKEND-28: a Bedrock tier may name any model that account can reach
