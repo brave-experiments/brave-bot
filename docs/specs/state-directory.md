@@ -87,17 +87,23 @@ through the helper.
 `verified-by: bravebot_lsp::server::a_cache_left_open_by_an_earlier_run_is_narrowed`
 
 <a id="STATE-2"></a>
-### STATE-2: one definition of where the directory is, and no fallback
+### STATE-2: a machine with no `HOME` has no state directory rather than a guessed one
 
-Every subsystem resolves `~/.bravebot` through the same answer, and a machine with no `HOME` has no
-state directory rather than a guessed one. Nothing is read and nothing is written in that case, and
-each caller does without.
+The directory is `HOME` and one fixed name, and an absent or empty `HOME` yields no directory at
+all. Nothing is read and nothing is written in that case, and each caller does without. The crates
+that sit below the one holding the answer resolve the path themselves, since
+[layering.md](layering.md) forbids them the dependency, and each spells the same name and offers the
+same absence of a fallback.
 
-**Why.** Two definitions of where the directory is would eventually disagree, and the disagreement
-would show up as a choice that does not stick or a history that is written twice. Inventing a
-location where `HOME` says nothing is worse than doing without: it would mean reading files from
-somewhere the user never chose, and this is the one directory whose contents are trusted for being
-the user's own.
+**Why.** Inventing a location where `HOME` says nothing is worse than doing without: it would mean
+reading files from somewhere the user never chose, and this is the one directory whose contents are
+trusted for being the user's own. A resolver that fell back to a working directory or a temporary
+one would put the prompt history somewhere with none of that standing behind it.
+
+Independent resolvers are the cost of the layering, and what has to hold across them is the name and
+the refusal to guess, which is what each is pinned on. A resolver that answered a different name
+would write a history nothing reads back; one that invented a fallback would be the case above,
+whichever crate it happened in.
 
 `verified-by: bravebot_agent::home::the_home_directory_is_the_one_the_environment_names`
 `verified-by: bravebot_agent::home::an_absent_home_is_not_an_error`
