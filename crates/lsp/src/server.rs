@@ -184,6 +184,27 @@ fn create_cache(path: &Path) -> std::io::Result<()> {
     if let Some(state) = path.parent().and_then(Path::parent) {
         remove_misplaced_index(state);
     }
+    create_private(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The directory holding one cache per workspace, narrowed for the same reason. This one and
+        // no further: what the state directory itself is set to belongs to whichever subsystem
+        // created it.
+        if let Some(root) = path.parent()
+            && root.file_name().is_some_and(|name| name == CACHE_ROOT)
+        {
+            let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    Ok(())
+}
+
+/// Create one directory reachable only by this user, narrowing one that is already there.
+///
+/// A directory keeps the mode it was made with, so one an earlier run left open stays open unless
+/// it is narrowed on the way past.
+fn create_private(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -191,15 +212,7 @@ fn create_cache(path: &Path) -> std::io::Result<()> {
             .recursive(true)
             .mode(0o700)
             .create(path)?;
-        // A directory keeps the mode it was made with, so one an earlier run left open is narrowed
-        // rather than kept. These two and no further: what the state directory itself is set to
-        // belongs to whichever subsystem created it.
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-        if let Some(root) = path.parent()
-            && root.file_name().is_some_and(|name| name == CACHE_ROOT)
-        {
-            let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
-        }
         Ok(())
     }
     #[cfg(not(unix))]
@@ -384,14 +397,32 @@ impl Server {
 
         // Where the index goes, said to each ecosystem in its own spelling. Nothing is written to the
         // workspace, which is LSP-10.
+        //
+        // Every directory the server is pointed at is made here rather than left to the server,
+        // and a failure to make one stops the launch. A server handed a directory this process
+        // could not create makes it itself, at the umask, and fills it with an index derived from
+        // every file in the workspace: STATE-1 undone by the one case where it matters. Not
+        // starting says so, where dropping the variable would silently write the index into the
+        // tree instead, which is what LSP-10 forbids.
         if let Some(cache) = cache {
-            let _ = create_cache(cache);
+            let private = |path: &Path, create: fn(&Path) -> std::io::Result<()>| {
+                create(path).map_err(|e| LspError::Start {
+                    language,
+                    detail: format!(
+                        "its index directory {} could not be created: {e}",
+                        path.display()
+                    ),
+                })
+            };
+            private(cache, create_cache)?;
             match language {
                 Language::Rust => {
                     command.env("CARGO_TARGET_DIR", cache);
                 }
                 Language::Go => {
-                    command.env("GOCACHE", cache.join("go-build"));
+                    let build = cache.join("go-build");
+                    private(&build, create_private)?;
+                    command.env("GOCACHE", build);
                 }
                 Language::TypeScript | Language::Python => {
                     // Neither reads a variable for this; both use the system temporary directory,
@@ -1063,6 +1094,39 @@ mod tests {
             theirs.join("notes").is_dir(),
             "a directory holding no index was removed"
         );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A server handed a directory this process could not create makes it itself, at the umask,
+    /// and fills it with an index derived from every file in the workspace. Refusing to start says
+    /// so; carrying on would leave STATE-1 holding in every case but the one where it matters.
+    #[test]
+    fn a_server_whose_index_directory_cannot_be_made_private_does_not_start() {
+        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-unmakeable");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        // A file where the state directory would be, so nothing can be created below it.
+        let state = scratch.join("not-a-directory");
+        std::fs::write(&state, "").expect("seed");
+        let cache = cache_for(Some(&state), &root(), false).expect("a cache is given");
+
+        let error = Server::launch(
+            Language::Rust,
+            Path::new("/nonexistent-binary"),
+            &root(),
+            Some(&cache),
+            &[],
+        )
+        .expect_err("a server must not start without an index directory of its own");
+
+        // Reported as a failure to start rather than as the missing binary, which is what a launch
+        // that got as far as spawning would have said.
+        match error {
+            LspError::Start { detail, .. } => {
+                assert!(detail.contains("index directory"), "{detail}");
+            }
+            other => panic!("started, or stopped for another reason: {other}"),
+        }
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
