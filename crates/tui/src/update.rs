@@ -351,11 +351,12 @@ fn store(install: Install, answer: Answer) {
     let Some(directory) = bravebot_agent::home::writable() else {
         return;
     };
-    if std::fs::create_dir_all(&directory).is_err() {
+    if bravebot_agent::home::create_directory(&directory).is_err() {
         return;
     }
     let temporary = directory.join(CACHE_TEMPORARY);
-    if std::fs::write(&temporary, format!("{}\n", encode_answer(install, answer))).is_ok() {
+    let line = format!("{}\n", encode_answer(install, answer));
+    if bravebot_agent::home::write_file(&temporary, line.as_bytes()).is_ok() {
         let _ = std::fs::rename(&temporary, directory.join(CACHE_FILE));
     }
 }

@@ -84,7 +84,9 @@ fn ask(root: &Path, question: &Question<'_>) -> Option<Answer> {
 
     let mut servers = Servers::new(
         root.to_path_buf(),
-        std::env::var_os("HOME").map(PathBuf::from),
+        // The state directory itself, which is what the agent hands over: a bare home would
+        // put the index next to the user's own files rather than under `.bravebot`.
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".bravebot")),
         resolve,
         false,
         Vec::new(),

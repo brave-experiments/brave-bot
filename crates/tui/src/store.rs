@@ -194,15 +194,12 @@ pub fn append_history(entry: &Entry) {
     let Some(dir) = writable() else {
         return;
     };
-    if std::fs::create_dir_all(&dir).is_err() {
+    if bravebot_agent::home::create_directory(&dir).is_err() {
         return;
     }
 
     let line = format!("{}\n", encode(entry));
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(HISTORY_FILE))
+    let _ = bravebot_agent::home::append_to_file(&dir.join(HISTORY_FILE))
         .and_then(|mut file| file.write_all(line.as_bytes()));
 }
 
@@ -214,7 +211,7 @@ pub fn save_history(entries: &[Entry]) {
     let Some(dir) = writable() else {
         return;
     };
-    if std::fs::create_dir_all(&dir).is_err() {
+    if bravebot_agent::home::create_directory(&dir).is_err() {
         return;
     }
 
@@ -226,7 +223,7 @@ pub fn save_history(entries: &[Entry]) {
         .collect();
 
     let temporary = dir.join("history.tmp");
-    if std::fs::write(&temporary, body).is_ok() {
+    if bravebot_agent::home::write_file(&temporary, body.as_bytes()).is_ok() {
         let _ = std::fs::rename(&temporary, dir.join(HISTORY_FILE));
     }
 }
@@ -267,12 +264,12 @@ pub fn save_model(model: &str) {
     let Some(dir) = writable() else {
         return;
     };
-    if std::fs::create_dir_all(&dir).is_err() {
+    if bravebot_agent::home::create_directory(&dir).is_err() {
         return;
     }
 
     let temporary = dir.join("model.tmp");
-    if std::fs::write(&temporary, format!("{model}\n")).is_ok() {
+    if bravebot_agent::home::write_file(&temporary, format!("{model}\n").as_bytes()).is_ok() {
         let _ = std::fs::rename(&temporary, dir.join(MODEL_FILE));
     }
 }
@@ -306,12 +303,12 @@ pub fn save_theme(theme: &str) {
     let Some(dir) = writable() else {
         return;
     };
-    if std::fs::create_dir_all(&dir).is_err() {
+    if bravebot_agent::home::create_directory(&dir).is_err() {
         return;
     }
 
     let temporary = dir.join("theme.tmp");
-    if std::fs::write(&temporary, format!("{theme}\n")).is_ok() {
+    if bravebot_agent::home::write_file(&temporary, format!("{theme}\n").as_bytes()).is_ok() {
         let _ = std::fs::rename(&temporary, dir.join(THEME_FILE));
     }
 }
@@ -343,7 +340,7 @@ pub fn save_effort(effort: Option<Effort>) {
     let Some(dir) = writable() else {
         return;
     };
-    if std::fs::create_dir_all(&dir).is_err() {
+    if bravebot_agent::home::create_directory(&dir).is_err() {
         return;
     }
 
@@ -355,7 +352,9 @@ pub fn save_effort(effort: Option<Effort>) {
     };
 
     let temporary = dir.join("effort.tmp");
-    if std::fs::write(&temporary, format!("{}\n", effort.as_str())).is_ok() {
+    if bravebot_agent::home::write_file(&temporary, format!("{}\n", effort.as_str()).as_bytes())
+        .is_ok()
+    {
         let _ = std::fs::rename(&temporary, dir.join(EFFORT_FILE));
     }
 }
@@ -391,12 +390,14 @@ pub fn save_editing(editing: crate::vim::Editing) {
     let Some(dir) = writable() else {
         return;
     };
-    if std::fs::create_dir_all(&dir).is_err() {
+    if bravebot_agent::home::create_directory(&dir).is_err() {
         return;
     }
 
     let temporary = dir.join("editor-mode.tmp");
-    if std::fs::write(&temporary, format!("{}\n", editing.as_str())).is_ok() {
+    if bravebot_agent::home::write_file(&temporary, format!("{}\n", editing.as_str()).as_bytes())
+        .is_ok()
+    {
         let _ = std::fs::rename(&temporary, dir.join(EDITING_FILE));
     }
 }

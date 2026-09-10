@@ -114,21 +114,50 @@ impl Language {
     }
 }
 
+/// The directory holding one index per workspace, directly under the state directory.
+const CACHE_ROOT: &str = "lsp";
+
+/// Remove an index an earlier build put one directory too deep.
+///
+/// The state directory's own name used to be appended a second time, so the index landed in
+/// `~/.bravebot/.bravebot/lsp/`, which nothing reads, rebuilds or narrows. What is left there is an
+/// index derived from every file in the workspace, at whatever the umask gave it, and it stays that
+/// way for as long as the machine does.
+///
+/// Removed rather than narrowed. Nothing will ever read it, so a private copy of it is worth no
+/// more than none, and narrowing would mean walking a tree to reach the files inside.
+///
+/// The path is derived rather than spelled: appending the directory's own name is what put it
+/// there, so joining that name is what finds it, and the state directory keeps one definition.
+/// Only a directory holding what this crate would have written is removed, so an unrelated
+/// directory of the same name is left where it is.
+fn remove_misplaced_index(state: &Path) {
+    let Some(name) = state.file_name() else {
+        return;
+    };
+    let nested = state.join(name);
+    if nested.join(CACHE_ROOT).is_dir() {
+        let _ = std::fs::remove_dir_all(&nested);
+    }
+}
+
 /// Where a server keeps its index for a workspace.
 ///
 /// LSP-10: under the directory this process already owns, keyed by the workspace, never inside it.
-/// `None` for a session that adds nothing to `~/.bravebot`, which is incognito: the server still runs
-/// and re-indexes, and says its answers are partial until it settles.
+/// `state` is that directory itself, `~/.bravebot` and not the home it sits in, so nothing here
+/// appends the name a second time. `None` for a session that adds nothing to `~/.bravebot`, which is
+/// incognito: the server still runs and re-indexes, and says its answers are partial until it
+/// settles.
 ///
 /// The name is a digest of the canonical path rather than the path flattened into one, so two
 /// checkouts of the same project do not share an index and a directory that moved does not inherit
 /// one. Not a cryptographic requirement: this only has to be stable and collision-resistant enough
 /// that two workspaces on one machine differ.
-pub fn cache_for(home: Option<&Path>, workspace: &Path, incognito: bool) -> Option<PathBuf> {
+pub fn cache_for(state: Option<&Path>, workspace: &Path, incognito: bool) -> Option<PathBuf> {
     if incognito {
         return None;
     }
-    let home = home?;
+    let state = state?;
     let canonical = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
@@ -140,11 +169,69 @@ pub fn cache_for(home: Option<&Path>, workspace: &Path, incognito: bool) -> Opti
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
-    Some(
-        home.join(".bravebot")
-            .join("lsp")
-            .join(format!("{hash:016x}")),
-    )
+    Some(state.join(CACHE_ROOT).join(format!("{hash:016x}")))
+}
+
+/// Create a cache directory, and the directories between it and the state directory, reachable
+/// only by this user.
+///
+/// The index is derived from every file in the workspace, so who may read it is who may read the
+/// workspace. The mode is asked for as each directory is created, because a directory keeps the
+/// mode it was made with. Spelled out here rather than shared with the crate that has a helper for
+/// it: this crate depends on the kernel alone, as layering.md records, and a language server client
+/// is not worth a dependency for four lines.
+fn create_cache(path: &Path) -> std::io::Result<()> {
+    if let Some(state) = path.parent().and_then(Path::parent) {
+        remove_misplaced_index(state);
+    }
+    create_private(path)?;
+    #[cfg(unix)]
+    {
+        // The directory holding one cache per workspace, narrowed for the same reason. This one and
+        // no further: what the state directory itself is set to belongs to whichever subsystem
+        // created it.
+        if let Some(root) = path.parent()
+            && root.file_name().is_some_and(|name| name == CACHE_ROOT)
+        {
+            narrow(root);
+        }
+    }
+    Ok(())
+}
+
+/// Create one directory reachable only by this user, narrowing one that is already there.
+///
+/// A directory keeps the mode it was made with, so one an earlier run left open stays open unless
+/// it is narrowed on the way past.
+fn create_private(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+        narrow(path);
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
+/// Narrow one directory, unless the name is a link.
+///
+/// `set_permissions` follows a link, and where one leads is outside the two directories this crate
+/// owns: a linked cache would have a language server client setting the mode of a directory
+/// somewhere else in the user's home.
+#[cfg(unix)]
+fn narrow(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let is_link = std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_symlink());
+    if !is_link {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    }
 }
 
 /// Whether a message is a server saying its initial index is built.
@@ -323,14 +410,32 @@ impl Server {
 
         // Where the index goes, said to each ecosystem in its own spelling. Nothing is written to the
         // workspace, which is LSP-10.
+        //
+        // Every directory the server is pointed at is made here rather than left to the server,
+        // and a failure to make one stops the launch. A server handed a directory this process
+        // could not create makes it itself, at the umask, and fills it with an index derived from
+        // every file in the workspace: STATE-1 undone by the one case where it matters. Not
+        // starting says so, where dropping the variable would silently write the index into the
+        // tree instead, which is what LSP-10 forbids.
         if let Some(cache) = cache {
-            let _ = std::fs::create_dir_all(cache);
+            let private = |path: &Path, create: fn(&Path) -> std::io::Result<()>| {
+                create(path).map_err(|e| LspError::Start {
+                    language,
+                    detail: format!(
+                        "its index directory {} could not be created: {e}",
+                        path.display()
+                    ),
+                })
+            };
+            private(cache, create_cache)?;
             match language {
                 Language::Rust => {
                     command.env("CARGO_TARGET_DIR", cache);
                 }
                 Language::Go => {
-                    command.env("GOCACHE", cache.join("go-build"));
+                    let build = cache.join("go-build");
+                    private(&build, create_private)?;
+                    command.env("GOCACHE", build);
                 }
                 Language::TypeScript | Language::Python => {
                     // Neither reads a variable for this; both use the system temporary directory,
@@ -677,7 +782,8 @@ pub struct Question<'a> {
 pub struct Servers {
     running: HashMap<Language, Server>,
     root: PathBuf,
-    home: Option<PathBuf>,
+    /// `~/.bravebot` itself, not the home it sits in.
+    state: Option<PathBuf>,
     /// How a program name becomes the file it names.
     ///
     /// Supplied rather than done here, for the reason [`Server::launch`] takes a resolved path:
@@ -702,7 +808,7 @@ impl std::fmt::Debug for Servers {
 impl Servers {
     pub fn new(
         root: impl Into<PathBuf>,
-        home: Option<PathBuf>,
+        state: Option<PathBuf>,
         resolve: fn(&str) -> Option<PathBuf>,
         incognito: bool,
         withheld: Vec<String>,
@@ -710,7 +816,7 @@ impl Servers {
         Self {
             running: HashMap::new(),
             root: root.into(),
-            home,
+            state,
             resolve,
             incognito,
             withheld,
@@ -779,7 +885,7 @@ impl Servers {
                 return Err(LspError::Refused { language });
             }
 
-            let cache = cache_for(self.home.as_deref(), &self.root, self.incognito);
+            let cache = cache_for(self.state.as_deref(), &self.root, self.incognito);
             let server = Server::launch(
                 language,
                 &resolved,
@@ -887,13 +993,17 @@ mod tests {
         );
     }
 
+    /// The state directory, as the host resolves it and hands it over.
+    fn state() -> PathBuf {
+        PathBuf::from("/home/someone/.bravebot")
+    }
+
     /// LSP-10: never inside the workspace, and keyed by it.
     #[test]
     fn the_cache_is_outside_the_workspace() {
-        let home = PathBuf::from("/home/someone");
-        let cache = cache_for(Some(&home), &root(), false).expect("a cache is given");
+        let cache = cache_for(Some(&state()), &root(), false).expect("a cache is given");
         assert!(
-            cache.starts_with(home.join(".bravebot")),
+            cache.starts_with(state()),
             "the cache belongs under the directory this process owns, got {}",
             cache.display()
         );
@@ -904,12 +1014,198 @@ mod tests {
         );
     }
 
+    /// The argument is the state directory, so appending its name here would put the index in
+    /// `~/.bravebot/.bravebot`: a directory nothing else writes to, reads or narrows, holding an
+    /// index of the user's source.
+    #[test]
+    fn the_cache_sits_directly_under_the_directory_it_is_given() {
+        let cache = cache_for(Some(&state()), &root(), false).expect("a cache is given");
+
+        let below: Vec<_> = cache
+            .strip_prefix(state())
+            .expect("under the directory it was given")
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            below.len(),
+            2,
+            "one directory for the tool, one per workspace"
+        );
+        assert_eq!(below[0], CACHE_ROOT);
+    }
+
+    /// The index is derived from every file in the workspace, so who may read it is who may read
+    /// the workspace. At the process umask that is every account on the machine.
+    #[cfg(unix)]
+    #[test]
+    fn the_cache_is_created_reachable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-mode");
+        let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
+
+        create_cache(&cache).expect("created");
+
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&cache), 0o700);
+        assert_eq!(
+            mode(&scratch.join(CACHE_ROOT)),
+            0o700,
+            "the directory holding one per workspace"
+        );
+    }
+
+    /// An earlier build appended the state directory's own name, so the index landed one level
+    /// deeper than anything reads, rebuilds or narrows. Left there it is an index of the user's
+    /// source sitting at the umask for the life of the machine.
+    #[test]
+    fn an_index_an_earlier_build_left_too_deep_is_removed() {
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-misplaced");
+        let state = scratch.join(".bravebot");
+        let misplaced = state
+            .join(".bravebot")
+            .join(CACHE_ROOT)
+            .join("0123456789abcdef");
+        std::fs::create_dir_all(&misplaced).expect("as an earlier build left it");
+        std::fs::write(misplaced.join("index"), "derived from the workspace").expect("write");
+        let cache = cache_for(Some(&state), &root(), false).expect("a cache is given");
+
+        create_cache(&cache).expect("created");
+
+        assert!(
+            !state.join(".bravebot").exists(),
+            "the index nothing reads is still there"
+        );
+        assert!(cache.is_dir(), "the cache this run wants was not created");
+    }
+
+    /// Only what this crate would have written is removed. A directory that happens to carry the
+    /// same name and holds something else is somebody's own.
+    #[test]
+    fn a_nested_directory_that_holds_no_index_is_left_where_it_is() {
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-not-an-index");
+        let state = scratch.join(".bravebot");
+        let theirs = state.join(".bravebot");
+        std::fs::create_dir_all(theirs.join("notes")).expect("somebody else's");
+        let cache = cache_for(Some(&state), &root(), false).expect("a cache is given");
+
+        create_cache(&cache).expect("created");
+
+        assert!(
+            theirs.join("notes").is_dir(),
+            "a directory holding no index was removed"
+        );
+    }
+
+    /// A server handed a directory this process could not create makes it itself, at the umask,
+    /// and fills it with an index derived from every file in the workspace. Refusing to start says
+    /// so; carrying on would leave STATE-1 holding in every case but the one where it matters.
+    #[test]
+    fn a_server_whose_index_directory_cannot_be_made_private_does_not_start() {
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-unmakeable");
+        std::fs::create_dir_all(&*scratch).expect("scratch");
+        // A file where the state directory would be, so nothing can be created below it.
+        let state = scratch.join("not-a-directory");
+        std::fs::write(&state, "").expect("seed");
+        let cache = cache_for(Some(&state), &root(), false).expect("a cache is given");
+
+        let error = Server::launch(
+            Language::Rust,
+            Path::new("/nonexistent-binary"),
+            &root(),
+            Some(&cache),
+            &[],
+        )
+        .expect_err("a server must not start without an index directory of its own");
+
+        // Reported as a failure to start rather than as the missing binary, which is what a launch
+        // that got as far as spawning would have said.
+        match error {
+            LspError::Start { detail, .. } => {
+                assert!(detail.contains("index directory"), "{detail}");
+            }
+            other => panic!("started, or stopped for another reason: {other}"),
+        }
+    }
+
+    /// A run of an earlier build left these at the umask, and creating a directory that exists
+    /// does not touch its mode. Without narrowing, the machines already holding an index would be
+    /// the ones this never reaches.
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_left_open_by_an_earlier_run_is_narrowed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-narrowed");
+        let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
+        std::fs::create_dir_all(&cache).expect("as an earlier run left it");
+        let loosen = |path: &Path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("loosen")
+        };
+        // Every level, including the state directory: what `create_dir_all` gave them is the mode
+        // of whoever runs the tests, and the claim below is about a directory left open.
+        loosen(&scratch);
+        loosen(&scratch.join(CACHE_ROOT));
+        loosen(&cache);
+
+        create_cache(&cache).expect("created");
+
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("exists")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&cache), 0o700);
+        assert_eq!(mode(&scratch.join(CACHE_ROOT)), 0o700);
+        assert_eq!(
+            mode(&scratch),
+            0o755,
+            "the state directory is not this crate's to set"
+        );
+    }
+
+    /// The two directories this crate narrows are named, not resolved, so a linked one would have
+    /// a language server client setting the mode of a directory somewhere else in the user's home.
+    #[cfg(unix)]
+    #[test]
+    fn narrowing_does_not_follow_a_link_out_of_the_cache() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-link");
+        let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
+        let elsewhere = scratch.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("create");
+        std::fs::create_dir_all(scratch.join(CACHE_ROOT)).expect("create");
+        std::os::unix::fs::symlink(&elsewhere, &cache).expect("link");
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).expect("mode");
+
+        create_cache(&cache).expect("created");
+
+        let mode = std::fs::symlink_metadata(&elsewhere)
+            .expect("exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "a directory outside the cache was narrowed through a link"
+        );
+    }
+
     /// LSP-10: two workspaces do not share an index.
     #[test]
     fn the_cache_is_keyed_by_the_workspace() {
-        let home = PathBuf::from("/home/someone");
-        let one = cache_for(Some(&home), Path::new("/a/project"), false).expect("cache");
-        let two = cache_for(Some(&home), Path::new("/b/project"), false).expect("cache");
+        let one = cache_for(Some(&state()), Path::new("/a/project"), false).expect("cache");
+        let two = cache_for(Some(&state()), Path::new("/b/project"), false).expect("cache");
         assert_ne!(
             one, two,
             "two checkouts must not share an index, or a stale one is read as the other's"
@@ -917,16 +1213,15 @@ mod tests {
         // And the same workspace is the same directory every time, or nothing is ever reused.
         assert_eq!(
             one,
-            cache_for(Some(&home), Path::new("/a/project"), false).expect("cache")
+            cache_for(Some(&state()), Path::new("/a/project"), false).expect("cache")
         );
     }
 
     /// LSP-10: incognito adds nothing to `~/.bravebot`, so it is given no cache at all.
     #[test]
     fn an_incognito_session_is_given_no_cache() {
-        let home = PathBuf::from("/home/someone");
         assert!(
-            cache_for(Some(&home), &root(), true).is_none(),
+            cache_for(Some(&state()), &root(), true).is_none(),
             "an incognito session must write no index"
         );
         // And with nowhere to keep one, there is nothing to key.
@@ -945,7 +1240,7 @@ mod tests {
     /// through this crate even if it wanted to.
     #[test]
     fn the_cache_is_never_read_by_the_driver() {
-        let cache = cache_for(Some(Path::new("/home/someone")), &root(), false).expect("cache");
+        let cache = cache_for(Some(&state()), &root(), false).expect("cache");
 
         // A path, not a handle and not any bytes. Everything this crate does with it is hand it to a
         // child process, and the type says so: `PathBuf` carries no contents.

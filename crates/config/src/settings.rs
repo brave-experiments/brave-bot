@@ -493,7 +493,17 @@ fn strings(block: &serde_json::Map<String, serde_json::Value>, name: &str) -> Ve
 /// location would silently read a checkout's file as though a person had put it in their own
 /// directory.
 fn home() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
+    home_named(std::env::var_os("HOME"))
+}
+
+/// The same answer, from the value rather than from the variable.
+///
+/// Split from the read so the rule is testable without a process-wide variable. A test that set
+/// `HOME` would have to take a lock against every other test in this binary, restore what was
+/// there, and step outside safe Rust to do it, all to check a rule that is a function of one
+/// string.
+fn home_named(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let home = home?;
     if home.is_empty() {
         return None;
     }
@@ -503,6 +513,35 @@ fn home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A home as the environment hands one over.
+    fn named(home: &str) -> Option<std::ffi::OsString> {
+        Some(std::ffi::OsString::from(home))
+    }
+
+    /// STATE-2: this crate resolves the state directory itself, since it sits below the one that
+    /// answers where it is. What has to hold across the resolvers is the name, so a layer reading
+    /// a settings file finds the same directory a layer writing history does.
+    #[test]
+    fn the_state_directory_is_the_home_the_environment_names() {
+        assert_eq!(
+            home_named(named("/somebody/else")),
+            Some(PathBuf::from("/somebody/else/.bravebot"))
+        );
+    }
+
+    /// STATE-2: the other half of the same rule. A fallback here would read settings out of a
+    /// directory nobody chose, and settings are what decide which model answers and which
+    /// commands run without being asked about.
+    #[test]
+    fn an_absent_or_empty_home_yields_no_directory_rather_than_a_guess() {
+        assert_eq!(home_named(None), None);
+        assert_eq!(
+            home_named(named("")),
+            None,
+            "an empty home was joined onto anyway"
+        );
+    }
 
     /// The point of the file: a block copied from `~/.claude/settings.json` configures this agent
     /// without being rewritten first.

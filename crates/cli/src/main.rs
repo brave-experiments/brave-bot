@@ -1725,7 +1725,7 @@ mod tests {
     impl Scratch {
         fn new(name: &str) -> Self {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/scratch")
+                .join("../../target/test-scratch")
                 .join(name);
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("create scratch");

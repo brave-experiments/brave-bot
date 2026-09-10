@@ -68,7 +68,10 @@ impl LanguageServers {
     ///
     /// Nothing is started here. LSP-8 starts a server on the first question that needs one, so a
     /// session that asks nothing of a language starts nothing and nobody is asked about anything.
-    pub fn new(root: impl Into<PathBuf>, home: Option<PathBuf>) -> Self {
+    ///
+    /// `state` is `~/.bravebot` itself, which is what [`crate::home::directory`] answers, rather
+    /// than the home it sits in.
+    pub fn new(root: impl Into<PathBuf>, state: Option<PathBuf>) -> Self {
         let root = root.into();
         // Read here rather than threaded in: incognito is a property of the process, so a caller
         // passing it would be repeating something already true.
@@ -80,7 +83,7 @@ impl LanguageServers {
             // what this agent authenticates with.
             servers: Servers::new(
                 root.clone(),
-                home,
+                state,
                 resolve_program,
                 incognito,
                 crate::scrub::names(&bravebot_config::Settings::load()),
