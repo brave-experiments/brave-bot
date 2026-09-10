@@ -599,7 +599,7 @@ leaves everything else in force.
 
 | What | How layers combine |
 |---|---|
-| `env`, `provider` | per name, one level down; the value under a name is replaced whole |
+| `env`, `provider`, `attribution` | per name, one level down; the value under a name is replaced whole |
 | `run.scrubEnv`, every list under `permissions` | every layer's entries are kept |
 | `model`, anything else | the closest layer that set it wins |
 
@@ -613,6 +613,10 @@ Overriding per name is what makes putting one value in a checkout worth doing, s
 is restating an entire configuration to change a host. Going deeper than a name would make one
 request's destination the product of two files with no single place to read that says where it goes,
 which is why a gateway entry is replaced whole and a project file naming one must name its host too.
+
+The two names under `attribution` combine per name for the same reason `env` does: they are
+unrelated destinations that happen to share a block, and a file answering for one must not answer
+for the other by omission.
 
 The lists are the exception because an entry in one only ever narrows what is possible: a name under
 `scrubEnv` takes a variable away from a subprocess, and a rule under `permissions` refuses something
@@ -635,6 +639,7 @@ knowing where to put a value for one tool is knowing it for the other.
 `verified-by: bravebot_config::settings::every_layer_adds_to_the_permission_rules`
 `verified-by: bravebot_config::settings::every_layer_adds_to_the_directories_a_file_makes_reachable`
 `verified-by: bravebot_config::settings::the_closest_layer_that_named_a_model_wins`
+`verified-by: bravebot_config::settings::a_layer_answering_for_one_attribution_name_leaves_the_other`
 `verified-by: bravebot_config::settings::a_layer_naming_no_model_leaves_the_one_below_it`
 `verified-by: bravebot_config::settings::a_project_layer_replaces_one_gateway_and_leaves_the_others`
 `verified-by: bravebot_config::settings::a_project_gateway_naming_no_host_replaces_one_that_did`
@@ -724,6 +729,28 @@ format, which has no field for this and asks for nothing.
 `verified-by: bravebot_bedrock::protocol::a_conversation_ending_in_a_tool_result_is_marked_too`
 `verified-by: bravebot_bedrock::protocol::a_reply_without_a_breakpoint_still_parses`
 `verified-by: bravebot_bedrock::protocol::cached_tokens_are_counted_as_the_prompt_they_were`
+
+<a id="BACKEND-28"></a>
+### BACKEND-28: what a commit or a pull request carries is a settings key, and empty says none
+
+An `attribution` block names what this program may add to a commit message it writes and to a pull
+request it opens: `commit` and `pr`, a string each. The empty string is an answer and means carry
+nothing. A name no layer wrote is the settings having said nothing about that destination, which is
+a different answer from empty and is reported as unset. Anything that is not a string is read as
+absence, on the footing every other malformed value here is read.
+
+**Why.** A trailer nobody asked for is a small thing on one commit and a permanent thing in a
+history, and asking for none of it in the instructions puts the answer somewhere a model has to be
+reading at the moment it writes one. A key states it once, with nothing to re-read and nothing to
+drop on a long turn. Empty has to be a value for that to work at all: read as absence it would be
+the one thing the block exists to say and the one thing it could not.
+
+Absence is kept distinct from empty because they ask for different things. Empty is a decision that
+nothing is carried; unset leaves the decision with whoever writes the commit, and collapsing the two
+would make a file that mentions the block at all speak for names it never named.
+
+`verified-by: bravebot_config::settings::an_empty_attribution_is_a_choice_of_nothing`
+`verified-by: bravebot_config::settings::an_attribution_name_no_file_wrote_is_unset`
 
 ## Known costs
 
