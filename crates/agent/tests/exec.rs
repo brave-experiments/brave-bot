@@ -74,7 +74,7 @@ fn with_env(vars: &[(&str, Option<&str>)]) -> EnvGuard {
 /// Resolve every stage the way the tool does, then run it.
 fn run(pipeline: Pipeline, at: &std::path::Path) -> Result<exec::Ran, ExecError> {
     let resolved = resolve_all(&pipeline, at)?;
-    exec::run(&pipeline, &resolved, at, &Cancel::new())
+    run_resolved(&pipeline, &resolved, at)
 }
 
 fn resolve_all(
@@ -93,6 +93,74 @@ fn resolve_all(
             })
         })
         .collect()
+}
+
+/// Make `name` an executable script in `at`, and return the path it resolved to.
+fn script(at: &std::path::Path, name: &str, body: &str) -> PathBuf {
+    let path = at.join(name);
+    std::fs::write(&path, body).expect("write the script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+    }
+    path.canonicalize().expect("canonicalize")
+}
+
+/// Runs `attempt`, retrying while it fails because the program is held open for writing.
+///
+/// A test that writes a program and then runs it races every other test in this binary. Between a
+/// sibling thread's fork and its exec the child holds a copy of every descriptor this process had
+/// open, and the descriptor [`script`] wrote through is close-on-exec, so it lives until that
+/// exec: for that window this process is itself a writer holding the new program open, and
+/// `execve` answers `ETXTBSY` for precisely that. The window belongs to whichever thread forked,
+/// so there is nothing to close here and nothing to synchronise on, only to wait out. Left
+/// unhandled it is an occasional failure in a test that has nothing to do with what it reports.
+fn past_text_file_busy<T>(
+    mut attempt: impl FnMut() -> Result<T, ExecError>,
+) -> Result<T, ExecError> {
+    // `ETXTBSY`, 26 on both Linux and macOS, compared as the message the operating system gives
+    // it because that string is all `NotStarted` carries.
+    let busy = std::io::Error::from_raw_os_error(26).to_string();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let outcome = attempt();
+        let held_open =
+            matches!(&outcome, Err(ExecError::NotStarted { detail, .. }) if *detail == busy);
+        if !held_open || std::time::Instant::now() >= deadline {
+            return outcome;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// [`exec::run`] for a pipeline already resolved, waiting out a busy program.
+fn run_resolved(
+    pipeline: &Pipeline,
+    resolved: &[PathBuf],
+    at: &std::path::Path,
+) -> Result<exec::Ran, ExecError> {
+    past_text_file_busy(|| exec::run(pipeline, resolved, at, &Cancel::new()))
+}
+
+/// [`exec::run_within`], waiting out a busy program.
+fn run_within(
+    pipeline: &Pipeline,
+    resolved: &[PathBuf],
+    at: &std::path::Path,
+    limit: std::time::Duration,
+) -> Result<exec::Ran, ExecError> {
+    past_text_file_busy(|| exec::run_within(pipeline, resolved, at, &Cancel::new(), limit))
+}
+
+/// [`exec::start`], waiting out a busy program.
+fn start(
+    pipeline: &Pipeline,
+    resolved: &[PathBuf],
+    at: &std::path::Path,
+) -> Result<exec::Background, ExecError> {
+    past_text_file_busy(|| exec::start(pipeline, resolved, at))
 }
 
 #[test]
@@ -447,24 +515,12 @@ fn a_large_result_does_not_deadlock() {
 #[test]
 fn a_stage_runs_the_binary_it_was_resolved_to() {
     let scratch = Scratch::new("resolved");
-    let shadow = scratch.path.join("echo");
-    std::fs::write(&shadow, "#!/bin/sh\necho shadowed\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shadow, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let shadow = [script(&scratch.path, "echo", "#!/bin/sh\necho shadowed\n")];
 
     // The pipeline says `echo`, but the resolution handed over the shadow. What runs is the
     // resolution.
     let pipeline = Pipeline::new(vec![Stage::new("echo", vec!["ignored".into()])]);
-    let ran = exec::run(
-        &pipeline,
-        &[shadow.canonicalize().unwrap()],
-        &scratch.path,
-        &Cancel::new(),
-    )
-    .expect("the resolved program runs");
+    let ran = run_resolved(&pipeline, &shadow, &scratch.path).expect("the resolved program runs");
     assert_eq!(ran.stdout.trim(), "shadowed");
 }
 
@@ -490,13 +546,11 @@ fn a_pipeline_stopped_at_the_limit_still_returns_what_it_printed() {
     let scratch = Scratch::new("stopped");
     // Prints a line, then outlasts the limit, which is the shape of `http.server` and every other
     // thing asked to serve something.
-    let script = scratch.path.join("serve");
-    std::fs::write(&script, "#!/bin/sh\necho listening\nsleep 30\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let resolved = [script(
+        &scratch.path,
+        "serve",
+        "#!/bin/sh\necho listening\nsleep 30\n",
+    )];
 
     let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
 
@@ -512,14 +566,8 @@ fn a_pipeline_stopped_at_the_limit_still_returns_what_it_printed() {
     let mut limit = std::time::Duration::from_secs(2);
     let (ran, took) = loop {
         let started = std::time::Instant::now();
-        let ran = exec::run_within(
-            &pipeline,
-            &[script.canonicalize().unwrap()],
-            &scratch.path,
-            &Cancel::new(),
-            limit,
-        )
-        .expect("a pipeline that outstays the limit is stopped, not an error");
+        let ran = run_within(&pipeline, &resolved, &scratch.path, limit)
+            .expect("a pipeline that outstays the limit is stopped, not an error");
         let took = started.elapsed();
 
         if !ran.stdout.trim().is_empty() || limit >= std::time::Duration::from_secs(16) {
@@ -567,21 +615,18 @@ fn a_pipeline_that_ends_by_itself_is_not_marked_stopped() {
 #[test]
 fn a_grandchild_holding_the_pipe_does_not_hang_the_run() {
     let scratch = Scratch::new("grandchild");
-    let script = scratch.path.join("detach");
-    std::fs::write(&script, "#!/bin/sh\nsleep 30 &\necho started\nsleep 30\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let resolved = [script(
+        &scratch.path,
+        "detach",
+        "#!/bin/sh\nsleep 30 &\necho started\nsleep 30\n",
+    )];
 
     let pipeline = Pipeline::new(vec![Stage::new("detach", Vec::new())]);
     let started = std::time::Instant::now();
-    let ran = exec::run_within(
+    let ran = run_within(
         &pipeline,
-        &[script.canonicalize().unwrap()],
+        &resolved,
         &scratch.path,
-        &Cancel::new(),
         std::time::Duration::from_millis(400),
     )
     .expect("stopped rather than failed");
@@ -765,19 +810,6 @@ fn an_assignment_reaches_the_step_it_was_written_in_front_of() {
     );
 }
 
-/// Make `name` an executable script in `at`, and return the path it resolved to.
-fn script(at: &std::path::Path, name: &str, body: &str) -> PathBuf {
-    let path = at.join(name);
-    std::fs::write(&path, body).expect("write the script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make it executable");
-    }
-    path.canonicalize().expect("canonicalize")
-}
-
 /// The case the whole thing exists for. A server prints that it is listening and then keeps
 /// running, so a caller that had to wait for it would wait out the limit and be handed a corpse.
 #[test]
@@ -791,7 +823,7 @@ fn a_background_pipeline_reports_what_it_printed_while_it_is_still_running() {
 
     let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
     let started = std::time::Instant::now();
-    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    let mut job = start(&pipeline, &[resolved], &scratch.path).expect("it starts");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "starting a background pipeline waited for it"
@@ -822,7 +854,7 @@ fn a_background_pipeline_that_finishes_says_so_and_reports_its_code() {
     let resolved = script(&scratch.path, "quick", "#!/bin/sh\necho done\nexit 3\n");
 
     let pipeline = Pipeline::new(vec![Stage::new("quick", Vec::new())]);
-    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    let mut job = start(&pipeline, &[resolved], &scratch.path).expect("it starts");
 
     let mut ended = false;
     for _ in 0..100 {
@@ -850,7 +882,7 @@ fn dropping_a_background_pipeline_kills_it() {
     );
 
     let pipeline = Pipeline::new(vec![Stage::new("later", Vec::new())]);
-    let job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    let job = start(&pipeline, &[resolved], &scratch.path).expect("it starts");
     drop(job);
 
     std::thread::sleep(std::time::Duration::from_millis(2500));
@@ -870,7 +902,7 @@ fn a_killed_background_pipeline_keeps_what_it_printed() {
     );
 
     let pipeline = Pipeline::new(vec![Stage::new("serve", Vec::new())]);
-    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    let mut job = start(&pipeline, &[resolved], &scratch.path).expect("it starts");
     for _ in 0..100 {
         if job.printed().contains("listening") {
             break;
@@ -895,7 +927,7 @@ fn background_stages_are_chained_so_one_feeds_the_next() {
         Stage::new("wc", vec!["-l".into()]),
     ]);
     let resolved = resolve_all(&pipeline, &scratch.path).expect("both resolve");
-    let mut job = exec::start(&pipeline, &resolved, &scratch.path).expect("it starts");
+    let mut job = start(&pipeline, &resolved, &scratch.path).expect("it starts");
 
     for _ in 0..100 {
         if job.ended() {
@@ -921,7 +953,7 @@ fn a_background_pipeline_does_not_see_this_agents_credentials() {
 
     let pipeline = Pipeline::new(vec![Stage::new("env", Vec::new())]);
     let resolved = resolve_all(&pipeline, &scratch.path).expect("env resolves");
-    let mut job = exec::start(&pipeline, &resolved, &scratch.path).expect("it starts");
+    let mut job = start(&pipeline, &resolved, &scratch.path).expect("it starts");
     for _ in 0..100 {
         if job.ended() {
             break;
@@ -948,7 +980,7 @@ fn a_background_pipeline_does_not_see_this_agents_credentials() {
 fn a_background_pipeline_with_missing_resolutions_does_not_start() {
     let scratch = Scratch::new("background-unresolved");
     let pipeline = Pipeline::new(vec![Stage::new("echo", vec!["a".into()])]);
-    let error = exec::start(&pipeline, &[], &scratch.path)
+    let error = start(&pipeline, &[], &scratch.path)
         .expect_err("nothing starts without a resolution per stage");
     assert!(matches!(error, ExecError::Io(_)));
 }
@@ -972,7 +1004,7 @@ fn a_background_pipeline_reported_as_ended_has_all_of_its_output() {
     );
 
     let pipeline = Pipeline::new(vec![Stage::new("chatty", Vec::new())]);
-    let mut job = exec::start(&pipeline, &[resolved], &scratch.path).expect("it starts");
+    let mut job = start(&pipeline, &[resolved], &scratch.path).expect("it starts");
 
     let mut ended = false;
     for _ in 0..100 {
