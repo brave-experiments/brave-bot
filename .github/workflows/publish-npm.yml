@@ -20,7 +20,7 @@ permissions:
 jobs:
   publish:
     name: Publish @brave/bravebot
-    if: github.repository == 'brave-experiments/bravebot'
+    if: github.repository == 'brave/bravebot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
