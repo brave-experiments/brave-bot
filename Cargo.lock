@@ -99,7 +99,7 @@ dependencies = [
 name = "bravebot-agent"
 version = "0.6.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bravebot-aichat",
  "bravebot-bedrock",
  "bravebot-config",
@@ -208,7 +208,7 @@ dependencies = [
 name = "bravebot-signing"
 version = "0.6.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "hmac",
  "sha2",
 ]
@@ -229,7 +229,7 @@ dependencies = [
 name = "bravebot-tui"
 version = "0.6.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bravebot-agent",
  "bravebot-aichat",
  "bravebot-config",
