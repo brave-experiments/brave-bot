@@ -5,12 +5,12 @@
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/brave-experiments/brave-bot.git"
+    "url": "git+https://github.com/brave-experiments/bravebot.git"
   },
   "bugs": {
-    "url": "https://github.com/brave-experiments/brave-bot/issues"
+    "url": "https://github.com/brave-experiments/bravebot/issues"
   },
-  "homepage": "https://github.com/brave-experiments/brave-bot#readme",
+  "homepage": "https://github.com/brave-experiments/bravebot#readme",
   "bin": {
     "bravebot": "npm/bin/bravebot.js"
   },
