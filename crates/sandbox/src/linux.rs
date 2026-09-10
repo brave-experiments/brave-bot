@@ -115,6 +115,17 @@ impl Sandbox for LandlockSandbox {
             });
         }
 
+        // Subprocess denial is not yet enforceable here, so a policy that requires it
+        // must not be silently downgraded.
+        if !policy.allow_subprocesses {
+            return Err(SandboxError::SetupFailed {
+                mechanism: "landlock",
+                detail: "subprocess denial is not implemented on Linux yet; refusing rather \
+                         than reporting confinement that is not applied"
+                    .into(),
+            });
+        }
+
         let mut command = Command::new(program);
         command.args(args);
 
@@ -222,6 +233,19 @@ mod tests {
         assert!(matches!(err, SandboxError::SetupFailed { .. }));
     }
 
+    /// Until subprocess denial is implemented, asking for it must be an error rather than
+    /// a sandbox that quietly permits fork/exec.
+    #[test]
+    fn a_policy_requiring_subprocess_denial_is_refused() {
+        let Some(sandbox) = sandbox_or_skip() else {
+            return;
+        };
+        let err = sandbox
+            .command("/bin/true", &[], &SandboxPolicy::strict().allow_network_egress())
+            .expect_err("must refuse rather than under-enforce");
+        assert!(matches!(err, SandboxError::SetupFailed { .. }));
+    }
+
     #[test]
     fn a_fully_permissive_policy_is_refused() {
         let policy = SandboxPolicy::strict()
@@ -241,6 +265,7 @@ mod tests {
         };
         let policy = SandboxPolicy::strict()
             .allow_network_egress()
+            .allow_subprocesses()
             .allow_read("/usr")
             .allow_read("/lib")
             .allow_read("/lib64")
@@ -264,6 +289,7 @@ mod tests {
         };
         let policy = SandboxPolicy::strict()
             .allow_network_egress()
+            .allow_subprocesses()
             .allow_read("/usr")
             .allow_read("/lib")
             .allow_read("/lib64")
