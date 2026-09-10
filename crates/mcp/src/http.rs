@@ -163,16 +163,16 @@ impl HttpServer {
         let parsed: ToolResult = serde_json::from_value(result)
             .map_err(|e| McpError::Transport(format!("malformed tool result: {e}")))?;
 
-        if parsed.is_error {
-            return Err(McpError::ToolFailed {
-                tool: tool.to_string(),
-                detail: parsed.text(),
-            });
-        }
-
         let label = policy
             .observe(Capability::McpCall)
             .map_err(McpError::Denied)?;
+
+        if parsed.is_error {
+            return Err(McpError::ToolFailed {
+                tool: tool.to_string(),
+                detail: Labelled::new(parsed.text(), label),
+            });
+        }
 
         Ok(Labelled::new(parsed.text(), label))
     }

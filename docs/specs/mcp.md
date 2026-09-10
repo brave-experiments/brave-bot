@@ -28,9 +28,12 @@ that needs its parts labelled separately stays native rather than moving behind 
 ### MCP-1: what a server returns is untrusted
 
 A tool result is content from outside, so it is labelled untrusted and quarantined like anything
-else nobody vouched for. Nothing a server says about itself changes that.
+else nobody vouched for. Nothing a server says about itself changes that, a result it marks as its
+own failure included.
 
 `verified-by: bravebot_mcp::stdio::a_tool_result_is_labelled_untrusted`
+`verified-by: bravebot_mcp::stdio::a_tool_level_error_is_reported_as_a_failure`
+`verified-by: bravebot_mcp::http::a_tool_level_error_is_reported_as_a_failure`
 
 <a id="MCP-2"></a>
 ### MCP-2: a call needs the capability, like any other effect
@@ -70,6 +73,8 @@ the truth is that nobody asked successfully.
 
 `verified-by: bravebot_mcp::stdio::a_server_error_is_reported`
 `verified-by: bravebot_mcp::stdio::a_server_that_exits_early_is_an_error`
+`verified-by: bravebot_mcp::stdio::a_tool_level_error_is_reported_as_a_failure`
+`verified-by: bravebot_mcp::http::a_tool_level_error_is_reported_as_a_failure`
 `verified-by: bravebot_mcp::protocol::a_tool_level_error_is_visible`
 `verified-by: bravebot_mcp::protocol::an_error_response_parses`
 `verified-by: bravebot_mcp::http::a_reply_with_no_json_is_none`
@@ -97,3 +102,20 @@ server-sent events is unwrapped with the last payload winning.
 `verified-by: bravebot_mcp::http::plain_json_is_extracted_as_is`
 `verified-by: bravebot_mcp::http::whitespace_around_json_is_tolerated`
 `verified-by: bravebot_mcp::http::a_server_records_its_configuration`
+
+<a id="MCP-8"></a>
+### MCP-8: what a failing tool says about itself is shown to a person and to nobody else
+
+A failure carries the server's account of why the call failed as labelled content, and the
+failure's own text names the tool and nothing the server sent. Reading that account takes the
+release that puts content on a screen, so it reaches the person watching and never a message the
+planner is sent.
+
+**Why.** An error's text is the part of a failure a caller formats into whatever it is building,
+including a message the planner is sent, which is the context a hostile tool result exists to
+reach. Discarding the account instead would leave a tool failure the only failure here that says
+nothing about what went wrong, and what went wrong is usually a person's own server.
+
+`verified-by: bravebot_mcp::lib::a_failing_tools_detail_stays_out_of_the_error_message`
+`verified-by: bravebot_mcp::stdio::a_tool_level_error_is_reported_as_a_failure`
+`verified-by: bravebot_mcp::http::a_tool_level_error_is_reported_as_a_failure`

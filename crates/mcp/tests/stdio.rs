@@ -73,6 +73,23 @@ while IFS= read -r line; do
 done
 "#;
 
+/// A server whose tool reports failure of its own, with something to say about it.
+const FAILING_SERVER: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fake","version":"1"}}}\n' "$id"
+      ;;
+    *'"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"no such record"}],"isError":true}}\n' "$id"
+      ;;
+    *'"notifications/initialized"'*)
+      ;;
+  esac
+done
+"#;
+
 fn routing() -> Routing {
     let mut r = Routing::new();
     r.insert_trusted("task", "use a tool");
@@ -231,6 +248,52 @@ fn a_server_is_not_launched_without_confinement() {
         error.to_string().contains("refusing to launch"),
         "got: {error}"
     );
+
+    let _ = std::fs::remove_file(&script);
+}
+
+/// A tool that reports failure of its own is a failure, and what it says about that failure is
+/// content from outside like anything else it sent.
+#[test]
+fn a_tool_level_error_is_reported_as_a_failure() {
+    let _spawning = one_at_a_time();
+    let Some(sandbox) = sandbox_or_skip() else {
+        return;
+    };
+    let script = fake_server("tool-error", FAILING_SERVER);
+
+    let mut server = StdioServer::launch(
+        "fake",
+        script.to_str().expect("path"),
+        &[],
+        sandbox.as_ref(),
+        &sandbox_policy(),
+    )
+    .expect("server launches");
+    server.initialize("bravebot", "0.1.0").expect("handshake");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::McpCall]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let error = server
+        .call_tool(&mut policy, "echo", serde_json::json!({}))
+        .expect_err("a tool-level error must be a failure");
+
+    let McpError::ToolFailed { tool, detail } = error else {
+        panic!("got: {error}");
+    };
+    assert_eq!(tool, "echo");
+    assert_eq!(detail.label(), Label::untrusted_public());
+
+    let proof = policy.authorise_display_release("test inspects the failure");
+    assert_eq!(detail.declassify(&proof), "no such record");
+    assert!(policy.finish());
 
     let _ = std::fs::remove_file(&script);
 }

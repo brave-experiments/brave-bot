@@ -82,6 +82,7 @@ const INIT_OK: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"20
 const TOOLS_OK: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"look something up","inputSchema":{"type":"object"}}]}}"#;
 const CALL_OK: &str =
     r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"remote answer"}]}}"#;
+const CALL_FAILED: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"no such record"}],"isError":true}}"#;
 
 #[test]
 fn a_handshake_and_tool_list_round_trip() {
@@ -311,6 +312,41 @@ fn a_redirecting_server_is_revalidated() {
 
     assert_eq!(checked.len(), 2, "each hop must be checked: {checked:?}");
     assert!(checked[1].contains("/elsewhere"));
+}
+
+/// A tool that reports failure of its own is a failure, and what it says about that failure is
+/// content from outside like anything else it sent.
+#[test]
+fn a_tool_level_error_is_reported_as_a_failure() {
+    let (url, _received) = serve(vec![json_response(INIT_OK), json_response(CALL_FAILED)]);
+    let egress = Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch, Capability::McpCall]),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let mut server = HttpServer::new("remote", &url);
+    server
+        .initialize(&mut policy, &egress, "bravebot", "0.1.0")
+        .expect("handshake");
+
+    let error = server
+        .call_tool(&mut policy, &egress, "lookup", serde_json::json!({}))
+        .expect_err("a tool-level error must be a failure");
+
+    let McpError::ToolFailed { tool, detail } = error else {
+        panic!("got: {error}");
+    };
+    assert_eq!(tool, "lookup");
+    assert_eq!(detail.label(), Label::untrusted_public());
+
+    let proof = policy.authorise_display_release("test inspects the failure");
+    assert_eq!(detail.declassify(&proof), "no such record");
+    assert!(policy.finish());
 }
 
 #[test]

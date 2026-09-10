@@ -182,6 +182,9 @@ impl StdioServer {
     /// The result is labelled untrusted-public: it is third-party output, and this
     /// client does not know what the server read to produce it. A server handling the
     /// user's private data should be given a higher label by its configuration.
+    ///
+    /// What a server says about a failure of its own is third-party output too, so the
+    /// failure carries its detail on exactly that footing.
     pub fn call_tool<S: Sink>(
         &mut self,
         policy: &mut Policy<'_, S>,
@@ -197,16 +200,16 @@ impl StdioServer {
         let parsed: ToolResult = serde_json::from_value(result)
             .map_err(|e| McpError::Transport(format!("malformed tool result: {e}")))?;
 
-        if parsed.is_error {
-            return Err(McpError::ToolFailed {
-                tool: tool.to_string(),
-                detail: parsed.text(),
-            });
-        }
-
         let label = policy
             .observe(bravebot_core::capability::Capability::McpCall)
             .map_err(McpError::Denied)?;
+
+        if parsed.is_error {
+            return Err(McpError::ToolFailed {
+                tool: tool.to_string(),
+                detail: Labelled::new(parsed.text(), label),
+            });
+        }
 
         Ok(Labelled::new(parsed.text(), label))
     }
