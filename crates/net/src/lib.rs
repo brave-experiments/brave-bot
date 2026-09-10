@@ -41,16 +41,26 @@ pub const MAX_REDIRECTS: usize = 5;
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
     /// Resolving the host name.
+    ///
+    /// The transport bounds connecting by this as well, so what it is given is this or
+    /// [`Timeouts::connect`], whichever is larger, and a lookup is allowed that long. A lookup
+    /// bound under the connection bound would be ending connections rather than lookups.
     pub resolve: Duration,
-    /// Opening the socket, including the TLS handshake.
+    /// Opening the socket, including the TLS handshake, from the name having resolved.
     pub connect: Duration,
-    /// Sending the request and its body.
+    /// Sending the request, from the connection having opened.
+    ///
+    /// A request body is bounded by this and [`Timeouts::reply`] together rather than by this
+    /// alone. The transport carries a send bound into the wait for the reply, so a bound tight
+    /// enough to time the body precisely would cut the reply short as well, and the reply is the
+    /// one that must not be cut short.
     pub send: Duration,
-    /// The whole reply, from the request going out to the last byte of the body.
+    /// The reply: the wait for it to begin, and then the whole of it.
     ///
     /// Generous, because this is where a model thinking and then writing a long answer spends
-    /// its time, and none of that is a fault. It is also the only bound on the wait before the
-    /// reply starts, since nothing has arrived yet for a gap to be measured between.
+    /// its time, and none of that is a fault. It is the only bound on the wait before the reply
+    /// starts, since nothing has arrived yet for a gap to be measured between, and it bounds the
+    /// body again from the moment the headers arrive rather than counting the two together.
     pub reply: Duration,
     /// The longest gap between two pieces of a reply that is still arriving.
     ///
@@ -314,14 +324,27 @@ impl Egress {
     /// Exists so the bounds can be exercised in a test at a scale a test can wait for. Nothing in
     /// the product changes them: the defaults are the product's.
     pub fn with_timeouts(timeouts: Timeouts) -> Self {
+        // ureq gives a phase the earliest of its own deadline and the deadlines of the phases
+        // before it (`Timeout::preceeding`, ureq 3.4 src/timings.rs), which its configuration
+        // does not say. A number handed over here therefore bounds the phase it names *and* the
+        // phases after it, so each one below covers every phase whose deadline it sets. Passing
+        // `send` straight to the send phases instead would bound the wait for the reply by
+        // `send`, and an endpoint that took longer than that to start answering would be
+        // reported as a failed send and the request sent again.
         let config = ureq::Agent::config_builder()
             // Redirects are handled here so each hop can be revalidated; letting the
             // client follow them silently would defeat the gate.
             .max_redirects(0)
-            .timeout_resolve(Some(timeouts.resolve))
-            .timeout_connect(Some(timeouts.connect))
-            .timeout_send_request(Some(timeouts.send))
-            .timeout_send_body(Some(timeouts.send))
+            // Bounds connecting too, from the moment the name resolved.
+            .timeout_resolve(Some(timeouts.resolve.max(timeouts.connect)))
+            // Bounds the request going out too, from the moment the connection opened.
+            .timeout_connect(Some(timeouts.connect.max(timeouts.send)))
+            // Bounds the request body and then the wait for the reply too, both from the
+            // moment the request headers went out.
+            .timeout_send_request(Some(timeouts.send + timeouts.reply))
+            // Bounds the wait for the reply too, from the moment the body went out, which is
+            // the moment that wait begins.
+            .timeout_send_body(Some(timeouts.reply))
             // ureq keeps checking this one while the body arrives, so it bounds the whole
             // reply rather than only its headers.
             .timeout_recv_response(Some(timeouts.reply))

@@ -9,7 +9,7 @@ use bravebot_core::event::{Event, RecordingSink};
 use bravebot_core::label::Label;
 use bravebot_core::policy::{Policy, ReleasePlan, Routing};
 use bravebot_net::{Egress, EgressError, Request, Timeouts};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
@@ -336,6 +336,95 @@ fn a_reply_still_arriving_is_not_cut_off_for_taking_longer_than_it_took_to_start
     assert!(!response.truncated);
     let (body, _) = response.body.into_parts_for_decoding();
     assert_eq!(String::from_utf8_lossy(&body), "one two three four five");
+}
+
+/// A server that takes the request, says nothing at all for a while, and only then answers.
+///
+/// What an endpoint that is thinking looks like on the wire: the request is long gone, the
+/// socket is healthy, and the first byte of the answer is simply not ready yet.
+///
+/// The request body is read as well as the head. Closing a connection with bytes still unread
+/// on it is answered with a reset rather than a clean end, and a reset that overtakes the reply
+/// takes the reply with it.
+fn serve_after_thinking(delay: Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("addr").port();
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut line = String::new();
+        let mut length = 0;
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            let header = line.to_ascii_lowercase();
+            if let Some(value) = header.strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap_or(0);
+            }
+            line.clear();
+        }
+        reader
+            .read_exact(&mut vec![0; length])
+            .expect("the request body");
+
+        thread::sleep(delay);
+
+        let body = "an answer worth waiting for";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body.as_bytes());
+        let _ = stream.flush();
+    });
+
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The wait before a reply starts belongs to `reply`, and the request was sent long before it
+/// began. Bounding it by `send` instead reports a thinking endpoint as a dead connection, and
+/// the caller retries a request that was going to be answered.
+///
+/// Sent as a POST, which is the shape the completion endpoint is asked in and the one where
+/// every send phase has run before the wait begins.
+#[test]
+fn a_reply_that_takes_longer_than_the_send_bound_to_start_is_not_a_failed_send() {
+    let base = serve_after_thinking(Duration::from_millis(900));
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        CapabilitySet::from_iter([Capability::WebFetch]),
+        &mut sink,
+    )
+    .expect("policy begins");
+
+    // Nothing about sending is slow here, so the send bound is deliberately far under the wait
+    // the answer needs: it is the bound that must not be the one that decides.
+    let egress = Egress::with_timeouts(Timeouts {
+        send: Duration::from_millis(200),
+        reply: Duration::from_secs(10),
+        ..Timeouts::default()
+    });
+
+    let response = egress
+        .fetch(
+            &mut policy,
+            Request::post(&base, b"{}".to_vec()),
+            Label::untrusted_public(),
+        )
+        .expect("a reply that takes a while to start still arrives");
+
+    assert_eq!(response.status, 200);
+    assert!(!response.truncated);
+    let (body, _) = response.body.into_parts_for_decoding();
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "an answer worth waiting for"
+    );
 }
 
 /// The other half of the same property: a request that is getting nowhere still ends.
