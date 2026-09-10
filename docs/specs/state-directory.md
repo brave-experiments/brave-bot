@@ -77,6 +77,7 @@ to belongs to whichever subsystem created it.
 `verified-by: bravebot_tui::state_directory::nothing_above_the_state_directory_is_touched`
 `verified-by: bravebot_tui::state_directory::writing_a_session_narrows_the_state_directory`
 `verified-by: bravebot_skus::store::the_directory_it_is_kept_in_is_not_reachable_by_anyone_else`
+`verified-by: bravebot_skus::store::a_file_left_readable_by_something_else_is_narrowed`
 `verified-by: bravebot_lsp::server::the_cache_is_created_reachable_only_by_its_owner`
 `verified-by: bravebot_lsp::server::a_cache_left_open_by_an_earlier_run_is_narrowed`
 

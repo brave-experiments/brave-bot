@@ -231,6 +231,10 @@ pub fn save(credentials: &StoredCredentials) -> Result<(), StoreError> {
         .mode(0o600)
         .open(&path)
         .map_err(|e| unusable(format!("{}: {e}", path.display())))?;
+    // The mode above is asked for as the file is created and says nothing about one already there,
+    // which a person may have restored from a backup or copied between machines. Narrowed after the
+    // open and before the write, so the truncated file is private before it holds a token again.
+    let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
 
     file.write_all(encode(credentials).as_bytes())
         .map_err(|e| unusable(format!("{}: {e}", path.display())))
@@ -734,6 +738,36 @@ mod tests {
                 mode & 0o077,
                 0,
                 "group or other can reach {}",
+                path.display()
+            );
+        });
+    }
+
+    /// A mode asked for at creation says nothing about a file already on disk, and this one may be
+    /// there from a backup or copied between machines. It holds a bearer token, so importing over
+    /// it has to narrow it rather than keep the mode it was found with.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_left_readable_by_something_else_is_narrowed() {
+        with_temp_home("file-mode-narrowed", || {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = path().expect("a home");
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
+            std::fs::write(&path, "{}").expect("a write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .expect("loosen");
+
+            save(&batch()).expect("a write");
+
+            let mode = std::fs::metadata(&path)
+                .expect("the file")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "group or other can read {}",
                 path.display()
             );
         });
