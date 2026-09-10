@@ -1042,8 +1042,7 @@ mod tests {
     fn the_cache_is_created_reachable_only_by_its_owner() {
         use std::os::unix::fs::PermissionsExt;
 
-        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-mode");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-mode");
         let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
 
         create_cache(&cache).expect("created");
@@ -1061,7 +1060,6 @@ mod tests {
             0o700,
             "the directory holding one per workspace"
         );
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// An earlier build appended the state directory's own name, so the index landed one level
@@ -1069,8 +1067,7 @@ mod tests {
     /// source sitting at the umask for the life of the machine.
     #[test]
     fn an_index_an_earlier_build_left_too_deep_is_removed() {
-        let scratch = crate::testutil::scratch_dir("bravebot-lsp-misplaced");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-misplaced");
         let state = scratch.join(".bravebot");
         let misplaced = state
             .join(".bravebot")
@@ -1087,15 +1084,13 @@ mod tests {
             "the index nothing reads is still there"
         );
         assert!(cache.is_dir(), "the cache this run wants was not created");
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// Only what this crate would have written is removed. A directory that happens to carry the
     /// same name and holds something else is somebody's own.
     #[test]
     fn a_nested_directory_that_holds_no_index_is_left_where_it_is() {
-        let scratch = crate::testutil::scratch_dir("bravebot-lsp-not-an-index");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-not-an-index");
         let state = scratch.join(".bravebot");
         let theirs = state.join(".bravebot");
         std::fs::create_dir_all(theirs.join("notes")).expect("somebody else's");
@@ -1107,7 +1102,6 @@ mod tests {
             theirs.join("notes").is_dir(),
             "a directory holding no index was removed"
         );
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// A server handed a directory this process could not create makes it itself, at the umask,
@@ -1115,9 +1109,8 @@ mod tests {
     /// so; carrying on would leave STATE-1 holding in every case but the one where it matters.
     #[test]
     fn a_server_whose_index_directory_cannot_be_made_private_does_not_start() {
-        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-unmakeable");
-        let _ = std::fs::remove_dir_all(&scratch);
-        std::fs::create_dir_all(&scratch).expect("scratch");
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-unmakeable");
+        std::fs::create_dir_all(&*scratch).expect("scratch");
         // A file where the state directory would be, so nothing can be created below it.
         let state = scratch.join("not-a-directory");
         std::fs::write(&state, "").expect("seed");
@@ -1140,7 +1133,6 @@ mod tests {
             }
             other => panic!("started, or stopped for another reason: {other}"),
         }
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// A run of an earlier build left these at the umask, and creating a directory that exists
@@ -1151,13 +1143,15 @@ mod tests {
     fn a_cache_left_open_by_an_earlier_run_is_narrowed() {
         use std::os::unix::fs::PermissionsExt;
 
-        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-narrowed");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-narrowed");
         let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
         std::fs::create_dir_all(&cache).expect("as an earlier run left it");
         let loosen = |path: &Path| {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("loosen")
         };
+        // Every level, including the state directory: what `create_dir_all` gave them is the mode
+        // of whoever runs the tests, and the claim below is about a directory left open.
+        loosen(&scratch);
         loosen(&scratch.join(CACHE_ROOT));
         loosen(&cache);
 
@@ -1177,7 +1171,6 @@ mod tests {
             0o755,
             "the state directory is not this crate's to set"
         );
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// The two directories this crate narrows are named, not resolved, so a linked one would have
@@ -1187,8 +1180,7 @@ mod tests {
     fn narrowing_does_not_follow_a_link_out_of_the_cache() {
         use std::os::unix::fs::PermissionsExt;
 
-        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-link");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = crate::testutil::Scratch::new("bravebot-lsp-cache-link");
         let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
         let elsewhere = scratch.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).expect("create");
@@ -1207,7 +1199,6 @@ mod tests {
             mode, 0o755,
             "a directory outside the cache was narrowed through a link"
         );
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// LSP-10: two workspaces do not share an index.
