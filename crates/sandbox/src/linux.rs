@@ -5,17 +5,18 @@
 //! container that masks the syscall, means confinement is unavailable and the process
 //! is refused instead of run unconfined.
 //!
-//! Landlock governs the filesystem only. Network denial needs a separate mechanism
-//! (an empty network namespace, or seccomp filtering of `socket`), which is not
-//! implemented yet, so [`Capabilities::network_denial_enforced`] is `false` and the
-//! reported level is [`ConfinementLevel::Partial`]. Claiming kernel-level network
-//! denial here would misreport the guarantee.
+//! Landlock governs the filesystem only. Network denial and subprocess denial need
+//! separate mechanisms (e.g. an empty network namespace, or seccomp filtering),
+//! which are not implemented yet, so [`Capabilities::network_denial_enforced`] is
+//! `false` and the reported level is [`ConfinementLevel::Partial`]. Claiming
+//! kernel-level network or subprocess denial here would misreport the guarantee;
+//! policies requiring either are refused.
 
 use crate::policy::{Capabilities, ConfinementLevel, SandboxPolicy};
 use crate::{Sandbox, SandboxError};
 use landlock::{
-    ABI, Access, AccessFs, CompatLevel, Compatible, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
-    path_beneath_rules,
+    path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, RulesetAttr, RulesetCreatedAttr,
+    RulesetStatus, ABI,
 };
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -85,9 +86,9 @@ impl LandlockSandbox {
 impl Sandbox for LandlockSandbox {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            // Filesystem restrictions are kernel-enforced, but network denial is not
-            // implemented yet, so this is deliberately not reported as full kernel
-            // confinement.
+            // Filesystem restrictions are kernel-enforced, but network and subprocess
+            // denial are not implemented yet, so this is deliberately not reported
+            // as full kernel confinement.
             level: ConfinementLevel::Partial,
             mechanisms: vec!["landlock"],
             network_denial_enforced: false,
@@ -224,26 +225,42 @@ mod tests {
     /// a sandbox that quietly permits sockets.
     #[test]
     fn a_policy_requiring_network_denial_is_refused() {
-        let Some(sandbox) = sandbox_or_skip() else {
-            return;
-        };
-        let err = sandbox
+        let err = LandlockSandbox
             .command("/bin/true", &[], &SandboxPolicy::strict())
             .expect_err("must refuse rather than under-enforce");
-        assert!(matches!(err, SandboxError::SetupFailed { .. }));
+        match err {
+            SandboxError::SetupFailed { mechanism, detail } => {
+                assert_eq!(mechanism, "landlock");
+                assert!(
+                    detail.contains("network denial"),
+                    "unexpected detail: {detail}"
+                );
+            }
+            other => panic!("expected SetupFailed for network denial, got: {other:?}"),
+        }
     }
 
     /// Until subprocess denial is implemented, asking for it must be an error rather than
     /// a sandbox that quietly permits fork/exec.
     #[test]
     fn a_policy_requiring_subprocess_denial_is_refused() {
-        let Some(sandbox) = sandbox_or_skip() else {
-            return;
-        };
-        let err = sandbox
-            .command("/bin/true", &[], &SandboxPolicy::strict().allow_network_egress())
+        let err = LandlockSandbox
+            .command(
+                "/bin/true",
+                &[],
+                &SandboxPolicy::strict().allow_network_egress(),
+            )
             .expect_err("must refuse rather than under-enforce");
-        assert!(matches!(err, SandboxError::SetupFailed { .. }));
+        match err {
+            SandboxError::SetupFailed { mechanism, detail } => {
+                assert_eq!(mechanism, "landlock");
+                assert!(
+                    detail.contains("subprocess denial"),
+                    "unexpected detail: {detail}"
+                );
+            }
+            other => panic!("expected SetupFailed for subprocess denial, got: {other:?}"),
+        }
     }
 
     #[test]
