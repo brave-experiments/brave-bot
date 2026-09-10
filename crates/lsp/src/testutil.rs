@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 /// An absolute path under the workspace `target/test-scratch/`.
 ///
-/// Tests built these under [`std::env::temp_dir`] before. That directory is shared
-/// between users and between processes with different privileges, so a fixed name
-/// under it collides whenever two checkouts run the tests at once, and it is the
-/// insecure-temporary-file pattern the security scan flags. `target/` is
-/// per-checkout and already ignored by git.
+/// Not [`std::env::temp_dir`]: that directory is shared between users and between
+/// processes with different privileges, so a fixed name under it collides whenever
+/// two checkouts run the tests at once, and it is the insecure-temporary-file
+/// pattern the security scan flags. `target/` is per-checkout and already ignored
+/// by git.
 ///
 /// Nothing is created here: callers make and remove the directory as they already did.
 pub(crate) fn scratch_dir(name: &str) -> PathBuf {

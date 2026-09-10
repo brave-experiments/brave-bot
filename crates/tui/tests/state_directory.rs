@@ -157,9 +157,9 @@ fn nothing_above_the_state_directory_is_touched() {
     assert_eq!(home, 0o755, "the directory the state directory sits in");
 }
 
-/// A session record is written by a different path from the store's, and the tightening it had of
-/// its own reached `sessions` and stopped, leaving the directory above it as the umask made it.
-/// Both paths have to narrow the same directory, since either may be the first to write.
+/// A session record is written by a different path from the store's, and either may be the first
+/// to write. Both have to narrow the same directory, or which subsystem happened to run first
+/// decides the mode of the one holding the prompt history.
 #[test]
 fn writing_a_session_narrows_the_state_directory() {
     let scratch = Scratch::new("session");
