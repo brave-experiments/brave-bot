@@ -30,10 +30,10 @@ struct Scratch {
 impl Scratch {
     fn new(name: &str) -> Self {
         let lock = HOME.lock().unwrap_or_else(|held| held.into_inner());
-        // Under this crate's own build directory rather than the system temporary one, which is
+        // Under the workspace build directory rather than the system temporary one, which is
         // shared between users and is the wrong place to prove something about privacy in.
         let home = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/scratch")
+            .join("../../target/test-scratch")
             .join(format!("state-directory-{name}"));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).expect("create home");
@@ -68,6 +68,12 @@ impl Scratch {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("loosen");
         std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o644))
             .expect("loosen");
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.home);
     }
 }
 

@@ -142,17 +142,14 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A scratch directory that removes itself, under this crate's own build directory rather than
-    /// the system temporary one, which is shared between users.
+    /// A scratch directory that removes itself.
     struct Scratch {
         path: PathBuf,
     }
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/scratch")
-                .join(name);
+            let path = crate::testutil::scratch_dir(name);
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("create scratch");
             Self {
