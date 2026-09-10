@@ -504,6 +504,50 @@ fn home() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// One lock for the tests that set `HOME`, since the variable is process-wide and the rest of
+    /// this binary's tests run beside them.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Run `body` with `HOME` set to `value`, restoring whatever was there.
+    fn with_home<T>(value: Option<&str>, body: impl FnOnce() -> T) -> T {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let previous = std::env::var_os("HOME");
+        // SAFETY: single-threaded within the lock, and restored before returning.
+        match value {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let result = body();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        result
+    }
+
+    /// STATE-2: this crate resolves the state directory itself, since it sits below the one that
+    /// answers where it is. What has to hold across the resolvers is the name, so a layer reading
+    /// a settings file finds the same directory a layer writing history does.
+    #[test]
+    fn the_state_directory_is_the_home_the_environment_names() {
+        with_home(Some("/somebody/else"), || {
+            assert_eq!(home(), Some(PathBuf::from("/somebody/else/.bravebot")));
+        });
+    }
+
+    /// STATE-2: the other half of the same rule. A fallback here would read settings out of a
+    /// directory nobody chose, and settings are what decide which model answers and which
+    /// commands run without being asked about.
+    #[test]
+    fn an_absent_or_empty_home_yields_no_directory_rather_than_a_guess() {
+        with_home(None, || assert_eq!(home(), None));
+        with_home(Some(""), || {
+            assert_eq!(home(), None, "an empty home was joined onto anyway");
+        });
+    }
+
     /// The point of the file: a block copied from `~/.claude/settings.json` configures this agent
     /// without being rewritten first.
     #[test]

@@ -4,8 +4,10 @@ title: The state directory
 status: normative
 governs:
   - crates/agent/src/home.rs
+  - crates/config/src/settings.rs
   - crates/tui/src/store.rs
   - crates/tui/src/update.rs
+  - crates/tui/src/sessions.rs
   - crates/skus/src/store.rs
   - crates/lsp/src/server.rs
   - install.sh
@@ -114,3 +116,5 @@ whichever crate it happened in.
 `verified-by: bravebot_agent::home::an_absent_home_is_not_an_error`
 `verified-by: bravebot_agent::home::an_empty_home_is_treated_as_no_home_at_all`
 `verified-by: bravebot_skus::store::no_home_directory_is_reported_rather_than_guessed`
+`verified-by: bravebot_config::settings::the_state_directory_is_the_home_the_environment_names`
+`verified-by: bravebot_config::settings::an_absent_or_empty_home_yields_no_directory_rather_than_a_guess`
