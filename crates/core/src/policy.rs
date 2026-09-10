@@ -1154,6 +1154,31 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         slots: &mut crate::slot::SlotStore,
     ) -> Gated<crate::reference::Reference> {
         let label = content.label();
+        let reference = self.store_in_slot(tool, slot, origin, content, slots)?;
+        self.allow(
+            "quarantine",
+            format!(
+                "{tool}: {origin} is {label}, stored as {}; nobody is shown it",
+                reference.slot
+            ),
+        );
+        Ok(reference)
+    }
+
+    /// Write content into a slot and describe its shape.
+    ///
+    /// The measurements are taken here, inside the kernel, because taking them outside would mean
+    /// the driver holding the content to measure it. Why the bytes are going into a slot is the
+    /// caller's to record: this decides nothing and says nothing.
+    fn store_in_slot(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        origin: &str,
+        content: &Labelled<String>,
+        slots: &mut crate::slot::SlotStore,
+    ) -> Gated<crate::reference::Reference> {
+        let label = content.label();
 
         let writer = slots.writer_for(slot.clone(), label).map_err(|e| Denial {
             principle: Principle::Confinement,
@@ -1169,10 +1194,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             slot: slot.clone(),
             label,
         });
-        self.allow(
-            "quarantine",
-            format!("{tool}: {origin} is {label}, stored as {slot}; nobody is shown it"),
-        );
         Ok(crate::reference::Reference::new(
             slot,
             origin,
@@ -1666,48 +1687,53 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ));
         }
 
-        // Untrusted. The bytes go into quarantine and the planner gets a description. The
-        // measurements are taken here, inside the kernel, because taking them outside would
-        // mean the driver holding the content to measure it.
-        let writer = slots.writer_for(slot.clone(), label).map_err(|e| Denial {
-            principle: Principle::Confinement,
-            message: format!("{tool}: could not quarantine {origin}: {e}"),
-        })?;
-
-        let measured = writer.write_measured(content.clone()).map_err(|e| Denial {
-            principle: Principle::Confinement,
-            message: format!("{tool}: could not quarantine {origin}: {e}"),
-        })?;
-
-        self.sink.emit(Event::SlotWritten {
-            slot: slot.clone(),
-            label,
-        });
+        // Untrusted. The bytes go into quarantine and the planner gets a description.
+        let reference = self.store_in_slot(tool, slot, origin, content, slots)?;
+        let reference = match picture {
+            Some(media) => reference.of_a_picture(media),
+            None => reference,
+        };
         self.allow(
             "present",
             format!(
-                "{tool}: {origin} is {label}, quarantined as {slot}; the planner sees a \
-                 reference only"
+                "{tool}: {origin} is {label}, quarantined as {}; the planner sees a \
+                 reference only",
+                reference.slot
             ),
         );
         // The planner has learned nothing but shape, so the context is not tainted by this.
-        Ok(crate::reference::Presentation::Quarantined(match picture {
-            Some(media) => crate::reference::Reference::new(
-                slot,
-                origin,
-                measured.lines,
-                measured.bytes,
-                label,
-            )
-            .of_a_picture(media),
-            None => crate::reference::Reference::new(
-                slot,
-                origin,
-                measured.lines,
-                measured.bytes,
-                label,
+        Ok(crate::reference::Presentation::Quarantined(reference))
+    }
+
+    /// Quarantine content the planner has been shown a sample of, and hand back the reference.
+    ///
+    /// [`Policy::present`] decides from the label alone and mints nothing for content the planner
+    /// may read, which is right where the whole of it is what the planner was given. Where a cap
+    /// cut it down, the rest exists nowhere else: the reference is what lets the whole be handed
+    /// to a processor or written to a file without producing it a second time.
+    ///
+    /// The reference describes the whole content, not the sample, because that is what the slot
+    /// holds. Nothing here reads a byte, and the label is the one the content already carried:
+    /// keeping bytes somewhere the planner cannot see them is not an assertion about them.
+    pub fn keep_whole(
+        &mut self,
+        tool: &str,
+        slot: SlotId,
+        origin: &str,
+        content: &Labelled<String>,
+        slots: &mut crate::slot::SlotStore,
+    ) -> Gated<crate::reference::Reference> {
+        let label = content.label();
+        let reference = self.store_in_slot(tool, slot, origin, content, slots)?;
+        self.allow(
+            "present",
+            format!(
+                "{tool}: {origin} was capped for the conversation, so the whole of it is {} at \
+                 {label}; the planner sees a reference to the rest",
+                reference.slot
             ),
-        }))
+        );
+        Ok(reference)
     }
 
     /// Resolve a reference the planner supplied back into content, for an effect.
@@ -6559,6 +6585,55 @@ mod tests {
 
         assert!(presented.is_visible());
         assert_eq!(presented.for_context(), "fn main() {}");
+    }
+
+    /// A cap on what may enter the conversation is not a reason to destroy the rest. The planner
+    /// holds a sample, and the reference is the whole of it: without one the only way back to the
+    /// middle is producing it again, and for a command that means running it a second time.
+    #[test]
+    fn content_the_planner_saw_a_sample_of_is_kept_whole() {
+        let mut sink = RecordingSink::new();
+        let mut slots = SlotStore::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "build"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        let whole = Labelled::new("head\nMIDDLE\ntail\n".to_string(), Label::trusted_private());
+        let reference = policy
+            .keep_whole(
+                "run",
+                SlotId::new("ref:0"),
+                "what `build` printed",
+                &whole,
+                &mut slots,
+            )
+            .expect("keeps the whole of it");
+
+        // The shape of what the slot holds, not of the sample: a planner deciding whether to hand
+        // this to a processor is deciding about the whole.
+        assert_eq!(reference.lines, Some(3));
+        assert_eq!(reference.bytes, Some("head\nMIDDLE\ntail\n".len()));
+        // Keeping bytes where the planner cannot see them asserts nothing about them.
+        assert_eq!(reference.label, Label::trusted_private());
+        assert!(
+            !reference.describe().contains("MIDDLE"),
+            "the description carried the content: {}",
+            reference.describe()
+        );
+
+        let resolved = policy
+            .resolve("write_file", &reference.slot, &slots)
+            .expect("resolves");
+        assert_eq!(resolved.label(), Label::trusted_private());
+        assert_eq!(
+            resolved.into_parts_for_decoding().0,
+            "head\nMIDDLE\ntail\n",
+            "the middle did not survive being kept"
+        );
     }
 
     /// A reference the planner names resolves back to the content, so it can act on data it

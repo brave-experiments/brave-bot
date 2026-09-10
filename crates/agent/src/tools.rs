@@ -772,6 +772,13 @@ pub struct Output {
     /// Whether a cap cut the result short, so the turn can say so beside the reference it hands
     /// over. Text inside a quarantined result reaches nobody who could act on it.
     pub incomplete: bool,
+    /// What a run printed, whole, where the cap cut down what the planner is shown.
+    ///
+    /// Quarantined by the turn loop, which is what mints slots, and the reference goes back beside
+    /// the sample. The cap is on what enters the conversation, not on what the command printed, so
+    /// the middle stays reachable: a planner that needs it hands the reference to a processor or
+    /// writes it to a file rather than running the command again.
+    pub whole: Option<Labelled<String>>,
     /// The slot this result stands for unchanged, where there is one.
     pub unchanged_from: Option<SlotId>,
     /// Which document a processor's answer is about, where it produced one.
@@ -969,6 +976,13 @@ struct Produced {
     /// written into `text` reaches the planner only when the planner may read `text` at all,
     /// which by default it may not.
     incomplete: bool,
+    /// What a run printed, whole, where a cap cut down what the planner is shown.
+    ///
+    /// The cap is on what enters the conversation, not on what the command printed, so the whole
+    /// of it is quarantined by the turn and the planner is handed the reference beside the sample.
+    /// Without it the one case where the cap bites would be the one case with no way back to the
+    /// middle short of running the command again.
+    whole: Option<Labelled<String>>,
     /// The change a write made, for showing under the line it belongs to.
     changes: Vec<crate::diff::Change>,
     /// Whether those lines are content nobody vouched for.
@@ -1036,6 +1050,7 @@ impl Produced {
             deferred: None,
             entries: None,
             incomplete: false,
+            whole: None,
             changes: Vec::new(),
             untrusted: false,
             unchanged_from: None,
@@ -1425,6 +1440,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 deferred: produced.deferred,
                 entries: produced.entries,
                 incomplete: produced.incomplete,
+                whole: produced.whole,
                 unchanged_from: produced.unchanged_from,
                 answers_for: produced.answers_for,
                 said: produced.said,
@@ -1483,6 +1499,7 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         deferred: produced.deferred,
         entries: produced.entries,
         incomplete: produced.incomplete,
+        whole: produced.whole,
         unchanged_from: produced.unchanged_from,
         answers_for: produced.answers_for,
         said: produced.said,
@@ -1510,6 +1527,7 @@ fn problem(text: impl Into<String>) -> Produced {
         deferred: None,
         entries: None,
         incomplete: false,
+        whole: None,
         changes: Vec::new(),
         untrusted: false,
         unchanged_from: None,
@@ -2813,14 +2831,19 @@ fn run<S: Sink, C: Confirmer>(
                 text.push_str(&ran.stderr);
             }
 
-            // Capped only where the planner may read it. Output it may not read becomes a
-            // reference, so nothing of it enters the conversation and there is nothing to bound;
-            // capping it would throw away the middle of something still worth handing to a
-            // processor or writing to a file.
-            let (text, capped) = if label.is_trusted() {
+            // Capped only where the planner may read it. Output it may not read is quarantined
+            // whole, so nothing of it enters the conversation and there is nothing to bound.
+            let sample = if label.is_trusted() {
                 bounded(&text)
             } else {
-                (text, false)
+                None
+            };
+            let (text, whole) = match sample {
+                // The cap bounds the conversation, not the run. What was printed is kept whole
+                // beside the sample, so the middle is still there to hand to a processor or write
+                // to a file, and nothing has to be run twice to see it.
+                Some(sample) => (sample, Some(Labelled::new(text, label))),
+                None => (text, None),
             };
 
             // Said in the driver's own words, from the exit codes and the clock, which are
@@ -2850,7 +2873,8 @@ fn run<S: Sink, C: Confirmer>(
                 note,
             )
             .of_content()
-            .capped(capped);
+            .capped(whole.is_some());
+            produced.whole = whole;
             // Marks the block the person is shown as content nobody vouched for, which is what a
             // program's output is: it may include bytes an earlier step read out of a file an
             // attacker wrote.
@@ -3036,11 +3060,15 @@ fn job_output<S: Sink>(
     );
 
     // Capped only where the planner may read it, exactly as a foreground run is: output it may not
-    // read becomes a reference, and there is nothing of it in the conversation to bound.
-    let (fresh, capped) = if label.is_trusted() {
+    // read is quarantined whole, and there is nothing of it in the conversation to bound.
+    let sample = if label.is_trusted() {
         bounded(&fresh)
     } else {
-        (fresh, false)
+        None
+    };
+    let (fresh, whole) = match sample {
+        Some(sample) => (sample, Some(Labelled::new(fresh, label))),
+        None => (fresh, None),
     };
 
     let mut produced = Produced::new(
@@ -3049,7 +3077,8 @@ fn job_output<S: Sink>(
         note,
     )
     .of_content()
-    .capped(capped);
+    .capped(whole.is_some());
+    produced.whole = whole;
     produced.untrusted = !label.is_trusted();
     // So a person can be asked to read it later, and can see which command they are reading.
     produced.printed_by = Some(crate::report::Command {
@@ -3069,15 +3098,16 @@ fn job_output<S: Sink>(
 /// spend a large fraction of a conversation, however useful what it printed was.
 const OUTPUT_CAP: usize = 16 * 1024;
 
-/// `text` cut to [`OUTPUT_CAP`], keeping the head and the tail, and whether anything went.
+/// `text` cut to [`OUTPUT_CAP`], keeping the head and the tail, or `None` where it fits.
 ///
 /// Head and tail rather than head alone, because a build log's verdict is at the end and its first
 /// error is near the beginning: keeping only the front of one answers neither question a reader
 /// has. What went is said in between, in the driver's own words, so a planner knows it is looking
-/// at a sample rather than at a short result.
-fn bounded(text: &str) -> (String, bool) {
+/// at a sample rather than at a short result. Where the rest of it went is said by the turn,
+/// which is the only thing that knows the slot it went to.
+fn bounded(text: &str) -> Option<String> {
     if text.len() <= OUTPUT_CAP {
-        return (text.to_string(), false);
+        return None;
     }
     let half = OUTPUT_CAP / 2;
     // Cut on a character boundary, or a multi-byte character straddling the cut would panic the
@@ -3096,15 +3126,12 @@ fn bounded(text: &str) -> (String, bool) {
 
     let dropped_bytes = tail_start - head_end;
     let dropped_lines = text[head_end..tail_start].lines().count();
-    (
-        format!(
-            "{}\n\n(the middle of this output was dropped: {dropped_bytes} bytes, \
-             about {dropped_lines} lines. Narrow the command if you need what was in it.)\n\n{}",
-            &text[..head_end],
-            &text[tail_start..]
-        ),
-        true,
-    )
+    Some(format!(
+        "{}\n\n(the middle of this output was dropped: {dropped_bytes} bytes, \
+         about {dropped_lines} lines.)\n\n{}",
+        &text[..head_end],
+        &text[tail_start..]
+    ))
 }
 
 /// the inputs before the processor runs.
@@ -4491,6 +4518,41 @@ mod tests {
             "the description does not ask for the whole list: {}",
             tool.function.description
         );
+    }
+
+    /// A build log's verdict is at the end and its first error is near the beginning, so a
+    /// sample that kept only the front would answer neither question a reader of one has.
+    #[test]
+    fn a_capped_output_keeps_its_head_and_its_tail() {
+        let mut log = String::new();
+        while log.len() <= OUTPUT_CAP * 2 {
+            log.push_str("a line in the middle of a long build log\n");
+        }
+        let log = format!("the first line\n{log}the last line\n");
+
+        let sample = bounded(&log).expect("an output twice the cap is capped");
+
+        assert!(sample.len() < log.len(), "nothing was dropped");
+        assert!(
+            sample.starts_with("the first line\n"),
+            "the head went: {}",
+            &sample[..40]
+        );
+        assert!(sample.ends_with("the last line\n"), "the tail went");
+        // In the driver's own words, so a planner knows it is reading a sample rather than a
+        // short result. How many bytes went, because that is what says how much is missing.
+        assert!(
+            sample.contains("the middle of this output was dropped"),
+            "the sample does not say that it is one"
+        );
+    }
+
+    /// The cap is a bound on a long result, not a transformation every result goes through: a
+    /// planner told that a two-line answer was cut short would narrow a command that answered it.
+    #[test]
+    fn an_output_inside_the_cap_is_left_alone() {
+        assert!(bounded("two\nlines\n").is_none());
+        assert!(bounded(&"x".repeat(OUTPUT_CAP)).is_none());
     }
 
     mod activity {
