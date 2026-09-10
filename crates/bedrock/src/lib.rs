@@ -216,6 +216,12 @@ impl<'a> BedrockClient<'a> {
             .and_then(|output| output.message)
             .map(|message| message.content)
             .unwrap_or_default();
+        if blocks.iter().any(protocol::ReplyBlock::is_unreadable_call) {
+            return Err(BedrockError::Decode {
+                detail: "the reply named a tool call in a shape this does not read".to_string(),
+            });
+        }
+
         let (content, calls) = protocol::parts_of(&blocks);
         if content.is_empty() && calls.is_empty() {
             return Err(BedrockError::NoContent);
@@ -370,6 +376,12 @@ impl<'a> BedrockClient<'a> {
             return Err(BedrockError::Incomplete);
         }
 
+        if reply.unreadable_call {
+            return Err(BedrockError::Decode {
+                detail: "the reply named a tool call in a shape this does not read".to_string(),
+            });
+        }
+
         if reply.stop_reason.as_deref() == Some(protocol::STOP_REASON_MAX_TOKENS) {
             return Err(BedrockError::TooLong);
         }
@@ -492,17 +504,30 @@ struct Reply {
     counted: bool,
     ended: bool,
     stop_reason: Option<String>,
+    /// Whether a block opened as a tool call this could not read.
+    ///
+    /// Kept rather than failed on the spot so the stream is still drained: the reply is refused
+    /// once it has ended, in the same place a reply that arrived whole is.
+    unreadable_call: bool,
 }
 
 impl Reply {
     fn absorb(&mut self, event: StreamEvent) {
         match event {
             StreamEvent::ContentBlockStart { index, start } => {
-                if let protocol::BlockStart::ToolUse { tool_use } = start {
+                match start {
                     // The opening event names the call and nothing else; every byte of its
                     // arguments arrives in the deltas that follow.
-                    self.calls
-                        .push((index, tool_use.tool_use_id, tool_use.name, String::new()));
+                    protocol::BlockStart::ToolUse { tool_use } => {
+                        self.calls.push((
+                            index,
+                            tool_use.tool_use_id,
+                            tool_use.name,
+                            String::new(),
+                        ));
+                    }
+                    protocol::BlockStart::UnreadableToolUse { .. } => self.unreadable_call = true,
+                    protocol::BlockStart::Other(_) => {}
                 }
             }
             StreamEvent::ContentBlockDelta { index, delta } => match delta {

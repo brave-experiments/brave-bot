@@ -243,6 +243,10 @@ pub struct ReplyMessage {
 /// Read as whichever member it matches, with anything else kept whole and ignored. The union grows
 /// with what the models this API fronts can produce, and a block naming something unmodelled must
 /// not fail a reply that is otherwise complete.
+///
+/// A block that names a tool call this could not read is its own case rather than one of those.
+/// Ignoring it would answer with the prose beside it and drop a call the model asked for, which
+/// looks to everybody like a model that decided against calling anything.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum ReplyBlock {
@@ -253,7 +257,18 @@ pub enum ReplyBlock {
         #[serde(rename = "toolUse")]
         tool_use: ToolUse,
     },
+    UnreadableToolUse {
+        #[serde(rename = "toolUse")]
+        tool_use: Value,
+    },
     Other(Value),
+}
+
+impl ReplyBlock {
+    /// Whether this block names a tool call whose shape this could not read.
+    pub fn is_unreadable_call(&self) -> bool {
+        matches!(self, Self::UnreadableToolUse { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -296,12 +311,20 @@ pub enum StreamEvent {
 }
 
 /// What a block that has just opened is.
+///
+/// A tool call this could not read is its own case for the same reason it is in a finished reply:
+/// the deltas that follow carry its arguments and nothing else names it, so a start that is read
+/// past leaves those fragments belonging to no call at all.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum BlockStart {
     ToolUse {
         #[serde(rename = "toolUse")]
         tool_use: ToolUseStart,
+    },
+    UnreadableToolUse {
+        #[serde(rename = "toolUse")]
+        tool_use: Value,
     },
     Other(Value),
 }
@@ -633,7 +656,8 @@ pub fn parts_of(blocks: &[ReplyBlock]) -> (String, Vec<bravebot_aichat::protocol
                     arguments: Some(tool_use.input.to_string()),
                 },
             }),
-            ReplyBlock::Other(_) => {}
+            // Neither reaches here: an unreadable call fails the reply before it is taken apart.
+            ReplyBlock::UnreadableToolUse { .. } | ReplyBlock::Other(_) => {}
         }
     }
 
@@ -1161,6 +1185,61 @@ mod tests {
         ]))
         .expect("parses");
         assert_eq!(parts_of(&blocks).0, "the answer");
+    }
+
+    /// A block that names a tool call this cannot read is not a block of a kind it does not model.
+    /// Read as one, the call disappears and the reply reads as a model that decided against calling
+    /// anything, which is a turn that quietly does nothing rather than one that says why.
+    #[test]
+    fn a_tool_call_this_cannot_read_is_not_mistaken_for_a_kind_it_does_not_model() {
+        let blocks: Vec<ReplyBlock> = serde_json::from_value(json!([
+            {"text": "I will read it"},
+            {"toolUse": {"id": "call-1", "name": "read_file", "input": {}}},
+        ]))
+        .expect("parses");
+        assert!(
+            blocks.iter().any(ReplyBlock::is_unreadable_call),
+            "a tool call that named its id differently was read past"
+        );
+
+        let modelled: Vec<ReplyBlock> =
+            serde_json::from_value(json!([{"reasoningContent": {"text": "thinking"}}]))
+                .expect("parses");
+        assert!(
+            !modelled.iter().any(ReplyBlock::is_unreadable_call),
+            "a block naming no tool call was reported as an unreadable one"
+        );
+    }
+
+    /// The same in a stream, where it costs more: nothing after the opening event names the call,
+    /// so a start that is read past leaves every fragment of its arguments belonging to nothing.
+    #[test]
+    fn a_streamed_tool_call_this_cannot_read_is_told_apart_too() {
+        let start = stream_event(
+            "contentBlockStart",
+            br#"{"contentBlockIndex":0,"start":{"toolUse":{"id":"a","name":"read"}}}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            start,
+            StreamEvent::ContentBlockStart {
+                start: BlockStart::UnreadableToolUse { .. },
+                ..
+            }
+        ));
+
+        let other = stream_event(
+            "contentBlockStart",
+            br#"{"contentBlockIndex":0,"start":{"reasoningContent":{}}}"#,
+        )
+        .expect("decodes");
+        assert!(matches!(
+            other,
+            StreamEvent::ContentBlockStart {
+                start: BlockStart::Other(_),
+                ..
+            }
+        ));
     }
 
     /// A reply can arrive as several text blocks, and they are one answer.
