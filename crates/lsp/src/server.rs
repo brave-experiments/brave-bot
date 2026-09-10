@@ -117,6 +117,30 @@ impl Language {
 /// The directory holding one index per workspace, directly under the state directory.
 const CACHE_ROOT: &str = "lsp";
 
+/// Remove an index an earlier build put one directory too deep.
+///
+/// The state directory's own name used to be appended a second time, so the index landed in
+/// `~/.bravebot/.bravebot/lsp/`, which nothing reads, rebuilds or narrows. What is left there is an
+/// index derived from every file in the workspace, at whatever the umask gave it, and it stays that
+/// way for as long as the machine does.
+///
+/// Removed rather than narrowed. Nothing will ever read it, so a private copy of it is worth no
+/// more than none, and narrowing would mean walking a tree to reach the files inside.
+///
+/// The path is derived rather than spelled: appending the directory's own name is what put it
+/// there, so joining that name is what finds it, and the state directory keeps one definition.
+/// Only a directory holding what this crate would have written is removed, so an unrelated
+/// directory of the same name is left where it is.
+fn remove_misplaced_index(state: &Path) {
+    let Some(name) = state.file_name() else {
+        return;
+    };
+    let nested = state.join(name);
+    if nested.join(CACHE_ROOT).is_dir() {
+        let _ = std::fs::remove_dir_all(&nested);
+    }
+}
+
 /// Where a server keeps its index for a workspace.
 ///
 /// LSP-10: under the directory this process already owns, keyed by the workspace, never inside it.
@@ -157,6 +181,9 @@ pub fn cache_for(state: Option<&Path>, workspace: &Path, incognito: bool) -> Opt
 /// it: this crate depends on the kernel alone, as layering.md records, and a language server client
 /// is not worth a dependency for four lines.
 fn create_cache(path: &Path) -> std::io::Result<()> {
+    if let Some(state) = path.parent().and_then(Path::parent) {
+        remove_misplaced_index(state);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -989,6 +1016,52 @@ mod tests {
             mode(&scratch.join(CACHE_ROOT)),
             0o700,
             "the directory holding one per workspace"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// An earlier build appended the state directory's own name, so the index landed one level
+    /// deeper than anything reads, rebuilds or narrows. Left there it is an index of the user's
+    /// source sitting at the umask for the life of the machine.
+    #[test]
+    fn an_index_an_earlier_build_left_too_deep_is_removed() {
+        let scratch = crate::testutil::scratch_dir("bravebot-lsp-misplaced");
+        let _ = std::fs::remove_dir_all(&scratch);
+        let state = scratch.join(".bravebot");
+        let misplaced = state
+            .join(".bravebot")
+            .join(CACHE_ROOT)
+            .join("0123456789abcdef");
+        std::fs::create_dir_all(&misplaced).expect("as an earlier build left it");
+        std::fs::write(misplaced.join("index"), "derived from the workspace").expect("write");
+        let cache = cache_for(Some(&state), &root(), false).expect("a cache is given");
+
+        create_cache(&cache).expect("created");
+
+        assert!(
+            !state.join(".bravebot").exists(),
+            "the index nothing reads is still there"
+        );
+        assert!(cache.is_dir(), "the cache this run wants was not created");
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// Only what this crate would have written is removed. A directory that happens to carry the
+    /// same name and holds something else is somebody's own.
+    #[test]
+    fn a_nested_directory_that_holds_no_index_is_left_where_it_is() {
+        let scratch = crate::testutil::scratch_dir("bravebot-lsp-not-an-index");
+        let _ = std::fs::remove_dir_all(&scratch);
+        let state = scratch.join(".bravebot");
+        let theirs = state.join(".bravebot");
+        std::fs::create_dir_all(theirs.join("notes")).expect("somebody else's");
+        let cache = cache_for(Some(&state), &root(), false).expect("a cache is given");
+
+        create_cache(&cache).expect("created");
+
+        assert!(
+            theirs.join("notes").is_dir(),
+            "a directory holding no index was removed"
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }

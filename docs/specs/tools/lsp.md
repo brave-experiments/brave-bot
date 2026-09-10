@@ -259,6 +259,10 @@ directory this process already owns. Never inside the workspace, and never read 
 tree the user is working in, and a directory that appeared as a side effect of a read is the sort of
 write [write-file.md](write-file.md) exists to put in front of somebody.
 
+An index an earlier build left under a path this one does not use is removed rather than left
+where it is. Nothing reads it, so it is an index of the user's source sitting at whatever mode it
+was made with, for as long as the machine lasts.
+
 **Why not a temporary directory.** The cost this avoids is the indexing, and an index thrown away at
 the end of a session pays it again at the start of the next. `~/.bravebot` is where this process
 already keeps what outlives a session, so a cache there inherits
@@ -280,6 +284,8 @@ trade incognito already makes for the session record.
 
 `verified-by: bravebot_lsp::server::the_cache_is_outside_the_workspace`
 `verified-by: bravebot_lsp::server::the_cache_sits_directly_under_the_directory_it_is_given`
+`verified-by: bravebot_lsp::server::an_index_an_earlier_build_left_too_deep_is_removed`
+`verified-by: bravebot_lsp::server::a_nested_directory_that_holds_no_index_is_left_where_it_is`
 `verified-by: bravebot_lsp::server::the_cache_is_keyed_by_the_workspace`
 `verified-by: bravebot_lsp::server::an_incognito_session_is_given_no_cache`
 `verified-by: bravebot_lsp::server::the_cache_is_never_read_by_the_driver`
