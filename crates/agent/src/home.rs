@@ -82,6 +82,11 @@ pub fn create_directory(path: &Path) -> std::io::Result<()> {
 ///
 /// Stops at `root` rather than walking to `/`: the directories above the state directory are the
 /// user's own home and are none of this program's business.
+///
+/// A link is stepped over rather than followed. `set_permissions` resolves one, and the bound above
+/// is a comparison of paths, which says where a name sits and nothing about where it leads: a
+/// linked `sessions` directory would otherwise have this narrowing a directory somewhere else
+/// entirely, which is the thing the bound exists to prevent.
 #[cfg(unix)]
 fn tighten(root: &Path, path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -90,12 +95,20 @@ fn tighten(root: &Path, path: &Path) {
     }
     let mut level = Some(path);
     while let Some(here) = level {
-        let _ = std::fs::set_permissions(here, std::fs::Permissions::from_mode(0o700));
+        if !is_link(here) {
+            let _ = std::fs::set_permissions(here, std::fs::Permissions::from_mode(0o700));
+        }
         if here == root {
             return;
         }
         level = here.parent();
     }
+}
+
+/// Whether the name itself is a link, rather than what it may lead to.
+#[cfg(unix)]
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_symlink())
 }
 
 /// Write `contents` to `path`, readable only by this user.
@@ -227,6 +240,31 @@ mod tests {
             0o755,
             "a directory above the state directory"
         );
+    }
+
+    /// The bound is a comparison of paths, so it says where a name sits and nothing about where it
+    /// leads. Somebody who keeps their sessions on a synced volume and links the directory into
+    /// place would otherwise have this program setting the mode of a directory outside the one it
+    /// was given.
+    #[test]
+    fn narrowing_does_not_follow_a_link_out_of_the_state_directory() {
+        let scratch = Scratch::new("home-link");
+        let state = scratch.path.join("state");
+        let elsewhere = scratch.path.join("elsewhere");
+        std::fs::create_dir_all(&state).expect("create");
+        std::fs::create_dir_all(&elsewhere).expect("create");
+        let linked = state.join("sessions");
+        std::os::unix::fs::symlink(&elsewhere, &linked).expect("link");
+        loosen(&elsewhere, 0o755);
+
+        tighten(&state, &linked);
+
+        assert_eq!(
+            mode_of(&elsewhere),
+            0o755,
+            "a directory outside the state directory was narrowed through a link"
+        );
+        assert_eq!(mode_of(&state), 0o700, "the state directory itself");
     }
 
     #[test]

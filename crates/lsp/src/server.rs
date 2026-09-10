@@ -187,14 +187,13 @@ fn create_cache(path: &Path) -> std::io::Result<()> {
     create_private(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         // The directory holding one cache per workspace, narrowed for the same reason. This one and
         // no further: what the state directory itself is set to belongs to whichever subsystem
         // created it.
         if let Some(root) = path.parent()
             && root.file_name().is_some_and(|name| name == CACHE_ROOT)
         {
-            let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
+            narrow(root);
         }
     }
     Ok(())
@@ -207,17 +206,31 @@ fn create_cache(path: &Path) -> std::io::Result<()> {
 fn create_private(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(path)?;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+        narrow(path);
         Ok(())
     }
     #[cfg(not(unix))]
     {
         std::fs::create_dir_all(path)
+    }
+}
+
+/// Narrow one directory, unless the name is a link.
+///
+/// `set_permissions` follows a link, and where one leads is outside the two directories this crate
+/// owns: a linked cache would have a language server client setting the mode of a directory
+/// somewhere else in the user's home.
+#[cfg(unix)]
+fn narrow(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let is_link = std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_symlink());
+    if !is_link {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
     }
 }
 
@@ -1163,6 +1176,36 @@ mod tests {
             mode(&scratch),
             0o755,
             "the state directory is not this crate's to set"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// The two directories this crate narrows are named, not resolved, so a linked one would have
+    /// a language server client setting the mode of a directory somewhere else in the user's home.
+    #[cfg(unix)]
+    #[test]
+    fn narrowing_does_not_follow_a_link_out_of_the_cache() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-link");
+        let _ = std::fs::remove_dir_all(&scratch);
+        let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
+        let elsewhere = scratch.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("create");
+        std::fs::create_dir_all(scratch.join(CACHE_ROOT)).expect("create");
+        std::os::unix::fs::symlink(&elsewhere, &cache).expect("link");
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).expect("mode");
+
+        create_cache(&cache).expect("created");
+
+        let mode = std::fs::symlink_metadata(&elsewhere)
+            .expect("exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "a directory outside the cache was narrowed through a link"
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }

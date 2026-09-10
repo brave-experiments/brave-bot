@@ -55,7 +55,10 @@ on creation would leave exactly those machines as they were.
 
 Stopping at the state directory bounds it in the other direction. Whose home this is, and what else
 is kept in it, is the user's own business, and a program that narrowed directories it was never
-asked about would be making decisions outside anything it was given.
+asked about would be making decisions outside anything it was given. A link is stepped over rather
+than followed, for the same reason: the bound is a comparison of paths, so it says where a name
+sits and nothing about where it leads, and somebody who keeps their sessions on a synced volume and
+links the directory into place has put the target outside what this was given.
 
 One helper does this for the crates that can share one. The crate that imports a subscription and
 the language server client both sit below the crate holding that helper, as
@@ -72,6 +75,7 @@ through the helper.
 `verified-by: bravebot_agent::home::a_directory_is_created_reachable_only_by_its_owner`
 `verified-by: bravebot_agent::home::a_directory_left_open_by_an_older_build_is_narrowed`
 `verified-by: bravebot_agent::home::narrowing_stops_at_the_state_directory`
+`verified-by: bravebot_agent::home::narrowing_does_not_follow_a_link_out_of_the_state_directory`
 `verified-by: bravebot_agent::home::a_file_is_written_readable_only_by_its_owner`
 `verified-by: bravebot_agent::home::a_file_left_readable_by_an_older_build_is_narrowed`
 `verified-by: bravebot_agent::home::an_appended_file_is_readable_only_by_its_owner`
@@ -85,6 +89,7 @@ through the helper.
 `verified-by: bravebot_skus::store::a_file_left_readable_by_something_else_is_narrowed`
 `verified-by: bravebot_lsp::server::the_cache_is_created_reachable_only_by_its_owner`
 `verified-by: bravebot_lsp::server::a_cache_left_open_by_an_earlier_run_is_narrowed`
+`verified-by: bravebot_lsp::server::narrowing_does_not_follow_a_link_out_of_the_cache`
 
 <a id="STATE-2"></a>
 ### STATE-2: a machine with no `HOME` has no state directory rather than a guessed one
