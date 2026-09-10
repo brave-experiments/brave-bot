@@ -138,8 +138,15 @@ fi
 
 # What bravebot reads to know it can offer the command that updates this copy. A machine with no
 # HOME gets the binary and no notice about later releases, which is the same as no record at all.
+#
+# Created reachable only by this user, and narrowed where it is already there, for the reason the
+# program narrows it: this directory holds the prompt history, and at the umask that is readable by
+# every local account. The record is removed and written again rather than written over, so the mode
+# is the one the file is created with rather than one a chmod catches up with afterwards.
 if [ -n "${HOME:-}" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
-  printf '%s\n' "$DEST_PATH" > "$INSTALLED_BY" 2>/dev/null || true
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
+  rm -f "$INSTALLED_BY" 2>/dev/null || true
+  (umask 077 && printf '%s\n' "$DEST_PATH" > "$INSTALLED_BY") 2>/dev/null || true
 fi
 
 echo "Installed ${BIN_NAME} ${TAG} to ${DEST_PATH}"

@@ -8,6 +8,7 @@ governs:
   - crates/tui/src/update.rs
   - crates/skus/src/store.rs
   - crates/lsp/src/server.rs
+  - install.sh
 guards:
   - symbol: home::create_directory
   - symbol: home::write_file
@@ -63,6 +64,10 @@ dependency for four lines. Either can be the first to write, which is the case t
 a directory holding prompt history a matter of which subsystem ran first. The language server client
 narrows the two directories it owns and not the state directory above them, since what that is set
 to belongs to whichever subsystem created it.
+
+The installer creates the directory too, before the program has run once, so it asks for the same
+modes. A directory left at the umask by an install would otherwise stand until the next write went
+through the helper.
 
 `verified-by: bravebot_agent::home::a_directory_is_created_reachable_only_by_its_owner`
 `verified-by: bravebot_agent::home::a_directory_left_open_by_an_older_build_is_narrowed`
