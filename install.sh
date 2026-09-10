@@ -141,9 +141,11 @@ fi
 #
 # Created reachable only by this user, and narrowed where it is already there, for the reason the
 # program narrows it: this directory holds the prompt history, and at the umask that is readable by
-# every local account. The record is removed and written again rather than written over, so the mode
-# is the one the file is created with rather than one a chmod catches up with afterwards.
-if [ -n "${HOME:-}" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
+# every local account. Both the directory and the record are created with the mode they keep rather
+# than chmod'ed once they exist, since the other order leaves them open for the moment in between;
+# the chmod is what narrows a directory an earlier install left, and the record is removed and
+# written again rather than written over.
+if [ -n "${HOME:-}" ] && (umask 077 && mkdir -p "$STATE_DIR") 2>/dev/null; then
   chmod 700 "$STATE_DIR" 2>/dev/null || true
   rm -f "$INSTALLED_BY" 2>/dev/null || true
   (umask 077 && printf '%s\n' "$DEST_PATH" > "$INSTALLED_BY") 2>/dev/null || true
