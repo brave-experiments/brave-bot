@@ -15,8 +15,8 @@
 use crate::policy::{Capabilities, ConfinementLevel, SandboxPolicy};
 use crate::{Sandbox, SandboxError};
 use landlock::{
-    path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, RulesetAttr, RulesetCreatedAttr,
-    RulesetStatus, ABI,
+    ABI, Access, AccessFs, CompatLevel, Compatible, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
+    path_beneath_rules,
 };
 use std::os::unix::process::CommandExt;
 use std::process::Command;
