@@ -1,10 +1,13 @@
-//! Client for Claude on AWS Bedrock.
+//! Client for models on AWS Bedrock.
 //!
 //! The second backend. It answers the same questions as [`bravebot_aichat`] and returns the same
 //! [`Completion`], so a caller chooses between them once and the turn loop is unchanged. What differs
-//! is underneath: the Anthropic Messages API rather than an OpenAI-compatible one, SigV4 signatures
+//! is underneath: Bedrock's own Converse API rather than an OpenAI-compatible one, SigV4 signatures
 //! over short-lived credentials rather than an HMAC over a body digest, and a binary event-stream
 //! framing rather than server-sent events.
+//!
+//! Converse states one body for every provider Bedrock hosts, so a tier may name a model from any
+//! of them and nothing here has to recognise which.
 //!
 //! Every request goes through [`bravebot_net::Egress`], so the policy gate sees this traffic exactly
 //! as it sees the other backend's. The reply is labelled untrusted-public and nothing here reads it:
@@ -191,7 +194,7 @@ impl<'a> BedrockClient<'a> {
         // under.
         let (bytes, label) = response.body.into_parts_for_decoding();
 
-        let parsed: protocol::InvokeResponse =
+        let parsed: protocol::ConverseResponse =
             serde_json::from_slice(&bytes).map_err(|e| BedrockError::Decode {
                 detail: format!("{e} (received {} bytes)", bytes.len()),
             })?;
@@ -200,14 +203,21 @@ impl<'a> BedrockClient<'a> {
             return Err(BedrockError::TooLong);
         }
 
-        let (content, calls) = protocol::parts_of(&parsed.content);
+        let blocks = parsed
+            .output
+            .and_then(|output| output.message)
+            .map(|message| message.content)
+            .unwrap_or_default();
+        let (content, calls) = protocol::parts_of(&blocks);
         if content.is_empty() && calls.is_empty() {
             return Err(BedrockError::NoContent);
         }
 
         Ok(Completion {
             content: Labelled::new(content, label),
-            model: parsed.model.unwrap_or(model),
+            // This API does not name the model back, so the one the request asked for is the one
+            // that answered.
+            model,
             calls,
             usage: parsed.usage.map(Usage::from).unwrap_or_default(),
         })
@@ -318,10 +328,10 @@ impl<'a> BedrockClient<'a> {
             let written_before = reply.text.len();
 
             for event in decoder.push(&bytes)? {
-                // A frame that will not parse as an event is skipped rather than failing the turn:
-                // the framing was sound, so the position in the stream is known, and the API sends
-                // events this does not model.
-                if let Ok(event) = serde_json::from_slice::<StreamEvent>(&event) {
+                // An event this does not model, or one whose body will not parse, is skipped rather
+                // than failing the turn: the framing was sound, so the position in the stream is
+                // known, and the API sends events that say nothing this needs.
+                if let Some(event) = protocol::stream_event(&event.name, &event.payload) {
                     reply.absorb(event);
                 }
             }
@@ -353,7 +363,9 @@ impl<'a> BedrockClient<'a> {
 
         Ok(Completion {
             content: Labelled::new(reply.text, label),
-            model: reply.model.unwrap_or(model),
+            // This API does not name the model back, so the one the request asked for is the one
+            // that answered.
+            model,
             calls,
             usage: reply.usage,
         })
@@ -378,7 +390,7 @@ impl<'a> BedrockClient<'a> {
 
         let resolved = credentials::resolve(self.config.profile.as_deref())?;
 
-        let url = self.config.invoke_url(&model, streaming);
+        let url = self.config.converse_url(&model, streaming);
         let host = self.config.host();
         let path = path_of(&url);
 
@@ -457,7 +469,6 @@ struct Reply {
     text: String,
     /// Tool calls by block index, since their arguments arrive in pieces across events.
     calls: Vec<(usize, String, String, String)>,
-    model: Option<String>,
     usage: Usage,
     /// Whether the count is the service's rather than a tally of what arrived.
     counted: bool,
@@ -468,31 +479,16 @@ struct Reply {
 impl Reply {
     fn absorb(&mut self, event: StreamEvent) {
         match event {
-            StreamEvent::MessageStart { message } => {
-                self.model = message.model;
-                if let Some(usage) = message.usage {
-                    // The prompt count arrives up front and the reply count at the end, so this
-                    // keeps the input figure without overwriting the output one.
-                    self.usage.prompt_tokens = usage.input_tokens;
-                }
-            }
-            StreamEvent::ContentBlockStart {
-                index,
-                content_block,
-            } => {
-                if let protocol::Block::ToolUse { id, name, input } = content_block {
-                    // The opening event may carry a whole argument object or an empty placeholder to
-                    // be filled by the deltas that follow.
-                    let opening = if input.is_null() || input == serde_json::json!({}) {
-                        String::new()
-                    } else {
-                        input.to_string()
-                    };
-                    self.calls.push((index, id, name, opening));
+            StreamEvent::ContentBlockStart { index, start } => {
+                if let protocol::BlockStart::ToolUse { tool_use } = start {
+                    // The opening event names the call and nothing else; every byte of its
+                    // arguments arrives in the deltas that follow.
+                    self.calls
+                        .push((index, tool_use.tool_use_id, tool_use.name, String::new()));
                 }
             }
             StreamEvent::ContentBlockDelta { index, delta } => match delta {
-                protocol::Delta::TextDelta { text } => {
+                protocol::Delta::Text { text } => {
                     self.text.push_str(&text);
                     // A tally until the service reports its own, so a reply in flight can show
                     // something rather than zero.
@@ -500,24 +496,27 @@ impl Reply {
                         self.usage.completion_tokens += 1;
                     }
                 }
-                protocol::Delta::InputJsonDelta { partial_json } => {
+                protocol::Delta::ToolUse { tool_use } => {
                     if let Some(call) = self.calls.iter_mut().find(|(at, ..)| *at == index) {
-                        call.3.push_str(&partial_json);
+                        call.3.push_str(&tool_use.input);
                     }
                 }
-                protocol::Delta::Other => {}
+                protocol::Delta::Other(_) => {}
             },
-            StreamEvent::MessageDelta { delta, usage } => {
-                if let Some(usage) = usage {
-                    self.usage.completion_tokens = usage.output_tokens;
-                    self.counted = true;
-                }
-                if delta.stop_reason.is_some() {
-                    self.stop_reason = delta.stop_reason;
+            StreamEvent::MessageStop { stop_reason } => {
+                self.ended = true;
+                if stop_reason.is_some() {
+                    self.stop_reason = stop_reason;
                 }
             }
-            StreamEvent::MessageStop => self.ended = true,
-            StreamEvent::Other => {}
+            // Both halves of the count arrive together at the end of the stream, so this replaces
+            // the running tally rather than adding to it.
+            StreamEvent::Metadata { usage } => {
+                if let Some(usage) = usage {
+                    self.usage = Usage::from(usage);
+                    self.counted = true;
+                }
+            }
         }
     }
 
@@ -605,6 +604,25 @@ mod tests {
     use super::*;
     use bravebot_config::env_var;
 
+    /// The event that opens a tool call, which names it and carries none of its arguments.
+    fn opening(id: &str, name: &str) -> protocol::BlockStart {
+        protocol::BlockStart::ToolUse {
+            tool_use: protocol::ToolUseStart {
+                tool_use_id: id.to_string(),
+                name: name.to_string(),
+            },
+        }
+    }
+
+    /// One fragment of a tool call's arguments.
+    fn arguments(piece: &str) -> protocol::Delta {
+        protocol::Delta::ToolUse {
+            tool_use: protocol::ToolUseDelta {
+                input: piece.to_string(),
+            },
+        }
+    }
+
     fn config() -> Bedrock {
         Bedrock::from_lookup(|name| {
             match name {
@@ -626,7 +644,7 @@ mod tests {
     fn a_refused_credential_says_so_rather_than_reporting_a_status() {
         for status in [401, 403] {
             let error = BedrockError::Egress(EgressError::Status {
-                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/invoke".to_string(),
+                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
                 status,
             });
             assert!(error.is_credential_refused(), "{status} was not recognised");
@@ -658,8 +676,8 @@ mod tests {
     #[test]
     fn the_signed_path_is_the_one_the_request_asks_for() {
         assert_eq!(
-            path_of("https://host.invalid/model/abc/invoke"),
-            "/model/abc/invoke"
+            path_of("https://host.invalid/model/abc/converse"),
+            "/model/abc/converse"
         );
         assert_eq!(path_of("https://host.invalid/"), "/");
         assert_eq!(path_of("https://host.invalid"), "/");
@@ -708,18 +726,12 @@ mod tests {
     #[test]
     fn streamed_text_is_assembled_in_order() {
         let mut reply = Reply::default();
-        reply.absorb(StreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: protocol::Delta::TextDelta {
-                text: "Hello ".into(),
-            },
-        });
-        reply.absorb(StreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: protocol::Delta::TextDelta {
-                text: "world".into(),
-            },
-        });
+        for piece in ["Hello ", "world"] {
+            reply.absorb(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: protocol::Delta::Text { text: piece.into() },
+            });
+        }
         assert_eq!(reply.text, "Hello world");
     }
 
@@ -730,18 +742,12 @@ mod tests {
         let mut reply = Reply::default();
         reply.absorb(StreamEvent::ContentBlockStart {
             index: 1,
-            content_block: protocol::Block::ToolUse {
-                id: "call-1".into(),
-                name: "read_file".into(),
-                input: serde_json::json!({}),
-            },
+            start: opening("call-1", "read_file"),
         });
         for piece in [r#"{"path""#, r#":"src/"#, r#"lib.rs"}"#] {
             reply.absorb(StreamEvent::ContentBlockDelta {
                 index: 1,
-                delta: protocol::Delta::InputJsonDelta {
-                    partial_json: piece.into(),
-                },
+                delta: arguments(piece),
             });
         }
 
@@ -762,11 +768,7 @@ mod tests {
         for (index, id) in [(0usize, "first"), (1usize, "second")] {
             reply.absorb(StreamEvent::ContentBlockStart {
                 index,
-                content_block: protocol::Block::ToolUse {
-                    id: id.into(),
-                    name: "read_file".into(),
-                    input: serde_json::json!({}),
-                },
+                start: opening(id, "read_file"),
             });
         }
         for (index, piece) in [
@@ -777,9 +779,7 @@ mod tests {
         ] {
             reply.absorb(StreamEvent::ContentBlockDelta {
                 index,
-                delta: protocol::Delta::InputJsonDelta {
-                    partial_json: piece.into(),
-                },
+                delta: arguments(piece),
             });
         }
 
@@ -795,40 +795,26 @@ mod tests {
         let mut reply = Reply::default();
         reply.absorb(StreamEvent::ContentBlockStart {
             index: 0,
-            content_block: protocol::Block::ToolUse {
-                id: "call-1".into(),
-                name: "list".into(),
-                input: serde_json::json!({}),
-            },
+            start: opening("call-1", "list"),
         });
         assert_eq!(reply.calls()[0].function.arguments.as_deref(), Some("{}"));
     }
 
-    /// The prompt count arrives at the start and the reply count at the end. Overwriting one with
-    /// the other loses half of what the turn cost.
+    /// Both halves of the count arrive in the one event at the end of the stream, and a reply that
+    /// kept only one of them reports half of what the turn cost. The cached tokens belong to the
+    /// prompt they were sent as, whoever ended up reading them.
     #[test]
     fn both_halves_of_the_cost_survive_the_stream() {
         let mut reply = Reply::default();
-        reply.absorb(StreamEvent::MessageStart {
-            message: protocol::StreamedMessageStart {
-                model: Some("a-model".into()),
-                usage: Some(protocol::BedrockUsage {
-                    input_tokens: 1_000,
-                    output_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
-                }),
-            },
+        reply.absorb(StreamEvent::MessageStop {
+            stop_reason: Some("end_turn".into()),
         });
-        reply.absorb(StreamEvent::MessageDelta {
-            delta: protocol::MessageDeltaBody {
-                stop_reason: Some("end_turn".into()),
-            },
+        reply.absorb(StreamEvent::Metadata {
             usage: Some(protocol::BedrockUsage {
-                input_tokens: 0,
+                input_tokens: 100,
                 output_tokens: 42,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 800,
+                cache_write_input_tokens: 100,
             }),
         });
 
@@ -836,7 +822,6 @@ mod tests {
         assert_eq!(reply.usage.completion_tokens, 42);
         assert_eq!(reply.usage.total(), 1_042);
         assert!(reply.counted, "the service reported its own figure");
-        assert_eq!(reply.model.as_deref(), Some("a-model"));
     }
 
     /// Until the service reports a figure, a count of what arrived is shown so a reply in flight
@@ -847,19 +832,18 @@ mod tests {
         for _ in 0..3 {
             reply.absorb(StreamEvent::ContentBlockDelta {
                 index: 0,
-                delta: protocol::Delta::TextDelta { text: "x".into() },
+                delta: protocol::Delta::Text { text: "x".into() },
             });
         }
         assert_eq!(reply.usage.completion_tokens, 3);
         assert!(!reply.counted, "not the service's own figure");
 
-        reply.absorb(StreamEvent::MessageDelta {
-            delta: protocol::MessageDeltaBody::default(),
+        reply.absorb(StreamEvent::Metadata {
             usage: Some(protocol::BedrockUsage {
                 input_tokens: 0,
                 output_tokens: 99,
                 cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
+                cache_write_input_tokens: 0,
             }),
         });
         assert_eq!(reply.usage.completion_tokens, 99);
@@ -873,13 +857,15 @@ mod tests {
         let mut reply = Reply::default();
         reply.absorb(StreamEvent::ContentBlockDelta {
             index: 0,
-            delta: protocol::Delta::TextDelta {
+            delta: protocol::Delta::Text {
                 text: "partial".into(),
             },
         });
         assert!(!reply.ended);
 
-        reply.absorb(StreamEvent::MessageStop);
+        reply.absorb(StreamEvent::MessageStop {
+            stop_reason: Some("end_turn".into()),
+        });
         assert!(reply.ended);
     }
 

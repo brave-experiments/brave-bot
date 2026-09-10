@@ -16,8 +16,8 @@ governs:
 
 ## Scope
 
-Where a request for a reply goes. Three services can answer: the aichat endpoint Brave runs, Claude
-on AWS Bedrock through somebody's own account, and an OpenAI-compatible gateway somebody configured.
+Where a request for a reply goes. Three services can answer: the aichat endpoint Brave runs, AWS
+Bedrock through somebody's own account, and an OpenAI-compatible gateway somebody configured.
 This file governs which of them serves a given request, what a person is offered to choose from, and
 what a configuration may decide.
 
@@ -516,7 +516,7 @@ service is sent the other's shape.
 |---|---|
 | The aichat endpoint Brave runs | `reasoning_effort`, beside the model |
 | An OpenAI-compatible gateway | `reasoning_effort`, beside the model |
-| Claude on AWS Bedrock | `effort`, inside `output_config` |
+| AWS Bedrock | `effort`, inside `output_config`, among the fields handed to the model unread |
 
 This says where a level is sent, not what becomes of it. What a service does with the field is that
 service's own behaviour, observable only by measuring it, and one of the three is known to discard it
@@ -708,11 +708,11 @@ earlier. The prompt and the schemas are identical on every round of every sessio
 front of the last one are identical to a round ago.
 
 **Rolling rather than fixed.** Each request writes the round before it into the cache and reads
-back everything older, which is what makes the second breakpoint worth a cache write. A last block
-that cannot carry one, an image or a tool call, leaves the request with one breakpoint and costs
-nothing else.
+back everything older, which is what makes the second breakpoint worth a cache write. A conversation
+ending in an image or a tool call is left with the breakpoint on the system prompt alone, and costs
+a cache write and nothing else.
 
-**The reported prompt is what was sent, not what was read.** This API states `input_tokens` net of
+**The reported prompt is what was sent, not what was read.** This API states `inputTokens` net of
 the cache and reports the cached tokens beside it, so the three are added back together on the way
 into a `Usage`. Without that a cached round reads as a conversation that shrank while it grew.
 
@@ -725,7 +725,39 @@ format, which has no field for this and asks for nothing.
 `verified-by: bravebot_bedrock::protocol::a_reply_without_a_breakpoint_still_parses`
 `verified-by: bravebot_bedrock::protocol::cached_tokens_are_counted_as_the_prompt_they_were`
 
+<a id="BACKEND-28"></a>
+### BACKEND-28: a Bedrock tier may name any model that account can reach
+
+A request to AWS Bedrock is built the same way whatever model it names, in the body that service
+states for every provider it hosts rather than in any one provider's own. A tier may therefore name
+a model from any of them, and an inference profile standing for one, without anything here
+recognising which provider is behind it.
+
+**Why.** Bedrock fronts several providers, and an inference-profile ARN does not say which one
+serves it. A body shaped for a single provider therefore makes which models are reachable a
+property of this code rather than of the account: the name is accepted, signed, sent, and refused at
+the far end on the body, which is the failure BACKEND-3 argues against for a name no service
+recognises. It is worse here, because the account can reach the model and nothing a person writes
+in a settings file closes the gap. Where a role is scoped to inference profiles, which is how
+per-user cost allocation is granted, the routes a bearer token can use refuse those profiles
+outright, so this is the only one that answers at all.
+
+**Note.** The tier words stay `opus`, `sonnet` and `haiku`. They name a slot in a settings file
+rather than a model family, and a tier is whichever model the account named for it.
+
+`verified-by: bravebot_bedrock::protocol::the_request_names_no_provider_of_its_own`
+`verified-by: bravebot_config::bedrock::streaming_and_buffered_requests_have_different_routes`
+`verified-by: bravebot_config::bedrock::a_model_arn_is_encoded_into_the_path`
+
 ## Known costs
+
+- **The effort level is the one field in a Bedrock request that a single provider defines.** The
+  body Bedrock states for every provider it hosts has no field for how hard to think, so the level
+  travels in the field that service hands to the model without reading, spelled the way the
+  Anthropic API spells it. A tier naming a model from another provider is reachable and answers,
+  and a level chosen against one is refused by that model on the field name. Nothing here can tell
+  the two apart, an inference-profile ARN not saying which provider serves it, and the alternative
+  is withholding a level from every Bedrock model including the ones that read it.
 
 - **Which models a product is served is the service's decision, and this holds no copy of it.** The
   roster is whatever the endpoint returns for `brave-bot`, so a model becoming unsuitable for agentic
@@ -750,7 +782,7 @@ format, which has no field for this and asks for nothing.
   roster were not measured, a free-tier credential being substituted to a weaker model before the
   request lands, so nothing here is established about them. A level chosen against a Brave-served
   model is therefore carried, sent, and dropped, while the interface goes on reporting it as in
-  force. Bedrock is unaffected, `output_config.effort` being the field that API defines.
+  force. Bedrock is unaffected, the level reaching the model in the field that model defines.
 
 - **A level a service does advertise may still not mean what this sends.** `xhigh` and `max` are
   levels the Anthropic API defines, and a gateway row advertising `reasoning_effort` says it reads

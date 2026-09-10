@@ -27,7 +27,7 @@ pub const DEFAULT_MODEL: &str = "BRAVE_AI_CHAT_DEFAULT_MODEL";
 /// release.
 pub const CONTEXT_BUDGET: &str = "BRAVEBOT_CONTEXT_BUDGET";
 
-/// Set to `1` to reach Claude through AWS Bedrock rather than the aichat backend.
+/// Set to `1` to reach a model through AWS Bedrock rather than the aichat backend.
 ///
 /// Brave-prefixed like the rest of this file: the switch decides which backend this program uses,
 /// so it belongs to this program. The model names below keep Claude Code's spelling, since those

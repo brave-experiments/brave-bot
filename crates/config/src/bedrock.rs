@@ -1,4 +1,4 @@
-//! Configuration for reaching Claude through AWS Bedrock.
+//! Configuration for reaching a model through AWS Bedrock.
 //!
 //! Present or absent, never half configured. [`Bedrock::from_lookup`] answers `None` unless the
 //! switch is on and a region is named, so a caller holding one of these knows where to send a
@@ -150,14 +150,18 @@ impl Bedrock {
 
     /// The URL for one request against a model, streamed or not.
     ///
+    /// The route is the one whose body Bedrock states for every provider it hosts, rather than one
+    /// that passes a provider-specific body straight through, so which model this names decides
+    /// nothing about how the request is built.
+    ///
     /// The model name is percent-encoded because an inference-profile ARN contains colons and
     /// slashes, and pasting one into a path unencoded produces a URL whose path segments are not
     /// the ones intended.
-    pub fn invoke_url(&self, model: &str, streaming: bool) -> String {
+    pub fn converse_url(&self, model: &str, streaming: bool) -> String {
         let route = if streaming {
-            "invoke-with-response-stream"
+            "converse-stream"
         } else {
-            "invoke"
+            "converse"
         };
         format!(
             "https://{}/model/{}/{route}",
@@ -372,11 +376,11 @@ mod tests {
             (env_var::AWS_REGION, "us-west-2"),
         ])
         .expect("configured");
-        let url = bedrock.invoke_url("arn:aws:bedrock:us-west-2:1:foo/bar", false);
+        let url = bedrock.converse_url("arn:aws:bedrock:us-west-2:1:foo/bar", false);
         assert!(url.contains("%3A"), "colons survived unencoded: {url}");
         assert!(url.contains("%2F"), "slashes survived unencoded: {url}");
         assert!(
-            url.ends_with("/invoke"),
+            url.ends_with("/converse"),
             "the route is no longer the last segment: {url}"
         );
     }
@@ -390,11 +394,15 @@ mod tests {
             (env_var::AWS_REGION, "us-west-2"),
         ])
         .expect("configured");
-        assert!(bedrock.invoke_url("m", false).ends_with("/model/m/invoke"));
         assert!(
             bedrock
-                .invoke_url("m", true)
-                .ends_with("/model/m/invoke-with-response-stream")
+                .converse_url("m", false)
+                .ends_with("/model/m/converse")
+        );
+        assert!(
+            bedrock
+                .converse_url("m", true)
+                .ends_with("/model/m/converse-stream")
         );
     }
 
