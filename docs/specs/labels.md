@@ -213,7 +213,7 @@ what catches it.
     decision. The write is approved later, from a diff of the actual bytes, so a person who reads
     the diff sees what happens whatever the remark said. The residue is that a plausible remark
     might persuade somebody to skim, which is
-    [issue #23](https://github.com/brave-experiments/brave-bot/issues/23).
+    [issue #23](https://github.com/brave-experiments/bravebot/issues/23).
   - **Add or drop a trailing newline.**
 
   What is not on the list is the thing that would matter: choosing *which* file is written. That

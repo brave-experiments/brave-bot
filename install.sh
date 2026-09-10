@@ -2,8 +2,8 @@
 #
 # Installs the newest bravebot release for this platform.
 #
-#   curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+#   curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 #
 # The checksum check is not optional: without it a network-fetched executable would run on the
 # strength of TLS alone, and a substituted release asset would be indistinguishable from a good
@@ -13,7 +13,7 @@
 
 set -eu
 
-REPO="brave-experiments/brave-bot"
+REPO="brave-experiments/bravebot"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 BIN_NAME="bravebot"
 STATE_DIR="${HOME:-}/.bravebot"

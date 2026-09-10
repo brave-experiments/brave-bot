@@ -13,7 +13,7 @@ const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const SKIP_ENV = "BRAVEBOT_INSTALL_SKIP_DOWNLOAD";
-const DEFAULT_REPO = "brave-experiments/brave-bot";
+const DEFAULT_REPO = "brave-experiments/bravebot";
 const MAX_REDIRECTS = 5;
 
 const repo = process.env.BRAVEBOT_REPO || DEFAULT_REPO;
@@ -132,7 +132,7 @@ function get(url, redirects, callback) {
   }
 
   https
-    .get(url, { headers: { "User-Agent": "brave-bot-installer" } }, (response) => {
+    .get(url, { headers: { "User-Agent": "bravebot-installer" } }, (response) => {
       const { statusCode, headers } = response;
       if (statusCode >= 300 && statusCode < 400 && headers.location) {
         response.resume();

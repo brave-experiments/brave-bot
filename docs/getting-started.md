@@ -14,7 +14,7 @@ and Windows on both x86_64 and arm64 are supported.
 On macOS and Linux there is an install script, for a machine with no npm on it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | sh
 ```
 
 It fetches the newest release for your platform, checks it against the published checksum, and
@@ -22,7 +22,7 @@ puts it in `/usr/local/bin`, asking for sudo only if that directory is not yours
 `INSTALL_DIR` puts it somewhere else:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/brave-experiments/brave-bot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Running the line again is how an install made this way is updated: it remembers where the last
@@ -100,7 +100,7 @@ which is usually wanted the other way round: an English interface on an otherwis
 language nothing has shipped for reads in English. `LC_ALL=C` asks for no translation at all.
 
 English and French are what ship today. Adding a language is a file, and needs no Rust:
-[crates/i18n/locales/README.md](https://github.com/brave-experiments/brave-bot/blob/main/crates/i18n/locales/README.md).
+[crates/i18n/locales/README.md](https://github.com/brave-experiments/bravebot/blob/main/crates/i18n/locales/README.md).
 
 What stays in English whatever you set: the names of the slash commands, so `/model` is `/model`
 everywhere; the letters a question is answered with, `y` and `n`; and the audit trail, which is a

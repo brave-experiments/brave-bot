@@ -1,6 +1,6 @@
 # Specs
 
-Each file in this directory is a mini-spec for one topic within the brave-bot system.
+Each file in this directory is a mini-spec for one topic within the bravebot system.
 Spec changes, additions, and removals are closely reviewed by humans.
 
 If a mini-spec disagrees, that is a bug in the spec that should be fixed.
