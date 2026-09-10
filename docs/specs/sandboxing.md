@@ -87,5 +87,6 @@ road.
 `verified-by: bravebot_sandbox::macos::capabilities_report_kernel_enforcement`
 `verified-by: bravebot_sandbox::linux::capabilities_do_not_overstate_network_denial`
 `verified-by: bravebot_sandbox::linux::a_policy_requiring_network_denial_is_refused`
+`verified-by: bravebot_sandbox::linux::a_policy_requiring_subprocess_denial_is_refused`
 `verified-by: bravebot_sandbox::lib::an_unavailable_backend_reports_no_confinement`
 `verified-by: bravebot_sandbox::policy::confinement_levels_render_for_the_audit_trail`
