@@ -7,6 +7,7 @@ governs:
   - crates/tui/src/store.rs
   - crates/tui/src/update.rs
   - crates/skus/src/store.rs
+  - crates/lsp/src/server.rs
 guards:
   - symbol: home::create_directory
   - symbol: home::write_file
@@ -17,13 +18,14 @@ guards:
 
 `~/.bravebot`, the directory holding what outlives a session, and who on the machine may read what
 is written into it. The prompt history, the model, theme, effort and editing choices, the answer to
-the update question, session records, skills, standing instructions and an imported subscription
-all live here.
+the update question, session records, a language server's index of a workspace, skills, standing
+instructions and an imported subscription all live here.
 
 What each of those files means belongs to the spec for that subject:
 [sessions.md](sessions.md) for a session record, [skills.md](skills.md) and
 [instructions.md](instructions.md) for what is read out of the directory,
-[premium-credentials.md](premium-credentials.md) for the subscription, and
+[premium-credentials.md](premium-credentials.md) for the subscription,
+[tools/lsp.md](tools/lsp.md) for the index and why sitting here confers nothing on it, and
 [incognito.md](incognito.md) for the mode that writes none of it. This file covers the directory
 itself.
 
@@ -54,11 +56,13 @@ Stopping at the state directory bounds it in the other direction. Whose home thi
 is kept in it, is the user's own business, and a program that narrowed directories it was never
 asked about would be making decisions outside anything it was given.
 
-One helper does this for the crates that can share one. The crate that imports a subscription
-depends on nothing, as [layering.md](layering.md) records, and keeps its own copy of the modes
-rather than taking a dependency for four lines. It creates the state directory when it is the
-first to write, which is the case that made the mode of a directory holding prompt history a
-matter of which subsystem ran first.
+One helper does this for the crates that can share one. The crate that imports a subscription and
+the language server client both sit below the crate holding that helper, as
+[layering.md](layering.md) records, so each keeps its own copy of the modes rather than inverting a
+dependency for four lines. Either can be the first to write, which is the case that made the mode of
+a directory holding prompt history a matter of which subsystem ran first. The language server client
+narrows the two directories it owns and not the state directory above them, since what that is set
+to belongs to whichever subsystem created it.
 
 `verified-by: bravebot_agent::home::a_directory_is_created_reachable_only_by_its_owner`
 `verified-by: bravebot_agent::home::a_directory_left_open_by_an_older_build_is_narrowed`
@@ -73,6 +77,8 @@ matter of which subsystem ran first.
 `verified-by: bravebot_tui::state_directory::nothing_above_the_state_directory_is_touched`
 `verified-by: bravebot_tui::state_directory::writing_a_session_narrows_the_state_directory`
 `verified-by: bravebot_skus::store::the_directory_it_is_kept_in_is_not_reachable_by_anyone_else`
+`verified-by: bravebot_lsp::server::the_cache_is_created_reachable_only_by_its_owner`
+`verified-by: bravebot_lsp::server::a_cache_left_open_by_an_earlier_run_is_narrowed`
 
 <a id="STATE-2"></a>
 ### STATE-2: one definition of where the directory is, and no fallback

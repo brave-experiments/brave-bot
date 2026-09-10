@@ -148,6 +148,39 @@ pub fn cache_for(state: Option<&Path>, workspace: &Path, incognito: bool) -> Opt
     Some(state.join(CACHE_ROOT).join(format!("{hash:016x}")))
 }
 
+/// Create a cache directory, and the directories between it and the state directory, reachable
+/// only by this user.
+///
+/// The index is derived from every file in the workspace, so who may read it is who may read the
+/// workspace. The mode is asked for as each directory is created, because a directory keeps the
+/// mode it was made with. Spelled out here rather than shared with the crate that has a helper for
+/// it: this crate depends on the kernel alone, as layering.md records, and a language server client
+/// is not worth a dependency for four lines.
+fn create_cache(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+        // A directory keeps the mode it was made with, so one an earlier run left open is narrowed
+        // rather than kept. These two and no further: what the state directory itself is set to
+        // belongs to whichever subsystem created it.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+        if let Some(root) = path.parent()
+            && root.file_name().is_some_and(|name| name == CACHE_ROOT)
+        {
+            let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
 /// Whether a message is a server saying its initial index is built.
 ///
 /// Read from the shape of a progress notification, never from prose: what is looked at is whether
@@ -325,7 +358,7 @@ impl Server {
         // Where the index goes, said to each ecosystem in its own spelling. Nothing is written to the
         // workspace, which is LSP-10.
         if let Some(cache) = cache {
-            let _ = std::fs::create_dir_all(cache);
+            let _ = create_cache(cache);
             match language {
                 Language::Rust => {
                     command.env("CARGO_TARGET_DIR", cache);
@@ -929,6 +962,72 @@ mod tests {
             "one directory for the tool, one per workspace"
         );
         assert_eq!(below[0], CACHE_ROOT);
+    }
+
+    /// The index is derived from every file in the workspace, so who may read it is who may read
+    /// the workspace. At the process umask that is every account on the machine.
+    #[cfg(unix)]
+    #[test]
+    fn the_cache_is_created_reachable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-mode");
+        let _ = std::fs::remove_dir_all(&scratch);
+        let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
+
+        create_cache(&cache).expect("created");
+
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&cache), 0o700);
+        assert_eq!(
+            mode(&scratch.join(CACHE_ROOT)),
+            0o700,
+            "the directory holding one per workspace"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A run of an earlier build left these at the umask, and creating a directory that exists
+    /// does not touch its mode. Without narrowing, the machines already holding an index would be
+    /// the ones this never reaches.
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_left_open_by_an_earlier_run_is_narrowed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = crate::testutil::scratch_dir("bravebot-lsp-cache-narrowed");
+        let _ = std::fs::remove_dir_all(&scratch);
+        let cache = cache_for(Some(&scratch), &root(), false).expect("a cache is given");
+        std::fs::create_dir_all(&cache).expect("as an earlier run left it");
+        let loosen = |path: &Path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("loosen")
+        };
+        loosen(&scratch.join(CACHE_ROOT));
+        loosen(&cache);
+
+        create_cache(&cache).expect("created");
+
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("exists")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&cache), 0o700);
+        assert_eq!(mode(&scratch.join(CACHE_ROOT)), 0o700);
+        assert_eq!(
+            mode(&scratch),
+            0o755,
+            "the state directory is not this crate's to set"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     /// LSP-10: two workspaces do not share an index.

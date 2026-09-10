@@ -19,6 +19,8 @@
 
 pub mod protocol;
 pub mod server;
+#[cfg(test)]
+mod testutil;
 
 pub use protocol::{Location, Operation, SymbolKind};
 pub use server::{Language, Question, Server, Servers, Starting};
