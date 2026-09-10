@@ -50,6 +50,11 @@ pub enum BedrockError {
     NoContent,
     /// The stream stopped without the service saying the reply was over.
     Incomplete,
+    /// The service said, part way through the reply, that it was not going to finish it.
+    ///
+    /// Named by the failure the service reported rather than by a status: the status was sent and
+    /// accepted before the reply began, so this is the only thing that says why it stopped.
+    Reported { kind: String },
     /// The model was cut off at the token ceiling.
     ///
     /// Distinct from [`BedrockError::Incomplete`], which is a connection that died: this reply ended
@@ -79,6 +84,9 @@ impl fmt::Display for BedrockError {
             Self::NoContent => f.write_str("the response contained no message content"),
             Self::Incomplete => {
                 f.write_str("the reply stopped before the service said it was finished")
+            }
+            Self::Reported { kind } => {
+                write!(f, "AWS stopped the reply part way through and reported {kind}")
             }
             Self::TooLong => f.write_str(
                 "the model reached its output limit before finishing. Ask for less in one turn",
@@ -328,11 +336,21 @@ impl<'a> BedrockClient<'a> {
             let written_before = reply.text.len();
 
             for event in decoder.push(&bytes)? {
-                // An event this does not model, or one whose body will not parse, is skipped rather
-                // than failing the turn: the framing was sound, so the position in the stream is
-                // known, and the API sends events that say nothing this needs.
-                if let Some(event) = protocol::stream_event(&event.name, &event.payload) {
-                    reply.absorb(event);
+                match event {
+                    // An event this does not model, or one whose body will not parse, is skipped
+                    // rather than failing the turn: the framing was sound, so the position in the
+                    // stream is known, and the API sends events that say nothing this needs.
+                    eventstream::Event::Named { name, payload } => {
+                        if let Some(event) = protocol::stream_event(&name, &payload) {
+                            reply.absorb(event);
+                        }
+                    }
+                    // Reported rather than read past. A reply the service abandoned ends the same
+                    // way a dead connection does, so without this the cause is replaced by "the
+                    // reply was cut off" and a refusal nothing can fix is asked for twice more.
+                    eventstream::Event::Failed { kind } => {
+                        return Err(BedrockError::Reported { kind });
+                    }
                 }
             }
 
@@ -561,6 +579,16 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// The failures AWS reports mid-reply that a second attempt could get past.
+///
+/// Everything else it names is a property of the request, which a second identical one has too.
+const TRANSIENT_REPORTS: [&str; 4] = [
+    "throttlingException",
+    "modelStreamErrorException",
+    "internalServerException",
+    "serviceUnavailableException",
+];
+
 /// How many times one request is sent before its failure is the caller's.
 const ATTEMPTS: u32 = 3;
 
@@ -584,6 +612,9 @@ fn worth_another_attempt(attempt: u32, error: &BedrockError) -> bool {
     }
     match error {
         BedrockError::Egress(e) => e.is_transient(),
+        // The service's own name for what went wrong. A fault or a busy service is worth asking
+        // again; a request it refuses on its contents is refused the same way every time.
+        BedrockError::Reported { kind } => TRANSIENT_REPORTS.contains(&kind.as_str()),
         // A reply that stopped early is a request that did not complete, whatever the socket
         // thought. The partial is thrown away for the same reason: half a reply cannot be continued
         // by a second stream.
@@ -879,6 +910,44 @@ mod tests {
             "{}",
             BedrockError::TooLong
         );
+    }
+
+    /// A reply the service abandoned says why in the frame that ends it. Reported as a truncation,
+    /// the cause is lost and the remedy with it: nothing about "the reply was cut off" tells
+    /// somebody their request was refused on its contents.
+    #[test]
+    fn a_failure_the_service_reported_is_named_rather_than_called_a_truncation() {
+        let error = BedrockError::Reported {
+            kind: "validationException".to_string(),
+        };
+        let said = error.to_string();
+        assert!(said.contains("validationException"), "{said}");
+        assert!(!said.contains("cut off"), "{said}");
+    }
+
+    /// A fault or a busy service is worth asking again. A request the service refuses on its
+    /// contents is refused identically every time, so asking again spends three round trips to
+    /// arrive at the same answer more slowly.
+    #[test]
+    fn only_the_reported_failures_that_could_pass_are_asked_again() {
+        for kind in [
+            "throttlingException",
+            "modelStreamErrorException",
+            "internalServerException",
+            "serviceUnavailableException",
+        ] {
+            let error = BedrockError::Reported {
+                kind: kind.to_string(),
+            };
+            assert!(worth_another_attempt(1, &error), "{kind} was given up on");
+        }
+
+        for kind in ["validationException", "somethingNewException"] {
+            let error = BedrockError::Reported {
+                kind: kind.to_string(),
+            };
+            assert!(!worth_another_attempt(1, &error), "{kind} was asked again");
+        }
     }
 
     /// A reply that arrived and would not decode is not a connection problem, and an expired

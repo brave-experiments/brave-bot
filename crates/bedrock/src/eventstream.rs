@@ -38,14 +38,23 @@ const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 /// The header naming which event a frame carries.
 const EVENT_TYPE_HEADER: &[u8] = b":event-type";
 
-/// The header value type for a string, which is what an event name is.
+/// The header naming which failure a frame reports, on the frames that report one.
+const EXCEPTION_TYPE_HEADER: &[u8] = b":exception-type";
+
+/// The header value type for a string, which is what both of those names are.
 const STRING_VALUE: u8 = 7;
 
-/// One event out of the stream: the name its frame gave it, and the JSON it carried.
+/// One frame's contribution to the reply.
+///
+/// The service reports a failure part way through a reply as a frame like any other, distinguished
+/// only by which header names it. Both names come from the framing rather than from the body, so
+/// telling them apart reads nothing the reply carried.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Event {
-    pub name: String,
-    pub payload: Vec<u8>,
+pub enum Event {
+    /// One of the reply's own events, under the name the framing gave it.
+    Named { name: String, payload: Vec<u8> },
+    /// The service saying this reply is not going to finish, under the name it gave the failure.
+    Failed { kind: String },
 }
 
 /// Something wrong with the framing itself.
@@ -98,15 +107,12 @@ impl FrameDecoder {
         let mut events = Vec::new();
         loop {
             match self.take_frame()? {
-                // A frame whose headers name no event is skipped rather than failing the stream:
-                // the framing was sound, so the position in the stream is still known, and the API
-                // sends frames this does not need.
+                // A frame whose headers name neither is skipped rather than failing the stream: the
+                // framing was sound, so the position in the stream is still known, and the API sends
+                // frames this does not need.
                 Some(frame) => {
-                    if let Some(name) = event_name(&frame.headers) {
-                        events.push(Event {
-                            name,
-                            payload: frame.payload,
-                        });
+                    if let Some(event) = event_of(&frame) {
+                        events.push(event);
                     }
                 }
                 None => return Ok(events),
@@ -172,7 +178,22 @@ impl FrameDecoder {
     }
 }
 
-/// The name a frame's headers give its event, if they give one.
+/// What a frame contributes, or nothing for one whose headers name neither an event nor a failure.
+///
+/// A failure is looked for first. A frame reporting one carries no `:event-type`, so the order only
+/// matters if the service ever sent both, and a frame that named a failure is a failure whatever
+/// else it named.
+fn event_of(frame: &Frame) -> Option<Event> {
+    if let Some(kind) = named_header(&frame.headers, EXCEPTION_TYPE_HEADER) {
+        return Some(Event::Failed { kind });
+    }
+    named_header(&frame.headers, EVENT_TYPE_HEADER).map(|name| Event::Named {
+        name,
+        payload: frame.payload.clone(),
+    })
+}
+
+/// The value of one string header, if the frame carries it.
 ///
 /// A header is a name, a value type, and a value whose width the type decides:
 ///
@@ -180,10 +201,10 @@ impl FrameDecoder {
 /// [name_len:u8][name][value_type:u8][value]
 /// ```
 ///
-/// Every header is walked rather than only the first, because the one naming the event is not
-/// always at the front. A value of a type this does not know has a width this cannot skip, so the
-/// walk stops there rather than reading whatever follows as a header name.
-fn event_name(headers: &[u8]) -> Option<String> {
+/// Every header is walked rather than only the first, because the one wanted is not always at the
+/// front. A value of a type this does not know has a width this cannot skip, so the walk stops there
+/// rather than reading whatever follows as a header name.
+fn named_header(headers: &[u8], wanted: &[u8]) -> Option<String> {
     let mut at = 0usize;
 
     while at < headers.len() {
@@ -216,7 +237,7 @@ fn event_name(headers: &[u8]) -> Option<String> {
         let value = headers.get(at..at.checked_add(width)?)?;
         at += width;
 
-        if value_type == STRING_VALUE && name == EVENT_TYPE_HEADER {
+        if value_type == STRING_VALUE && name == wanted {
             return String::from_utf8(value.to_vec()).ok();
         }
     }
@@ -267,6 +288,14 @@ mod tests {
         out
     }
 
+    /// A frame the way the service reports a mid-reply failure: named by `:exception-type`, with
+    /// no `:event-type` at all.
+    fn failure(kind: &str) -> Vec<u8> {
+        let mut headers = string_header(b":message-type", b"exception");
+        headers.extend(string_header(EXCEPTION_TYPE_HEADER, kind.as_bytes()));
+        frame_with_headers(br#"{"message":"the service said why"}"#, &headers)
+    }
+
     fn string_header(name: &[u8], value: &[u8]) -> Vec<u8> {
         let mut out = vec![name.len() as u8];
         out.extend_from_slice(name);
@@ -291,9 +320,44 @@ mod tests {
         let events = decoder
             .push(&frame("messageStop", br#"{"stopReason":"end_turn"}"#))
             .expect("decodes");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].name, "messageStop");
-        assert_eq!(events[0].payload, br#"{"stopReason":"end_turn"}"#);
+        assert_eq!(
+            events,
+            vec![Event::Named {
+                name: "messageStop".to_string(),
+                payload: br#"{"stopReason":"end_turn"}"#.to_vec(),
+            }]
+        );
+    }
+
+    /// The service reports throttling, a validation refusal and its own faults as frames rather
+    /// than as a status, since the status was sent before the reply began. Dropped, each one is a
+    /// stream that simply stops, which reads as a cut-off reply and says nothing about the cause.
+    #[test]
+    fn a_failure_the_service_reports_mid_reply_comes_out_as_one() {
+        let mut decoder = FrameDecoder::new();
+        let events = decoder
+            .push(&failure("throttlingException"))
+            .expect("decodes");
+        assert_eq!(
+            events,
+            vec![Event::Failed {
+                kind: "throttlingException".to_string(),
+            }]
+        );
+    }
+
+    /// The reply's own events go on being read either way, so a failure arriving after some of the
+    /// text does not take that text with it.
+    #[test]
+    fn a_reported_failure_arrives_behind_the_events_that_preceded_it() {
+        let mut bytes = frame("contentBlockDelta", br#"{"delta":{"text":"hi"}}"#);
+        bytes.extend(failure("modelStreamErrorException"));
+
+        let mut decoder = FrameDecoder::new();
+        let events = decoder.push(&bytes).expect("decodes");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Event::Named { .. }));
+        assert!(matches!(events[1], Event::Failed { .. }));
     }
 
     /// A frame very often arrives split across reads, and a decoder that needed whole frames per
@@ -309,7 +373,7 @@ mod tests {
             events.extend(decoder.push(&[*byte]).expect("decodes"));
         }
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].name, "messageStop");
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "messageStop"));
         assert!(!decoder.is_mid_frame(), "nothing should be left over");
     }
 
@@ -324,8 +388,13 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let events = decoder.push(&bytes).expect("decodes");
         assert_eq!(events.len(), 3);
-        assert_eq!(events[2].name, "c");
-        assert_eq!(events[2].payload, br#"{"i":3}"#);
+        assert_eq!(
+            events[2],
+            Event::Named {
+                name: "c".to_string(),
+                payload: br#"{"i":3}"#.to_vec(),
+            }
+        );
     }
 
     /// The name is not always the first header, so every one has to be walked. Read from the first
@@ -340,7 +409,7 @@ mod tests {
         let events = decoder
             .push(&frame_with_headers(br#"{"delta":{}}"#, &headers))
             .expect("decodes");
-        assert_eq!(events[0].name, "contentBlockDelta");
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "contentBlockDelta"));
     }
 
     /// A header whose value is not a string still has a width, and one skipped wrongly leaves the
@@ -358,7 +427,7 @@ mod tests {
         let events = decoder
             .push(&frame_with_headers(br#"{"usage":{}}"#, &headers))
             .expect("decodes");
-        assert_eq!(events[0].name, "metadata");
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "metadata"));
     }
 
     /// A stream that ends mid-frame is a reply that was cut off. Without noticing, a truncated reply
@@ -461,16 +530,24 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let events = decoder.push(&bytes).expect("the framing was fine");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].name, "metadata");
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "metadata"));
     }
 
     /// Headers that run off the end of their own block name nothing, and a walk that read past them
     /// would be reading the payload as a header.
     #[test]
     fn a_truncated_header_block_names_nothing_rather_than_reading_on() {
-        assert_eq!(event_name(&[5, b'a']), None);
-        assert_eq!(event_name(&[1, b'a', STRING_VALUE, 0]), None);
-        assert_eq!(event_name(&[1, b'a', STRING_VALUE, 0, 9, b'x']), None);
+        for headers in [
+            &[5, b'a'][..],
+            &[1, b'a', STRING_VALUE, 0][..],
+            &[1, b'a', STRING_VALUE, 0, 9, b'x'][..],
+        ] {
+            assert_eq!(
+                named_header(headers, EVENT_TYPE_HEADER),
+                None,
+                "{headers:?}"
+            );
+        }
     }
 
     /// An empty read is what a quiet connection produces, and it must not be mistaken for an end.
