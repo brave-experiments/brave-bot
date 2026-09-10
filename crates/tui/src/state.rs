@@ -1958,6 +1958,7 @@ impl Session {
     /// mode and would let the character be typed by any path that thinks it is typing text. A
     /// newline in the prompt is one deliberate keystroke.
     pub fn type_newline(&mut self) {
+        self.abandon_the_selection();
         self.history.leave();
         self.input.insert(self.caret, '\n');
         self.caret += 1;
@@ -2008,6 +2009,11 @@ impl Session {
         }
         self.editing = editing;
         self.mode = crate::vim::Mode::Insert;
+        // The selection goes with the mode that showed it, the way Escape out of VISUAL mode
+        // abandons it. INSERT mode has no stretch to act on, and the ordinary box has nowhere to
+        // draw one: what is left otherwise is a reversed run of characters in a box whose keys
+        // cannot account for it.
+        self.anchor = None;
     }
 
     /// Which vi mode the box is in, or `None` where vi is not the style.
@@ -2036,11 +2042,18 @@ impl Session {
     /// `d` take two characters rather than one. Whole lines in the line-wise mode however far along a
     /// line either end happens to sit.
     pub fn vi_selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.anchor?;
-        let lines = matches!(
-            self.vi_mode(),
-            Some(crate::vim::Mode::Visual { lines: true })
-        );
+        // The mode as well as the anchor: the anchor is what the stretch is, and the mode is whether
+        // there is one at all. Read from the anchor alone, a box that had left VISUAL mode without
+        // dropping it would draw a stretch its keys can no longer act on.
+        let Some(crate::vim::Mode::Visual { lines }) = self.vi_mode() else {
+            return None;
+        };
+        // Clamped to the line as it stands rather than trusted to be within it, the way `wrap`
+        // clamps the caret it is handed. Nothing reachable leaves a stale anchor behind — every edit
+        // of the line abandons the selection — but this is read on every frame, and an offset past
+        // the end here is not a stretch drawn wrong: it is the line sliced outside its bounds, which
+        // panics out of the draw with the terminal still in raw mode.
+        let anchor = crate::wrap::boundary_at_or_before(&self.input, self.anchor?);
         let (from, to) = (anchor.min(self.caret), anchor.max(self.caret));
         if lines {
             let starts = self.input[..from].rfind('\n').map_or(0, |at| at + 1);
@@ -2533,6 +2546,7 @@ impl Session {
             return;
         };
         self.before_last_change = Some((self.input.clone(), self.caret));
+        self.abandon_the_selection();
         self.history.leave();
         self.completion = 0;
 
@@ -2586,6 +2600,7 @@ impl Session {
             return;
         }
         self.before_last_change = Some((self.input.clone(), self.caret));
+        self.abandon_the_selection();
         self.history.leave();
         self.completion = 0;
 
@@ -2691,6 +2706,27 @@ impl Session {
         if self.anchor.take().is_some() {
             self.mode = crate::vim::Mode::Normal;
             self.step_back_off_the_end();
+        }
+    }
+
+    /// Abandon the selection, the line it was marked on having been edited out from under it.
+    ///
+    /// Everything that shortens or replaces the line calls this, because a stretch is a pair of
+    /// offsets into the line and nothing records which line they were taken from. Most of the keys
+    /// that edit are not vi's own — Backspace, Delete, the readline bindings, a paste, a prompt
+    /// recalled — and VISUAL mode claims none of them, so they reach the box with a selection open
+    /// and leave it naming characters that have moved or gone. What is left is not a stretch drawn
+    /// wrong: [`Session::vi_selection`] is read on every frame, so the next draw reads the line
+    /// outside its bounds and the session panics with the terminal still in raw mode.
+    ///
+    /// The mode goes back to NORMAL with the stretch, since VISUAL mode with nothing marked out is a
+    /// mode whose whole subject is missing and the letters would be read from the wrong table.
+    /// Nothing else about the press changes: the caret is left where the edit put it, which is where
+    /// the same key leaves it in NORMAL mode, rather than stepped off the end of the line the way
+    /// `leave_visual_mode` steps it after an operator has acted on the stretch.
+    fn abandon_the_selection(&mut self) {
+        if self.anchor.take().is_some() {
+            self.mode = crate::vim::Mode::Normal;
         }
     }
 
@@ -3006,6 +3042,7 @@ impl Session {
     /// down themselves and the ones that did not were the ones a person reached mid-turn: recalling
     /// an earlier prompt, and a stopped turn handing its prompt back.
     fn set_input(&mut self, line: impl Into<String>) {
+        self.abandon_the_selection();
         self.input = line.into();
         self.caret = self.input.len();
         self.shortcuts = false;
@@ -3189,6 +3226,7 @@ impl Session {
         if self.caret == self.input.len() {
             return;
         }
+        self.abandon_the_selection();
         self.history.leave();
         match self.marker_at_caret() {
             Some((start, end)) => self.input.replace_range(start..end, ""),
@@ -3200,7 +3238,15 @@ impl Session {
     }
 
     /// Delete the word before the caret.
+    ///
+    /// Nothing where there is no character before it, as [`Session::delete_forward`] does with none
+    /// in front: a press that deletes nothing leaves the line, the history it is being browsed from,
+    /// and any selection standing over it exactly as they were.
     pub fn delete_word_before(&mut self) {
+        if self.caret == 0 {
+            return;
+        }
+        self.abandon_the_selection();
         self.history.leave();
         let was = self.caret;
         self.move_word_left();
@@ -3209,18 +3255,32 @@ impl Session {
     }
 
     /// Delete from the caret back to the start of its line.
+    ///
+    /// Nothing where the caret is already there, for the reason [`Session::delete_word_before`] does
+    /// nothing at the start of the line.
     pub fn delete_to_line_start(&mut self) {
-        self.history.leave();
         let (start, _) = self.caret_line();
+        if start == self.caret {
+            return;
+        }
+        self.abandon_the_selection();
+        self.history.leave();
         self.input.replace_range(start..self.caret, "");
         self.caret = start;
         self.completion = 0;
     }
 
     /// Delete from the caret to the end of its line.
+    ///
+    /// Nothing where the caret is already there, for the reason [`Session::delete_word_before`] does
+    /// nothing at the start of the line.
     pub fn delete_to_line_end(&mut self) {
-        self.history.leave();
         let (_, end) = self.caret_line();
+        if end == self.caret {
+            return;
+        }
+        self.abandon_the_selection();
+        self.history.leave();
         self.input.replace_range(self.caret..end, "");
         self.completion = 0;
     }
@@ -3503,6 +3563,7 @@ impl Session {
     /// newlines are kept rather than flattened, since a pasted paragraph was written with them
     /// and the box draws them.
     pub fn paste(&mut self, text: &str) {
+        self.abandon_the_selection();
         self.history.leave();
         let text = normalised(text);
         self.input.insert_str(self.caret, &text);
@@ -3782,6 +3843,7 @@ impl Session {
     /// visible: the whole of that marker is drawn under the caret, and a press that took the
     /// character beside it instead would take something the user could see was not selected.
     pub fn backspace(&mut self) {
+        self.abandon_the_selection();
         self.history.leave();
         if let Some((start, end)) = self
             .marker_at_caret()
@@ -3919,6 +3981,7 @@ impl Session {
         } else {
             // Overwriting rather than stacking. One slot is what the key promises, and a press that
             // silently pushed a second line would leave the first reachable only by pressing again.
+            self.abandon_the_selection();
             self.stashed = Some(std::mem::take(&mut self.input));
             self.caret = 0;
             true
@@ -9927,6 +9990,156 @@ mod tests {
             s.input, "oe two",
             "the abandoned selection was still acted on"
         );
+    }
+
+    /// One press on the box, named so the tables below read as the keys they stand for.
+    type Press = fn(&mut Session);
+
+    /// An edit of the line abandons the selection, the stretch it named having gone with the line it
+    /// was marked on. VISUAL mode claims none of these keys, so every one of them reaches the box with
+    /// a selection open: a stretch left standing would name characters that have moved or gone, and the
+    /// draw that reads it on every frame would read the line outside its bounds and take the session
+    /// down in raw mode.
+    #[test]
+    fn an_edit_of_the_line_abandons_the_selection() {
+        let edits: [(&str, Press); 10] = [
+            ("Backspace", |s| s.backspace()),
+            ("Delete", |s| s.delete_forward()),
+            ("Ctrl-W", |s| s.delete_word_before()),
+            ("Ctrl-U", |s| s.delete_to_line_start()),
+            ("Ctrl-K", |s| s.delete_to_line_end()),
+            ("a paste", |s| s.paste("and more")),
+            ("Alt-Enter", |s| s.type_newline()),
+            ("stashing", |s| {
+                s.stash();
+            }),
+            ("recall", |s| s.recall_older()),
+            ("an edited line", |s| s.take_edited("hi")),
+        ];
+
+        for (key, edit) in edits {
+            let mut s = normal("hello", 4);
+            s.history.push("an older prompt".to_string(), None);
+            s.type_char('v');
+            s.type_char('h');
+            assert!(s.vi_selection().is_some(), "{key}: nothing was marked out");
+
+            edit(&mut s);
+
+            assert_eq!(s.vi_selection(), None, "{key} left the selection standing");
+            assert_eq!(
+                s.vi_mode(),
+                Some(crate::vim::Mode::Normal),
+                "{key} left VISUAL mode open with nothing marked out"
+            );
+        }
+    }
+
+    /// A press that deletes nothing leaves the selection standing. The stretch is still exactly the
+    /// one that was marked out, and a key that closed it would be doing something visible while doing
+    /// nothing at all to the line it was pressed over.
+    #[test]
+    fn a_press_that_changes_nothing_leaves_the_selection() {
+        let presses: [(&str, &str, usize, Press); 4] = [
+            ("Ctrl-U at the start of the line", "hello", 0, |s| {
+                s.delete_to_line_start()
+            }),
+            ("Ctrl-K at the end of the line", "a\nb", 1, |s| {
+                s.delete_to_line_end()
+            }),
+            ("Ctrl-W at the start of the line", "hello", 0, |s| {
+                s.delete_word_before()
+            }),
+            ("stashing an empty line with nothing put away", "", 0, |s| {
+                s.stash();
+            }),
+        ];
+
+        for (press, line, at, press_it) in presses {
+            let mut s = normal(line, at);
+            s.type_char('v');
+            let marked = s.vi_selection();
+
+            press_it(&mut s);
+
+            assert_eq!(s.input, line, "{press} changed the line");
+            assert_eq!(s.vi_selection(), marked, "{press} closed the selection");
+        }
+    }
+
+    /// The keys VISUAL mode maps that are not operators change the line as much as an operator does,
+    /// and nothing else ends the selection for them: `J` shortens it by the newline and the blanks the
+    /// line below was indented with, and `p` puts the register back into the middle of it.
+    #[test]
+    fn a_visual_key_that_changes_the_line_abandons_the_selection() {
+        for key in ['J', 'p'] {
+            let mut s = normal("one\n  two", 0);
+            // Yanked before the selection is opened, so `p` has something to put back. Yanking the
+            // selection would end it, that being what an operator does and these two keys not being
+            // operators.
+            s.type_char('y');
+            s.type_char('l');
+            s.type_char('v');
+            s.type_char(key);
+
+            assert_eq!(s.vi_selection(), None, "{key} left the selection standing");
+            assert_eq!(
+                s.vi_mode(),
+                Some(crate::vim::Mode::Normal),
+                "{key} left VISUAL mode open with nothing marked out"
+            );
+        }
+    }
+
+    /// The style is chosen away from the box, so the selection goes with the mode that showed it. The
+    /// ordinary box has no key that could act on a stretch and no mode to draw for it, and one left
+    /// standing is a reversed run of characters nothing in front of the person accounts for.
+    #[test]
+    fn choosing_a_style_of_editing_abandons_the_selection() {
+        for editing in crate::vim::Editing::ALL {
+            let mut s = normal("hello", 2);
+            s.type_char('v');
+            s.type_char('l');
+
+            s.choose_editing(editing);
+
+            assert_eq!(
+                s.vi_selection(),
+                None,
+                "{editing:?} left the selection standing"
+            );
+            // The anchor itself, not only the stretch read off it: the field is what says whether
+            // VISUAL mode has anything marked out, and the letters are read from one table or the
+            // other by asking it.
+            assert_eq!(s.anchor, None, "{editing:?} kept the anchor");
+        }
+    }
+
+    /// The stretch is read off the line as it stands rather than trusted to be within it. Nothing
+    /// reachable leaves a stale anchor behind, but the draw reads this on every frame and there is no
+    /// panic hook: an offset past the end, or inside a character a shorter line left split, would take
+    /// the terminal down in raw mode rather than draw a frame.
+    #[test]
+    fn the_selection_is_read_off_the_line_as_it_stands() {
+        for kind in ['v', 'V'] {
+            // Where a longer line stood: past the end of this one, and inside the second character
+            // of a line whose characters are two bytes wide.
+            for (line, stale) in [("hi", 9), ("éé", 3)] {
+                let mut s = normal(line, 0);
+                s.type_char(kind);
+                s.anchor = Some(stale);
+
+                let (from, to) = s.vi_selection().expect("VISUAL mode marked nothing out");
+                assert!(
+                    from <= to && to <= s.input.len(),
+                    "{kind} over {line:?} read {from}..{to} off a line of {} bytes",
+                    s.input.len()
+                );
+                // Panics rather than fails where either end is not one of the line's own boundaries,
+                // which is what the draw does with what it is given.
+                let _ = &s.input[from..to];
+            }
+        }
     }
 
     /// Every operator ends the selection, the stretch having been acted on. One left standing would be

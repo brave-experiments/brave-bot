@@ -151,7 +151,7 @@ pub fn wrap(text: &str, width: usize, caret: usize) -> Wrapped {
 }
 
 /// The largest character boundary of `text` no greater than `offset`.
-fn boundary_at_or_before(text: &str, offset: usize) -> usize {
+pub(crate) fn boundary_at_or_before(text: &str, offset: usize) -> usize {
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
         offset -= 1;

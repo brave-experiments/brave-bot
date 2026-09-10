@@ -1145,7 +1145,10 @@ left to distinguish. `r` replaces every selected character with one, and `~`, `u
 case. A line-wise selection goes into the register as lines.
 
 The key that opened the mode closes it, the other of the two changes which kind is in force, and
-Escape abandons the selection. Every operator ends it.
+Escape abandons the selection. Every operator ends it, and so does an edit of the line it was marked
+on, whether the edit came from one of vi's own keys or from a key VISUAL mode does not claim. A press
+that deletes nothing has not edited the line and leaves the stretch standing; choosing a style of
+editing abandons it along with the mode that showed it.
 
 **The whole marked stretch is drawn**, on every row it crosses, and the caret is not drawn within it.
 
@@ -1167,6 +1170,18 @@ nothing on the screen explains. Escape abandoning it is the same rule from the o
 A marker is not a run of characters to overwrite, and replacing the text either side while leaving it
 standing would be a line nobody could read.
 
+An edit ending the selection is what a stretch being a pair of positions costs: nothing about the two
+says which line they were taken from, and the keys that edit are mostly not vi's own. Backspace, the
+readline bindings, a paste, and the prompt an arrow recalls all reach the box while VISUAL mode is
+open, and a selection they left standing would name characters that have moved or gone. Drawing that
+is not a stretch drawn wrong but a line read outside itself, and the draw is on every frame. The
+stretch is read off the line as it stands for the same reason, rather than trusted to be within it.
+
+A press that deletes nothing is exempt because the stretch it would end is still exactly the one on
+the screen, and a key that closed it would be doing something visible while doing nothing to the
+line. The style of editing is the other way round: it is chosen away from the box, and the box it
+comes back to may have no key that could act on a stretch and no mode to draw one for.
+
 Block-wise selection is a known cost rather than a clause.
 
 `verified-by: bravebot_tui::vim::an_operator_in_visual_mode_acts_on_the_selection`
@@ -1185,6 +1200,12 @@ Block-wise selection is a known cost rather than a clause.
 `verified-by: bravebot_tui::state::the_selection_key_opens_and_closes_and_changes_kind`
 `verified-by: bravebot_tui::state::escape_abandons_the_selection`
 `verified-by: bravebot_tui::state::an_operator_ends_the_selection`
+`verified-by: bravebot_tui::state::an_edit_of_the_line_abandons_the_selection`
+`verified-by: bravebot_tui::state::a_visual_key_that_changes_the_line_abandons_the_selection`
+`verified-by: bravebot_tui::state::a_press_that_changes_nothing_leaves_the_selection`
+`verified-by: bravebot_tui::state::choosing_a_style_of_editing_abandons_the_selection`
+`verified-by: bravebot_tui::state::the_selection_is_read_off_the_line_as_it_stands`
+`verified-by: bravebot_tui::render::an_edit_under_a_selection_still_draws`
 `verified-by: bravebot_tui::state::replacing_a_selection_holding_a_marker_leaves_it_alone`
 `verified-by: bravebot_tui::render::the_selection_is_drawn_over_the_whole_stretch`
 `verified-by: bravebot_tui::render::a_selection_across_rows_is_drawn_on_all_of_them`

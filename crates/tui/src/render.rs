@@ -6288,6 +6288,28 @@ mod tests {
         assert_eq!(caret_cells(&session, 40, 12), " ");
     }
 
+    /// The bug: a key VISUAL mode does not claim reached the box and shortened the line under the
+    /// selection, and the next frame read the stretch off the line that was no longer there. Seven
+    /// keystrokes from a clean prompt took the session down in raw mode, since the draw is what
+    /// panicked and nothing catches it.
+    #[test]
+    fn an_edit_under_a_selection_still_draws() {
+        let mut session = Session::new("test");
+        session.choose_editing(crate::vim::Editing::Vi);
+        for c in "hello".chars() {
+            session.type_char(c);
+        }
+        session.enter_vi_normal();
+        session.type_char('v');
+        session.type_char('h');
+        session.backspace();
+        session.backspace();
+
+        // The stretch is gone with the line it was marked on, so the caret is drawn where it always
+        // is outside VISUAL mode: on one character, which here is the `l` it is left on.
+        assert_eq!(caret_cells(&session, 40, 12), "l");
+    }
+
     /// The bug: text past the right edge used to be clipped, cursor included, which looked like
     /// the program had stopped taking keys.
     #[test]
