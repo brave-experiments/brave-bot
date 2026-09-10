@@ -25,6 +25,9 @@
 //!   key those tools honour that this one silently dropped is worse than one nobody writes.
 //! - `permissions`, whose rules Claude Code spells the same way.
 //! - `provider`, in opencode's shape, read by [`crate::provider`].
+//! - `attribution`, Claude Code's name for what a commit message or a pull request may carry, so
+//!   that a checkout asking for none of it says so once in a file rather than in prose an agent
+//!   has to be reading at the moment it writes one.
 //!
 //! They are independent. A file configuring one has nothing to say about the others, and reading any
 //! of them does not depend on another being present.
@@ -91,9 +94,31 @@ pub struct Settings {
     /// not recognise has to reach the interface to be reported there rather than be dropped here as
     /// though the file had said nothing.
     editor_mode: Option<String>,
+    attribution: Attribution,
     providers: Vec<crate::provider::Provider>,
     layers: Vec<PathBuf>,
     contested: BTreeMap<String, PathBuf>,
+}
+
+/// The `attribution` block: what a commit message or a pull request this program writes may carry.
+///
+/// A string per destination, and the empty string is a value rather than absence. Saying to carry
+/// nothing is the whole reason to write the block, so a blank cannot mean the same thing here as it
+/// means for `model`, where it is how somebody comments a line out. `None` is the file having said
+/// nothing about that destination, which is what leaves a weaker layer's answer standing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Attribution {
+    /// What a commit message may carry, if the settings said.
+    pub commit: Option<String>,
+    /// What a pull request may carry, if the settings said.
+    pub pr: Option<String>,
+}
+
+impl Attribution {
+    /// Whether the block said anything.
+    pub fn is_empty(&self) -> bool {
+        self.commit.is_none() && self.pr.is_none()
+    }
 }
 
 /// The `permissions` block, as text, exactly as the file spelled it.
@@ -209,6 +234,7 @@ impl Settings {
             permissions: permission_lists(root),
             model: word(root, "model"),
             editor_mode: word(root, "editorMode"),
+            attribution: attribution_block(root),
             providers: crate::provider::Provider::all(root),
             layers: Vec::new(),
             contested: BTreeMap::new(),
@@ -237,6 +263,14 @@ impl Settings {
         self.editor_mode.as_deref()
     }
 
+    /// What the settings in force say a commit message and a pull request may carry.
+    ///
+    /// A name the block set is an answer even when it is empty, empty being how a file says to
+    /// carry nothing. Nothing here writes either one: this is where a writer of one asks.
+    pub fn attribution(&self) -> &Attribution {
+        &self.attribution
+    }
+
     /// Whether anything was set at all.
     pub fn is_empty(&self) -> bool {
         self.env.is_empty()
@@ -244,6 +278,7 @@ impl Settings {
             && self.permissions.is_empty()
             && self.model.is_none()
             && self.editor_mode.is_none()
+            && self.attribution.is_empty()
             && self.providers.is_empty()
     }
 
@@ -296,6 +331,13 @@ impl Settings {
             .then_some("model")
             .into_iter()
             .chain(self.editor_mode.is_some().then_some("editorMode"))
+            .chain(
+                self.attribution
+                    .commit
+                    .is_some()
+                    .then_some("attribution.commit"),
+            )
+            .chain(self.attribution.pr.is_some().then_some("attribution.pr"))
             .chain(self.env.keys().map(String::as_str))
     }
 }
@@ -347,11 +389,11 @@ fn env_names(root: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
 
 /// Lay one settings root over another, a name at a time.
 ///
-/// One level deep, which is Claude Code's rule rather than a general merge: `env` and `provider`
-/// combine per name, and a value inside one of those names is replaced whole. So a project file may
-/// add a gateway or restate one, and cannot reach inside an inherited gateway to change the host it
-/// points at while keeping the rest. A deeper merge would make a request's destination the product of
-/// two files, and no single place to read would say where it goes.
+/// One level deep, which is Claude Code's rule rather than a general merge: `env`, `provider` and
+/// `attribution` combine per name, and a value inside one of those names is replaced whole. So a
+/// project file may add a gateway or restate one, and cannot reach inside an inherited gateway to
+/// change the host it points at while keeping the rest. A deeper merge would make a request's
+/// destination the product of two files, and no single place to read would say where it goes.
 ///
 /// `run.scrubEnv` unions instead, since a name there only ever takes a variable away from a
 /// subprocess. Overriding would let a layer hand back something a weaker one withheld, which is a
@@ -362,9 +404,12 @@ fn merge(
 ) {
     for (key, value) in over {
         match (base.get_mut(&key), value) {
-            // `env` and `provider`: per-name, one level down.
+            // `env`, `provider` and `attribution`: per-name, one level down. The names under
+            // `attribution` are two unrelated destinations, so a file answering for one must not
+            // answer for the other by omission: a project file naming what a pull request carries
+            // would otherwise hand back the commit trailer a person's own file had turned off.
             (Some(serde_json::Value::Object(under)), serde_json::Value::Object(above))
-                if key == "env" || key == "provider" =>
+                if key == "env" || key == "provider" || key == "attribution" =>
             {
                 under.extend(above);
             }
@@ -449,6 +494,25 @@ fn scrub_list(root: &serde_json::Map<String, serde_json::Value>) -> Vec<String> 
             _ => None,
         })
         .collect()
+}
+
+/// The `attribution` block: what a commit message and a pull request may carry.
+///
+/// The string exactly as written, empty ones included, because empty is the value that says to
+/// carry nothing. Anything that is not a string is absence, on the same footing as everything else
+/// here: a half-typed file leaves the layers under it in force rather than refusing to start.
+fn attribution_block(root: &serde_json::Map<String, serde_json::Value>) -> Attribution {
+    let Some(serde_json::Value::Object(block)) = root.get("attribution") else {
+        return Attribution::default();
+    };
+    let text = |name: &str| match block.get(name) {
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        _ => None,
+    };
+    Attribution {
+        commit: text("commit"),
+        pr: text("pr"),
+    }
 }
 
 /// The `permissions` block: three lists of rule text, and the directories to open.
@@ -1087,6 +1151,61 @@ mod tests {
         let reported: Vec<&str> = settings.names().collect();
         assert_eq!(reported, ["editorMode"]);
         assert!(!settings.is_empty());
+    }
+
+    /// Empty is the value the block exists to carry. Read as absence, the one thing somebody writes
+    /// this file to say would be the one thing it cannot say, and `doctor` would report a file that
+    /// turned both trailers off as having set nothing.
+    #[test]
+    fn an_empty_attribution_is_a_choice_of_nothing() {
+        let settings = Settings::parse(r#"{"attribution": {"commit": "", "pr": ""}}"#);
+        assert_eq!(settings.attribution().commit.as_deref(), Some(""));
+        assert_eq!(settings.attribution().pr.as_deref(), Some(""));
+        assert!(!settings.is_empty());
+        assert_eq!(
+            settings.names().collect::<Vec<_>>(),
+            ["attribution.commit", "attribution.pr"]
+        );
+    }
+
+    /// A name no layer wrote is a question the settings did not answer, which is what leaves whoever
+    /// writes a commit free to decide. Absence and a choice of nothing are different answers, so
+    /// anything that is not a string reads as the file having said nothing about that name.
+    #[test]
+    fn an_attribution_name_no_file_wrote_is_unset() {
+        let settings = Settings::parse(r#"{"attribution": {"commit": ""}}"#);
+        assert_eq!(settings.attribution().commit.as_deref(), Some(""));
+        assert_eq!(settings.attribution().pr, None);
+
+        for text in [
+            r#"{}"#,
+            r#"{"attribution": {}}"#,
+            r#"{"attribution": {"commit": null, "pr": 1}}"#,
+            r#"{"attribution": "none"}"#,
+        ] {
+            let settings = Settings::parse(text);
+            assert!(
+                settings.attribution().is_empty(),
+                "read a value from {text}"
+            );
+            assert!(settings.is_empty(), "reported a name from {text}");
+        }
+    }
+
+    /// The two names are unrelated destinations, so they resolve one at a time. Replacing the block
+    /// would let a checkout naming what a pull request carries hand back the commit trailer somebody
+    /// turned off in their own file, without saying so anywhere a reader of either file would see.
+    #[test]
+    fn a_layer_answering_for_one_attribution_name_leaves_the_other() {
+        let settings = Layers::new("attribution-per-name")
+            .global(r#"{"attribution": {"commit": "", "pr": ""}}"#)
+            .project(r#"{"attribution": {"pr": "Opened by bravebot"}}"#)
+            .read();
+        assert_eq!(settings.attribution().commit.as_deref(), Some(""));
+        assert_eq!(
+            settings.attribution().pr.as_deref(),
+            Some("Opened by bravebot")
+        );
     }
 
     /// A model is one choice rather than a list, so the closest layer that names one wins: a checkout

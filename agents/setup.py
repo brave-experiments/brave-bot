@@ -15,6 +15,8 @@ once and every tool sees it:
     .cursor/skills/<name>    ->  agents/skills/<name>
     .claude/CLAUDE.md        ->  agents/AGENTS.md
     AGENTS.md                ->  agents/AGENTS.md
+    .claude/settings.json    ->  agents/settings.json
+    .bravebot/settings.json  ->  agents/settings.json
 
 The generated links are gitignored and never committed, which is why this runs from
 `make init` rather than being a one-time setup somebody has to remember.
@@ -63,10 +65,20 @@ _FANOUT = [
     ('agents', ['.claude/agents', '.cursor/agents']),
 ]
 
-# The one instructions file, under the name each tool looks for. bravebot and Codex read
-# it from the workspace root; Claude Code reads `.claude/CLAUDE.md`.
+# One file to one destination each, under the name the tool reading it looks for.
+#
+# The instructions: bravebot, Codex and Cursor read them from the workspace root, and Claude
+# Code from `.claude/CLAUDE.md`.
+#
+# The settings: what a commit message and a pull request may carry, asked for in the
+# instructions as well and stated here where no model is involved in honouring it. Claude Code
+# and bravebot both read a `settings.json` in this shape, so one file serves both. Cursor has no
+# equivalent file and has the instructions instead. Codex has none either, and no project-level
+# file at all: its `commit_attribution_enabled` is an account setting read over the network, so
+# turning it off is a step in `docs/development.md` rather than anything `make init` can link.
 _FILES = [
     ('AGENTS.md', ['.claude/CLAUDE.md', 'AGENTS.md']),
+    ('settings.json', ['.claude/settings.json', '.bravebot/settings.json']),
 ]
 
 # A child of a fanned-out source dir is only worth linking if it is a real entry rather
