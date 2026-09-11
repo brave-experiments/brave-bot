@@ -1,10 +1,13 @@
-//! Client for Claude on AWS Bedrock.
+//! Client for models on AWS Bedrock.
 //!
 //! The second backend. It answers the same questions as [`bravebot_aichat`] and returns the same
 //! [`Completion`], so a caller chooses between them once and the turn loop is unchanged. What differs
-//! is underneath: the Anthropic Messages API rather than an OpenAI-compatible one, SigV4 signatures
+//! is underneath: Bedrock's own Converse API rather than an OpenAI-compatible one, SigV4 signatures
 //! over short-lived credentials rather than an HMAC over a body digest, and a binary event-stream
 //! framing rather than server-sent events.
+//!
+//! Converse states one body for every provider Bedrock hosts, so a tier may name a model from any
+//! of them and nothing here has to recognise which.
 //!
 //! Every request goes through [`bravebot_net::Egress`], so the policy gate sees this traffic exactly
 //! as it sees the other backend's. The reply is labelled untrusted-public and nothing here reads it:
@@ -47,6 +50,11 @@ pub enum BedrockError {
     NoContent,
     /// The stream stopped without the service saying the reply was over.
     Incomplete,
+    /// The service said, part way through the reply, that it was not going to finish it.
+    ///
+    /// Named by the failure the service reported rather than by a status: the status was sent and
+    /// accepted before the reply began, so this is the only thing that says why it stopped.
+    Reported { kind: String },
     /// The model was cut off at the token ceiling.
     ///
     /// Distinct from [`BedrockError::Incomplete`], which is a connection that died: this reply ended
@@ -77,6 +85,9 @@ impl fmt::Display for BedrockError {
             Self::Incomplete => {
                 f.write_str("the reply stopped before the service said it was finished")
             }
+            Self::Reported { kind } => {
+                write!(f, "AWS stopped the reply part way through and reported {kind}")
+            }
             Self::TooLong => f.write_str(
                 "the model reached its output limit before finishing. Ask for less in one turn",
             ),
@@ -90,6 +101,13 @@ impl fmt::Display for BedrockError {
 }
 
 impl std::error::Error for BedrockError {}
+
+/// The status AWS answers a request it will not accept the contents of.
+///
+/// A validation refusal, which is what a model that does not do prompt caching answers a request
+/// carrying cache breakpoints. Not worth sending again unchanged, and the one thing worth changing
+/// is the part of the request nobody asked for.
+const REFUSED_CONTENTS_STATUS: u16 = 400;
 
 /// The statuses AWS answers a credential it will not accept with.
 ///
@@ -112,6 +130,17 @@ impl BedrockError {
         matches!(
             self,
             Self::Egress(EgressError::Status { status, .. }) if REFUSED_STATUSES.contains(status)
+        )
+    }
+
+    /// Whether AWS refused this request on what it contained.
+    ///
+    /// Not a decision taken from content, for the same reason the one above is not: a status is the
+    /// transport's own report, and nothing in the body is read to reach it.
+    pub fn is_refused_on_contents(&self) -> bool {
+        matches!(
+            self,
+            Self::Egress(EgressError::Status { status, .. }) if *status == REFUSED_CONTENTS_STATUS
         )
     }
 }
@@ -143,6 +172,11 @@ pub struct BedrockClient<'a> {
     config: &'a Bedrock,
     egress: &'a Egress,
     cancel: Option<Cancel>,
+    /// Whether requests still carry cache breakpoints.
+    ///
+    /// True until a model refuses one, which is the only way to find out that it does not do
+    /// prompt caching: an inference-profile ARN does not say which model is behind it.
+    breakpoints: bool,
 }
 
 impl<'a> BedrockClient<'a> {
@@ -151,6 +185,7 @@ impl<'a> BedrockClient<'a> {
             config,
             egress,
             cancel: None,
+            breakpoints: true,
         }
     }
 
@@ -167,14 +202,46 @@ impl<'a> BedrockClient<'a> {
         request: &ChatRequest,
     ) -> Result<Completion, BedrockError> {
         let mut attempt = 1;
+        let mut probed = false;
         loop {
             match self.complete_once(policy, request) {
+                // Sent again immediately rather than after a wait: nothing is busy, the request was
+                // simply carrying something this model does not take.
+                Err(error) if self.worth_dropping_breakpoints(&error) => {
+                    self.breakpoints = false;
+                    probed = true;
+                }
                 Err(error) if worth_another_attempt(attempt, &error) => {
                     std::thread::sleep(backoff(attempt));
                     attempt += 1;
                 }
-                result => return result,
+                result => {
+                    self.probe_settled(probed, result.is_err());
+                    return result;
+                }
             }
+        }
+    }
+
+    /// Whether this failure is worth sending the same request again without its cache breakpoints.
+    ///
+    /// Only once, since the answer is remembered, and only for a refusal on the request's contents.
+    /// The breakpoints are the one part of a request nobody asked for, so a service that refuses it
+    /// is worth asking without them before the failure is anybody else's.
+    fn worth_dropping_breakpoints(&self, error: &BedrockError) -> bool {
+        self.breakpoints && error.is_refused_on_contents()
+    }
+
+    /// Settle what a probe found, once the request it was part of has finished one way or the other.
+    ///
+    /// A probe that answered leaves the breakpoints dropped, which is the model saying it does not
+    /// read them. A probe that failed as well says they were not what the service refused, so they
+    /// go back: a request can be refused on its contents for reasons that have nothing to do with
+    /// them, and a session that gave them up for one of those pays full price for a prefix the
+    /// service would have read once, every round, for the rest of its life.
+    fn probe_settled(&mut self, probed: bool, failed: bool) {
+        if probed && failed {
+            self.breakpoints = true;
         }
     }
 
@@ -191,7 +258,7 @@ impl<'a> BedrockClient<'a> {
         // under.
         let (bytes, label) = response.body.into_parts_for_decoding();
 
-        let parsed: protocol::InvokeResponse =
+        let parsed: protocol::ConverseResponse =
             serde_json::from_slice(&bytes).map_err(|e| BedrockError::Decode {
                 detail: format!("{e} (received {} bytes)", bytes.len()),
             })?;
@@ -200,14 +267,27 @@ impl<'a> BedrockClient<'a> {
             return Err(BedrockError::TooLong);
         }
 
-        let (content, calls) = protocol::parts_of(&parsed.content);
+        let blocks = parsed
+            .output
+            .and_then(|output| output.message)
+            .map(|message| message.content)
+            .unwrap_or_default();
+        if blocks.iter().any(protocol::ReplyBlock::is_unreadable_call) {
+            return Err(BedrockError::Decode {
+                detail: "the reply named a tool call in a shape this does not read".to_string(),
+            });
+        }
+
+        let (content, calls) = protocol::parts_of(&blocks);
         if content.is_empty() && calls.is_empty() {
             return Err(BedrockError::NoContent);
         }
 
         Ok(Completion {
             content: Labelled::new(content, label),
-            model: parsed.model.unwrap_or(model),
+            // This API does not name the model back, so the one the request asked for is the one
+            // that answered.
+            model,
             calls,
             usage: parsed.usage.map(Usage::from).unwrap_or_default(),
         })
@@ -224,8 +304,13 @@ impl<'a> BedrockClient<'a> {
         mut progress: impl FnMut(Progress),
     ) -> Result<Completion, BedrockError> {
         let mut attempt = 1;
+        let mut probed = false;
         loop {
             match self.stream_once(policy, request, attempt, &mut progress) {
+                Err(error) if self.worth_dropping_breakpoints(&error) => {
+                    self.breakpoints = false;
+                    probed = true;
+                }
                 Err(error) if worth_another_attempt(attempt, &error) => {
                     attempt += 1;
                     // Announced before the wait rather than after it, so the pause is explained
@@ -240,7 +325,10 @@ impl<'a> BedrockClient<'a> {
                         return Err(BedrockError::Cancelled);
                     }
                 }
-                result => return result,
+                result => {
+                    self.probe_settled(probed, result.is_err());
+                    return result;
+                }
             }
         }
     }
@@ -318,11 +406,21 @@ impl<'a> BedrockClient<'a> {
             let written_before = reply.text.len();
 
             for event in decoder.push(&bytes)? {
-                // A frame that will not parse as an event is skipped rather than failing the turn:
-                // the framing was sound, so the position in the stream is known, and the API sends
-                // events this does not model.
-                if let Ok(event) = serde_json::from_slice::<StreamEvent>(&event) {
-                    reply.absorb(event);
+                match event {
+                    // An event this does not model, or one whose body will not parse, is skipped
+                    // rather than failing the turn: the framing was sound, so the position in the
+                    // stream is known, and the API sends events that say nothing this needs.
+                    eventstream::Event::Named { name, payload } => {
+                        if let Some(event) = protocol::stream_event(&name, &payload) {
+                            reply.absorb(event);
+                        }
+                    }
+                    // Reported rather than read past. A reply the service abandoned ends the same
+                    // way a dead connection does, so without this the cause is replaced by "the
+                    // reply was cut off" and a refusal nothing can fix is asked for twice more.
+                    eventstream::Event::Failed { kind } => {
+                        return Err(BedrockError::Reported { kind });
+                    }
                 }
             }
 
@@ -342,6 +440,12 @@ impl<'a> BedrockClient<'a> {
             return Err(BedrockError::Incomplete);
         }
 
+        if reply.unreadable_call {
+            return Err(BedrockError::Decode {
+                detail: "the reply named a tool call in a shape this does not read".to_string(),
+            });
+        }
+
         if reply.stop_reason.as_deref() == Some(protocol::STOP_REASON_MAX_TOKENS) {
             return Err(BedrockError::TooLong);
         }
@@ -353,7 +457,9 @@ impl<'a> BedrockClient<'a> {
 
         Ok(Completion {
             content: Labelled::new(reply.text, label),
-            model: reply.model.unwrap_or(model),
+            // This API does not name the model back, so the one the request asked for is the one
+            // that answered.
+            model,
             calls,
             usage: reply.usage,
         })
@@ -370,15 +476,19 @@ impl<'a> BedrockClient<'a> {
     ) -> Result<(Request, String), BedrockError> {
         let model = self.model_for(request)?;
 
-        let body = serde_json::to_vec(
-            &protocol::request_from(&request.messages, request.tools.as_deref())
-                .with_effort(request.effort),
-        )
-        .map_err(|e| BedrockError::Encode(e.to_string()))?;
+        let converse = protocol::request_from(&request.messages, request.tools.as_deref())
+            .with_effort(request.effort);
+        let converse = if self.breakpoints {
+            converse
+        } else {
+            converse.without_breakpoints()
+        };
+        let body =
+            serde_json::to_vec(&converse).map_err(|e| BedrockError::Encode(e.to_string()))?;
 
         let resolved = credentials::resolve(self.config.profile.as_deref())?;
 
-        let url = self.config.invoke_url(&model, streaming);
+        let url = self.config.converse_url(&model, streaming);
         let host = self.config.host();
         let path = path_of(&url);
 
@@ -457,42 +567,39 @@ struct Reply {
     text: String,
     /// Tool calls by block index, since their arguments arrive in pieces across events.
     calls: Vec<(usize, String, String, String)>,
-    model: Option<String>,
     usage: Usage,
     /// Whether the count is the service's rather than a tally of what arrived.
     counted: bool,
     ended: bool,
     stop_reason: Option<String>,
+    /// Whether a block opened as a tool call this could not read.
+    ///
+    /// Kept rather than failed on the spot so the stream is still drained: the reply is refused
+    /// once it has ended, in the same place a reply that arrived whole is.
+    unreadable_call: bool,
 }
 
 impl Reply {
     fn absorb(&mut self, event: StreamEvent) {
         match event {
-            StreamEvent::MessageStart { message } => {
-                self.model = message.model;
-                if let Some(usage) = message.usage {
-                    // The prompt count arrives up front and the reply count at the end, so this
-                    // keeps the input figure without overwriting the output one.
-                    self.usage.prompt_tokens = usage.input_tokens;
-                }
-            }
-            StreamEvent::ContentBlockStart {
-                index,
-                content_block,
-            } => {
-                if let protocol::Block::ToolUse { id, name, input } = content_block {
-                    // The opening event may carry a whole argument object or an empty placeholder to
-                    // be filled by the deltas that follow.
-                    let opening = if input.is_null() || input == serde_json::json!({}) {
-                        String::new()
-                    } else {
-                        input.to_string()
-                    };
-                    self.calls.push((index, id, name, opening));
+            StreamEvent::ContentBlockStart { index, start } => {
+                match start {
+                    // The opening event names the call and nothing else; every byte of its
+                    // arguments arrives in the deltas that follow.
+                    protocol::BlockStart::ToolUse { tool_use } => {
+                        self.calls.push((
+                            index,
+                            tool_use.tool_use_id,
+                            tool_use.name,
+                            String::new(),
+                        ));
+                    }
+                    protocol::BlockStart::UnreadableToolUse { .. } => self.unreadable_call = true,
+                    protocol::BlockStart::Other(_) => {}
                 }
             }
             StreamEvent::ContentBlockDelta { index, delta } => match delta {
-                protocol::Delta::TextDelta { text } => {
+                protocol::Delta::Text { text } => {
                     self.text.push_str(&text);
                     // A tally until the service reports its own, so a reply in flight can show
                     // something rather than zero.
@@ -500,24 +607,27 @@ impl Reply {
                         self.usage.completion_tokens += 1;
                     }
                 }
-                protocol::Delta::InputJsonDelta { partial_json } => {
+                protocol::Delta::ToolUse { tool_use } => {
                     if let Some(call) = self.calls.iter_mut().find(|(at, ..)| *at == index) {
-                        call.3.push_str(&partial_json);
+                        call.3.push_str(&tool_use.input);
                     }
                 }
-                protocol::Delta::Other => {}
+                protocol::Delta::Other(_) => {}
             },
-            StreamEvent::MessageDelta { delta, usage } => {
-                if let Some(usage) = usage {
-                    self.usage.completion_tokens = usage.output_tokens;
-                    self.counted = true;
-                }
-                if delta.stop_reason.is_some() {
-                    self.stop_reason = delta.stop_reason;
+            StreamEvent::MessageStop { stop_reason } => {
+                self.ended = true;
+                if stop_reason.is_some() {
+                    self.stop_reason = stop_reason;
                 }
             }
-            StreamEvent::MessageStop => self.ended = true,
-            StreamEvent::Other => {}
+            // Both halves of the count arrive together at the end of the stream, so this replaces
+            // the running tally rather than adding to it.
+            StreamEvent::Metadata { usage } => {
+                if let Some(usage) = usage {
+                    self.usage = Usage::from(usage);
+                    self.counted = true;
+                }
+            }
         }
     }
 
@@ -562,6 +672,16 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// The failures AWS reports mid-reply that a second attempt could get past.
+///
+/// Everything else it names is a property of the request, which a second identical one has too.
+const TRANSIENT_REPORTS: [&str; 4] = [
+    "throttlingException",
+    "modelStreamErrorException",
+    "internalServerException",
+    "serviceUnavailableException",
+];
+
 /// How many times one request is sent before its failure is the caller's.
 const ATTEMPTS: u32 = 3;
 
@@ -585,6 +705,9 @@ fn worth_another_attempt(attempt: u32, error: &BedrockError) -> bool {
     }
     match error {
         BedrockError::Egress(e) => e.is_transient(),
+        // The service's own name for what went wrong. A fault or a busy service is worth asking
+        // again; a request it refuses on its contents is refused the same way every time.
+        BedrockError::Reported { kind } => TRANSIENT_REPORTS.contains(&kind.as_str()),
         // A reply that stopped early is a request that did not complete, whatever the socket
         // thought. The partial is thrown away for the same reason: half a reply cannot be continued
         // by a second stream.
@@ -604,6 +727,25 @@ fn backoff(failures: u32) -> Duration {
 mod tests {
     use super::*;
     use bravebot_config::env_var;
+
+    /// The event that opens a tool call, which names it and carries none of its arguments.
+    fn opening(id: &str, name: &str) -> protocol::BlockStart {
+        protocol::BlockStart::ToolUse {
+            tool_use: protocol::ToolUseStart {
+                tool_use_id: id.to_string(),
+                name: name.to_string(),
+            },
+        }
+    }
+
+    /// One fragment of a tool call's arguments.
+    fn arguments(piece: &str) -> protocol::Delta {
+        protocol::Delta::ToolUse {
+            tool_use: protocol::ToolUseDelta {
+                input: piece.to_string(),
+            },
+        }
+    }
 
     fn config() -> Bedrock {
         Bedrock::from_lookup(|name| {
@@ -626,7 +768,7 @@ mod tests {
     fn a_refused_credential_says_so_rather_than_reporting_a_status() {
         for status in [401, 403] {
             let error = BedrockError::Egress(EgressError::Status {
-                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/invoke".to_string(),
+                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
                 status,
             });
             assert!(error.is_credential_refused(), "{status} was not recognised");
@@ -658,8 +800,8 @@ mod tests {
     #[test]
     fn the_signed_path_is_the_one_the_request_asks_for() {
         assert_eq!(
-            path_of("https://host.invalid/model/abc/invoke"),
-            "/model/abc/invoke"
+            path_of("https://host.invalid/model/abc/converse"),
+            "/model/abc/converse"
         );
         assert_eq!(path_of("https://host.invalid/"), "/");
         assert_eq!(path_of("https://host.invalid"), "/");
@@ -708,18 +850,12 @@ mod tests {
     #[test]
     fn streamed_text_is_assembled_in_order() {
         let mut reply = Reply::default();
-        reply.absorb(StreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: protocol::Delta::TextDelta {
-                text: "Hello ".into(),
-            },
-        });
-        reply.absorb(StreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: protocol::Delta::TextDelta {
-                text: "world".into(),
-            },
-        });
+        for piece in ["Hello ", "world"] {
+            reply.absorb(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: protocol::Delta::Text { text: piece.into() },
+            });
+        }
         assert_eq!(reply.text, "Hello world");
     }
 
@@ -730,18 +866,12 @@ mod tests {
         let mut reply = Reply::default();
         reply.absorb(StreamEvent::ContentBlockStart {
             index: 1,
-            content_block: protocol::Block::ToolUse {
-                id: "call-1".into(),
-                name: "read_file".into(),
-                input: serde_json::json!({}),
-            },
+            start: opening("call-1", "read_file"),
         });
         for piece in [r#"{"path""#, r#":"src/"#, r#"lib.rs"}"#] {
             reply.absorb(StreamEvent::ContentBlockDelta {
                 index: 1,
-                delta: protocol::Delta::InputJsonDelta {
-                    partial_json: piece.into(),
-                },
+                delta: arguments(piece),
             });
         }
 
@@ -762,11 +892,7 @@ mod tests {
         for (index, id) in [(0usize, "first"), (1usize, "second")] {
             reply.absorb(StreamEvent::ContentBlockStart {
                 index,
-                content_block: protocol::Block::ToolUse {
-                    id: id.into(),
-                    name: "read_file".into(),
-                    input: serde_json::json!({}),
-                },
+                start: opening(id, "read_file"),
             });
         }
         for (index, piece) in [
@@ -777,9 +903,7 @@ mod tests {
         ] {
             reply.absorb(StreamEvent::ContentBlockDelta {
                 index,
-                delta: protocol::Delta::InputJsonDelta {
-                    partial_json: piece.into(),
-                },
+                delta: arguments(piece),
             });
         }
 
@@ -795,40 +919,26 @@ mod tests {
         let mut reply = Reply::default();
         reply.absorb(StreamEvent::ContentBlockStart {
             index: 0,
-            content_block: protocol::Block::ToolUse {
-                id: "call-1".into(),
-                name: "list".into(),
-                input: serde_json::json!({}),
-            },
+            start: opening("call-1", "list"),
         });
         assert_eq!(reply.calls()[0].function.arguments.as_deref(), Some("{}"));
     }
 
-    /// The prompt count arrives at the start and the reply count at the end. Overwriting one with
-    /// the other loses half of what the turn cost.
+    /// Both halves of the count arrive in the one event at the end of the stream, and a reply that
+    /// kept only one of them reports half of what the turn cost. The cached tokens belong to the
+    /// prompt they were sent as, whoever ended up reading them.
     #[test]
     fn both_halves_of_the_cost_survive_the_stream() {
         let mut reply = Reply::default();
-        reply.absorb(StreamEvent::MessageStart {
-            message: protocol::StreamedMessageStart {
-                model: Some("a-model".into()),
-                usage: Some(protocol::BedrockUsage {
-                    input_tokens: 1_000,
-                    output_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
-                }),
-            },
+        reply.absorb(StreamEvent::MessageStop {
+            stop_reason: Some("end_turn".into()),
         });
-        reply.absorb(StreamEvent::MessageDelta {
-            delta: protocol::MessageDeltaBody {
-                stop_reason: Some("end_turn".into()),
-            },
+        reply.absorb(StreamEvent::Metadata {
             usage: Some(protocol::BedrockUsage {
-                input_tokens: 0,
+                input_tokens: 100,
                 output_tokens: 42,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 800,
+                cache_write_input_tokens: 100,
             }),
         });
 
@@ -836,7 +946,6 @@ mod tests {
         assert_eq!(reply.usage.completion_tokens, 42);
         assert_eq!(reply.usage.total(), 1_042);
         assert!(reply.counted, "the service reported its own figure");
-        assert_eq!(reply.model.as_deref(), Some("a-model"));
     }
 
     /// Until the service reports a figure, a count of what arrived is shown so a reply in flight
@@ -847,19 +956,18 @@ mod tests {
         for _ in 0..3 {
             reply.absorb(StreamEvent::ContentBlockDelta {
                 index: 0,
-                delta: protocol::Delta::TextDelta { text: "x".into() },
+                delta: protocol::Delta::Text { text: "x".into() },
             });
         }
         assert_eq!(reply.usage.completion_tokens, 3);
         assert!(!reply.counted, "not the service's own figure");
 
-        reply.absorb(StreamEvent::MessageDelta {
-            delta: protocol::MessageDeltaBody::default(),
+        reply.absorb(StreamEvent::Metadata {
             usage: Some(protocol::BedrockUsage {
                 input_tokens: 0,
                 output_tokens: 99,
                 cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
+                cache_write_input_tokens: 0,
             }),
         });
         assert_eq!(reply.usage.completion_tokens, 99);
@@ -873,13 +981,15 @@ mod tests {
         let mut reply = Reply::default();
         reply.absorb(StreamEvent::ContentBlockDelta {
             index: 0,
-            delta: protocol::Delta::TextDelta {
+            delta: protocol::Delta::Text {
                 text: "partial".into(),
             },
         });
         assert!(!reply.ended);
 
-        reply.absorb(StreamEvent::MessageStop);
+        reply.absorb(StreamEvent::MessageStop {
+            stop_reason: Some("end_turn".into()),
+        });
         assert!(reply.ended);
     }
 
@@ -893,6 +1003,121 @@ mod tests {
             "{}",
             BedrockError::TooLong
         );
+    }
+
+    /// Prompt caching is not something every model this backend can reach offers, and an
+    /// inference-profile ARN does not say which model is behind it. A model that refuses the
+    /// breakpoints refuses the whole request, so without asking again without them, every request
+    /// to such a model fails and the tier is unusable.
+    #[test]
+    fn a_request_refused_on_its_contents_is_asked_again_without_the_breakpoints() {
+        let config = config();
+        let egress = Egress::new();
+        let mut client = BedrockClient::new(&config, &egress);
+
+        let refused = BedrockError::Egress(EgressError::Status {
+            url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
+            status: 400,
+        });
+        assert!(client.worth_dropping_breakpoints(&refused));
+
+        // Once only. The answer is remembered, so a second refusal is the caller's rather than a
+        // request sent for a third time carrying nothing new.
+        client.breakpoints = false;
+        assert!(!client.worth_dropping_breakpoints(&refused));
+    }
+
+    /// A request is refused on its contents for reasons that have nothing to do with the
+    /// breakpoints, and asking again without them does not fix one of those. Giving them up anyway
+    /// costs full price for a prefix the service would have read once, every round, for the rest of
+    /// the session, which is the whole expense the breakpoints exist to avoid.
+    #[test]
+    fn a_probe_that_failed_as_well_puts_the_breakpoints_back() {
+        let config = config();
+        let egress = Egress::new();
+        let mut client = BedrockClient::new(&config, &egress);
+
+        // What the loop does: drop them, send again, and find the second attempt refused too.
+        client.breakpoints = false;
+        client.probe_settled(true, true);
+        assert!(
+            client.breakpoints,
+            "a refusal that outlived the breakpoints still cost the session its caching"
+        );
+
+        // A probe that answered is the model saying it does not read them, and they stay dropped.
+        client.breakpoints = false;
+        client.probe_settled(true, false);
+        assert!(!client.breakpoints);
+
+        // A request that never probed is left exactly as it was, whichever way it ended.
+        for failed in [true, false] {
+            client.breakpoints = true;
+            client.probe_settled(false, failed);
+            assert!(client.breakpoints);
+        }
+    }
+
+    /// Every other failure leaves the breakpoints alone. Dropping them on a timeout or an expired
+    /// credential would spend the rest of the session paying full price for a prefix the service
+    /// had already read, for a reason that was never about the request's contents.
+    #[test]
+    fn only_a_refusal_on_the_contents_drops_the_breakpoints() {
+        let config = config();
+        let egress = Egress::new();
+        let client = BedrockClient::new(&config, &egress);
+
+        for status in [401, 403, 429, 500, 503] {
+            let error = BedrockError::Egress(EgressError::Status {
+                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
+                status,
+            });
+            assert!(
+                !client.worth_dropping_breakpoints(&error),
+                "{status} dropped the breakpoints"
+            );
+        }
+
+        assert!(!client.worth_dropping_breakpoints(&BedrockError::Incomplete));
+        assert!(!client.worth_dropping_breakpoints(&BedrockError::TooLong));
+    }
+
+    /// A reply the service abandoned says why in the frame that ends it. Reported as a truncation,
+    /// the cause is lost and the remedy with it: nothing about "the reply was cut off" tells
+    /// somebody their request was refused on its contents.
+    #[test]
+    fn a_failure_the_service_reported_is_named_rather_than_called_a_truncation() {
+        let error = BedrockError::Reported {
+            kind: "validationException".to_string(),
+        };
+        let said = error.to_string();
+        assert!(said.contains("validationException"), "{said}");
+        assert!(!said.contains("cut off"), "{said}");
+    }
+
+    /// A fault or a busy service is worth asking again. A request the service refuses on its
+    /// contents is refused identically every time, so asking again spends three round trips to
+    /// arrive at the same answer more slowly.
+    #[test]
+    fn only_the_reported_failures_that_could_pass_are_asked_again() {
+        for kind in [
+            "throttlingException",
+            "modelStreamErrorException",
+            "internalServerException",
+            "serviceUnavailableException",
+        ] {
+            let error = BedrockError::Reported {
+                kind: kind.to_string(),
+            };
+            assert!(worth_another_attempt(1, &error), "{kind} was given up on");
+        }
+
+        for kind in ["validationException", "somethingNewException"] {
+            let error = BedrockError::Reported {
+                kind: kind.to_string(),
+            };
+            assert!(!worth_another_attempt(1, &error), "{kind} was asked again");
+        }
     }
 
     /// A reply that arrived and would not decode is not a connection problem, and an expired

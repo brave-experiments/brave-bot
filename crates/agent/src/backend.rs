@@ -1,9 +1,9 @@
 //! Which backend a request goes to.
 //!
-//! Three exist: the aichat endpoint Brave runs, Claude on AWS Bedrock, and an OpenAI-compatible
-//! gateway somebody configured. The choice is made from configuration, once, here, so the turn loop
-//! and everything beside it asks the same question of whichever one is in use rather than branching
-//! on the backend at every call.
+//! Three exist: the aichat endpoint Brave runs, AWS Bedrock, and an OpenAI-compatible gateway
+//! somebody configured. The choice is made from configuration, once, here, so the turn loop and
+//! everything beside it asks the same question of whichever one is in use rather than branching on
+//! the backend at every call.
 //!
 //! The choice is not content. It comes from [`bravebot_config::Config`], which is built from the
 //! environment and the user's own settings file before any turn starts, and nothing a model says can

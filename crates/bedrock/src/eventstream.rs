@@ -1,8 +1,8 @@
 //! The binary framing a streamed Bedrock reply arrives in.
 //!
 //! Not server-sent events. Bedrock wraps each event in an AWS event-stream frame: a length prelude,
-//! a set of typed headers, a payload, and two CRCs. The payload is a JSON object with the event's
-//! JSON base64-encoded inside it, which is the reply's actual content.
+//! a set of typed headers, a payload, and two CRCs. The payload is the event's JSON, and which event
+//! it is is a header rather than a field of the body.
 //!
 //! ```text
 //! [total_len:u32][headers_len:u32][prelude_crc:u32][headers][payload][message_crc:u32]
@@ -13,10 +13,11 @@
 //!
 //! # Nothing here decides anything
 //!
-//! This finds where a frame begins and ends, which is transport structure, exactly like the SSE
-//! decoder the other backend uses. The bytes inside are handed on with the label they arrived under.
-//! The CRCs are checked because a frame that fails one is a frame that was corrupted in transit, and
-//! reading a truncated length as a real one would mean waiting forever for bytes that are not coming.
+//! This finds where a frame begins and ends and reads the name the framing gave it, which is
+//! transport structure, exactly like the SSE decoder the other backend uses. The bytes inside are
+//! handed on with the label they arrived under. The CRCs are checked because a frame that fails one
+//! is a frame that was corrupted in transit, and reading a truncated length as a real one would mean
+//! waiting forever for bytes that are not coming.
 
 /// The fixed prelude: two lengths and their checksum.
 const PRELUDE_BYTES: usize = 12;
@@ -33,6 +34,28 @@ const MIN_FRAME_BYTES: usize = PRELUDE_BYTES + MESSAGE_CRC_BYTES;
 /// length is refused rather than turned into an allocation, and set far above any real event: the
 /// largest is a reply's worth of text.
 const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
+
+/// The header naming which event a frame carries.
+const EVENT_TYPE_HEADER: &[u8] = b":event-type";
+
+/// The header naming which failure a frame reports, on the frames that report one.
+const EXCEPTION_TYPE_HEADER: &[u8] = b":exception-type";
+
+/// The header value type for a string, which is what both of those names are.
+const STRING_VALUE: u8 = 7;
+
+/// One frame's contribution to the reply.
+///
+/// The service reports a failure part way through a reply as a frame like any other, distinguished
+/// only by which header names it. Both names come from the framing rather than from the body, so
+/// telling them apart reads nothing the reply carried.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Event {
+    /// One of the reply's own events, under the name the framing gave it.
+    Named { name: String, payload: Vec<u8> },
+    /// The service saying this reply is not going to finish, under the name it gave the failure.
+    Failed { kind: String },
+}
 
 /// Something wrong with the framing itself.
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +77,13 @@ impl std::fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// One whole frame, in the two pieces that matter: the headers, which name the event, and the
+/// payload, which is it.
+struct Frame {
+    headers: Vec<u8>,
+    payload: Vec<u8>,
+}
+
 /// Reassembles frames from bytes that arrive in arbitrarily sized pieces.
 ///
 /// A frame is very often split across reads, and two frames very often arrive in one, so the buffer
@@ -70,16 +100,18 @@ impl FrameDecoder {
 
     /// Add bytes and take every complete event they finished.
     ///
-    /// Returns the JSON payloads, already unwrapped from their frames and base64. An incomplete
-    /// frame stays buffered for the next call.
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, FrameError> {
+    /// An incomplete frame stays buffered for the next call.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Event>, FrameError> {
         self.buffered.extend_from_slice(bytes);
 
         let mut events = Vec::new();
         loop {
             match self.take_frame()? {
-                Some(payload) => {
-                    if let Some(event) = event_from(&payload) {
+                // A frame whose headers name neither is skipped rather than failing the stream: the
+                // framing was sound, so the position in the stream is still known, and the API sends
+                // frames this does not need.
+                Some(frame) => {
+                    if let Some(event) = event_of(&frame) {
                         events.push(event);
                     }
                 }
@@ -96,8 +128,8 @@ impl FrameDecoder {
         !self.buffered.is_empty()
     }
 
-    /// Take the next whole frame's payload, if there is one.
-    fn take_frame(&mut self) -> Result<Option<Vec<u8>>, FrameError> {
+    /// Take the next whole frame, if there is one.
+    fn take_frame(&mut self) -> Result<Option<Frame>, FrameError> {
         if self.buffered.len() < PRELUDE_BYTES {
             return Ok(None);
         }
@@ -139,51 +171,78 @@ impl FrameDecoder {
 
         let payload_start = PRELUDE_BYTES + headers_len as usize;
         let payload_end = total - MESSAGE_CRC_BYTES;
-        Ok(Some(frame[payload_start..payload_end].to_vec()))
+        Ok(Some(Frame {
+            headers: frame[PRELUDE_BYTES..payload_start].to_vec(),
+            payload: frame[payload_start..payload_end].to_vec(),
+        }))
     }
 }
 
-/// The event JSON inside a frame's payload.
+/// What a frame contributes, or nothing for one whose headers name neither an event nor a failure.
 ///
-/// The payload is `{"bytes": "<base64 of the event JSON>"}`. A payload that is not that shape is
-/// skipped rather than failing the stream: the framing was sound, so the position in the stream is
-/// still known, and the API sends frames this does not need.
-fn event_from(payload: &[u8]) -> Option<Vec<u8>> {
-    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let encoded = value.get("bytes")?.as_str()?;
-    decode_base64(encoded)
+/// A failure is looked for first. A frame reporting one carries no `:event-type`, so the order only
+/// matters if the service ever sent both, and a frame that named a failure is a failure whatever
+/// else it named.
+fn event_of(frame: &Frame) -> Option<Event> {
+    if let Some(kind) = named_header(&frame.headers, EXCEPTION_TYPE_HEADER) {
+        return Some(Event::Failed { kind });
+    }
+    named_header(&frame.headers, EVENT_TYPE_HEADER).map(|name| Event::Named {
+        name,
+        payload: frame.payload.clone(),
+    })
 }
 
-/// Standard base64 with padding, which is what the payload uses.
+/// The value of one string header, if the frame carries it.
 ///
-/// Written out rather than pulled from the base64 crate to keep this crate's dependencies to the two
-/// it needs; the alphabet is fixed and the decode is a dozen lines.
-fn decode_base64(text: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let mut accumulated: u32 = 0;
-    let mut bits = 0;
+/// A header is a name, a value type, and a value whose width the type decides:
+///
+/// ```text
+/// [name_len:u8][name][value_type:u8][value]
+/// ```
+///
+/// Every header is walked rather than only the first, because the one wanted is not always at the
+/// front. A value of a type this does not know has a width this cannot skip, so the walk stops there
+/// rather than reading whatever follows as a header name.
+fn named_header(headers: &[u8], wanted: &[u8]) -> Option<String> {
+    let mut at = 0usize;
 
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            b'\n' | b'\r' => continue,
+    while at < headers.len() {
+        let name_len = *headers.get(at)? as usize;
+        at += 1;
+        let name = headers.get(at..at.checked_add(name_len)?)?;
+        at += name_len;
+
+        let value_type = *headers.get(at)?;
+        at += 1;
+
+        let width = match value_type {
+            // A boolean's value is its own type, so it occupies no bytes.
+            0 | 1 => 0,
+            2 => 1,
+            3 => 2,
+            4 => 4,
+            // A long and a timestamp are both eight bytes.
+            5 | 8 => 8,
+            // A byte array and a string are both preceded by their length.
+            6 | STRING_VALUE => {
+                let stated = headers.get(at..at.checked_add(2)?)?;
+                at += 2;
+                u16::from_be_bytes([stated[0], stated[1]]) as usize
+            }
+            9 => 16,
             _ => return None,
-        } as u32;
+        };
 
-        accumulated = (accumulated << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((accumulated >> bits) as u8);
+        let value = headers.get(at..at.checked_add(width)?)?;
+        at += width;
+
+        if value_type == STRING_VALUE && name == wanted {
+            return String::from_utf8(value.to_vec()).ok();
         }
     }
 
-    Some(out)
+    None
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
@@ -212,8 +271,8 @@ mod tests {
 
     /// Build a frame the way the service does, so the decoder is tested against the format rather
     /// than against itself.
-    fn frame(payload: &[u8]) -> Vec<u8> {
-        frame_with_headers(payload, &[])
+    fn frame(name: &str, payload: &[u8]) -> Vec<u8> {
+        frame_with_headers(payload, &string_header(EVENT_TYPE_HEADER, name.as_bytes()))
     }
 
     fn frame_with_headers(payload: &[u8], headers: &[u8]) -> Vec<u8> {
@@ -229,34 +288,20 @@ mod tests {
         out
     }
 
-    /// The payload shape the service uses: the event's JSON, base64'd, inside a wrapper object.
-    fn wrapped(event: &str) -> Vec<u8> {
-        format!(r#"{{"bytes":"{}"}}"#, to_base64(event.as_bytes())).into_bytes()
+    /// A frame the way the service reports a mid-reply failure: named by `:exception-type`, with
+    /// no `:event-type` at all.
+    fn failure(kind: &str) -> Vec<u8> {
+        let mut headers = string_header(b":message-type", b"exception");
+        headers.extend(string_header(EXCEPTION_TYPE_HEADER, kind.as_bytes()));
+        frame_with_headers(br#"{"message":"the service said why"}"#, &headers)
     }
 
-    fn to_base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let b = [
-                chunk[0],
-                *chunk.get(1).unwrap_or(&0),
-                *chunk.get(2).unwrap_or(&0),
-            ];
-            let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-            out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-            out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-            out.push(if chunk.len() > 1 {
-                ALPHABET[(n >> 6) as usize & 63] as char
-            } else {
-                '='
-            });
-            out.push(if chunk.len() > 2 {
-                ALPHABET[n as usize & 63] as char
-            } else {
-                '='
-            });
-        }
+    fn string_header(name: &[u8], value: &[u8]) -> Vec<u8> {
+        let mut out = vec![name.len() as u8];
+        out.extend_from_slice(name);
+        out.push(STRING_VALUE);
+        out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        out.extend_from_slice(value);
         out
     }
 
@@ -268,33 +313,58 @@ mod tests {
         assert_eq!(crc32(b""), 0);
     }
 
-    /// Base64 against known vectors, including both padding lengths.
-    #[test]
-    fn base64_decodes_the_standard_alphabet() {
-        assert_eq!(decode_base64("aGVsbG8=").as_deref(), Some(&b"hello"[..]));
-        assert_eq!(decode_base64("aGk=").as_deref(), Some(&b"hi"[..]));
-        assert_eq!(decode_base64("aGVsbG8h").as_deref(), Some(&b"hello!"[..]));
-        assert_eq!(decode_base64("").as_deref(), Some(&b""[..]));
-        // The bytes a JSON payload actually carries: '+' and '/' are in the alphabet.
-        assert_eq!(decode_base64("+/8=").as_deref(), Some(&[0xFB, 0xFF][..]));
-    }
-
-    /// The whole point: an event comes out of a frame with its JSON intact.
+    /// The whole point: an event comes out of a frame under its name, with its JSON intact.
     #[test]
     fn an_event_is_recovered_from_a_frame() {
         let mut decoder = FrameDecoder::new();
         let events = decoder
-            .push(&frame(&wrapped(r#"{"type":"message_stop"}"#)))
+            .push(&frame("messageStop", br#"{"stopReason":"end_turn"}"#))
             .expect("decodes");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0], br#"{"type":"message_stop"}"#);
+        assert_eq!(
+            events,
+            vec![Event::Named {
+                name: "messageStop".to_string(),
+                payload: br#"{"stopReason":"end_turn"}"#.to_vec(),
+            }]
+        );
+    }
+
+    /// The service reports throttling, a validation refusal and its own faults as frames rather
+    /// than as a status, since the status was sent before the reply began. Dropped, each one is a
+    /// stream that simply stops, which reads as a cut-off reply and says nothing about the cause.
+    #[test]
+    fn a_failure_the_service_reports_mid_reply_comes_out_as_one() {
+        let mut decoder = FrameDecoder::new();
+        let events = decoder
+            .push(&failure("throttlingException"))
+            .expect("decodes");
+        assert_eq!(
+            events,
+            vec![Event::Failed {
+                kind: "throttlingException".to_string(),
+            }]
+        );
+    }
+
+    /// The reply's own events go on being read either way, so a failure arriving after some of the
+    /// text does not take that text with it.
+    #[test]
+    fn a_reported_failure_arrives_behind_the_events_that_preceded_it() {
+        let mut bytes = frame("contentBlockDelta", br#"{"delta":{"text":"hi"}}"#);
+        bytes.extend(failure("modelStreamErrorException"));
+
+        let mut decoder = FrameDecoder::new();
+        let events = decoder.push(&bytes).expect("decodes");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Event::Named { .. }));
+        assert!(matches!(events[1], Event::Failed { .. }));
     }
 
     /// A frame very often arrives split across reads, and a decoder that needed whole frames per
     /// read would lose most of a reply.
     #[test]
     fn a_frame_split_across_reads_is_reassembled() {
-        let whole = frame(&wrapped(r#"{"type":"message_stop"}"#));
+        let whole = frame("messageStop", br#"{"stopReason":"end_turn"}"#);
         let mut decoder = FrameDecoder::new();
 
         // A byte at a time, which is the worst case and subsumes every other split.
@@ -303,7 +373,7 @@ mod tests {
             events.extend(decoder.push(&[*byte]).expect("decodes"));
         }
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], br#"{"type":"message_stop"}"#);
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "messageStop"));
         assert!(!decoder.is_mid_frame(), "nothing should be left over");
     }
 
@@ -311,35 +381,60 @@ mod tests {
     /// drop the rest of the reply.
     #[test]
     fn several_frames_in_one_read_all_come_out() {
-        let mut bytes = frame(&wrapped(r#"{"type":"a"}"#));
-        bytes.extend(frame(&wrapped(r#"{"type":"b"}"#)));
-        bytes.extend(frame(&wrapped(r#"{"type":"c"}"#)));
+        let mut bytes = frame("a", br#"{"i":1}"#);
+        bytes.extend(frame("b", br#"{"i":2}"#));
+        bytes.extend(frame("c", br#"{"i":3}"#));
 
         let mut decoder = FrameDecoder::new();
         let events = decoder.push(&bytes).expect("decodes");
         assert_eq!(events.len(), 3);
-        assert_eq!(events[2], br#"{"type":"c"}"#);
+        assert_eq!(
+            events[2],
+            Event::Named {
+                name: "c".to_string(),
+                payload: br#"{"i":3}"#.to_vec(),
+            }
+        );
     }
 
-    /// Real frames carry headers naming the event type. The payload starts after them, so a decoder
-    /// that ignored the header length would read them as content.
+    /// The name is not always the first header, so every one has to be walked. Read from the first
+    /// alone, every event would arrive unnamed and the whole reply would be dropped.
     #[test]
-    fn headers_are_skipped_to_find_the_payload() {
+    fn the_name_is_found_behind_the_headers_in_front_of_it() {
+        let mut headers = string_header(b":content-type", b"application/json");
+        headers.extend(string_header(b":message-type", b"event"));
+        headers.extend(string_header(EVENT_TYPE_HEADER, b"contentBlockDelta"));
+
         let mut decoder = FrameDecoder::new();
         let events = decoder
-            .push(&frame_with_headers(
-                &wrapped(r#"{"type":"a"}"#),
-                b"\x0b:event-typesome-header-bytes",
-            ))
+            .push(&frame_with_headers(br#"{"delta":{}}"#, &headers))
             .expect("decodes");
-        assert_eq!(events[0], br#"{"type":"a"}"#);
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "contentBlockDelta"));
+    }
+
+    /// A header whose value is not a string still has a width, and one skipped wrongly leaves the
+    /// walk reading a value as the next header's name.
+    #[test]
+    fn a_header_that_is_not_a_string_is_skipped_by_its_own_width() {
+        // A timestamp, which is eight bytes with no length in front of them.
+        let mut headers = vec![b":date".len() as u8];
+        headers.extend_from_slice(b":date");
+        headers.push(8);
+        headers.extend_from_slice(&0u64.to_be_bytes());
+        headers.extend(string_header(EVENT_TYPE_HEADER, b"metadata"));
+
+        let mut decoder = FrameDecoder::new();
+        let events = decoder
+            .push(&frame_with_headers(br#"{"usage":{}}"#, &headers))
+            .expect("decodes");
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "metadata"));
     }
 
     /// A stream that ends mid-frame is a reply that was cut off. Without noticing, a truncated reply
     /// is returned as a whole one and the tool call the model was writing simply vanishes.
     #[test]
     fn an_incomplete_frame_is_reported_as_still_mid_frame() {
-        let whole = frame(&wrapped(r#"{"type":"message_stop"}"#));
+        let whole = frame("messageStop", br#"{}"#);
         let mut decoder = FrameDecoder::new();
         let events = decoder.push(&whole[..whole.len() - 3]).expect("decodes");
         assert!(events.is_empty());
@@ -397,7 +492,7 @@ mod tests {
     /// flipped bit in the body must be caught rather than parsed.
     #[test]
     fn a_frame_that_fails_its_checksum_is_refused() {
-        let mut bytes = frame(&wrapped(r#"{"type":"message_stop"}"#));
+        let mut bytes = frame("messageStop", br#"{}"#);
         let last = bytes.len() - MESSAGE_CRC_BYTES - 1;
         bytes[last] ^= 0xFF;
 
@@ -411,7 +506,7 @@ mod tests {
     /// A flipped bit in the prelude is caught by its own checksum, before the length is trusted.
     #[test]
     fn a_corrupt_prelude_is_caught_before_its_length_is_used() {
-        let mut bytes = frame(&wrapped(r#"{"type":"a"}"#));
+        let mut bytes = frame("a", br#"{}"#);
         bytes[1] ^= 0xFF;
 
         let mut decoder = FrameDecoder::new();
@@ -421,18 +516,38 @@ mod tests {
         ));
     }
 
-    /// The framing was sound, so the position in the stream is still known. A payload this does not
-    /// recognise is skipped rather than failing a reply that is otherwise arriving fine.
+    /// The framing was sound, so the position in the stream is still known. A frame whose headers
+    /// name no event is skipped rather than failing a reply that is otherwise arriving fine.
     #[test]
-    fn a_payload_that_is_not_a_wrapped_event_is_skipped_not_fatal() {
-        let mut bytes = frame(b"not json at all");
-        bytes.extend(frame(br#"{"no_bytes_field":true}"#));
-        bytes.extend(frame(&wrapped(r#"{"type":"real"}"#)));
+    fn a_frame_naming_no_event_is_skipped_not_fatal() {
+        let mut bytes = frame_with_headers(br#"{"anything":true}"#, &[]);
+        bytes.extend(frame_with_headers(
+            br#"{"anything":true}"#,
+            &string_header(b":message-type", b"event"),
+        ));
+        bytes.extend(frame("metadata", br#"{"usage":{}}"#));
 
         let mut decoder = FrameDecoder::new();
         let events = decoder.push(&bytes).expect("the framing was fine");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], br#"{"type":"real"}"#);
+        assert!(matches!(&events[0], Event::Named { name, .. } if name == "metadata"));
+    }
+
+    /// Headers that run off the end of their own block name nothing, and a walk that read past them
+    /// would be reading the payload as a header.
+    #[test]
+    fn a_truncated_header_block_names_nothing_rather_than_reading_on() {
+        for headers in [
+            &[5, b'a'][..],
+            &[1, b'a', STRING_VALUE, 0][..],
+            &[1, b'a', STRING_VALUE, 0, 9, b'x'][..],
+        ] {
+            assert_eq!(
+                named_header(headers, EVENT_TYPE_HEADER),
+                None,
+                "{headers:?}"
+            );
+        }
     }
 
     /// An empty read is what a quiet connection produces, and it must not be mistaken for an end.

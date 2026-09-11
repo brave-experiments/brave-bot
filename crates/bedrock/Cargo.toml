@@ -1,6 +1,6 @@
 [package]
 name = "bravebot-bedrock"
-description = "Client for Claude on AWS Bedrock, SigV4-signed"
+description = "Client for models on AWS Bedrock, SigV4-signed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
