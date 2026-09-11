@@ -323,16 +323,17 @@ impl Workspace {
         Err(escapes())
     }
 
-    /// Also allow paths inside `directory`, which must exist.
+    /// The directory a name would open, without opening it.
     ///
-    /// Returns the canonical path, which is what the caller records trust against and shows the
-    /// user: the name they typed may be a symlink or contain `..`, and the rule has to be about the
-    /// directory that was actually opened.
+    /// Every reason a name cannot be opened is decided here, so a caller that has to show the path
+    /// before opening one shows what opening it would actually reach: a name is canonicalized, so
+    /// `shared` pointing at `/` is the filesystem root and not the spelling in front of it. A
+    /// question about the spelling would be collecting an answer to a different question.
     ///
     /// A directory already inside the primary root is refused. It is reachable by its relative path
     /// already, and admitting it would give one file two spellings, one governed by the project's
     /// trust rules and one by its own.
-    pub fn add_directory(&mut self, directory: &str) -> Result<PathBuf, WorkspaceError> {
+    pub fn resolve_directory(&self, directory: &str) -> Result<PathBuf, WorkspaceError> {
         let candidate = Path::new(directory);
         if !candidate.is_absolute() {
             return Err(WorkspaceError::Invalid {
@@ -359,6 +360,17 @@ impl Workspace {
                 reason: "is already inside the workspace, so it can be named relatively",
             });
         }
+
+        Ok(canonical)
+    }
+
+    /// Also allow paths inside `directory`, which must exist.
+    ///
+    /// Returns the canonical path, which is what the caller records trust against and shows the
+    /// user: the name they typed may be a symlink or contain `..`, and the rule has to be about the
+    /// directory that was actually opened.
+    pub fn add_directory(&mut self, directory: &str) -> Result<PathBuf, WorkspaceError> {
+        let canonical = self.resolve_directory(directory)?;
 
         if !self.added.contains(&canonical) {
             self.added.push(canonical.clone());

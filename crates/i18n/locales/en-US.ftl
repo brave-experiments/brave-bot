@@ -199,6 +199,20 @@ trust-directory-no = ask me about every write
 quit = quit
 
 
+## Opening a directory a settings file named, asked once for each when a session starts
+
+named-directory-title = open this directory?
+named-directory-question = Open
+named-directory-explained =
+    A settings file asked for this directory to be opened beside the one you are working in.
+    Opening it lets files there be read and edited, and read as trusted.
+named-directory-regardless =
+    A file cannot open a directory on its own. Say no and this session runs without it; /add-dir
+    opens one at any time.
+named-directory-yes = open it
+named-directory-no = leave it closed
+
+
 ## Choosing a theme, a model, or a session to pick up
 
 theme-picker-title = themes
