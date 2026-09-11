@@ -18,6 +18,26 @@ what CI runs, not what to run between two edits to the same file, and never twic
 same thing. Reaching for it out of caution is not free: it is the difference between a review that
 takes a minute and one that takes twenty, and the reviewer is the person waiting.
 
+**Who the push is from.** `make init` also installs a pre-push hook that refuses a push whose new
+commits are authored or committed by anybody other than the `user.name` and `user.email` this clone
+is configured with. Commits already on a remote-tracking ref are not its subject, so a branch rebased
+onto upstream work is not blamed for who wrote that work.
+
+It says nothing about which account `gh` defaults to, since a machine whose default `gh` config is a
+person while a clone commits as a bot is an arrangement, not a mistake, and failing on it would
+refuse every push. What it does instead is name the directory to open a pull request from. A clone
+that commits as somebody other than the default `gh` account sets
+
+```sh
+git config bravebot.ghConfigDir ~/.config/gh-<account>
+```
+
+and the hook then checks that directory really is signed in as `user.name`, refusing the push where
+it is not, and otherwise prints the `GH_CONFIG_DIR=... gh pr create` line to use. This matters
+because `gh pr create` reads no git config at all: a correctly authored branch can still be followed
+by a pull request opened by somebody else, and a pull request's author cannot be reassigned
+afterwards, only closed and opened again. A clone that sets nothing here is unaffected.
+
 `make check-spec` checks the mechanical half of the specs: clause numbering, the tests each clause
 names, the paths it governs, and the table in [../specs/README.md](../specs/README.md).
 `make check-npm` installs from the lockfile and lints it, as CI does. `make check-reviewdog` is the

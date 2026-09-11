@@ -11,7 +11,7 @@ links the one source into all four:
 make init
 ```
 
-That points Git at the checked-in pre-commit hook and creates these symlinks:
+That points Git at the checked-in hooks and creates these symlinks:
 
 ```
 .claude/skills/<name>    ->  agents/skills/<name>

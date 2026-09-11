@@ -1,0 +1,98 @@
+#!/bin/sh
+# Refuse a push that would put work on GitHub under an identity other than the configured one.
+#
+# A clone that commits as a bot, on a machine whose global config and gh CLI are signed in as a
+# person, is one forgotten `git config` away from the wrong name on the work. The two go wrong
+# independently: a commit's author comes from user.name, while `gh pr create` uses whichever
+# account gh holds a token for and reads no git config at all. So a push can be correctly
+# authored and still be followed by a pull request opened by somebody else.
+#
+# A commit's author can be rewritten afterwards. A pull request's author cannot be reassigned,
+# only closed and opened again, so the push a pull request follows is where saying so is worth
+# anything.
+#
+# Nothing is hardcoded: user.name and user.email are what the commit checks compare against, and
+# `bravebot.ghConfigDir` is where a clone names the gh config directory holding that same identity.
+# A clone that sets neither is unaffected by the second half.
+
+expected_name=$(git config user.name)
+expected_email=$(git config user.email)
+
+if [ -z "$expected_name" ] || [ -z "$expected_email" ]; then
+    echo "pre-push: user.name and user.email are not both set, so there is nothing to check a" >&2
+    echo "  push against. Set them for this clone before pushing:" >&2
+    echo "    git config user.name <name> && git config user.email <email>" >&2
+    exit 1
+fi
+
+# Only commits this push would create are the subject. Anything already on a remote-tracking ref
+# arrived from somebody else and is not this push's to answer for, which is what keeps a branch
+# rebased onto upstream work from being blamed for who wrote that work.
+mismatched=""
+
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    case "$local_sha" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+
+    for commit in $(git rev-list "$local_sha" --not --remotes); do
+        author_name=$(git log -1 --format=%an "$commit")
+        author_email=$(git log -1 --format=%ae "$commit")
+        committer_name=$(git log -1 --format=%cn "$commit")
+        committer_email=$(git log -1 --format=%ce "$commit")
+
+        if [ "$author_name" != "$expected_name" ] ||
+            [ "$author_email" != "$expected_email" ] ||
+            [ "$committer_name" != "$expected_name" ] ||
+            [ "$committer_email" != "$expected_email" ]; then
+            mismatched="$mismatched
+  $(git log -1 --format='%h  author %an <%ae>  committer %cn <%ce>' "$commit")"
+        fi
+    done
+done
+
+if [ -n "$mismatched" ]; then
+    echo "pre-push: this clone is configured as $expected_name <$expected_email>," >&2
+    echo "  but these commits are somebody else:" >&2
+    echo "$mismatched" >&2
+    echo >&2
+    echo "  Fix the whole branch with:" >&2
+    echo "    git rebase -x 'git commit --amend --no-edit --reset-author' <base>" >&2
+    exit 1
+fi
+
+# Which account opens a pull request is chosen by the gh config directory in force, since
+# `gh pr create` reads no git config at all. A machine whose default gh config is signed in as a
+# person while a clone commits as a bot is the arrangement here and not a mistake, so the ambient
+# account is deliberately not treated as one: failing on it would refuse every push. What is worth
+# saying is which directory to use, because forgetting it is the whole failure this exists to catch,
+# and a pull request's author cannot be reassigned afterwards.
+gh_config_dir=$(git config bravebot.ghConfigDir)
+
+if [ -n "$gh_config_dir" ] && command -v gh >/dev/null 2>&1; then
+    gh_account=$(GH_CONFIG_DIR="$gh_config_dir" gh auth status --active 2>/dev/null |
+        sed -n 's/.*account \([A-Za-z0-9-]*\).*/\1/p' | head -1)
+
+    if [ -z "$gh_account" ]; then
+        echo "pre-push: bravebot.ghConfigDir names $gh_config_dir, but no account is signed in" >&2
+        echo "  there, so a pull request from this branch cannot be opened as $expected_name." >&2
+        exit 1
+    fi
+
+    if [ "$gh_account" != "$expected_name" ]; then
+        echo "pre-push: bravebot.ghConfigDir names $gh_config_dir, which is signed in as" >&2
+        echo "  $gh_account rather than $expected_name, so it is not the directory this clone wants." >&2
+        exit 1
+    fi
+
+    ambient=$(gh auth status --active 2>/dev/null |
+        sed -n 's/.*account \([A-Za-z0-9-]*\).*/\1/p' | head -1)
+
+    if [ -n "$ambient" ] && [ "$ambient" != "$expected_name" ]; then
+        echo "pre-push: gh defaults to $ambient here, so open a pull request for this branch with" >&2
+        echo "  the account this clone commits as, whose author cannot be changed afterwards:" >&2
+        echo "    GH_CONFIG_DIR=$gh_config_dir gh pr create" >&2
+        echo >&2
+    fi
+fi
