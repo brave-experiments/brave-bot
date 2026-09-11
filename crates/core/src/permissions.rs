@@ -29,9 +29,9 @@
 //! # Nothing here widens reach
 //!
 //! Rules decide what is asked about, never what is reachable. A path outside the workspace and
-//! the directories the user named is refused because it is out of reach, and no allow rule brings
-//! it back: `additionalDirectories` is what makes a directory reachable, and it is a separate
-//! statement.
+//! the directories the user opened is refused because it is out of reach, and no allow rule brings
+//! it back: `additionalDirectories` is a separate statement, and one that asks for a directory
+//! rather than opening it.
 
 use std::fmt;
 

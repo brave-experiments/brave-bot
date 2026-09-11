@@ -1846,7 +1846,9 @@ fn event_loop(
 
     // Settled once, before any turn. Nothing means the user left at the question, and a session
     // they never agreed to have must not begin behind it.
-    let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), beginning) else {
+    let Some((mut trust, whence)) =
+        opening_trust(terminal, &mut session, workspace.root(), beginning)
+    else {
         return Ok(left_behind(&stored));
     };
 
@@ -1883,12 +1885,24 @@ fn event_loop(
     if skip_permissions {
         session.note(t!(session_permissions_skipped));
     }
-    // Named after the startup question, so a directory a file asked for is opened on the same
-    // terms as one typed at `/add-dir`, and after the person has agreed to the workspace at all.
-    for directory in bravebot_agent::permissions::additional_directories(&settings) {
-        let named = against_workspace(workspace.root(), directory);
-        add_directory(&mut session, &mut workspace, &mut trust, &named);
-    }
+    // After the startup question, and put rather than applied: naming a directory in a settings
+    // file asks for it instead of granting it, so one the person accepts is opened on the same
+    // terms as one typed at `/add-dir`, and one they decline is not opened at all.
+    let requested = named_directories(
+        whence,
+        bravebot_agent::permissions::additional_directories(&settings),
+    );
+    let opening = match requested {
+        Named::Opening(names) => named_to_open(&mut session, &workspace, &names),
+        Named::Asking(names) => {
+            let paths = named_to_open(&mut session, &workspace, &names);
+            match crate::trust_prompt::ask_named(terminal, &paths) {
+                Some(accepted) => accepted,
+                None => return Ok(left_behind(&stored)),
+            }
+        }
+    };
+    open_named(&mut session, &mut workspace, &mut trust, &opening);
 
     // Drawn when something has changed rather than on every pass. A drag arrives as a stream of
     // positions, and a frame for each costs more than the whole gesture is worth: with a long
@@ -2218,7 +2232,10 @@ fn event_loop(
                 // context and the directories opened under it go too, since opening one is a grant
                 // and leaving it reachable with nothing vouching for it would outlive its answer.
                 workspace.close_added_directories();
-                let Some(fresh) =
+                // Where this map came from decides nothing further: a directory a settings file
+                // named was opened by an answer the cleared session's user gave, and it closed
+                // with that session rather than carrying into this one.
+                let Some((fresh, _)) =
                     opening_trust(terminal, &mut session, workspace.root(), Beginning::New)
                 else {
                     return Ok(left_behind(&stored));
@@ -2919,7 +2936,7 @@ fn set_theme(session: &mut Session, name: &str) {
 }
 
 /// Where a session's opening trust map came from, which is what it says about it.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Whence {
     /// The person answered the startup question just now.
     Asked,
@@ -2927,6 +2944,80 @@ enum Whence {
     Resumed,
     /// Nobody was asked, because the mode in force answers this question too.
     Unasked,
+}
+
+/// What becomes of the directories a settings file named.
+#[derive(Debug, PartialEq, Eq)]
+enum Named {
+    /// Opened with nothing put to anybody.
+    Opening(Vec<String>),
+    /// Put to the person, one question per directory.
+    Asking(Vec<String>),
+}
+
+/// What becomes of the directories a settings file named, for a session that opened this way.
+///
+/// A file names them and a person grants them, so whoever answered for the working directory
+/// answers for these: a person who was asked about it is asked about each of these, and the mode
+/// that answers every question answers these too, on the terms it answers that one.
+///
+/// A resumed session opens none of them. Nothing is put to it, and the directories it has open are
+/// the ones its own record reopened, so a name in a file that has been edited since is not a grant
+/// that session's user made.
+fn named_directories(whence: Whence, named: &[String]) -> Named {
+    match whence {
+        Whence::Asked => Named::Asking(named.to_vec()),
+        Whence::Unasked => Named::Opening(named.to_vec()),
+        // Nothing is resolved for this one either: a name is a path on the filesystem, and
+        // reading the disk to decide about directories this session will not open is work done
+        // for a question nobody is being asked.
+        Whence::Resumed => Named::Opening(Vec::new()),
+    }
+}
+
+/// The directories the names in a settings file would open, in the order they were named.
+///
+/// Resolved before anything is asked, because what a person is shown has to be what they would be
+/// granting: a name is canonicalized when it is opened, so `shared` pointing somewhere else opens
+/// the tree at the other end of it, and a box showing the spelling would collect an answer to a
+/// different question. A name that cannot be opened at all is said so rather than asked about, and
+/// a path two layers both named is one request rather than the same question twice.
+fn named_to_open(session: &mut Session, workspace: &Workspace, named: &[String]) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for directory in named {
+        // Home first, then the workspace, so `~/notes` means the home directory rather than a
+        // directory called `~` under the project. `/cd` resolves a name in that order too.
+        let candidate = against_workspace(workspace.root(), &expand_home(directory));
+        match workspace.resolve_directory(&candidate) {
+            Ok(path) => {
+                let shown = path.display().to_string();
+                if !paths.contains(&shown) {
+                    paths.push(shown);
+                }
+            }
+            Err(problem) => session.note(t!(
+                session_directory_not_added,
+                directory = directory,
+                problem = problem
+            )),
+        }
+    }
+    paths
+}
+
+/// Open and vouch for each directory that was accepted, and nothing else.
+///
+/// Separated so the other half can be tested where it bites: a name nobody accepted leaves its
+/// path as unreachable and as unvouched for as any other outside the workspace.
+fn open_named(
+    session: &mut Session,
+    workspace: &mut Workspace,
+    trust: &mut TrustStore,
+    accepted: &[String],
+) {
+    for directory in accepted {
+        add_directory(session, workspace, trust, directory);
+    }
 }
 
 /// What a session brings to the startup question, which is all that decides whether it is put.
@@ -3000,7 +3091,7 @@ fn opening_trust(
     session: &mut Session,
     root: &std::path::Path,
     beginning: Beginning,
-) -> Option<TrustStore> {
+) -> Option<(TrustStore, Whence)> {
     let (trust, whence) = match opening_for(beginning, session.permission_mode()) {
         Opening::Settled(trust, whence) => (trust, whence),
         Opening::Ask => (crate::trust_prompt::ask(terminal, root)?, Whence::Asked),
@@ -3008,7 +3099,7 @@ fn opening_trust(
 
     if !trust.is_trusted(".") {
         session.note(t!(session_not_trusting));
-        return Some(trust);
+        return Some((trust, whence));
     }
     let where_it_is = root.display();
     // Named, because two of the three are a grant nobody made just now, and this line is the only
@@ -3018,7 +3109,7 @@ fn opening_trust(
         Whence::Resumed => t!(session_trusting_as_left, directory = where_it_is),
         Whence::Unasked => t!(session_trusting_unasked, directory = where_it_is),
     });
-    Some(trust)
+    Some((trust, whence))
 }
 
 /// Run a command the user typed in shell mode, redrawing while it runs.
@@ -8868,11 +8959,11 @@ mod tests {
         assert_eq!(handle_key(&mut session, key(KeyCode::Enter)), Action::None);
     }
 
-    /// A directory a settings file named is opened and vouched for by the same route `/add-dir`
+    /// A directory the person accepted is opened and vouched for by the same route `/add-dir`
     /// takes, so neither has a way in that the other lacks. A relative name means a path under the
     /// workspace, which is what `../shared` in a file about a project says.
     #[test]
-    fn a_settings_file_directory_is_opened_and_trusted_like_one_typed() {
+    fn an_accepted_directory_is_opened_and_trusted_like_one_typed() {
         let root = crate::testutil::scratch_dir("bravebot-settings-dir-test");
         let outside = root.join("shared");
         let project = root.join("project");
@@ -8884,22 +8975,186 @@ mod tests {
         let mut trust = TrustStore::new();
 
         // Named the way a settings file names it, relative to the project.
-        let named = against_workspace(workspace.root(), "../shared");
-        add_directory(&mut session, &mut workspace, &mut trust, &named);
+        let asked = named_to_open(&mut session, &workspace, &["../shared".to_string()]);
+        open_named(&mut session, &mut workspace, &mut trust, &asked);
 
         // Both halves, since either alone is useless: reach without trust asks about every write
         // there, and trust without reach is a rule about files nothing can open.
         let canonical = outside.canonicalize().expect("canonical");
         assert!(
             workspace.added_directories().contains(&canonical),
-            "a directory a settings file named was not opened"
+            "a directory the person accepted was not opened"
         );
         assert!(
             trust.is_trusted(&canonical.display().to_string()),
-            "a directory a settings file named was not vouched for"
+            "a directory the person accepted was not vouched for"
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The other half of the answer, asserted where a refusal bites rather than in the list that
+    /// was asked about: a name nobody accepted leaves its path unreachable and out of the map, so
+    /// reading or writing there is refused as it is anywhere else outside the workspace.
+    #[test]
+    fn a_declined_directory_is_left_unreachable_and_unvouched_for() {
+        let root = crate::testutil::scratch_dir("bravebot-declined-dir-test");
+        let accepted = root.join("accepted");
+        let declined = root.join("declined");
+        let project = root.join("project");
+        for directory in [&accepted, &declined, &project] {
+            std::fs::create_dir_all(directory).expect("scratch");
+        }
+
+        let mut workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+        let mut trust = TrustStore::new();
+
+        let asked = named_to_open(
+            &mut session,
+            &workspace,
+            &["../accepted".to_string(), "../declined".to_string()],
+        );
+        assert_eq!(asked.len(), 2, "both names were asked about");
+        // One question answered yes, the other no.
+        open_named(&mut session, &mut workspace, &mut trust, &asked[..1]);
+
+        let yes = accepted.canonicalize().expect("canonical");
+        let no = declined.canonicalize().expect("canonical");
+        assert!(workspace.confines(&yes.join("notes.md")).is_ok());
+        assert!(
+            workspace.confines(&no.join("notes.md")).is_err(),
+            "a declined directory is still reachable"
+        );
+        assert!(
+            !trust.is_trusted(&no.display().to_string()),
+            "a declined directory is still vouched for"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// What the question shows has to be what accepting it would reach. A name is canonicalized
+    /// when it is opened, so a settings file naming a link inside the project would otherwise put
+    /// a path beginning with the person's own project root in front of them and grant the tree at
+    /// the other end of it.
+    #[test]
+    #[cfg(unix)]
+    fn a_named_directory_is_resolved_before_it_is_asked_about() {
+        let root = crate::testutil::scratch_dir("bravebot-named-link-test");
+        let outside = root.join("outside");
+        let project = root.join("project");
+        std::fs::create_dir_all(&outside).expect("scratch");
+        std::fs::create_dir_all(&project).expect("scratch");
+        std::os::unix::fs::symlink(&outside, project.join("link")).expect("symlink");
+
+        let workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+
+        let asked = named_to_open(&mut session, &workspace, &["link".to_string()]);
+
+        assert_eq!(
+            asked,
+            vec![
+                outside
+                    .canonicalize()
+                    .expect("canonical")
+                    .display()
+                    .to_string()
+            ],
+            "the question would have shown the name rather than the directory"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Two layers of settings both naming a directory is one request. A second box for a path
+    /// already answered is a question whose answer is already known, and answering the same
+    /// question twice differently is a contradiction nothing could resolve.
+    #[test]
+    fn a_directory_two_layers_both_named_is_asked_about_once() {
+        let root = crate::testutil::scratch_dir("bravebot-named-twice-test");
+        let outside = root.join("shared");
+        let project = root.join("project");
+        std::fs::create_dir_all(&outside).expect("scratch");
+        std::fs::create_dir_all(&project).expect("scratch");
+
+        let workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+
+        let both = vec!["../shared".to_string(), outside.display().to_string()];
+        let asked = named_to_open(&mut session, &workspace, &both);
+
+        assert_eq!(asked.len(), 1, "the same directory was asked about twice");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A name that could not be opened whatever the answer is reported rather than put as a
+    /// question: a directory already inside the project is reachable by its relative path, so a
+    /// box asking about it collects an answer that changes nothing either way.
+    #[test]
+    fn a_name_that_cannot_be_opened_is_said_so_rather_than_asked_about() {
+        let root = crate::testutil::scratch_dir("bravebot-named-inside-test");
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("docs")).expect("scratch");
+
+        let workspace = Workspace::new(&project).expect("workspace");
+        let mut session = Session::new("none");
+
+        let asked = named_to_open(&mut session, &workspace, &["docs".to_string()]);
+
+        assert!(
+            asked.is_empty(),
+            "a name that cannot be opened was asked about"
+        );
+        assert!(
+            session.transcript[0].text.contains("could not add"),
+            "nothing said why the directory was not opened: {}",
+            session.transcript[0].text
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The person who was asked about the working directory is asked about each directory a file
+    /// named too, because a name in a file is a request for reach and trust rather than a grant of
+    /// either, and the file is the easiest thing in a checkout to write to.
+    #[test]
+    fn a_person_asked_about_the_workspace_is_asked_about_each_named_directory() {
+        let named = vec!["/home/me/notes".to_string(), "/home/me/.ssh".to_string()];
+
+        assert_eq!(
+            named_directories(Whence::Asked, &named),
+            Named::Asking(named)
+        );
+    }
+
+    /// The mode that answers every permission question answers these as well. It approves every
+    /// write, every run and vouching for every file the planner reads, so stopping at a modal box
+    /// about a directory would be the one thing it did not answer.
+    #[test]
+    fn bypassing_opens_the_directories_a_file_named_without_asking() {
+        let named = vec!["/home/me/notes".to_string()];
+
+        assert_eq!(
+            named_directories(Whence::Unasked, &named),
+            Named::Opening(named)
+        );
+    }
+
+    /// A session resumed with the map its own user left puts no question, and the directories it
+    /// has open are the ones its own record reopened. Taking a name from the file as well would
+    /// open a directory on behalf of somebody who was never asked, out of a file that may have
+    /// been edited since they answered.
+    #[test]
+    fn a_resume_that_brought_its_own_map_opens_no_directory_a_file_named() {
+        let named = vec!["/home/me/notes".to_string()];
+
+        assert_eq!(
+            named_directories(Whence::Resumed, &named),
+            Named::Opening(Vec::new())
+        );
     }
 
     /// A session that ran in this directory and vouched for it, which is what an earlier answer

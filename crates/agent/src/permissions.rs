@@ -64,9 +64,11 @@ fn anchors(home: Option<&std::path::Path>) -> Anchors {
     }
 }
 
-/// The directories a settings file said to open, in the order it named them.
+/// The directories a settings file asked to have opened, in the order it named them.
 ///
-/// Names only. Opening one is the caller's to do, through the same path `/add-dir` takes, so that
+/// Names only, and a name is a request: a file that arrived with a checkout must not be able to
+/// make a path outside the project reachable and vouched for. Putting each to the person and
+/// opening what they accept is the caller's to do, through the same path `/add-dir` takes, so that
 /// a directory a file named and a directory a person typed are reachable on identical terms and
 /// neither has a route the other lacks.
 pub fn additional_directories(settings: &Settings) -> &[String] {

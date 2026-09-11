@@ -47,9 +47,12 @@ would be the largest claim of all, since running it is an effect nobody approved
 gateway block names a variable holding a credential rather than a way to produce one.
 
 **Note.** A `permissions` block is not an exception. Its rules only ever narrow what would otherwise
-be allowed, and nothing in one grants an effect that was refused without it.
+be allowed, and nothing in one grants an effect that was refused without it. The directories it
+names are requests: each is put to the person when the session opens, and one they decline is
+neither reachable nor vouched for. [permissions.md](permissions.md) is what a block may say.
 
 `verified-by: by-construction (values are consulted by name and never exported; the only value handed to a subprocess is the AWS profile, passed as an argument to the tool that owns it; no field is read as a path to execute, and a gateway's pass-through options reach a request body and nothing else)`
+`verified-by: bravebot_tui::trust_prompt::a_directory_a_file_named_is_opened_only_where_the_person_accepts_it`
 
 <a id="BACKEND-2"></a>
 ### BACKEND-2: configuring a second backend takes nothing away from the first

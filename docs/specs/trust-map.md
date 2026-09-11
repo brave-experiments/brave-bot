@@ -193,9 +193,10 @@ more specific record.
 ## The ways a rule is written
 
 Each grants exactly one thing and grants it because a person made a gesture, never because
-anything inspected content. TRUST-7 is the first. Two more write a rule the same way and have
-specs of their own: naming a file is [naming-files.md](naming-files.md), and dropping one on the
-window is [dropping.md](dropping.md).
+anything inspected content. TRUST-7 is the first. Three more write a rule the same way and have
+specs of their own: naming a file is [naming-files.md](naming-files.md), dropping one on the
+window is [dropping.md](dropping.md), and accepting a directory a settings file asked for is
+[permissions.md](permissions.md). A file naming that directory writes nothing by itself.
 
 <a id="TRUST-8"></a>
 ### TRUST-8: a quarantined read offers the same rule, at the moment it bites

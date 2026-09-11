@@ -106,7 +106,7 @@ pub struct PermissionLists {
     pub deny: Vec<String>,
     pub ask: Vec<String>,
     pub allow: Vec<String>,
-    /// Directories a file says to make reachable, alongside the working directory.
+    /// Directories a file asks to have opened, alongside the working directory.
     pub additional_directories: Vec<String>,
 }
 
@@ -393,8 +393,8 @@ fn merge(
 /// The `permissions` block, where every list unions and any other name overrides.
 ///
 /// A rule is added by a layer and never removed by one, so `deny` still holds whatever the weakest
-/// file said. `additionalDirectories` unions for the same reason it exists: a layer names somewhere
-/// to reach, and the strongest file naming one place should not un-name another.
+/// file said. `additionalDirectories` unions for the same reason it exists: a layer asks for
+/// somewhere to work, and the strongest file asking for one place should not un-ask another.
 fn merge_permissions(
     under: &mut serde_json::Map<String, serde_json::Value>,
     above: serde_json::Map<String, serde_json::Value>,

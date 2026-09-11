@@ -97,7 +97,8 @@ made from less than the person can see themselves.
 A write, a run, a command's output and vouching for a file nobody vouched for are all approved
 without being put to anybody, and the question a session opens with about trusting the working
 directory is not put either: the workspace is trusted, which is what answering it yes would have
-recorded ([trust-map.md](trust-map.md) is what that record means).
+recorded ([trust-map.md](trust-map.md) is what that record means). A directory a settings file
+asked for is opened and vouched for without being put either.
 
 The two about trust are the ones that cost the most. Vouching is what lets a file's contents be
 shown to the planner rather than held behind a reference, so in this mode every file the planner
@@ -115,6 +116,7 @@ the wrong mode everywhere else, and it is named `--dangerously-skip-permissions`
 `verified-by: bravebot_agent::permission_mode::bypassing_answers_every_permission_question`
 `verified-by: bravebot_tui::trust_prompt::bypassing_trusts_the_workspace_instead_of_asking`
 `verified-by: bravebot_tui::trust_prompt::every_other_mode_leaves_the_question_to_the_person`
+`verified-by: bravebot_tui::app::bypassing_opens_the_directories_a_file_named_without_asking`
 
 ## Choosing one
 

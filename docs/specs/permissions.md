@@ -7,6 +7,8 @@ governs:
   - crates/config/src/settings.rs
   - crates/agent/src/permissions.rs
   - crates/agent/src/workspace.rs
+  - crates/tui/src/trust_prompt.rs
+  - crates/tui/src/app.rs
 guards:
   - symbol: Policy::with_permissions
   - symbol: Policy::before_read
@@ -225,19 +227,31 @@ stand in for having looked.
 `verified-by: bravebot_core::policy::a_reference_named_write_asks_whatever_a_rule_says`
 
 <a id="PERM-10"></a>
-### PERM-10: no rule extends reach, and `additionalDirectories` grants no more than `/add-dir`
+### PERM-10: no rule extends reach, and `additionalDirectories` asks before it opens
 
 An allow rule cannot make a path reachable that the workspace and the directories the user opened
-do not already cover. A directory named in `additionalDirectories` is opened by the same route
-`/add-dir` takes and is trusted for the session on the same terms, and a relative name in it means
-a path under the workspace.
+do not already cover. A directory named in `additionalDirectories` is put to the person as a
+question of its own when the session opens, and one they accept is opened by the same route
+`/add-dir` takes and trusted for the session on the same terms. One they decline is neither
+reachable nor vouched for. A relative name in it means a path under the workspace.
+
+The mode that answers every permission question answers these too. A session resumed with the map
+its own user left is asked nothing and opens none of them, since the directories it has open are
+the ones its own record reopened. `/clear` closes the ones that were open and opens none, because
+the answer that opened one was given by the session being cleared.
 
 **Why.** Reach and asking are separate questions, and a rule about prompts must not answer the
-other one by accident. Sharing one route with `/add-dir` is what keeps a directory a file named
-and a directory a person typed from being reachable on different terms.
+other one by accident. These files are read before anything runs and the layers a checkout carries
+arrive with the checkout, so a name in one that opened a directory by itself would be reach and
+trust granted by whatever last edited the file: naming a directory asks for it, and a person grants
+it. Sharing the route with `/add-dir` past that point is what keeps a directory a file named and a
+directory a person typed from being reachable on different terms.
 
 `verified-by: bravebot_agent::permissions::the_directories_a_file_named_come_back_in_order`
-`verified-by: bravebot_tui::app::a_settings_file_directory_is_opened_and_trusted_like_one_typed`
+`verified-by: bravebot_tui::trust_prompt::a_directory_a_file_named_is_opened_only_where_the_person_accepts_it`
+`verified-by: bravebot_tui::app::a_person_asked_about_the_workspace_is_asked_about_each_named_directory`
+`verified-by: bravebot_tui::app::a_resume_that_brought_its_own_map_opens_no_directory_a_file_named`
+`verified-by: bravebot_tui::app::an_accepted_directory_is_opened_and_trusted_like_one_typed`
 
 ## The file
 
@@ -272,8 +286,33 @@ altered a session nobody had configured would be a change to every session.
 `verified-by: bravebot_agent::permissions::no_block_is_no_rules`
 `verified-by: bravebot_config::settings::the_permissions_block_and_the_env_block_do_not_need_each_other`
 
+## The question
+
+<a id="PERM-13"></a>
+### PERM-13: a question about a named directory names the directory it would open
+
+A name in `additionalDirectories` is resolved before it is put to anybody, and the question shows
+what it resolved to. A name that cannot be opened whatever the answer is reported instead of asked
+about, and a directory two layers both named is one question.
+
+**Why.** Opening a directory follows a name wherever it leads, so a question about the spelling
+collects an answer about a different tree: a link inside a checkout resolves somewhere else
+entirely, and the path in the box would begin with the person's own project while the grant landed
+outside it. A question that changes nothing either way, and one already answered a box ago, both
+train the habit of answering without reading, which is the whole of what asking is worth.
+
+`verified-by: bravebot_tui::app::a_named_directory_is_resolved_before_it_is_asked_about`
+`verified-by: bravebot_tui::app::a_directory_two_layers_both_named_is_asked_about_once`
+`verified-by: bravebot_tui::app::a_name_that_cannot_be_opened_is_said_so_rather_than_asked_about`
+
 ## Known costs
 
+- **How many questions a session opens with is the file's to choose.** Every name in
+  `additionalDirectories` is one box, so a file naming thirty directories is thirty of them before
+  the first prompt can be typed, and the way out of a list somebody does not want to answer is
+  Ctrl-C, which starts no session. A cap would be worse: the names past it would be dropped in
+  silence, which reads as a setting that does nothing. What limits the damage is that no box grants
+  anything by itself.
 - **A rule is matched against argv, not against what a program does.** `Bash(git *)` covers
   `git -c core.fsmonitor=<script> diff`, which runs a program the rule never named, and
   `Bash(devbox run *)` covers whatever follows `run`. A pattern constraining arguments is weaker

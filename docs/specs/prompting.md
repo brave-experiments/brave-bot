@@ -15,8 +15,8 @@ answer grants, and what one answer must never be taken for. `ask_user`, where th
 a question, is [tools/ask-user.md](tools/ask-user.md) and is a different thing: these prompts are the system asking
 permission.
 
-There are five: the startup trust question, a read of a file nobody vouched for, a write or edit, a
-run, and reading what a run printed.
+There are six: the startup trust question, a directory a settings file asked for, a read of a file
+nobody vouched for, a write or edit, a run, and reading what a run printed.
 
 ## What every prompt owes the reader
 
@@ -25,22 +25,27 @@ run, and reading what a run printed.
 
 A write prompt shows the path and the body; an overwrite shows what it replaces; a run prompt
 shows the argv, the resolved binary and the directory; an output prompt shows the bytes and the
-command that printed them. A person cannot endorse a routing field they were not shown.
+command that printed them; the prompt about a directory a settings file asked for shows the path it
+would open. A person cannot endorse a routing field they were not shown.
 
 `verified-by: bravebot_tui::confirm::a_new_file_prompt_shows_the_path_and_body`
 `verified-by: bravebot_tui::confirm::an_overwrite_prompt_shows_what_it_replaces`
 `verified-by: bravebot_tui::confirm::a_run_prompt_shows_the_argv_the_binary_and_the_directory`
 `verified-by: bravebot_tui::confirm::the_output_prompt_shows_the_bytes_and_the_command`
+`verified-by: bravebot_tui::trust_prompt::the_named_prompt_shows_the_directory_it_would_open`
 
 <a id="PROMPT-2"></a>
 ### PROMPT-2: a prompt says what approving does, and what it does not
 
 The run prompt says it is not sandboxed, asks for the side effects and the output together, and
 names the exact command it would vouch for. The output prompt says
-what approving does. The trust prompt explains the consequence and names both answers.
+what approving does. The trust prompt explains the consequence and names both answers. The prompt
+about a directory a settings file asked for says that opening it grants reach and trust, and that a
+file asked for it.
 
 **Why.** The second half of a run grant, that what the command prints becomes trusted, is the one
-nothing else would tell the user.
+nothing else would tell the user. A directory nobody typed is the same problem in the other
+direction: without the question saying where the name came from, the box is unexplained.
 
 `verified-by: bravebot_tui::confirm::a_run_prompt_says_it_is_not_sandboxed`
 `verified-by: bravebot_tui::confirm::a_run_prompt_asks_for_the_side_effects_and_the_output_together`
@@ -48,6 +53,7 @@ nothing else would tell the user.
 `verified-by: bravebot_tui::confirm::the_output_prompt_says_what_approving_does`
 `verified-by: bravebot_tui::trust_prompt::the_prompt_explains_the_consequence`
 `verified-by: bravebot_tui::trust_prompt::the_prompt_names_the_directory_and_both_answers`
+`verified-by: bravebot_tui::trust_prompt::the_named_prompt_explains_what_opening_does`
 
 <a id="PROMPT-3"></a>
 ### PROMPT-3: what a prompt shows is drawn inside a margin it cannot forge
@@ -119,8 +125,8 @@ for nothing.
 <a id="PROMPT-7"></a>
 ### PROMPT-7: declining is not cancelling
 
-Saying no to a write does not stop the turn; Ctrl-C refuses it and does. Leaving at the startup
-question ends the session, and only Ctrl-C leaves.
+Saying no to a write does not stop the turn; Ctrl-C refuses it and does. Leaving at a question a
+session opens with ends the session and opens nothing, and only Ctrl-C leaves.
 
 **Why.** A refusal the agent can carry on past is how a person steers without starting over.
 
@@ -129,6 +135,7 @@ question ends the session, and only Ctrl-C leaves.
 `verified-by: bravebot_tui::trust_prompt::ctrl_c_leaves_rather_than_answering_the_question`
 `verified-by: bravebot_tui::trust_prompt::only_ctrl_c_leaves`
 `verified-by: bravebot_tui::trust_prompt::leaving_starts_no_session`
+`verified-by: bravebot_tui::trust_prompt::leaving_at_one_of_the_questions_opens_nothing`
 
 <a id="PROMPT-8"></a>
 ### PROMPT-8: a resume restores standing permissions, and nothing else
@@ -158,7 +165,7 @@ A one-shot run refuses effects rather than applying them unseen, and declines ev
 rather than inventing an answer. A closed channel refuses a run and answers no
 question.
 
-A person may answer these five in advance, for a session or for a run, by choosing a mode:
+A person may answer these six in advance, for a session or for a run, by choosing a mode:
 [permission-modes.md](permission-modes.md) is what each mode answers and what asking for one costs.
 That is somebody's own standing answer rather than a default, and no mode answers a question the
 planner posed, since that asks for information rather than consent.
@@ -183,3 +190,4 @@ which under a light theme in a dark terminal is the path to unreadable.
 
 `verified-by: bravebot_tui::confirm::every_prompt_paints_the_themes_background_inside_its_border`
 `verified-by: bravebot_tui::trust_prompt::the_prompt_paints_the_themes_background_inside_its_border`
+`verified-by: bravebot_tui::trust_prompt::the_named_prompt_paints_the_themes_background_inside_its_border`
