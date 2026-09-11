@@ -92,9 +92,11 @@ into the other does not remove it.
 
 `verified-by: bravebot_core::value::untrusted_values_cannot_be_read_without_a_witness`
 `verified-by: bravebot_core::value::trusted_public_values_need_no_witness`
-`verified-by: bravebot_core::value::a_witness_permits_reading`
+`verified-by: bravebot_core::policy::a_witness_permits_reading`
 `verified-by: bravebot_core::value::debug_redacts_the_value`
+`verified-by: bravebot_core::value::content_can_be_measured_without_being_read`
 `verified-by: by-construction (Deref, PartialEq and Display are not implemented for Labelled)`
+`verified-by: by-construction (Declassification::authorise is pub(in crate::policy), so no other module of bravebot-core and no crate downstream of it can mint a witness)`
 
 <a id="LABEL-5"></a>
 ### LABEL-5: a decision may be taken only from trusted content

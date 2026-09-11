@@ -23,9 +23,32 @@ use crate::event::{Event, Principle, Role, Sink};
 use crate::label::{Integrity, Label};
 use crate::slot::SlotId;
 use crate::trust::TrustStore;
-use crate::value::{Declassification, Labelled};
+use crate::value::Labelled;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+/// Proof that a read of labelled content has been authorised and recorded.
+///
+/// Lives here, and not beside [`Labelled`], because of who is allowed to make one.
+/// [`Declassification::authorise`] is `pub(in crate::policy)`, so a witness can be minted
+/// only by the gates in this module: not by another module of this crate, and not by any
+/// crate downstream of it. [`Labelled::declassify`] therefore cannot be reached without
+/// passing a gate that recorded why.
+#[derive(Debug)]
+pub struct Declassification {
+    reason: &'static str,
+}
+
+impl Declassification {
+    pub(in crate::policy) fn authorise(reason: &'static str) -> Self {
+        Self { reason }
+    }
+
+    /// Why this read was permitted, recorded in the audit trail.
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+}
 
 /// A refusal. Carries the principle upheld so a caller can explain the block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3478,6 +3501,17 @@ mod tests {
             .filter_map(crate::processor::Piece::text)
             .collect::<Vec<_>>()
             .concat()
+    }
+
+    /// The other half of `bravebot_core::value::untrusted_values_cannot_be_read_without_a_witness`:
+    /// a witness is what turns a value nothing can read into one something can. It lives here
+    /// rather than beside the type because minting one is the policy layer's alone, so this is
+    /// the only module that can write the test.
+    #[test]
+    fn a_witness_permits_reading() {
+        let v = Labelled::new("page body".to_string(), Label::untrusted_public());
+        let proof = Declassification::authorise("test");
+        assert_eq!(v.declassify(&proof), "page body");
     }
 
     /// The point of deferring: naming a file costs nothing until something wants what is in it.

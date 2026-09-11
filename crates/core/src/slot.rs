@@ -419,20 +419,17 @@ impl SlotStore {
         // trust in the meantime lands untrusted rather than at the label it was promised.
         let label = crate::label::taint_all([deferred.label, content.label()]);
 
-        // Reading to measure, not to decide, exactly as `write_measured` does.
-        let proof = crate::value::Declassification::authorise("measured on the way into a slot");
-        let text = content.declassify(&proof);
-        let measured = Measured {
-            lines: text.lines().count(),
-            bytes: text.len(),
-        };
+        // Measuring, not reading: `Labelled::shape` counts without letting the bytes out, so
+        // nothing here holds the content and no witness is minted for it. The store is not the
+        // policy layer and must not be able to mint one.
+        let measured = Measured::of(&content);
 
         // The path stays with the slot now that the bytes are here. A reference that stopped
         // being an address the moment it was read could not be written back to.
         self.slots.insert(
             id.clone(),
             Entry::Read {
-                value: Labelled::new(text, label),
+                value: taint(content, label),
                 verbatim: Some(deferred.path.clone()),
                 path: Some(deferred.path),
                 home: Home::Anywhere,
@@ -546,19 +543,14 @@ impl SlotWriter<'_> {
 
         let label = crate::label::taint_all([self.label, content.label()]);
 
-        // Reading to measure, not to decide: nothing about the bytes influences control flow,
-        // and the counts leave here as numbers.
-        let proof = crate::value::Declassification::authorise("measured on the way into a slot");
-        let text = content.declassify(&proof);
-        let measured = Measured {
-            lines: text.lines().count(),
-            bytes: text.len(),
-        };
+        // Measured rather than read, for the reason `fill` gives: the counts leave here as
+        // numbers and the bytes never leave the value at all.
+        let measured = Measured::of(&content);
 
         self.store.slots.insert(
             self.id,
             Entry::Read {
-                value: Labelled::new(text, label),
+                value: taint(content, label),
                 path: None,
                 verbatim: None,
                 home: Home::Anywhere,
@@ -575,6 +567,30 @@ impl SlotWriter<'_> {
 pub struct Measured {
     pub lines: usize,
     pub bytes: usize,
+}
+
+impl Measured {
+    /// Measure content without reading it.
+    fn of(content: &Labelled<String>) -> Self {
+        let shape = content.shape();
+        Self {
+            lines: shape.lines,
+            bytes: shape.bytes,
+        }
+    }
+}
+
+/// Lower a value to the label the store recorded for it, keeping the bytes inside the value.
+///
+/// Relabelling rather than rebuilding is what keeps the content from passing through a bare
+/// `String` here: the store is not the policy layer, so it has no witness to read one with and
+/// must not be able to mint one. The label always reaches, because `taint_all` only ever
+/// degrades on each axis and a label degrades to its own taint with anything, which is
+/// `bravebot_core::label::top_of_taint_degrades_from_everything`.
+fn taint(content: Labelled<String>, label: Label) -> Labelled<String> {
+    content
+        .relabel(label)
+        .expect("a label degrades to its taint with any other")
 }
 
 /// A read capability scoped to a fixed set of slots, with a label ceiling.
