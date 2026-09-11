@@ -281,6 +281,204 @@ fn a_symlink_out_of_the_workspace_is_refused() {
     let _ = std::fs::remove_file(&outside);
 }
 
+/// A write creates what it names, so confinement has to hold for a path that does not exist yet.
+/// A directory symlink is an ordinary Git entry, which makes where a write lands something the
+/// tree itself can choose.
+#[cfg(unix)]
+#[test]
+fn creating_a_file_through_a_symlinked_directory_out_of_the_workspace_is_refused() {
+    let scratch = Scratch::new("symlink-create");
+    let target = outside("symlink-create");
+    std::os::unix::fs::symlink(&target.path, scratch.path.join("escape-dir")).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = "escape-dir/fresh.txt".to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    let error = workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("delivered".to_string()),
+        )
+        .expect_err("a write through a symlinked directory must be refused");
+
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+    assert!(
+        !target.path.join("fresh.txt").exists(),
+        "the bytes landed outside the workspace"
+    );
+}
+
+/// A dangling symlink is a path that does not exist and still decides where a write lands, since
+/// the write follows the link to create its target. Nothing is there to canonicalise, which is
+/// what makes it a separate case from a name that does not exist at all.
+#[cfg(unix)]
+#[test]
+fn writing_to_a_dangling_symlink_out_of_the_workspace_is_refused() {
+    let scratch = Scratch::new("symlink-dangling");
+    let target = outside("symlink-dangling");
+    std::os::unix::fs::symlink(
+        target.path.join("fresh.txt"),
+        scratch.path.join("dangling.txt"),
+    )
+    .unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = "dangling.txt".to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    let error = workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("delivered".to_string()),
+        )
+        .expect_err("a write through a dangling symlink must be refused");
+
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+    assert!(
+        !target.path.join("fresh.txt").exists(),
+        "the bytes landed outside the workspace"
+    );
+}
+
+/// A file outside the workspace keeps what it holds. Confinement that refused only the writes
+/// that create a file would leave the worse outcome, clobbering a person's own work through a
+/// name inside the project, to a check that no longer runs.
+#[cfg(unix)]
+#[test]
+fn overwriting_a_file_through_a_symlink_out_of_the_workspace_is_refused() {
+    let scratch = Scratch::new("symlink-overwrite");
+    let target = outside("symlink-overwrite");
+    std::fs::write(target.path.join("victim.txt"), "the user's own file").unwrap();
+    std::os::unix::fs::symlink(
+        target.path.join("victim.txt"),
+        scratch.path.join("victim.txt"),
+    )
+    .unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = "victim.txt".to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    let error = workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("delivered".to_string()),
+        )
+        .expect_err("a write over a symlink out of the workspace must be refused");
+
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+    assert_eq!(
+        std::fs::read_to_string(target.path.join("victim.txt")).unwrap(),
+        "the user's own file"
+    );
+}
+
+/// Resolving a path has to say where the bytes went and not which name asked for them, or a
+/// caller that needs the file has only an alias for it: what is backed up and what a rewind
+/// restores are the file, and an alias names whatever it points at next.
+#[cfg(unix)]
+#[test]
+fn creating_a_file_through_a_symlink_inside_the_workspace_returns_where_it_landed() {
+    let scratch = Scratch::new("symlink-inside");
+    std::fs::create_dir_all(scratch.path.join("real")).unwrap();
+    std::os::unix::fs::symlink(scratch.path.join("real"), scratch.path.join("alias")).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = "alias/fresh.txt".to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    let resolved = workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("delivered".to_string()),
+        )
+        .expect("a symlink inside the workspace is not an escape");
+
+    assert_eq!(resolved, workspace.root().join("real").join("fresh.txt"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("real").join("fresh.txt")).unwrap(),
+        "delivered"
+    );
+}
+
+/// A dangling symlink that stays inside the workspace is not an escape: the write creates the
+/// target the link names, which is where the bytes belong. Refusing every link with nothing at
+/// the other end would be simpler and would deny a write a person is entitled to.
+#[cfg(unix)]
+#[test]
+fn writing_to_a_dangling_symlink_inside_the_workspace_lands_at_its_target() {
+    let scratch = Scratch::new("symlink-dangling-inside");
+    std::fs::create_dir_all(scratch.path.join("real")).unwrap();
+    std::os::unix::fs::symlink(
+        scratch.path.join("real").join("later.txt"),
+        scratch.path.join("pending.txt"),
+    )
+    .unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = "pending.txt".to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    let resolved = workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("delivered".to_string()),
+        )
+        .expect("a dangling symlink inside the workspace is not an escape");
+
+    assert_eq!(resolved, workspace.root().join("real").join("later.txt"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("real").join("later.txt")).unwrap(),
+        "delivered"
+    );
+}
+
 #[test]
 fn writing_without_the_capability_is_refused() {
     let scratch = Scratch::new("no-capability");
@@ -1627,6 +1825,52 @@ fn a_symlink_out_of_an_added_directory_is_refused() {
     assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
 }
 
+/// The added-directory resolver has the same job as the primary one, so a write that creates a
+/// file is confined there too. A directory opened by name is somewhere a person said this session
+/// may work, not somewhere it may write through.
+#[cfg(unix)]
+#[test]
+fn creating_a_file_through_a_symlinked_directory_in_an_added_directory_is_refused() {
+    let scratch = Scratch::new("added-symlink-create");
+    let other = outside("added-symlink-create");
+    let target = outside("added-symlink-create-target");
+    std::os::unix::fs::symlink(&target.path, other.path.join("escape-dir")).unwrap();
+
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(other.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let named = added
+        .join("escape-dir")
+        .join("fresh.txt")
+        .display()
+        .to_string();
+    policy.issue_grant("file_write", "path", named.clone());
+    let error = workspace
+        .write_endorsed(
+            &mut policy,
+            &Labelled::new(named, Label::untrusted_public()),
+            &Labelled::trusted("delivered".to_string()),
+        )
+        .expect_err("a write through a symlinked directory must be refused");
+
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+    assert!(
+        !target.path.join("fresh.txt").exists(),
+        "the bytes landed outside every root"
+    );
+}
+
 /// A directory already in the workspace is refused: it is reachable relatively, and admitting it
 /// would give one file two spellings governed by two different trust rules.
 #[test]
@@ -2593,6 +2837,26 @@ fn a_destination_reached_through_a_symlink_out_of_the_workspace_is_refused() {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     assert!(matches!(
         workspace.confines(&scratch.path.join("link/out.txt")),
+        Err(WorkspaceError::Escapes { .. })
+    ));
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// A redirection is opened by the run itself, so a link with nothing at the other end is a name
+/// the shell will create through: the destination is the link's target, wherever that is.
+#[cfg(unix)]
+#[test]
+fn a_destination_reached_through_a_dangling_symlink_out_of_the_workspace_is_refused() {
+    let scratch = Scratch::new("confines-dangling");
+    let outside = std::env::temp_dir().join("bravebot-workspace-confines-dangling-target");
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).expect("target directory");
+    std::os::unix::fs::symlink(outside.join("out.txt"), scratch.path.join("link.txt"))
+        .expect("symlink");
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    assert!(matches!(
+        workspace.confines(&scratch.path.join("link.txt")),
         Err(WorkspaceError::Escapes { .. })
     ));
     let _ = std::fs::remove_dir_all(&outside);
