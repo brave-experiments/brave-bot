@@ -543,6 +543,34 @@ mod tests {
         assert!(!rendered.contains("resolve"));
     }
 
+    /// LSP-3: a hover answer says what the prose is and never which file wrote it, which is why
+    /// the caller has no entry to label that prose by. The whole of the label on hover text rests
+    /// on this, so it is pinned here rather than left as a fact about whichever server was tried.
+    #[test]
+    fn a_hover_response_names_no_file() {
+        // A hover response whole, as the protocol defines it: contents and an optional range over
+        // the document that was asked about. There is no field for a uri anywhere in it.
+        let raw = serde_json::json!({
+            "contents": {
+                "kind": "markdown",
+                "value": "```go\nfunc Resolve() Settings\n```\n\nResolve reads the config.",
+            },
+            "range": {
+                "start": { "line": 9, "character": 4 },
+                "end": { "line": 9, "character": 11 },
+            },
+        });
+
+        assert!(
+            hover_text(&raw).is_some(),
+            "the prose is there to be labelled"
+        );
+        assert!(
+            locations_in(&raw).is_empty(),
+            "nothing in a hover response names a file, so there is no entry to label the prose by"
+        );
+    }
+
     #[test]
     fn a_frame_declares_its_body_length() {
         let framed = frame(r#"{"id":1}"#);
