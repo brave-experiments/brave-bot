@@ -59,10 +59,10 @@ jobs:
             bravebot-windows-amd64.exe \
             bravebot-windows-arm64.exe
           do
-            if ! printf '%s\n' "$names" | grep -qx "$asset"; then
+            if ! printf '%s\n' "$names" | grep -qxF "$asset"; then
               missing="$missing $asset"
             fi
-            if ! printf '%s\n' "$names" | grep -qx "${asset}.sha256"; then
+            if ! printf '%s\n' "$names" | grep -qxF "${asset}.sha256"; then
               missing="$missing ${asset}.sha256"
             fi
           done
