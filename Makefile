@@ -154,7 +154,7 @@ check-msrv:
 		cp -r /src/. /work && \
 		cargo build --all --locked'
 
-# Everything any CI enforces, in one target: the four jobs in ci.yml plus the security
+# Everything any CI enforces, in one target: the jobs in ci.yml plus the security
 # scan the organization-level workflow runs. Slower than `check` by a lot -- two
 # container builds and a scan -- so `check` stays the inner loop and this is the
 # before-you-push pass.
@@ -179,8 +179,11 @@ locales:
 # pushing platform-specific code: a macOS host never compiles the Linux backend, and
 # clippy gains lints between releases, so both can fail in CI while passing locally.
 # The environment the container needs: the build script refuses an unconfigured build
-# without the first, and the shell-mode test reads `$$USER` the way a terminal would, which
-# a bare container does not set. Both are set for CI in ci.yml.
+# without the first, which ci.yml sets for CI, and the shell-mode test reads `$$USER` the way
+# a terminal would, which a CI runner image provides and a bare container does not. The third
+# is set here and must not be set in CI: Docker Desktop's kernel implements no Landlock at
+# all, so the sandbox tests would fail rather than skip, while on a CI runner that same
+# failure is the report that the Linux half of confinement went unexercised.
 #
 # Threads are capped because several turn tests stand up a mock HTTP server on an ephemeral
 # port, and at the container's default parallelism enough of them race that a different one
@@ -188,6 +191,7 @@ locales:
 .PHONY: check-linux
 check-linux:
 	docker run --rm --platform linux/amd64 -e BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=1 -e USER=root \
+		-e BRAVEBOT_ALLOW_MISSING_LANDLOCK=1 \
 		-v "$(PWD):/src:ro" -w /work rust:slim sh -c '\
 		cp -r /src/. /work && \
 		rustup component add clippy rustfmt >/dev/null 2>&1 && \

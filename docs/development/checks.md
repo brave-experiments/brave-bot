@@ -25,7 +25,9 @@ names, the paths it governs, and the table in [../specs/README.md](../specs/READ
 
 `make check-linux` runs fmt, clippy and the tests on Linux under the current stable toolchain.
 Worth doing before pushing platform-specific code, since a macOS host never compiles the Linux
-backend. `make check-msrv` builds against the declared minimum toolchain, which the pinned
+backend. Its one gap is the Landlock tests: the kernel in play is Docker's, and Docker Desktop's
+implements no Landlock at all, so that target sets the switch that skips them instead of failing and
+they say so as they go. On a Linux host `make check` runs them against the host kernel already. `make check-msrv` builds against the declared minimum toolchain, which the pinned
 cross-build container ships.
 
 ## Clippy here is not the clippy CI runs
