@@ -285,6 +285,11 @@ pub struct VouchRequest {
     /// The file, as the user knows it. They are the only party shown this.
     pub path: String,
     /// The first lines of it, so the decision is about something they have seen.
+    ///
+    /// Empty where the file's text cannot be shown, whatever the reason: an empty file, and one
+    /// that is not valid UTF-8, arrive here the same way. The prompt says so in place of it, so
+    /// whatever it says has to be true of all of them. What a file holds decides how it is
+    /// previewed and never whether it is asked about.
     pub preview: String,
     /// Whether the preview is only part of the file.
     pub truncated: bool,

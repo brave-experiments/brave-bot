@@ -1077,12 +1077,37 @@ fn draw_vouch(frame: &mut ratatui::Frame, request: &VouchRequest, scroll: u16) -
     ));
     lines.push(Line::raw(""));
 
-    for line in request.preview.lines() {
+    // A file with nothing to show is asked about like any other, so the prompt has to say that is
+    // what it is. Drawing nothing would read as a prompt that failed to render, and the person
+    // would be answering about a blank box. Blank lines are nothing to show too: they draw rows of
+    // bare margin, which is the same blank box with more of it.
+    //
+    // An empty file and one whose text will not decode arrive here identically, so what is said has
+    // to be true of both: that nothing of the file can be shown, not that there is nothing in it.
+    // A person told a file was empty would be answering a different question about it.
+    //
+    // Only where that is the whole file, though. A preview that is blank because the lines with
+    // something on them are further down is a file with plenty to show, and saying it holds nothing
+    // while the marker below says there is more would be the prompt contradicting itself over a
+    // file the person is about to trust. So the blank rows are drawn, and the marker speaks for
+    // them. Either the message or the rows, never both: two of them is the blank box again.
+    if request.preview.trim().is_empty() && !request.truncated {
         lines.extend(marked_rows(
             &margin,
-            &[Span::raw(line.to_string())],
+            &[Span::styled(
+                t!(vouch_nothing),
+                Style::default().fg(theme::muted()),
+            )],
             inside.width as usize,
         ));
+    } else {
+        for line in request.preview.lines() {
+            lines.extend(marked_rows(
+                &margin,
+                &[Span::raw(line.to_string())],
+                inside.width as usize,
+            ));
+        }
     }
     if request.truncated {
         lines.extend(marked_rows(
@@ -2038,5 +2063,72 @@ mod tests {
         });
 
         assert_marked_on_every_row(&drawn, "PADDING");
+    }
+
+    /// A file with nothing in it is asked about exactly as any other quarantined file is, so the
+    /// prompt has to account for the space where a preview would be. Without this the person is
+    /// asked to trust a path over a blank box, and a blank box reads as a prompt that broke.
+    ///
+    /// A file of blank lines is the same box: its rows draw a margin and nothing beside it.
+    #[test]
+    fn a_preview_with_nothing_in_it_says_so() {
+        for preview in ["", "\n\n"] {
+            let request = VouchRequest {
+                path: "empty.txt".into(),
+                preview: preview.to_string(),
+                truncated: false,
+            };
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    draw_vouch(frame, &request, 0);
+                })
+                .expect("draw");
+            let drawn: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+
+            assert!(drawn.contains("empty.txt"), "{preview:?}: {drawn}");
+            assert!(
+                drawn.contains("nothing of this file"),
+                "{preview:?}: {drawn}"
+            );
+        }
+    }
+
+    /// A preview of blank lines with more of the file below it is not a file with nothing in it: the
+    /// lines worth reading are further down. Saying it holds nothing, next to the marker saying
+    /// there is more, would have the prompt contradict itself about a file the person is deciding
+    /// whether to trust.
+    #[test]
+    fn a_blank_preview_of_a_longer_file_does_not_claim_the_file_is_empty() {
+        let request = VouchRequest {
+            path: "padded.txt".into(),
+            preview: "\n".repeat(19),
+            truncated: true,
+        };
+        // Tall enough for the marker: at 24 rows the blank preview scrolls it off, which is the
+        // scrolling PROMPT-4 already covers and not what this is about.
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                draw_vouch(frame, &request, 0);
+            })
+            .expect("draw");
+        let drawn: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(drawn.contains("padded.txt"), "{drawn}");
+        assert!(!drawn.contains("nothing of this file"), "{drawn}");
+        assert!(drawn.contains('…'), "{drawn}");
     }
 }
