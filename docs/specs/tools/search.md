@@ -122,6 +122,10 @@ planner proposed, so saying why it will not compile discloses nothing about the 
 A search whose `include` selected no files reports that, and says so instead of reporting no
 matches. One that read files and found nothing reports no matches, as before.
 
+A search left with nothing to read because a permission rule covers what it selected reports the
+rule, and says that retrying is not the answer. The rule is stated, never which paths it reached:
+the names are what it is keeping back. See [permissions.md](../permissions.md).
+
 **Why.** The two are opposite facts wearing the same sentence. Files were read and the pattern was
 not in them, which is evidence about the tree. Or nothing was read at all, which is evidence about
 the query and says nothing whatever about the tree. Rendered identically, a planner cannot tell
@@ -129,12 +133,19 @@ them apart, and the failure is not hypothetical: a real turn wrote `**/*.{cc,h,m
 groups were unsupported, got "(no matches)", retreated to `**/*.cc`, and answered the question
 wrong because the files it needed were the two extensions it had just dropped.
 
+**Why the rule is a third answer.** A glob that selected nothing is a query to rewrite, and a rule
+is not: no spelling reaches past one. Reported as the first, it sends the planner through rounds of
+globs against a refusal none of them can satisfy, which is the same failure as the brace group and
+costs more, because there is no spelling that ends it.
+
 Where the glob also leans on syntax the matcher does not have, the result says which, for the same
 reason [SEARCH-4](#SEARCH-4) reports a pattern that will not compile and against the same failure.
 Advice is decided from the glob, which the planner proposed and the routing gate vouched for; the
 result decides only whether there was anything to advise about.
 
 `verified-by: bravebot_agent::workspace::a_search_says_when_its_include_selected_no_files`
+`verified-by: bravebot_agent::workspace::a_search_a_rule_emptied_is_not_reported_as_an_empty_glob`
+`verified-by: bravebot_agent::turn::a_search_a_rule_emptied_names_the_rule_and_not_the_glob`
 `verified-by: bravebot_agent::workspace::an_include_may_use_a_brace_group`
 `verified-by: bravebot_agent::tools::a_glob_leaning_on_missing_syntax_is_named`
 `verified-by: bravebot_agent::tools::a_glob_the_matcher_can_read_is_left_alone`

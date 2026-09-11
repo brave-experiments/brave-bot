@@ -6,9 +6,11 @@ governs:
   - crates/core/src/permissions.rs
   - crates/config/src/settings.rs
   - crates/agent/src/permissions.rs
+  - crates/agent/src/workspace.rs
 guards:
   - symbol: Policy::with_permissions
   - symbol: Policy::before_read
+  - symbol: Policy::read_is_denied
   - symbol: Policy::before_write
   - symbol: Policy::before_run_rules
 ---
@@ -155,6 +157,18 @@ processor is handed no denied file either. The planner is told the rule refused 
 not the answer, and where the path arrived through a reference the refusal names the reference rather
 than the path, as everything else that goes back to the planner does.
 
+Nor is it about the directory a call happened to name, so it holds whichever way a walk arrives at
+the file. A listing or a search consults the rules for every entry its walk reaches as well as for
+the directory it was asked for, and an entry a rule covers is left out before the file is opened or
+its name is reported. A directory a rule covers is not descended into. Both are decided ahead of
+the walk's own caps, so a rule never costs a listing or a search the files it was asked about.
+
+What comes back says a rule was the reason only where the rule is the whole reason: a search that
+had nothing left to read reports that and that retrying is not the answer, and one that read the
+rest of the tree reports what it found and nothing more. Saying which entries were left out, or how
+many, would hand over the names the rule is keeping back, and a planner able to narrow a glob until
+the notice appears has the names either way.
+
 **Why.** A file whose contents are off limits is not protected if it can be overwritten, so the two
 families are consulted together for a write. Enumerating a directory and searching it both report
 what is in it, so a rule that fences a tree fences those too. A processor is the component allowed
@@ -172,6 +186,11 @@ same reason: the refusal comes before there is a prompt, so there is nothing for
 `verified-by: bravebot_agent::turn::a_denied_file_is_not_read_by_a_processor_either`
 `verified-by: bravebot_agent::turn::a_deny_rule_holds_against_a_trusted_workspace`
 `verified-by: bravebot_agent::turn::a_deny_rule_holds_where_every_permission_check_is_bypassed`
+`verified-by: bravebot_agent::turn::a_deny_rule_holds_when_a_search_walks_the_directory_above_the_file`
+`verified-by: bravebot_agent::turn::a_deny_rule_holds_when_a_listing_walks_the_directory_above_the_file`
+`verified-by: bravebot_agent::workspace::a_search_does_not_open_a_file_a_deny_rule_covers`
+`verified-by: bravebot_agent::workspace::a_listing_does_not_enumerate_a_tree_a_deny_rule_covers`
+`verified-by: bravebot_agent::workspace::a_denied_file_does_not_spend_a_searchs_budget`
 
 <a id="PERM-8"></a>
 ### PERM-8: an allow rule answers a prompt and grants nothing else

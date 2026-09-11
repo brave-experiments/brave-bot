@@ -518,6 +518,22 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         self.refuse_if_denied("read", decision, path)
     }
 
+    /// Whether a `deny` rule covers reading `path`, asked without refusing anything.
+    ///
+    /// [`Policy::before_read`] is the gate for a path a call named, and there a refusal is the
+    /// answer: the planner asked for that file and has to be told it cannot have it. A walk
+    /// reaches paths nobody named, and for those the answer is to leave the path out rather than
+    /// to fail the call, so this asks the same question without the refusal.
+    ///
+    /// A question about the rules, keyed by a path off the filesystem. No file's contents reach
+    /// it, and the answer can only drop a path from a result: nothing a name could be crafted to
+    /// say brings a path back into one.
+    pub fn read_is_denied(&self, path: &str) -> bool {
+        self.permissions
+            .for_path(crate::permissions::Subject::Read, path)
+            == crate::permissions::Decision::Ruled(crate::permissions::Ruling::Deny)
+    }
+
     /// Refuse a write a `deny` rule covers.
     ///
     /// Both families are consulted: a path nothing may read is a path nothing may replace either,

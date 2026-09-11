@@ -2705,6 +2705,215 @@ fn a_search_skips_vendored_dependencies() {
     assert_eq!(found.matches[0].path, "mine.rs");
 }
 
+/// Rules as a settings file would have carried them, with nothing but a deny list. Every rule must
+/// parse: a test whose rule was silently dropped would pass by matching nothing.
+fn denying(rules: &[&str]) -> bravebot_core::permissions::Permissions {
+    let deny: Vec<String> = rules.iter().map(|r| (*r).to_string()).collect();
+    let (permissions, rejected) = bravebot_core::permissions::Permissions::parse(
+        &deny,
+        &[],
+        &[],
+        &bravebot_core::permissions::Anchors::none(),
+    );
+    assert!(rejected.is_empty(), "a rule in this test did not parse");
+    permissions
+}
+
+/// A rule names a file, and a walk arrives at that file from whichever directory the call named.
+/// Consulted against the root alone, a rule fencing one file protected it only from a call that
+/// named it, and a search of the tree above it opened it and quoted the line back.
+#[test]
+fn a_search_does_not_open_a_file_a_deny_rule_covers() {
+    let scratch = Scratch::new("grep-denied");
+    std::fs::write(scratch.path.join(".env"), "SECRET_TOKEN=needle\n").unwrap();
+    std::fs::write(scratch.path.join("notes.md"), "needle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy")
+    .with_permissions(denying(&["Read(./.env)"]));
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
+            &Labelled::trusted(".".to_string()),
+            None,
+            true,
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert_eq!(
+        found.matches.iter().map(|m| &m.path).collect::<Vec<_>>(),
+        vec!["notes.md"],
+        "a denied file was searched: {:?}",
+        found.matches
+    );
+    // The counts are the other half of it: a file dropped after it was read would still show here.
+    assert_eq!(
+        (found.considered, found.searched),
+        (1, 1),
+        "a denied file was collected by the walk"
+    );
+}
+
+/// A rule covering a directory is written against every file in it, so the walk does not descend
+/// and does not name the directory either: a listing that reported the name would answer the
+/// question the rule exists to refuse.
+#[test]
+fn a_listing_does_not_enumerate_a_tree_a_deny_rule_covers() {
+    let scratch = Scratch::new("list-denied");
+    std::fs::create_dir_all(scratch.path.join("secrets")).unwrap();
+    std::fs::write(scratch.path.join("secrets/key.pem"), "private").unwrap();
+    std::fs::write(scratch.path.join("keep.txt"), "public").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy")
+    .with_permissions(denying(&["Read(secrets/**)"]));
+
+    // Bounded to one level, because that is the only shape in which a directory is named in the
+    // result at all: a walk with no depth descends rather than reporting where it stopped, so an
+    // unbounded listing has no directories to check and the assertion below would hold whatever
+    // the rules said.
+    let listing = workspace
+        .list(
+            &mut policy,
+            &Labelled::trusted(".".to_string()),
+            None,
+            Some(1),
+        )
+        .expect("list succeeds");
+    let proof = policy.authorise_content_release("test", "paths");
+    let listing = listing.declassify(&proof);
+
+    assert_eq!(
+        listing.files,
+        vec!["keep.txt".to_string()],
+        "a denied tree was enumerated"
+    );
+    assert!(
+        listing.directories.is_empty(),
+        "a denied directory was named as a place the tree continues: {:?}",
+        listing.directories
+    );
+}
+
+/// An empty search has to say which kind of empty it is, and a rule is a third kind. Reported as
+/// an include glob that selected nothing, it reads as a query to rewrite, and no glob can reach
+/// past a rule: the planner spends its rounds on spellings instead of working without the file.
+#[test]
+fn a_search_a_rule_emptied_is_not_reported_as_an_empty_glob() {
+    let scratch = Scratch::new("grep-denied-include");
+    std::fs::create_dir_all(scratch.path.join("secrets")).unwrap();
+    std::fs::write(scratch.path.join("secrets/key.pem"), "needle\n").unwrap();
+    std::fs::write(scratch.path.join("notes.md"), "needle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let searching = |permissions: bravebot_core::permissions::Permissions, include: &str| {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing(),
+            ReleasePlan::new(),
+            all_file_capabilities(),
+            &mut sink,
+        )
+        .expect("policy")
+        .with_permissions(permissions);
+        let found = workspace
+            .grep(
+                &mut policy,
+                std::slice::from_ref(&Labelled::trusted("needle".to_string())),
+                &Labelled::trusted(".".to_string()),
+                Some(&Labelled::trusted(include.to_string())),
+                true,
+            )
+            .expect("grep succeeds");
+        let proof = policy.authorise_content_release("test", "matches");
+        found.declassify(&proof)
+    };
+
+    let found = searching(denying(&["Read(secrets/**)"]), "secrets/**");
+    assert_eq!(found.considered, 0, "a denied file was selected to be read");
+    assert!(
+        found.withheld,
+        "a rule emptied the search and the result does not say so"
+    );
+
+    // The other empty, which must keep reading as itself: a glob that selects nothing with no rule
+    // in force is a query to rewrite, and saying a rule was involved would send the planner the
+    // other way.
+    let found = searching(denying(&[]), "*.py");
+    assert_eq!(found.considered, 0);
+    assert!(
+        !found.withheld,
+        "an empty glob was blamed on a rule nobody wrote"
+    );
+}
+
+/// A denied file is not one a walk may report, so it must not be one the budget is spent on.
+/// Dropping the path after the cap had counted it reads the same in a small tree and turns a rule
+/// into the reason a search stops before the files it was asked about: here the denied files sort
+/// first, so a walk that collects them never reaches the one file holding the needle.
+#[test]
+fn a_denied_file_does_not_spend_a_searchs_budget() {
+    let scratch = Scratch::new("grep-denied-cap");
+    for n in 0..8 {
+        std::fs::write(scratch.path.join(format!("f{n}.log")), "needle\n").unwrap();
+    }
+    std::fs::write(scratch.path.join("keep.txt"), "needle\n").unwrap();
+    let workspace = Workspace::new(&scratch.path)
+        .expect("workspace")
+        .with_search_limit(2);
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy")
+    .with_permissions(denying(&["Read(**/*.log)"]));
+
+    let found = workspace
+        .grep(
+            &mut policy,
+            std::slice::from_ref(&Labelled::trusted("needle".to_string())),
+            &Labelled::trusted(".".to_string()),
+            None,
+            true,
+        )
+        .expect("grep succeeds");
+    let proof = policy.authorise_content_release("test", "matches");
+    let found = found.declassify(&proof);
+
+    assert_eq!(
+        found.matches.iter().map(|m| &m.path).collect::<Vec<_>>(),
+        vec!["keep.txt"],
+        "a denied file ate the budget the file under the rule needed: {:?}",
+        found.matches
+    );
+    assert!(
+        !found.unvisited,
+        "denied files were counted against the cap, so the search reported itself incomplete"
+    );
+}
+
 /// `read_dir` order is the filesystem's, so a walk that stops at a cap used to keep an
 /// arbitrary subset and the same search could answer differently on two machines. What is
 /// kept is still partial; it now has to be the same partial answer every time.

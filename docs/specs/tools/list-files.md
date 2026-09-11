@@ -62,8 +62,9 @@ inside the body reaches nobody.
 ### LIST-5: a listing walks the whole tree unless it is given a depth, and says where it stopped
 
 `depth` is how many directory levels below `directory` are walked. One is that directory and no
-further. Absent, the walk reaches every file under it, which is what a caller that names no depth
-gets.
+further. Absent, the walk reaches every file under it that a permission rule does not cover, which
+is what a caller that names no depth gets. A rule keeps a path out of the listing and a directory
+out of the walk; see [permissions.md](../permissions.md).
 
 A directory a bounded walk did not descend into is named in the result alongside the files, so
 what comes back describes the shape of the tree and not only the part of it that was read. The
