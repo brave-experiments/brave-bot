@@ -7,6 +7,7 @@ governs:
   - crates/core/src/policy.rs
 guards:
   - symbol: Policy::before_granted_action
+  - symbol: Policy::before_endorsed_destination
   - symbol: Policy::promote_confined_read
   - symbol: Policy::path_of_reference
 ---
@@ -42,7 +43,8 @@ never reaches a component that decides, neither the planner nor the driver.
 
 Derived only from trusted input, and never from fetched content. Untrusted routing is an injection
 attempt and is refused. Trusted-but-private is refused too, since a routing field ends up
-somewhere this policy stops governing.
+somewhere this policy stops governing. The one field authorised by something other than its label
+is a destination a person endorsed, which ROUTE-8 governs.
 
 `verified-by: bravebot_core::policy::routing_refuses_untrusted_values`
 `verified-by: bravebot_core::policy::routing_refuses_private_values`
@@ -119,3 +121,23 @@ destination and payload at once, which is why the planner has no shell and why `
 excluded. An argv vector passes the test, which is why running a pipeline of argv stages does not.
 
 `verified-by: none`
+
+<a id="ROUTE-8"></a>
+### ROUTE-8: an endorsement authorises a destination without relabelling it
+
+A destination reaches the effect at the label it arrived with, which for a path the planner
+proposed is untrusted. What authorises it is the single-use endorsement for that exact path, and
+the gate consumes the endorsement rather than changing the label. A destination carrying private
+data is refused all the same, since a path derived from the user's data is that data in a
+directory entry.
+
+**Why.** Promotion exists for a read, so a write routed on a promoted path would have the model's
+own proposal as the reason an effect landed where it did, which ROUTE-4 forbids. Consuming the
+endorsement leaves no trusted path behind for another field to route on, and it puts a person
+rather than a label behind every place an effect can reach.
+
+`verified-by: bravebot_core::policy::an_endorsement_authorises_a_destination_it_does_not_relabel`
+`verified-by: bravebot_core::policy::an_unendorsed_destination_is_refused`
+`verified-by: bravebot_core::policy::a_private_destination_is_refused_even_when_endorsed`
+`verified-by: bravebot_core::policy::an_endorsement_does_not_outlive_the_destination_it_authorised`
+`verified-by: bravebot_agent::workspace::a_write_does_not_promote_its_destination`

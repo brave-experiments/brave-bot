@@ -13,7 +13,7 @@ that functionality matches specs. Bugs are posted for any problems found.
 | Spec | Id | Clauses | Topic |
 |---|---|---|---|
 | [labels.md](labels.md) | `LABEL` | 9 | the lattice, taint, who may read what, and how a first label is assigned |
-| [routing.md](routing.md) | `ROUTE` | 7 | where an effect may land and what may decide it |
+| [routing.md](routing.md) | `ROUTE` | 8 | where an effect may land and what may decide it |
 | [trust-map.md](trust-map.md) | `TRUST` | 13 | which paths the user vouched for, what a write does to that record, and how long an answer lasts |
 | [permissions.md](permissions.md) | `PERM` | 13 | rules written in advance about what to ask about and what to refuse |
 | [processors.md](processors.md) | `PROC` | 9 | the one component that reads untrusted content, and what it may do with it |

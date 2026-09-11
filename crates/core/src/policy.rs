@@ -3454,8 +3454,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ///
     /// It must never be used for an effect. A write, an exec, or a network destination
     /// chosen this way would hand routing to whatever text the model just read, which is
-    /// precisely the attack this system prevents. Those require
-    /// [`Policy::before_granted_action`] and a human endorsement.
+    /// precisely the attack this system prevents. A destination goes through
+    /// [`Policy::before_endorsed_destination`] instead, which authorises it from a human
+    /// endorsement and leaves its label alone.
     ///
     /// Every promotion is recorded, so the audit trail shows which choices were the
     /// model's rather than the user's.
@@ -3654,11 +3655,63 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         self.consume_grant(tool, field, &concrete)
     }
 
+    /// Check a destination a person endorsed, and consume the endorsement.
+    ///
+    /// The counterpart to [`Policy::before_granted_action`] for the one field whose authority is
+    /// the endorsement rather than its label. A destination arrives as the planner proposed it,
+    /// so it is untrusted, and [`Policy::promote_confined_read`] is not what lets it through:
+    /// promotion exists for a read, and a write routed on a promoted path would have the model's
+    /// own proposal as the reason it landed where it did. What comes back is the exact value a
+    /// person approved, with nothing relabelled, so the effect leaves no trusted path behind for
+    /// another field to route on.
+    ///
+    /// Confidentiality is still the label's to decide. A private destination is refused, because
+    /// a name derived from the user's data is that data, and a directory entry is somewhere this
+    /// policy stops governing.
+    ///
+    /// Finding the endorsement means reading the value, which goes through
+    /// [`Policy::read_planner_argument`]: a destination is the planner's own words, so that gate
+    /// is where the rule for reading them already lives, and it refuses the moment this context
+    /// has met anything untrusted. What is left to decide is then only that exact value or a
+    /// refusal, since the comparison is against a string a person saw on their screen.
+    pub fn before_endorsed_destination(
+        &mut self,
+        tool: &str,
+        field: &str,
+        destination: &Labelled<String>,
+    ) -> Gated<String> {
+        let label = destination.label();
+        let allowed = label.is_public();
+
+        self.sink.emit(Event::ActionField {
+            tool: tool.to_string(),
+            field: field.to_string(),
+            role: Role::Routing,
+            label,
+            allowed,
+        });
+
+        if !allowed {
+            return Err(self.deny(
+                "action",
+                Principle::Confinement,
+                format!(
+                    "routing field '{field}' of '{tool}' carries private data ({label}); an \
+                     endorsed destination must still be public"
+                ),
+            ));
+        }
+
+        let concrete = self.read_planner_argument(tool, field, destination)?;
+        self.consume_grant(tool, field, &concrete)?;
+        Ok(concrete)
+    }
+
     /// Find and consume the endorsement for one exact value.
     ///
     /// Shared with [`Policy::before_run`], which has no labelled field to check: argv reaches it
     /// as plain strings a person read, and the grant match is the whole of its authority. Keeping
-    /// the lookup in one place is what stops the two callers drifting apart on what counts as a
+    /// the lookup in one place is what stops its callers drifting apart on what counts as a
     /// match.
     fn consume_grant(&mut self, tool: &str, field: &str, concrete: &str) -> Gated<()> {
         let found = self
@@ -6031,6 +6084,127 @@ mod tests {
             .promote_confined_read("file_read", "path", &private)
             .expect_err("private content must not be promoted");
         assert_eq!(err.principle, Principle::Confinement);
+        assert!(!policy.finish());
+    }
+
+    /// A destination is authorised by the person who approved it rather than by its label, and
+    /// the trail says so: the routing field is recorded at the label it arrived with. A promotion
+    /// here would put the model's own proposal behind the routing field of an effect.
+    #[test]
+    fn an_endorsement_authorises_a_destination_it_does_not_relabel() {
+        let mut sink = RecordingSink::new();
+        {
+            let mut policy = Policy::begin(
+                routing_with("task", "write a file"),
+                ReleasePlan::new(),
+                all_capabilities(),
+                &mut sink,
+            )
+            .unwrap();
+
+            policy.issue_grant("file_write", "path", "vendor/x.js".to_string());
+            let proposed = Labelled::new("vendor/x.js".to_string(), Label::untrusted_public());
+            let endorsed = policy
+                .before_endorsed_destination("file_write", "path", &proposed)
+                .expect("an endorsed destination passes");
+
+            assert_eq!(endorsed, "vendor/x.js");
+            assert!(policy.finish(), "an endorsed destination is not a refusal");
+        }
+
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::ActionField {
+                    field,
+                    role: Role::Routing,
+                    label,
+                    allowed: true,
+                    ..
+                } if field == "path" && *label == Label::untrusted_public()
+            )),
+            "the destination was not recorded at the label it arrived with"
+        );
+        assert!(
+            !sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed {
+                    gate: "promote",
+                    ..
+                }
+            )),
+            "the destination went through the promotion gate"
+        );
+    }
+
+    /// Nothing about the label authorises a destination. A path nobody approved is refused even
+    /// though it is exactly the value a confined read would have been allowed to promote.
+    #[test]
+    fn an_unendorsed_destination_is_refused() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "write a file"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        let proposed = Labelled::new("vendor/x.js".to_string(), Label::untrusted_public());
+        let err = policy
+            .before_endorsed_destination("file_write", "path", &proposed)
+            .expect_err("a destination nobody endorsed must be refused");
+        assert_eq!(err.principle, Principle::IntegrityGate);
+        assert!(!policy.finish());
+    }
+
+    /// An approval says where an effect may land, not that the user's data may be the address.
+    /// A path derived from private content is that content, in a directory entry this policy
+    /// stops governing.
+    #[test]
+    fn a_private_destination_is_refused_even_when_endorsed() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "write a file"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        policy.issue_grant("file_write", "path", "secret.txt".to_string());
+        let private = Labelled::new("secret.txt".to_string(), Label::untrusted_private());
+        let err = policy
+            .before_endorsed_destination("file_write", "path", &private)
+            .expect_err("a private destination must be refused");
+        assert_eq!(err.principle, Principle::Confinement);
+        assert!(!policy.finish());
+    }
+
+    /// An endorsement is spent by the effect it authorised. A destination a person approved once
+    /// cannot be reached twice, so an approval still in the model's view is not a standing
+    /// permission to keep landing effects there.
+    #[test]
+    fn an_endorsement_does_not_outlive_the_destination_it_authorised() {
+        let mut sink = RecordingSink::new();
+        let mut policy = Policy::begin(
+            routing_with("task", "write a file"),
+            ReleasePlan::new(),
+            all_capabilities(),
+            &mut sink,
+        )
+        .unwrap();
+
+        policy.issue_grant("file_write", "path", "vendor/x.js".to_string());
+        let proposed = Labelled::new("vendor/x.js".to_string(), Label::untrusted_public());
+        policy
+            .before_endorsed_destination("file_write", "path", &proposed)
+            .expect("the endorsed destination passes once");
+
+        let err = policy
+            .before_endorsed_destination("file_write", "path", &proposed)
+            .expect_err("the endorsement must not authorise a second write");
+        assert_eq!(err.principle, Principle::IntegrityGate);
         assert!(!policy.finish());
     }
 
