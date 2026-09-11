@@ -192,6 +192,28 @@ mod tests {
     use std::io::Write;
     use std::process::Stdio;
 
+    /// cat reporting that the file it was asked for could not be read. Any other code
+    /// means it stopped before opening the file, which says nothing about a read grant.
+    const CAT_FAILED: i32 = 1;
+
+    /// touch reporting that the write it was asked for failed. Any other code means it
+    /// stopped before the write, which says nothing about a write grant.
+    const TOUCH_FAILED: i32 = 1;
+
+    /// The narrowest policy a process can actually start under. The loader reads the
+    /// binary and the libraries it links, and Landlock has no exemption for that, while
+    /// withholding the network or subprocesses is refused outright because neither
+    /// denial is enforceable here.
+    fn loadable_policy() -> SandboxPolicy {
+        SandboxPolicy::strict()
+            .allow_network_egress()
+            .allow_subprocesses()
+            .allow_read("/usr")
+            .allow_read("/lib")
+            .allow_read("/lib64")
+            .allow_read("/bin")
+    }
+
     /// Landlock is absent on kernels before 5.13 and in container runtimes that do not
     /// enable the LSM, notably Docker Desktop's linuxkit kernel.
     ///
@@ -199,9 +221,9 @@ mod tests {
     /// skipping them. Those tests are the whole of what pins confinement on Linux, so a
     /// suite reporting green having never installed a ruleset is the false confidence
     /// this crate exists to avoid, and a kernel that cannot enforce one is worth hearing
-    /// about from the test run rather than from a process that was never confined.
+    /// about from the test run rather than from the first process that escapes.
     /// `BRAVEBOT_ALLOW_MISSING_LANDLOCK=1` runs the rest of the suite on such a kernel
-    /// and says as it goes that it did.
+    /// and says in the output that it did.
     fn sandbox_or_fail() -> Option<LandlockSandbox> {
         match LandlockSandbox::new() {
             Ok(sandbox) => Some(sandbox),
@@ -295,13 +317,7 @@ mod tests {
         let Some(sandbox) = sandbox_or_fail() else {
             return;
         };
-        let policy = SandboxPolicy::strict()
-            .allow_network_egress()
-            .allow_subprocesses()
-            .allow_read("/usr")
-            .allow_read("/lib")
-            .allow_read("/lib64")
-            .allow_read("/bin");
+        let policy = loadable_policy();
 
         let mut child = sandbox
             .command("/bin/true", &[], &policy)
@@ -319,16 +335,16 @@ mod tests {
         let Some(sandbox) = sandbox_or_fail() else {
             return;
         };
-        let policy = SandboxPolicy::strict()
-            .allow_network_egress()
-            .allow_subprocesses()
-            .allow_read("/usr")
-            .allow_read("/lib")
-            .allow_read("/lib64")
-            .allow_read("/bin");
+        let policy = loadable_policy();
 
-        let target = std::path::Path::new("/tmp/bravebot-landlock-must-not-exist");
-        let _ = std::fs::remove_file(target);
+        // The parent has to be there and empty. Into a directory that does not exist touch
+        // fails with ENOENT whatever the ruleset permits, which holds just as well against a
+        // sandbox granting every write, and a file left behind by an earlier run would fail
+        // every run after it.
+        let dir = crate::testutil::scratch_dir("bravebot-landlock-denied-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch directory is creatable");
+        let target = dir.join("must-not-exist");
 
         let mut child = sandbox
             .command("/usr/bin/touch", &[target.display().to_string()], &policy)
@@ -338,7 +354,95 @@ mod tests {
             .spawn()
             .expect("should spawn");
         let status = child.wait().expect("should wait");
-        assert!(!status.success(), "write should have been denied");
+
+        // touch's own refusal, rather than any failure at all: a process that died before it
+        // reached the write exits by signal or with some other code, and neither of those
+        // says anything about a grant.
+        assert_eq!(
+            status.code(),
+            Some(TOUCH_FAILED),
+            "the write was not what failed"
+        );
         assert!(!target.exists(), "file was created despite confinement");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The control that gives every denial here its meaning: without the write rules
+    /// installed a write inside the grants fails too, and a test asserting only denials
+    /// passes just as readily against a sandbox that permits nothing at all.
+    #[test]
+    fn a_confined_process_can_write_inside_its_grants() {
+        let Some(sandbox) = sandbox_or_fail() else {
+            return;
+        };
+
+        // The directory has to be there before the ruleset is built: a rule for a path that
+        // cannot be opened is dropped rather than refused, so a missing directory is no grant
+        // at all and the write below would fail for a reason that proves nothing.
+        let dir = crate::testutil::scratch_dir("bravebot-landlock-granted-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch directory is creatable");
+        let target = dir.join("written");
+
+        let policy = loadable_policy().allow_write(&dir);
+        let mut child = sandbox
+            .command("/usr/bin/touch", &[target.display().to_string()], &policy)
+            .expect("command builds")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("should spawn");
+        assert!(
+            child.wait().expect("should wait").success(),
+            "a granted write was denied, so nothing else here means anything"
+        );
+        assert!(target.exists(), "the write succeeded and created nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reads are a grant list as much as writes are: a readable set widened to `/` leaves
+    /// every other test here passing while the confined process can read the whole host.
+    ///
+    /// Both halves run against the same file, because a cat that failed for reasons of
+    /// its own exits exactly as one refused the file does.
+    #[test]
+    fn a_confined_process_cannot_read_outside_its_grants() {
+        let Some(sandbox) = sandbox_or_fail() else {
+            return;
+        };
+
+        let dir = crate::testutil::scratch_dir("bravebot-landlock-denied-read");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch directory is creatable");
+        let target = dir.join("readable");
+        std::fs::write(&target, b"contents").expect("the file is writable");
+
+        let cat = |policy: &SandboxPolicy| {
+            sandbox
+                .command("/usr/bin/cat", &[target.display().to_string()], policy)
+                .expect("command builds")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("should spawn")
+        };
+
+        let mut granted = cat(&loadable_policy().allow_read(&dir));
+        assert_eq!(
+            granted.wait().expect("should wait").code(),
+            Some(0),
+            "a granted read failed, so nothing below means anything"
+        );
+
+        let mut refused = cat(&loadable_policy());
+        assert_eq!(
+            refused.wait().expect("should wait").code(),
+            Some(CAT_FAILED),
+            "the read was not what failed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

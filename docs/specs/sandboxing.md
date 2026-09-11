@@ -55,12 +55,19 @@ rejected rather than applied. Granting everything is not a confinement decision.
 <a id="SANDBOX-3"></a>
 ### SANDBOX-3: the network is denied unless it was asked for
 
-A confined process reaches neither the network nor the filesystem outside its grants.
+A confined process reaches neither the network nor the filesystem outside its grants. A backend
+that cannot enforce the network denial refuses the policy instead, so the guarantee never degrades
+into one that is not in force.
 
 `verified-by: bravebot_sandbox::macos::network_is_only_allowed_when_requested`
 `verified-by: bravebot_sandbox::macos::a_confined_process_cannot_reach_the_network`
 `verified-by: bravebot_sandbox::macos::a_confined_process_cannot_write_outside_its_grants`
 `verified-by: bravebot_sandbox::macos::a_confined_process_runs`
+`verified-by: bravebot_sandbox::linux::a_policy_requiring_network_denial_is_refused`
+`verified-by: bravebot_sandbox::linux::a_confined_process_runs`
+`verified-by: bravebot_sandbox::linux::a_confined_process_can_write_inside_its_grants`
+`verified-by: bravebot_sandbox::linux::a_confined_process_cannot_write_outside_its_grants`
+`verified-by: bravebot_sandbox::linux::a_confined_process_cannot_read_outside_its_grants`
 
 <a id="SANDBOX-4"></a>
 ### SANDBOX-4: a path cannot inject profile syntax

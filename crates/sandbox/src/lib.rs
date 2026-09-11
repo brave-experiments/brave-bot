@@ -17,7 +17,7 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod policy;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod testutil;
 
 use policy::{Capabilities, ConfinementLevel, SandboxPolicy};
