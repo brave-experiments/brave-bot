@@ -71,7 +71,7 @@ A verdict is a claim about code, so it needs a file, a symbol, or a commit behin
 A STANDS or STALE issue leaves the run carrying all three axis labels: an `importance`, an
 `urgency`, and a `size`. A FIXED one is closed and needs none.
 
-[docs/development.md](../../../docs/development.md#labelling-an-issue) is the source of
+[docs/development/labelling-issues.md](../../../docs/development/labelling-issues.md) is the source of
 truth for what a value means. Read it before assigning anything, rather than inferring the
 scale from the labels already on the backlog: those are the output of earlier runs, so
 reading the scale off them lets one misreading spread through everything triaged after it.

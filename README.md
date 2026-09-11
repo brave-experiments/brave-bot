@@ -71,8 +71,9 @@ project as usual, since that is the work rather than a trace of it. See
 ## Development
 
 `cargo build` and `make check`, which runs fmt, clippy and the tests. See
-[docs/development.md](docs/development.md) for cross-builds, configuration, and the conventions
-here.
+[docs/development/](docs/development/README.md) for checks, commits, cross-builds, configuration
+and releasing, and [docs/best-practices/](docs/best-practices/README.md) for what a pull request is
+reviewed against.
 
 For the `.envrc` configuration, message bbondy.
 

@@ -23,61 +23,12 @@ the model. Neither receives untrusted bytes.
 Never weaken this statement. If an implementation cannot satisfy it, the implementation is wrong.
 Do not restate the rule to match the code.
 
-## Reviewing for it
+## Checking a diff against it
 
-The subtle violations look like safety features.
-
-```rust
-// WRONG: the driver decided whether to write, from untrusted bytes.
-let text = contents.declassify(&proof);
-if text.matches(old).count() > 1 {
-    return "error: ambiguous";
-}
-```
-
-```rust
-// ALSO WRONG: relocating the same branch into bravebot-core does not fix it.
-// And "it is only for a message to the model" does not either: that is the planner's context.
-messages.push(Message::user(format!("Contents:\n{}", text)));
-```
-
-**A witness is not permission to inspect.** Minting one records that bytes moved somewhere they
-were already allowed to go: a filesystem write, an HTTP body, or a human's screen. Those three
-destinations have gates of their own, `Policy::present`, `Policy::render_in_place` and
-`Policy::read_trusted_content`. A `declassify` call outside them is almost certainly a violation.
-
-Never construct a `Labelled` by hand to give a value a better label than its inputs had. That is
-laundering, whichever crate it happens in. If a value derived from untrusted input has to be
-trusted for something to work, the design is wrong, not the label.
-
-Two places in the kernel do branch on untrusted bytes, deliberately. Both are named under Known
-costs in [docs/specs/labels.md](docs/specs/labels.md). An unlisted exception is indistinguishable
-from a violation.
-
-## The inverse mistake: inventing a violation
-
-This rule is about content that could reach the planner or steer a turn in progress. It is not a
-general prohibition on reading bytes that arrived over a network, and it says nothing about this
-program's own configuration and startup.
-
-`GET /v1/models` is the example to keep in mind. It is fetched before any session, from the endpoint
-the user configured, so a person can pick a model off a list they read. It carries
-`Label::untrusted_public()` because that label records *where bytes came from*, not that the data is
-injection-sensitive, and the code already branches on it freely: `usable` filters on
-`capabilities`, compares `access` against `premium`, and `adopt_window` takes a number out of the
-same response to decide when a conversation is shortened. None of that is a violation, and an
-argument implying it is has misread the rule.
-
-So before reaching for a trust or label argument, ask whether the bytes could reach a model's
-context or influence a turn already running. If they could not, the question is an ordinary
-engineering one: latency, offline behaviour, staleness, how many code paths. Argue it on those
-terms.
-
-**Why this is worth a section.** A wrong trust argument reads exactly like a safety feature, which
-is the same thing that makes a real violation hard to spot, and it is more likely to be waved
-through than a plain design mistake. It also talks you out of the better implementation for a reason
-that does not exist. Getting the scope of the rule wrong in this direction is a real cost, not a
-harmless excess of caution.
+[docs/development/reviewing-for-the-rule.md](docs/development/reviewing-for-the-rule.md) is the
+review pass: the four shapes a violation takes in a diff, the argument that mistakes a sound design
+for one, and the two exceptions that are written down. Read it before writing code that touches a
+label, and again before asking anyone to review one.
 
 ## Everything else is in the specs
 
@@ -107,131 +58,12 @@ rules here.
 Before adding a tool, ask what its routing field is and whether a person could approve that field
 alone. If they could not, it does not get built.
 
-### A spec says what is true now
+## Working here
 
-Present tense, no history. A clause describes the behaviour as it stands and the reasoning that holds
-it in place, so it reads the same whether it was written today or two years ago.
+[docs/development/](docs/development/README.md) is how this repository is worked on: what to run
+before a commit and before a push, what one commit contains, the specs the code is developed
+against, the security scan, configuration, releasing, and how an issue is labelled.
 
-Keep out of a spec: what an earlier version did, what was tried and abandoned, which bug prompted a
-change, and any sentence beginning "an earlier version" or "this used to". A reader wants the rule,
-not its biography, and a spec that accumulates changelog stops being readable as a statement of
-behaviour. Git history is where that lives, so put it in the commit message.
-
-A measurement is different from a story about one. "Denying writes leaves the index unsettled" is a
-fact about the system and belongs in the clause it justifies. "I tried denying writes and it broke"
-is the same fact wearing a diary entry, and does not.
-
-The exception is a **known cost**, which is present-tense too: it names a weakness the design still
-has, not a mistake somebody made on the way. If the sentence is only interesting because of who
-learned it and when, it is not a known cost. An **open question** is for a decision genuinely
-unsettled, not for a thing that was settled and is being justified after the fact.
-
-## Committing
-
-No co-attribution markers for Claude Code.
-
-**fmt and clippy before every commit; the tests that cover the change, not all of them.** fmt and
-clippy with `-D warnings` take seconds and have no exemption for a change that only touched a
-comment, a document, or a name: they fail on those as readily as on anything else, and `make init`
-installs a pre-commit hook that refuses a commit failing either. Then run the tests the diff is
-under, scoped as tightly as the diff is: `cargo test -p bravebot-tui --lib` for the interface,
-`cargo test -p bravebot-agent --test workspace` for one test binary. A commit still has to be a
-state that stands up, and a change nothing covers is a change to be suspicious of.
-
-`make check` runs the whole suite and takes minutes. It is what to run before pushing a branch and
-what CI runs, not what to run between two edits to the same file, and never twice to confirm the
-same thing. Reaching for it out of caution is not free: it is the difference between a review that
-takes a minute and one that takes twenty, and the reviewer is the person waiting.
-
-**Clippy here is not the clippy CI runs.** CI installs whatever stable is current on the day it
-runs, and clippy gains lints with every release, so a host a few releases behind passes a warning
-CI fails on, and the first report of it is a red build on code that was checked before it was
-pushed. `make check-toolchain` measures that gap from the release date rustc states, and it runs
-last in `make check`. When it fires, the answer is `make check-linux`, which runs fmt, clippy and
-the tests on current stable in a container. Another local `cargo clippy` is not: it is the same
-weaker lint set a second time.
-
-Read what a command exits with rather than a filter over it: `make check | grep error` reports
-success on a formatting failure, because a fmt diff says nothing matching that pattern and grep
-exited happily. If a check cannot pass for a reason outside the change, say so in the commit
-message rather than leaving it to be discovered.
-
-**A test that fails on the parent commit is not yours to fix.** Establish that once, cheaply, and
-move on: name the test, say it reproduces without the change, and carry on with the work. Do not
-bisect it, do not build a baseline worktree for it, and do not re-run the suite hoping. Some tests
-here spawn real processes against a wall clock, so they fail on a loaded machine and pass on the
-next run; that is a flake, not a signal, and chasing one costs more than the failure does.
-
-**One change per commit, with its tests in that same commit.** A commit is the unit somebody
-reads, reverts, and bisects on, so it has to stand up alone: the change, the tests that pin it,
-and any documentation the change makes wrong if it lands without it. Tests that arrive a commit
-later say the behaviour went in unverified, and a bisect that lands between the two hits a
-revision passing for the wrong reason.
-
-Keep them small. If the message needs an "and" to describe what the commit does, it is usually
-two commits. Every commit must leave the tree building and passing, since that is the whole of
-what makes a history worth bisecting.
-
-**A spec clause ships with the work it describes**, in the same commit and the same pull request.
-Do not land the spec on its own. A clause names the tests that pin it, so a spec commit by itself
-leaves `make check-spec` pointing at tests that do not exist, and a code commit by itself is
-behaviour nothing specifies. Reviewing them together is also the only way to see whether the clause
-and the code actually agree. The history has commits that did it the other way; do not read those
-as the convention.
-
-The exception is a spec written to be argued about before anything is built. That is a design
-document, its clauses say `verified-by: none` until the work lands, and the message should say
-plainly that it specifies work not yet done. Documenting behaviour that already exists is not this
-case.
-
-Adding a clause means bumping that spec's count in [docs/specs/README.md](docs/specs/README.md),
-and `make check-spec` fails on a mismatch. When one commit adds clauses to two specs, that one table
-is edited by both, so stage it a hunk at a time rather than landing an unrelated count alongside the
-wrong change.
-
-**Close a GitHub issue from the commit and the pull request that finish it.** Where the change fully
-resolves the issue, use GitHub's closing syntax (`Closes #123`, `Fixes #123`) so that merging closes
-it. Where the change is only part of what the issue asks for, name it without the keyword (`Part of
-#123`): an issue closed while the rest of it is outstanding is worse than one left open.
-
-
-## Pull requests
-
-No co-attribution markers for Claude Code or other tools.
-
-## Conventions
-
-- **Never use an em-dash.** Not in documentation, commit messages, the README, code comments,
-  pull requests, or anywhere else. Reword instead: a comma, a colon, a semicolon, parentheses,
-  or two sentences will always do the job.
-- Comments explain **why**, never what. Prefer no comment to a restatement of the code.
-- **Never write about your own process.** Not in a commit message, a spec, a comment, a pull
-  request, or a reply. "I was wrong earlier", "as I said above", "this corrects what I claimed",
-  "I initially thought", and narration of what was checked, guessed or assumed are all noise.
-  Nobody reading this later shares the conversation it came from.
-
-  State what is true about the code, in the present tense, as though saying it for the first time.
-  Where a correction matters, the corrected fact is the whole of it: write "an absent store reports
-  nothing and the turn runs on the free tier", not "I said it warns, but it does not". This applies
-  most where it is most tempting, which is immediately after getting something wrong.
-- Tests are behavioural and named as sentences. A doc comment on a test says why the property
-  matters, not what the test does.
-- Test refusals and denials, not just happy paths. A test that would pass against the buggy
-  code is worthless: verify a new test fails before the fix.
-- Specs live in docs/specs and are the source of truth for behaviour. Before writing or changing
-  one, read docs/specs/README.md: it is the specification for specs, covering clause ids, the
-  front matter, coverage, and how a spec is allowed to refer to anything outside itself. Follow it
-  rather than the shape of whatever spec you happen to be editing.
-- **A spec says what is true, never what changed.** No "no longer", "used to", "previously", "it
-  now does X". A spec is read by somebody who has never seen any other version of this system,
-  and what changed is in the commit that changed it. This binds the commentary and the **Why** of
-  a clause as much as the clause itself: argue from what the alternative costs, in the present
-  tense, not from what the code did last week. The same goes for a known cost, which describes a
-  limitation that exists, not one that arrived.
-- **A spec is written to be checked, not admired.** A clause is read by somebody deciding whether
-  a diff obeys it, so every sentence should be one they could hold a diff against. Cut the
-  cadence, the flourishes and the sentences that only set a mood: plain declarative statements,
-  and a **Why** that gives the reason rather than performing it.
-- No new dependencies without a reason that survives scrutiny. Patterns that arrive through a
-  turn are attack surface: prefer literal matching and hand-written, non-backtracking
-  matchers to a regex engine.
+[docs/best-practices/](docs/best-practices/README.md) is what a pull request is reviewed against,
+and holds only rules a person has to read a diff to decide. A rule a tool enforces or could enforce
+is a check, not an entry there.

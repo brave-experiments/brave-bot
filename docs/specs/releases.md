@@ -18,7 +18,7 @@ Turning a commit into binaries somebody else installs: what names a version, wha
 release, what refuses one, and what an installer trusts about what it fetched.
 
 Building for a platform is not this topic. Reproducible cross-builds are ordinary code, described
-in [../development.md](../development.md). This file governs only the path from a version to a
+in [../development/releasing.md](../development/releasing.md). This file governs only the path from a version to a
 published asset, and the checks along it.
 
 Two installers fetch what is published: the npm package's install step, and the shell script
