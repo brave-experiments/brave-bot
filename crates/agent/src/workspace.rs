@@ -870,6 +870,44 @@ impl Workspace {
         std::fs::read_to_string(resolved).ok()
     }
 
+    /// Whether the path names a regular file, for deciding whether a question about a file is
+    /// worth putting to a person at all.
+    ///
+    /// Answered from the path and from `stat`, never from a byte of what the file holds, so this
+    /// may gate a prompt where [`Workspace::peek_for_review`] may not. A directory and a path that
+    /// names nothing both come back false: a question titled with one file, answered yes, writes a
+    /// rule covering everything beneath the name, and `.` names the whole workspace.
+    pub fn names_a_file(&self, relative: &str) -> bool {
+        self.resolve(relative)
+            .ok()
+            .and_then(|resolved| std::fs::metadata(resolved).ok())
+            .is_some_and(|meta| meta.is_file())
+    }
+
+    /// The same read, with the label kept on, for a question put to a person about the file
+    /// itself.
+    ///
+    /// [`Workspace::peek_for_review`] hands back a plain `String`, so a caller holds the text and
+    /// can compare it. This hands back a labelled one instead: the only things that can be done
+    /// with it are to reshape it inside the kernel and release it to a screen, so what the file
+    /// holds cannot decide what happens.
+    ///
+    /// A file with nothing to show comes back as an empty string rather than as an absence: an
+    /// empty file and one that is not valid UTF-8 are the same answer here. A caller that could
+    /// tell them apart would be back to asking the file what question to put about it. Whether the
+    /// path names a file at all is [`Workspace::names_a_file`], which is settled before this is
+    /// reached.
+    ///
+    /// The label is the one a read of a file nobody vouched for produces, which is the only kind
+    /// of file this is reached for. Taking it from [`read_label`] rather than from the map means
+    /// nothing here can raise it.
+    pub fn peek_labelled_for_review(&self, relative: &str) -> Labelled<String> {
+        Labelled::new(
+            self.peek_for_review(relative).unwrap_or_default(),
+            read_label(),
+        )
+    }
+
     /// How long ago a workspace file was last written, for telling a reviewer what they are
     /// about to lose.
     ///

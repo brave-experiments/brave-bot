@@ -1661,26 +1661,49 @@ fn read_file<S: Sink, C: Confirmer>(
     //
     // Asked once per path per turn, and only for a path that is quarantined, so a planner retrying
     // a read does not put the same question up twice.
-    if policy.should_offer_vouch(&proposed_path) {
-        let (preview, truncated) = match workspace.peek_for_review(&proposed_path) {
-            Some(body) => {
-                let head: Vec<&str> = body.lines().take(VOUCH_PREVIEW).collect();
-                let truncated = body.lines().count() > head.len();
-                (head.join("\n"), truncated)
-            }
-            // Nothing to show means nothing to vouch about: a path that cannot be read is reported
-            // by the read below, not turned into a question.
-            None => (String::new(), false),
+    //
+    // Never asked about a picture. What a yes grants is that a file's *text* may be read, and the
+    // branch below hands a picture back as a reference whatever the trust map says, so the
+    // question would promise something the answer could not deliver. Decided from the extension,
+    // out of the driver's own table, so nothing read chooses it.
+    //
+    // Never asked about a path that does not name a file either. The prompt names one file and a
+    // yes writes a rule covering everything beneath the name, so on a directory it would grant
+    // `/add-dir`'s reach from a question that said "file", and on `.` the whole workspace. Both
+    // guards are the path and `stat`, so what settles whether the question is put stays out of
+    // reach of anything read.
+    //
+    // `should_offer_vouch` is last because it is the only one of these that does anything: it marks
+    // the path asked about and writes the trail line saying so. Every test that could still call
+    // the prompt off has to come before it, or the path spends its one question of the turn on a
+    // prompt nobody sees and the trail records an offer that was never made. That is the defect
+    // this block was rewritten to fix, and the order is what holds it fixed.
+    let media = crate::workspace::media_for(&proposed_path);
+    if policy.read_is_quarantined(&proposed_path)
+        && media.is_none()
+        && workspace.names_a_file(&proposed_path)
+        && policy.should_offer_vouch(&proposed_path)
+    {
+        // Whether the question is put has already been settled. What the file holds shapes the
+        // preview and decides nothing further: the head of it is cut inside the kernel, so the
+        // driver never holds the text, and a file with nothing to show is asked about like any
+        // other. The prompt says so in place of the preview.
+        let body = workspace.peek_labelled_for_review(&proposed_path);
+        let shaped = policy.render_in_place("read_file", &body, |text| {
+            let head: Vec<&str> = text.lines().take(VOUCH_PREVIEW).collect();
+            (head.join("\n"), text.lines().nth(VOUCH_PREVIEW).is_some())
+        });
+        let (preview, truncated) = {
+            let proof = policy.authorise_display_release("the head of a quarantined file");
+            shaped.declassify(&proof)
         };
-        if !preview.is_empty() {
-            let request = crate::confirm::VouchRequest {
-                path: proposed_path.clone(),
-                preview,
-                truncated,
-            };
-            if confirmer.confirm_vouch(&request) == Decision::Approve {
-                policy.vouch_for_named_path(&proposed_path);
-            }
+        let request = crate::confirm::VouchRequest {
+            path: proposed_path.clone(),
+            preview,
+            truncated,
+        };
+        if confirmer.confirm_vouch(&request) == Decision::Approve {
+            policy.vouch_for_named_path(&proposed_path);
         }
     }
 
@@ -1708,7 +1731,7 @@ fn read_file<S: Sink, C: Confirmer>(
     // may only be one a person put there themselves, and a screenshot with words in it is exactly
     // the content this arrangement exists to keep out of it. So a vouched-for directory does not
     // make a picture readable, and there is no trust question here to ask.
-    if let Some(media) = crate::workspace::media_for(&proposed_path) {
+    if let Some(media) = media {
         return match workspace.read_attachment(policy, &path, media) {
             Ok(encoded) => {
                 let weight = workspace.survey(&proposed_path).unwrap_or(0);

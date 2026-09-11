@@ -206,6 +206,18 @@ it and asked whether to trust it. Yes writes exactly the rule `@` would have wri
 per path per turn, and only where the read is quarantined. Declining leaves the file as it was and
 the turn carries on with a reference.
 
+What the file holds decides nothing about whether the question is put. A file with nothing to show,
+because it is empty or does not read as text, is asked about like any other, and the prompt says so
+where the preview would be.
+
+What does decide it is the path, and the question is put only where the path names a file. Never a
+picture, because what a yes grants is that a file's text may be read and a picture's text is never
+read whatever the map says. Never a directory or a path that names nothing either: a yes writes a
+rule covering everything beneath the name it was given, so a prompt titled with one file would hand
+over the trust half of what [`/add-dir`](#TRUST-9) grants, every file beneath the name at once, over
+a string the planner chose rather than one a person typed. Reach it would not grant, which is the
+only part of that gesture this could not have imitated.
+
 ```
 ╭ let the model read this file? ────────────────────────────╮
 │Trust game.js                                              │
@@ -226,7 +238,14 @@ not have it: asked to fix a bug in a game it could not read, the model pointed a
 processor at the file, wrote the answer back unseen, and finished by saying it could not confirm
 any of what it had done. One prompt would have let it read the file.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::a_quarantined_read_offers_the_user_the_chance_to_vouch`
+`verified-by: bravebot_agent::turn::a_quarantined_file_with_nothing_in_it_is_still_offered_for_vouching`
+`verified-by: bravebot_agent::turn::a_picture_is_not_offered_for_vouching`
+`verified-by: bravebot_agent::turn::a_path_that_names_no_file_is_not_offered_for_vouching`
+`verified-by: bravebot_agent::turn::declining_to_vouch_leaves_the_file_quarantined`
+`verified-by: bravebot_agent::turn::a_trusted_file_is_not_offered_for_vouching`
+`verified-by: bravebot_agent::turn::the_same_file_is_offered_once_per_turn`
+`verified-by: bravebot_tui::confirm::a_preview_with_nothing_in_it_says_so`
 
 <a id="TRUST-9"></a>
 ### TRUST-9: `/add-dir` makes a directory both reachable and trusted, for the session

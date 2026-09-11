@@ -79,8 +79,8 @@ than dropped, as it is for any long body.
 ### PROMPT-4: a review stays legible, or says it could not
 
 A long body keeps the question on screen and offers the rest, which can be scrolled to. A small
-edit in a large file shows only the change. An empty output says so. A diff that cannot be
-computed says so rather than showing nothing.
+edit in a large file shows only the change. An empty output says so, and so does a file with
+nothing to preview. A diff that cannot be computed says so rather than showing nothing.
 
 **Why.** Reviewing a whole file body on a terminal is not review, which is why `edit_file` exists
 on a passage rather than a whole body. A prompt that scrolled the question away would be collecting a keypress, not a decision.
@@ -89,6 +89,7 @@ on a passage rather than a whole body. A prompt that scrolled the question away 
 `verified-by: bravebot_tui::confirm::the_rest_of_a_long_body_can_be_scrolled_to`
 `verified-by: bravebot_tui::confirm::a_small_edit_in_a_large_file_shows_only_the_change`
 `verified-by: bravebot_tui::confirm::output_that_is_empty_says_so`
+`verified-by: bravebot_tui::confirm::a_preview_with_nothing_in_it_says_so`
 `verified-by: bravebot_tui::confirm::an_uncomputable_diff_says_so`
 
 ## What an answer means

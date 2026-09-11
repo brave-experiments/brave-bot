@@ -18,7 +18,6 @@ docs/specs/sessions.md:SESSION-2: nothing untrusted is ever written down
 docs/specs/shell-mode.md:SHELL-4: only a line a human typed
 docs/specs/shell-mode.md:SHELL-5: the planner gets no shell tool, ever
 docs/specs/trace.md:TRACE-2: the trail holds no content
-docs/specs/trust-map.md:TRUST-8: a quarantined read offers the same rule, at the moment it bites
 docs/specs/tools/command-line.md:CMDLINE-10: output comes back as text whenever the planner may read it
 docs/specs/tools/command-line.md:CMDLINE-11: output is bounded, and what was dropped is said
 docs/specs/tools/command-line.md:CMDLINE-12: the working directory persists across calls, and shell state does not

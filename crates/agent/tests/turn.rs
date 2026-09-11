@@ -9319,6 +9319,176 @@ fn the_same_file_is_offered_once_per_turn() {
     );
 }
 
+/// A file's own bytes must not decide whether the question is put. A zero-byte file is as
+/// unvouched-for as any other, and the path has already been recorded as asked about by the time a
+/// preview could be looked at, so skipping the prompt spends that path's one question of the turn
+/// on nothing and leaves the trail saying the offer was made.
+#[test]
+fn a_quarantined_file_with_nothing_in_it_is_still_offered_for_vouching() {
+    let scratch = Scratch::new("vouch-empty");
+    std::fs::write(scratch.path.join("empty.txt"), "").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"empty.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = VouchesForFiles::new(true);
+    let offered = confirmer.offered.clone();
+
+    let outcome = turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("read the notes"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let asked = offered.lock().unwrap();
+    let request = asked.first().expect("the user was offered the file");
+    assert_eq!(request.path, "empty.txt");
+    assert!(
+        request.preview.is_empty(),
+        "a file holding nothing previewed something: {}",
+        request.preview
+    );
+    drop(asked);
+
+    // And a yes wrote the rule TRUST-8 says it writes, so the offer was a real one.
+    assert!(
+        outcome.trust.is_trusted("empty.txt"),
+        "vouching did not record a rule in the trust map"
+    );
+}
+
+/// A yes writes a rule covering everything beneath the name it was given, so a path that names no
+/// file must never be put. On a directory the prompt would hand `/add-dir`'s reach to a question
+/// titled with one file, and on `.` the whole workspace, from a string the planner chose. A path
+/// that names nothing has nothing to grant and would spend that path's question of the turn.
+#[test]
+fn a_path_that_names_no_file_is_not_offered_for_vouching() {
+    for path in ["sub", ".", "missing.txt"] {
+        let scratch = Scratch::new("vouch-not-a-file");
+        std::fs::create_dir(scratch.path.join("sub")).unwrap();
+        std::fs::write(scratch.path.join("sub/secret.rs"), "let hidden = 1;\n").unwrap();
+        let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+        let (endpoint, _received) = serve_sequence(vec![
+            tool_request("read_file", &format!(r#"{{"path":"{path}"}}"#)),
+            reply_with("done"),
+        ]);
+        let config = config_for(&endpoint);
+        let egress = bravebot_net::Egress::new();
+        let mut sink = RecordingSink::new();
+        let mut confirmer = VouchesForFiles::new(true);
+        let offered = confirmer.offered.clone();
+
+        let outcome = turn::resume(
+            &config,
+            &egress,
+            &workspace,
+            &Task::new("read the notes"),
+            &mut bravebot_agent::Conversation::new(),
+            &mut confirmer,
+            &mut bravebot_agent::report::RecordingReporter::default(),
+            &mut sink,
+            bravebot_core::trust::TrustStore::new(),
+            bravebot_core::programs::TrustedPrograms::new(),
+            &bravebot_core::cancel::Cancel::new(),
+        )
+        .expect("turn runs");
+
+        assert!(
+            offered.lock().unwrap().is_empty(),
+            "{path} was put to the user as a file to vouch for"
+        );
+        assert!(
+            !outcome.trust.is_trusted(path),
+            "{path}: a path nobody was asked about got a rule of its own"
+        );
+        // The guard has to come before the kernel is asked, not after. Reversed, the path is marked
+        // asked-about and the trail says the offer was made, while no prompt is ever drawn: green on
+        // the assertions above and the original defect back.
+        assert!(
+            !sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed { gate: "approval", detail }
+                    if detail.contains("offered the chance to vouch")
+            )),
+            "{path}: the trail records an offer the user was never shown: {:#?}",
+            sink.events()
+        );
+        assert!(
+            !outcome.trust.is_trusted("sub/secret.rs"),
+            "{path}: answering about {path} trusted a file nobody was shown"
+        );
+    }
+}
+
+/// Vouching grants that a file's text may be read, and a picture is handed back as a reference
+/// whatever the map says. Offering the question anyway would promise something a yes cannot
+/// deliver, and would record in the trail that an offer was made.
+#[test]
+fn a_picture_is_not_offered_for_vouching() {
+    let scratch = Scratch::new("vouch-picture");
+    // A PNG's first bytes, which no read here decodes as text.
+    std::fs::write(
+        scratch.path.join("shot.png"),
+        [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("read_file", r#"{"path":"shot.png"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = VouchesForFiles::new(true);
+    let offered = confirmer.offered.clone();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("look at the screenshot"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        bravebot_core::trust::TrustStore::new(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    assert!(
+        offered.lock().unwrap().is_empty(),
+        "a picture was put to the user as a file to vouch for"
+    );
+    assert!(
+        !sink.events().iter().any(|e| matches!(
+            e,
+            Event::GatePassed { gate: "approval", detail }
+                if detail.contains("offered the chance to vouch")
+        )),
+        "the trail records an offer the user was never shown: {:#?}",
+        sink.events()
+    );
+}
+
 /// The point of attaching a file: the bytes reach the model, in the same message as the line the
 /// user typed rather than in one of their own.
 #[test]

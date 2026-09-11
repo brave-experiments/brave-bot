@@ -374,6 +374,7 @@ vouch-explained =
     le modèle ne peut pas lire ce fichier, il travaille donc à l'aveugle dessus.
     L'approuver lui permet de le lire pour le reste de cette session, ici et à chaque
     lecture ultérieure.
+vouch-nothing = (rien de ce fichier ne peut être affiché)
 vouch-yes = l'approuver
 vouch-no = le laisser en quarantaine
 

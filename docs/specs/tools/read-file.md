@@ -80,7 +80,8 @@ resolve its path differently.
 A file whose extension names a picture or a PDF is read as bytes, encoded into a `data:` URI, and
 handed back as a reference. The planner is never shown one, and a vouched-for directory does not
 change that: what the trust map answers is whether a file's **text** may be read, and a picture has
-none.
+none. Nothing offers to vouch for one either, because a yes would grant the reading of text there
+is none of.
 
 The reference says what kind of thing it is rather than how many lines it has, because a line count
 over base64 describes nothing a reader can act on. Given to `spawn_processor`, it reaches the
@@ -101,6 +102,7 @@ holding something that looks like one, and a picture cannot become text by being
 either way the extension is what was decided from, and it is part of a path a person can read.
 
 `verified-by: bravebot_agent::turn::a_picture_is_never_shown_to_the_planner`
+`verified-by: bravebot_agent::turn::a_picture_is_not_offered_for_vouching`
 `verified-by: bravebot_agent::turn::a_processor_is_given_a_picture_as_a_picture`
 `verified-by: bravebot_agent::workspace::the_media_type_comes_from_the_extension`
 `verified-by: bravebot_agent::workspace::a_file_that_names_no_picture_is_not_one`

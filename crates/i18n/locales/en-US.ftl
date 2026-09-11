@@ -408,6 +408,7 @@ vouch-verb = Trust
 vouch-explained =
     the model cannot read this file, so it is working blind on it. Vouching lets it read
     this file for the rest of this session, here and in every later read.
+vouch-nothing = (nothing of this file can be shown)
 vouch-yes = trust it
 vouch-no = leave it quarantined
 
