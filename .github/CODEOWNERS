@@ -6,7 +6,7 @@
 #
 # Last matching pattern wins, so keep the more specific rules below the general ones.
 
-/docs/specs/ @bbondy @AliShahin
+/docs/specs/ @bbondy
 
 /README.md @bbondy
 
