@@ -23,6 +23,13 @@
 /// cost of an absent entry is a line of configuration rather than a broken gateway.
 const KNOWN_ENDPOINTS: &[(&str, &str)] = &[("openrouter", "https://openrouter.ai/api/v1")];
 
+/// The id naming AWS Bedrock, which is reached by signing rather than by a bearer token.
+///
+/// The same id the other tool uses, so the block that configures it there configures it here. Its
+/// endpoint is not in [`KNOWN_ENDPOINTS`] because there is no one endpoint: the host carries the
+/// region, so it is built from `options.region` rather than looked up.
+const AWS_PROVIDER_ID: &str = "amazon-bedrock";
+
 /// The endpoint compiled in for `id`, where there is one.
 fn known_endpoint(id: &str) -> Option<&'static str> {
     KNOWN_ENDPOINTS
@@ -93,6 +100,12 @@ pub struct Provider {
     /// reported as such rather than guessed at: a gateway roster is too large and too fluid to
     /// enumerate, so there is nothing to fall back to.
     pub models: Vec<Model>,
+    /// The AWS account this entry reaches, where it names Bedrock rather than a gateway.
+    ///
+    /// Resolved here rather than by the caller because a request to Bedrock needs a region to sign
+    /// for and a profile to resolve credentials from, and both are properties of this block.
+    /// `None` for every other entry, which is reached as an OpenAI-compatible gateway.
+    pub bedrock: Option<crate::bedrock::Bedrock>,
 }
 
 impl Provider {
@@ -123,6 +136,10 @@ impl Provider {
             Some(serde_json::Value::Object(options)) => Some(options),
             _ => None,
         };
+
+        if id == AWS_PROVIDER_ID {
+            return Self::aws(id, entry, options);
+        }
         let base_url = options
             .and_then(|options| options.get("baseURL"))
             .and_then(serde_json::Value::as_str)
@@ -139,6 +156,36 @@ impl Provider {
             env: names(entry.get("env")),
             api_key: options.and_then(|options| string(options.get("apiKey"))),
             models: models(entry.get("models")),
+            bedrock: None,
+        })
+    }
+
+    /// One entry naming AWS Bedrock.
+    ///
+    /// A region is what this requires and all it requires, being what the host is built from and
+    /// what a signature is bound to. Credentials come from the AWS chain, so there is no token to
+    /// name and nothing here reads one: a `profile` selects which set of them, exactly as the tier
+    /// variables' own does.
+    fn aws(
+        id: &str,
+        entry: &serde_json::Map<String, serde_json::Value>,
+        options: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<Self> {
+        let region = string(options?.get("region"))?;
+        let profile = string(options.and_then(|options| options.get("profile")));
+        let models = models(entry.get("models"));
+        let entries = bedrock_entries(entry.get("models"));
+
+        Some(Self {
+            id: id.to_string(),
+            name: string(entry.get("name")),
+            base_url: format!("https://bedrock-runtime.{region}.amazonaws.com"),
+            env: Vec::new(),
+            api_key: None,
+            models,
+            bedrock: Some(crate::bedrock::Bedrock::from_provider(
+                region, profile, entries,
+            )),
         })
     }
 
@@ -211,6 +258,29 @@ fn names(value: Option<&serde_json::Value>) -> Vec<String> {
     names.iter().filter_map(|name| string(Some(name))).collect()
 }
 
+/// The `models` block as Bedrock entries, in the order the file listed it.
+///
+/// The same block the gateway path reads, taken into the shape that backend speaks. `name` is read
+/// here and not there because an inference-profile ARN is unreadable and a gateway's model id is
+/// not, so this is the one place the friendly name is worth more than the id.
+fn bedrock_entries(value: Option<&serde_json::Value>) -> Vec<crate::bedrock::Entry> {
+    let Some(serde_json::Value::Object(block)) = value else {
+        return Vec::new();
+    };
+    block
+        .iter()
+        .map(|(id, entry)| {
+            let entry = entry.as_object();
+            crate::bedrock::Entry {
+                tier: None,
+                id: id.to_string(),
+                name: entry.and_then(|entry| string(entry.get("name"))),
+                context_window: entry.and_then(|entry| window(entry.get("limit"))),
+            }
+        })
+        .collect()
+}
+
 /// The `models` block, in the order the file listed it.
 fn models(value: Option<&serde_json::Value>) -> Vec<Model> {
     let Some(serde_json::Value::Object(block)) = value else {
@@ -280,6 +350,72 @@ mod tests {
         assert_eq!(provider.base_url, "https://openrouter.ai/api/v1");
         assert_eq!(provider.env, ["OPENROUTER_API_KEY"]);
         assert!(provider.offers("z-ai/glm-4.6"));
+    }
+
+    /// The block that configures this account in the other tool, copied across unedited. Its models
+    /// are keyed by inference-profile ARN, and the credential is the AWS chain rather than a token,
+    /// so nothing here names one.
+    #[test]
+    fn an_aws_block_configures_bedrock_rather_than_a_gateway() {
+        let provider = one(r#"{"provider": {"amazon-bedrock": {
+                "options": {"region": "us-west-2", "profile": "claude-code-bedrock-sso"},
+                "models": {
+                    "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc": {
+                        "name": "GPT-5.6 Sol (Bedrock)",
+                        "limit": {"context": 1050000, "output": 128000}
+                    }
+                }
+            }}}"#);
+
+        let bedrock = provider.bedrock.as_ref().expect("an AWS account");
+        assert_eq!(bedrock.region, "us-west-2");
+        assert_eq!(bedrock.profile.as_deref(), Some("claude-code-bedrock-sso"));
+        assert_eq!(
+            provider.base_url,
+            "https://bedrock-runtime.us-west-2.amazonaws.com"
+        );
+        assert!(
+            provider.env.is_empty() && provider.api_key.is_none(),
+            "an AWS entry named a bearer token"
+        );
+
+        let entry = bedrock
+            .entry("arn:aws:bedrock:us-west-2:1:application-inference-profile/abc")
+            .expect("the model the block named");
+        assert_eq!(entry.tier, None, "a block names a model, not a tier");
+        assert_eq!(entry.display_name(), "GPT-5.6 Sol (Bedrock)");
+        assert_eq!(entry.window(), 1_050_000);
+    }
+
+    /// An ARN is not a name anybody reads, so a block that named nothing friendlier leaves the id
+    /// standing rather than inventing a word for it.
+    #[test]
+    fn an_aws_model_the_block_did_not_name_is_shown_by_its_id() {
+        let provider = one(r#"{"provider": {"amazon-bedrock": {
+                "options": {"region": "us-west-2"},
+                "models": {"openai.gpt-5.6-sol": {}}
+            }}}"#);
+        let bedrock = provider.bedrock.as_ref().expect("an AWS account");
+        assert_eq!(bedrock.profile, None);
+        let entry = bedrock.entry("openai.gpt-5.6-sol").expect("the model");
+        assert_eq!(entry.display_name(), "openai.gpt-5.6-sol");
+        assert_eq!(
+            entry.window(),
+            super::CONTEXT_WINDOW,
+            "a window nobody stated was guessed at"
+        );
+    }
+
+    /// The region is the host and what a signature is bound to, so an entry without one names no
+    /// service. Guessing a region produces requests that fail somewhere far from the mistake, which
+    /// is the same reason the tier variables refuse a block that omits it.
+    #[test]
+    fn an_aws_block_without_a_region_configures_nothing() {
+        let root: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"provider": {"amazon-bedrock": {"models": {"openai.gpt-5.6-sol": {}}}}}"#,
+        )
+        .expect("parses");
+        assert!(Provider::all(&root).is_empty());
     }
 
     /// opencode requires nothing of a model entry, so neither may this. An empty entry is a legal

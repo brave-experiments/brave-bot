@@ -125,7 +125,7 @@ impl<'a> Backend<'a> {
     /// Not content. The name comes from what `/model` listed and a person picked, or from the
     /// configured default, and the pick is the endorsement for the request field it lands in.
     pub fn select(config: &'a Config, egress: &'a Egress, model: &str) -> Self {
-        if let Some(bedrock) = config.bedrock.as_ref().filter(|it| it.offers(model)) {
+        if let Some(bedrock) = config.bedrock_for(model) {
             return Self::Bedrock {
                 config: bedrock,
                 egress,
@@ -418,6 +418,40 @@ mod tests {
         assert!(matches!(
             Backend::select(&with_a_gateway(), &egress, "z-ai/glm-4.6"),
             Backend::Gateway { .. }
+        ));
+    }
+
+    /// A `provider` block naming AWS reaches Bedrock, which signs, rather than the gateway client,
+    /// which carries a bearer token and has none to carry. The model decides as it does everywhere
+    /// else; what is new is that a second place can name a Bedrock model.
+    #[test]
+    fn a_model_an_aws_block_named_selects_the_bedrock_backend() {
+        let mut config = both_backends();
+        let serde_json::Value::Object(root) = serde_json::from_str(
+            r#"{"provider": {"amazon-bedrock": {
+                "options": {"region": "us-west-2", "profile": "sso"},
+                "models": {"openai.gpt-5.6-sol": {}}
+            }}}"#,
+        )
+        .expect("json") else {
+            panic!("not an object");
+        };
+        config.providers = bravebot_config::provider::Provider::all(&root);
+        let egress = Egress::new();
+
+        assert!(matches!(
+            Backend::select(&config, &egress, "openai.gpt-5.6-sol"),
+            Backend::Bedrock { .. }
+        ));
+
+        // The tiers the env block named still reach it too, and a Brave name still reaches Brave.
+        assert!(matches!(
+            Backend::select(&config, &egress, "opus-arn"),
+            Backend::Bedrock { .. }
+        ));
+        assert!(matches!(
+            Backend::select(&config, &egress, DEFAULT_MODEL),
+            Backend::Aichat { .. }
         ));
     }
 

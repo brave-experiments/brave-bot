@@ -473,14 +473,41 @@ impl Config {
         model: &'name str,
     ) -> Option<(&provider::Provider, &'name str)> {
         if let Some((id, wire)) = model.split_once('/').filter(|(_, wire)| !wire.is_empty())
-            && let Some(provider) = self.providers.iter().find(|provider| provider.id == id)
+            && let Some(provider) = self
+                .providers
+                .iter()
+                .find(|provider| provider.id == id && provider.bedrock.is_none())
         {
             return Some((provider, wire));
         }
         self.providers
             .iter()
+            .filter(|provider| provider.bedrock.is_none())
             .find(|provider| provider.offers(model))
             .map(|provider| (provider, model))
+    }
+
+    /// The AWS account that serves `model`, from the tier variables or from a `provider` block.
+    ///
+    /// The tier variables are asked first, being the older way to name a Bedrock model and the one
+    /// a tier word resolves against. A name neither offers belongs to some other service.
+    pub fn bedrock_for(&self, model: &str) -> Option<&bedrock::Bedrock> {
+        if let Some(bedrock) = self.bedrock.as_ref().filter(|it| it.offers(model)) {
+            return Some(bedrock);
+        }
+        self.providers
+            .iter()
+            .filter_map(|provider| provider.bedrock.as_ref())
+            .find(|bedrock| bedrock.offers(model))
+    }
+
+    /// Every AWS account a `provider` block named, in the order the file listed them.
+    pub fn bedrock_providers(
+        &self,
+    ) -> impl Iterator<Item = (&provider::Provider, &bedrock::Bedrock)> {
+        self.providers
+            .iter()
+            .filter_map(|provider| provider.bedrock.as_ref().map(|bedrock| (provider, bedrock)))
     }
 
     /// Whether the Brave backend can be reached at all.
@@ -897,6 +924,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The two blocks reach different services and a name has to go to the one that recognises it.
+    /// Routed as a gateway, an AWS model is sent OpenAI-compatible chat completions over a bearer
+    /// token that does not exist, which is the gap a `provider` block for Bedrock exists to close.
+    #[test]
+    fn a_model_an_aws_block_named_reaches_bedrock_rather_than_a_gateway() {
+        let settings = Settings::parse(
+            r#"{"provider": {
+                "amazon-bedrock": {
+                    "options": {"region": "us-west-2", "profile": "sso"},
+                    "models": {"openai.gpt-5.6-sol": {}}
+                },
+                "openrouter": {
+                    "options": {"baseURL": "https://openrouter.ai/api/v1"},
+                    "models": {"z-ai/glm-4.6": {}}
+                }
+            }}"#,
+        );
+        let config =
+            Config::from_lookup_with_providers(complete_env, settings.providers().to_vec())
+                .expect("configured");
+
+        let bedrock = config
+            .bedrock_for("openai.gpt-5.6-sol")
+            .expect("the AWS account that serves it");
+        assert_eq!(bedrock.region, "us-west-2");
+        assert!(
+            config.provider_for("openai.gpt-5.6-sol").is_none(),
+            "an AWS model was offered to the gateway path"
+        );
+
+        // The gateway beside it is untouched by any of this.
+        assert!(config.provider_for("z-ai/glm-4.6").is_some());
+        assert!(config.bedrock_for("z-ai/glm-4.6").is_none());
+    }
+
+    /// A qualified name says which service is meant, and the AWS entry is not one a gateway request
+    /// can be built for, so naming it must not produce one.
+    #[test]
+    fn a_name_qualified_by_the_aws_id_is_not_a_gateway_either() {
+        let settings = Settings::parse(
+            r#"{"provider": {"amazon-bedrock": {
+                "options": {"region": "us-west-2"},
+                "models": {"openai.gpt-5.6-sol": {}}
+            }}}"#,
+        );
+        let config =
+            Config::from_lookup_with_providers(complete_env, settings.providers().to_vec())
+                .expect("configured");
+        assert!(
+            config
+                .provider_for("amazon-bedrock/openai.gpt-5.6-sol")
+                .is_none()
+        );
     }
 
     #[test]

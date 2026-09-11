@@ -369,6 +369,11 @@ variable is also the only way to keep a long-lived token out of a file people pa
 which is why it is preferred where the block offers both and why a value in the file never displaces
 one a variable holds.
 
+**An entry naming AWS is the exception**, and not a token kept somewhere else: Bedrock takes a
+signature over the request, so there is no credential for a block to name and none is read from one.
+Which set of AWS credentials to sign with comes from the profile the block names, resolved when a
+request needs it, which is the same moment and the same reason a token is read.
+
 `verified-by: bravebot_config::provider::a_named_variable_holds_the_token_before_the_file_does`
 `verified-by: bravebot_config::provider::a_token_written_into_the_file_is_still_read`
 `verified-by: bravebot_config::provider::a_provider_with_nothing_holding_a_token_has_none`
@@ -762,6 +767,43 @@ rather than a model family, and a tier is whichever model the account named for 
 `verified-by: bravebot_bedrock::protocol::the_request_names_no_provider_of_its_own`
 `verified-by: bravebot_config::bedrock::streaming_and_buffered_requests_have_different_routes`
 `verified-by: bravebot_config::bedrock::a_model_arn_is_encoded_into_the_path`
+
+<a id="BACKEND-29"></a>
+### BACKEND-29: a settings block may name an AWS account, and every model it lists is reachable
+
+A `provider` entry may name AWS Bedrock instead of an OpenAI-compatible gateway. It states a region,
+optionally a credential profile, and as many models as the file lists, each reached by the name it
+is keyed under. Such an entry is served by the Bedrock backend and signed with the AWS credential
+chain, never sent to a gateway, and it adds to what the tier variables already name rather than
+replacing it.
+
+**Why.** The tier variables are three, named for one provider's model families, and a fourth model
+can only be had by giving up one of the three. That is a limit of the shape those variables have,
+not of the account, which reaches as many models as it is entitled to. The block this borrows is
+already how the other tool configures the same account, keyed by model rather than by tier, so
+taking it costs nothing and removes the limit.
+
+Signed rather than authenticated with a token because that is what the service takes, and it is
+also what makes the entry worth having: the routes a bearer token can use refuse the inference
+profile ARNs a per-user role is commonly scoped to, so a gateway entry pointed at the same account
+reaches nothing.
+
+**The region is required and the endpoint is not.** The host carries the region, so one value
+produces the other and there is nothing left to state. An entry naming no region configures no
+service, for the reason a Bedrock block without one does not: a guessed region is a request that
+fails somewhere far from the mistake.
+
+**What a row says.** A model named here has no tier, so a picker row carries what the block called
+it, and its id where the block called it nothing. An inference-profile ARN is not a name anybody
+reads, which is why this is worth stating rather than left to fall out of the id.
+
+`verified-by: bravebot_config::provider::an_aws_block_configures_bedrock_rather_than_a_gateway`
+`verified-by: bravebot_config::provider::an_aws_model_the_block_did_not_name_is_shown_by_its_id`
+`verified-by: bravebot_config::provider::an_aws_block_without_a_region_configures_nothing`
+`verified-by: bravebot_config::lib::a_model_an_aws_block_named_reaches_bedrock_rather_than_a_gateway`
+`verified-by: bravebot_config::lib::a_name_qualified_by_the_aws_id_is_not_a_gateway_either`
+`verified-by: bravebot_agent::backend::a_model_an_aws_block_named_selects_the_bedrock_backend`
+`verified-by: bravebot_tui::app::a_bedrock_model_a_block_named_is_shown_under_that_name`
 
 ## Known costs
 

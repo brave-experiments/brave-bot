@@ -2524,6 +2524,14 @@ fn list_models(
     // asked, because the alternative is a gateway configured exactly as the tool this block's shape
     // came from configures it, offering nothing.
     for provider in &config.providers {
+        // An entry naming AWS reaches the Bedrock backend, so its rows are built the way that
+        // backend's are: the models the block named, and nothing fetched. There is no listing
+        // endpoint to ask, which is why a block that named none offers none rather than being
+        // asked what it serves.
+        if let Some(bedrock) = provider.bedrock.as_ref() {
+            configured.extend(bedrock_models(bedrock));
+            continue;
+        }
         match provider.models.is_empty() {
             false => configured.extend(provider_models(provider)),
             true => configured.extend(in_reading_order(
@@ -2671,19 +2679,21 @@ fn bedrock_models(
     bedrock
         .models()
         .iter()
-        .map(|(tier, name)| bravebot_aichat::models::Model {
-            key: name.clone(),
-            // The tier alone, because the account it is reached through is the same for all of them
-            // and is said once, over the section these rows sit in.
-            display_name: tier.display_name().to_string(),
+        .map(|entry| bravebot_aichat::models::Model {
+            key: entry.id.clone(),
+            // The tier word where a tier named it, because the account it is reached through is the
+            // same for all of them and is said once, over the section these rows sit in. A model a
+            // `provider` block named has no tier, and an inference-profile ARN is not a name
+            // anybody reads, so what that block called it is what a row says.
+            display_name: entry.display_name().to_string(),
             premium: false,
             provider: Some(match bedrock.profile.as_deref() {
                 Some(profile) => t!(picker_service_bedrock_profile, profile = profile),
                 None => t!(picker_service_bedrock).to_string(),
             }),
-            // The same figure for every tier, because it is a property of what an opaque profile
-            // ARN gets rather than of a particular model.
-            conversation_tokens: Some(bravebot_config::bedrock::CONTEXT_WINDOW),
+            // The figure a tier gets is a property of what an opaque profile ARN gets rather than of
+            // a particular model. A block that stated one knew better.
+            conversation_tokens: Some(entry.window()),
             // The API this reaches defines the field, so a level sent there is read.
             reads_effort: true,
         })
@@ -4175,6 +4185,54 @@ mod tests {
             roster[1].provider, None,
             "the Brave roster names no service"
         );
+    }
+
+    /// A model a `provider` block named has no tier, so there is no tier word to draw a row from.
+    /// Drawn from one anyway, every such model would appear as "Opus", and an account reaching four
+    /// of them would show four rows with three names between them.
+    #[test]
+    fn a_bedrock_model_a_block_named_is_shown_under_that_name() {
+        use bravebot_config::bedrock::{Bedrock, Entry};
+
+        let models = bedrock_models(&Bedrock::from_provider(
+            "us-west-2".to_string(),
+            Some("sso".to_string()),
+            vec![
+                Entry {
+                    tier: None,
+                    id: "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc".to_string(),
+                    name: Some("GPT-5.6 Sol (Bedrock)".to_string()),
+                    context_window: Some(1_050_000),
+                },
+                Entry {
+                    tier: None,
+                    id: "openai.gpt-5.6-sol".to_string(),
+                    name: None,
+                    context_window: None,
+                },
+            ],
+        ));
+
+        assert_eq!(models[0].display_name, "GPT-5.6 Sol (Bedrock)");
+        assert_eq!(
+            models[0].key, "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc",
+            "the row carries the ARN a request names, not the word a person reads"
+        );
+        assert_eq!(
+            models[0].conversation_tokens,
+            Some(1_050_000),
+            "a window the block stated was thrown away"
+        );
+
+        // Nothing friendlier was said about the second, so its id stands.
+        assert_eq!(models[1].display_name, "openai.gpt-5.6-sol");
+        assert_eq!(
+            models[1].conversation_tokens,
+            Some(bravebot_config::bedrock::CONTEXT_WINDOW)
+        );
+
+        // Both are reached through the person's own account, which a row has to say.
+        assert!(models.iter().all(|model| model.provider.is_some()));
     }
 
     /// A profile is optional, and a row still has to say the tier is reached through the person's own

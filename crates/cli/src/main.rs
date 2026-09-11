@@ -1282,7 +1282,7 @@ fn report_bedrock(bedrock: &bravebot_config::bedrock::Bedrock) {
             bedrock
                 .models()
                 .iter()
-                .map(|(tier, _)| tier.display_name())
+                .map(bravebot_config::bedrock::Entry::display_name)
                 .collect::<Vec<_>>()
                 .join(", "),
         ),
