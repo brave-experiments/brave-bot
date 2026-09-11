@@ -244,6 +244,24 @@ file's bytes go into a program, so the plan reports it as private input and it t
 standard-input gate of [run.md](run.md#RUN-6) whichever file it names. `2>&1` renames a
 descriptor and touches no file.
 
+The map records what a destination holds afterwards, and records it one way. Where the line's
+output is untrusted, every file the line opened for writing becomes untrusted, which is what stops
+a program's output being read back as trusted; where it is trusted, the map is left as it was. A
+trusted line is no evidence about any one file: `>>` keeps what the file already held, and the
+label answers for the programs a person vouched for rather than for the contents of a file.
+
+What is recorded is what the run opened, never the write set. The set names every branch
+([CMDLINE-6](#CMDLINE-6)), so a branch the line decided against would have its destination
+recorded as holding bytes nothing wrote, and a path recorded untrusted can no longer be examined
+or edited. A destination is truncated as its step begins, so a step that failed and a line stopped
+part way through both record the files they had opened by then, and a target nothing could open
+records nothing.
+
+**What the one direction costs.** A destination a vouched-for line overwrote stays untrusted until
+a person says otherwise, so reading it back is quarantined and costs a prompt. Recording a path as
+trusted on a write nobody can establish happened would be the round trip
+[trust-map.md](../trust-map.md) exists to close.
+
 A redirection whose target is a glob, or anything else that does not compile to one literal path,
 is a compile error.
 
@@ -252,6 +270,11 @@ and it is exactly the one that becomes safe once the destination is a named fiel
 redirection while allowing pipes would be refusing the easy half.
 
 `verified-by: bravebot_agent::cmdline::a_redirection_joins_the_write_set`
+`verified-by: bravebot_agent::turn::a_redirection_carrying_untrusted_output_distrusts_the_file_it_wrote`
+`verified-by: bravebot_agent::turn::a_line_a_person_vouched_for_does_not_trust_the_file_it_wrote`
+`verified-by: bravebot_agent::turn::a_branch_that_does_not_run_leaves_its_destination_as_it_was`
+`verified-by: bravebot_agent::exec::a_line_reports_the_destinations_it_opened_and_no_others`
+`verified-by: bravebot_agent::exec::a_destination_that_cannot_be_opened_is_not_reported`
 `verified-by: bravebot_agent::cmdline::an_append_writes_and_an_input_reads`
 `verified-by: bravebot_agent::cmdline::an_input_redirection_is_private_input`
 `verified-by: bravebot_agent::cmdline::a_line_that_only_writes_releases_nothing`
@@ -509,6 +532,7 @@ nothing until you have opened that file.
 | [shell-mode.md](../shell-mode.md) | the planner gets no shell tool, ever | **Amended, and this is the big one.** "The planner gets no shell tool" stands: no shell process is started for anything the planner wrote. What is withdrawn is the reading that also banned the notation. The clause should be restated as *the planner's line is never interpreted*, which is what it was protecting. |
 | [permissions.md](../permissions.md) | every stage of a pipeline is judged on its own | Amended. Stages come from the compiler rather than from an array. Its closing sentence, that there is no shell to do the splitting and so this holds rather than being a matter of parsing carefully, must be replaced with the honest version: the splitting is done once, here, and nothing re-splits afterwards. |
 | [tools/read-output.md](read-output.md) | letting a person release quarantined output | Unchanged, and used less. It remains the route for output no proof and no person has covered. |
+| [trust-map.md](../trust-map.md) | what a write asks, and what it records | Read one way for a redirection, per [CMDLINE-5](#CMDLINE-5). The rows recording a path as trusted do not fire, since an append keeps what the file already held. The question put before the write is the run prompt of [CMDLINE-3](#CMDLINE-3), which shows every destination and is put whatever the map says about them, rather than the map's own question about a path that is about to stop being trusted. |
 
 ## What is deliberately not adopted
 
