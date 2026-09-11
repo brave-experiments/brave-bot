@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/brave-experiments/bravebot/main/ins
 Running the line again is how an install made this way is updated: it remembers where the last
 one went, so a second run replaces that binary rather than leaving two on your PATH.
 
-To build from source instead, see [development.md](development.md).
+To build from source instead, see [development/README.md](development/README.md).
 
 ## Staying current
 
@@ -139,4 +139,4 @@ directory and are left out when you did not. See [specs/skills.md](specs/skills.
 
 Configuration is built into the released binary, so there is nothing to set up. `bravebot doctor`
 reports what it will use. To point it at a different backend, see
-[development.md](development.md#configuration).
+[development/configuration.md](development/configuration.md).
