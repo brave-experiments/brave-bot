@@ -3,8 +3,9 @@
 use bravebot_agent::workspace::{Workspace, WorkspaceError};
 use bravebot_core::capability::{Capability, CapabilitySet};
 use bravebot_core::event::RecordingSink;
-use bravebot_core::label::Label;
+use bravebot_core::label::{Integrity, Label};
 use bravebot_core::policy::{Policy, ReleasePlan, Routing};
+use bravebot_core::trust::TrustStore;
 use bravebot_core::value::Labelled;
 use std::path::PathBuf;
 
@@ -88,6 +89,47 @@ fn an_untrusted_path_cannot_be_read() {
         "unexpected error: {error}"
     );
     assert!(!policy.finish());
+}
+
+/// What the trust map's spelling rule is for, at the layer where the two halves meet: `resolve`
+/// accepts a `.` component and opens the file the untrusted rule was written about, so the label
+/// has to come from that rule and not from the workspace root rule above it. The read succeeding
+/// is the first half of that: `src/fetched.json` is the only file there, so a spelling that
+/// resolved anywhere else would fail to open rather than arrive mislabelled.
+#[test]
+fn a_second_spelling_of_a_distrusted_file_is_read_as_untrusted() {
+    let scratch = Scratch::new("spelled-past-a-rule");
+    std::fs::create_dir_all(scratch.path.join("src")).unwrap();
+    std::fs::write(scratch.path.join("src/fetched.json"), "a fetched page").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    // The state a turn leaves behind after writing a fetched page into a vouched-for tree: the
+    // workspace is trusted, and the file that page landed in is not.
+    let mut trust = TrustStore::new();
+    trust.trust(".");
+    trust.distrust("src/fetched.json");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy")
+    .with_trust(trust);
+
+    let spelled_past = Labelled::trusted("src/./fetched.json".to_string());
+    let contents = workspace
+        .read(&mut policy, &spelled_past)
+        .expect("the same file is opened under either spelling");
+
+    assert_eq!(
+        contents.label().integrity,
+        Integrity::Untrusted,
+        "a second spelling of the path laundered the fetched page into trusted content"
+    );
+    assert!(policy.finish());
 }
 
 #[test]

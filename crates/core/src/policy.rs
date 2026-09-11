@@ -5984,6 +5984,27 @@ mod tests {
         );
     }
 
+    /// The round trip the map exists to close, attempted through a second spelling of the one
+    /// path. The write records the file; the read asks about `src/./fetched.json`, which
+    /// `Workspace::resolve` accepts and opens as the same file, so the same rule has to answer or
+    /// the fetched page comes back trusted.
+    #[test]
+    fn a_file_read_back_under_another_spelling_is_still_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = policy_trusting(&mut sink, &["."]);
+
+        policy.reconcile_after_write("src/fetched.json", Label::untrusted_public());
+
+        let label = policy
+            .observe_path(Capability::FileRead, "src/./fetched.json")
+            .expect("observes");
+        assert_eq!(
+            label.integrity,
+            Integrity::Untrusted,
+            "a second spelling of the path laundered the write into trusted content"
+        );
+    }
+
     /// Model output is labelled at its context's integrity. With a clean context that is
     /// trusted, which is what makes silent writes possible at all.
     #[test]

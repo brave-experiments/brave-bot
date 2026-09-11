@@ -135,7 +135,8 @@ impl TrustStore {
     }
 }
 
-/// Whether a normalised key names an absolute path rather than a workspace-relative one.
+/// Whether a path, or the key it normalises to, names an absolute path rather than a
+/// workspace-relative one.
 ///
 /// The two are separate namespaces, and nothing is a member of both. A relative key is a path
 /// under the primary root; an absolute key is a path in a directory the user added by name.
@@ -145,8 +146,17 @@ fn is_absolute(key: &str) -> bool {
 
 /// Normalise a path for comparison.
 ///
-/// Relative paths lose a leading `./` and any surrounding slashes, so `./src/`, `src` and `src/`
-/// are one rule rather than three that shadow each other confusingly.
+/// Every `.` segment and every empty one goes, so `./src/`, `src`, `src/`, `./src/./` and
+/// `src//` are one rule rather than five that shadow each other. Anything less is a bypass, not
+/// an inconvenience: `Workspace::resolve` accepts a `.` component and opens the same file, so a
+/// key that kept one would leave a per-file untrusted rule the planner could spell past, and the
+/// page a turn fetched into that file would be read back as trusted.
+///
+/// A `..` segment is kept as written rather than resolved. Resolving one lexically would be a
+/// guess: nothing here has a filesystem, and `a/../b` names `b` only if `a` is a directory and
+/// not a symlink somewhere else. A confined path never contains one, since confinement refuses
+/// `..` rather than resolving it (TRUST-10), so what this leaves unmerged is the spelling a
+/// dropped file arrives under.
 ///
 /// An absolute path **keeps** its leading slash, which is what makes it a different rule from the
 /// relative path spelled the same way. Collapsing the two would be a security bug rather than an
@@ -154,16 +164,14 @@ fn is_absolute(key: &str) -> bool {
 /// rule, so trusting one added directory would silently trust the entire workspace.
 fn normalise(path: &str) -> String {
     let trimmed = path.trim();
-    if let Some(rest) = trimmed.strip_prefix('/') {
-        let rest = rest.trim_end_matches('/');
-        return format!("/{rest}");
-    }
-    let trimmed = trimmed.strip_prefix("./").unwrap_or(trimmed);
-    let trimmed = trimmed.trim_matches('/');
-    if trimmed == "." || trimmed.is_empty() {
-        String::new()
-    } else {
-        trimmed.to_string()
+    let segments = trimmed
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    match is_absolute(trimmed) {
+        true => format!("/{segments}"),
+        false => segments,
     }
 }
 
@@ -296,6 +304,32 @@ mod tests {
         );
     }
 
+    /// The laundering round trip this closes: a per-file untrusted rule the planner can spell
+    /// past is no rule at all, since `Workspace::resolve` accepts a `.` component and a repeated
+    /// separator and opens the very same file. Every spelling of that file has to reach the rule
+    /// the write recorded, not the workspace root rule above it.
+    #[test]
+    fn every_equivalent_spelling_of_a_path_reaches_the_same_rule() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("src/fetched.json");
+
+        for spelling in [
+            "src/fetched.json",
+            "./src/fetched.json",
+            "src/./fetched.json",
+            "src//fetched.json",
+            "./src/./fetched.json",
+            "src/.//fetched.json",
+        ] {
+            assert_eq!(
+                store.integrity_of(spelling),
+                Some(Integrity::Untrusted),
+                "{spelling} missed the rule, so the workspace root rule decided instead"
+            );
+        }
+    }
+
     /// Re-deciding must replace the earlier decision rather than accumulating rules whose
     /// resolution depends on insertion order.
     #[test]
@@ -413,6 +447,29 @@ mod tests {
             !store.is_trusted("/Users/me/notes/todo.md"),
             "a differently spelled path became a second rule"
         );
+    }
+
+    /// The interior spellings too, in this namespace as in the relative one. An added directory
+    /// holds files worth distrusting one at a time (TRUST-9), so a spelling that misses a
+    /// per-file rule launders content here exactly as it does in the workspace.
+    #[test]
+    fn every_equivalent_absolute_spelling_reaches_the_same_rule() {
+        let mut store = TrustStore::new();
+        store.trust("/Users/me/notes");
+        store.distrust("/Users/me/notes/clipped.md");
+
+        for spelling in [
+            "/Users/me/notes/clipped.md",
+            "/Users/me/./notes/clipped.md",
+            "/Users/me/notes//clipped.md",
+            "/Users/me/notes/./clipped.md",
+        ] {
+            assert_eq!(
+                store.integrity_of(spelling),
+                Some(Integrity::Untrusted),
+                "{spelling} missed the rule, so the added directory's own rule decided instead"
+            );
+        }
     }
 
     /// Moving the working directory must not carry the yes given for one project into another. The

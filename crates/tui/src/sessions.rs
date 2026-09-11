@@ -332,15 +332,21 @@ impl Record {
     /// An integrity this build does not recognise reads as untrusted, the safe direction, as
     /// [`bravebot_agent::conversation::Snapshot`] already does for the context. A hand-edited or
     /// newer-than-this-build record therefore resumes with less trust rather than more.
+    ///
+    /// Untrusted rules are replayed last, so two recorded spellings of one path resume as
+    /// untrusted. Distinct keys are order-independent, and a record carries no decision order to
+    /// honour anyway: it is a sorted list, so leaving a collision to it would let the shorter
+    /// spelling decide. A record written before every spelling of a path became one rule can hold
+    /// both, and the file the session marked untrusted is the one a resume must not read back as
+    /// trusted.
     pub fn trust_map(&self) -> Option<TrustStore> {
         let rules = self.trust.as_ref()?;
         let mut trust = TrustStore::new();
-        for rule in rules {
-            if rule.integrity == TRUSTED {
-                trust.trust(&rule.path);
-            } else {
-                trust.distrust(&rule.path);
-            }
+        for rule in rules.iter().filter(|rule| rule.integrity == TRUSTED) {
+            trust.trust(&rule.path);
+        }
+        for rule in rules.iter().filter(|rule| rule.integrity != TRUSTED) {
+            trust.distrust(&rule.path);
         }
         Some(trust)
     }
@@ -1423,6 +1429,32 @@ mod tests {
         let map = record.trust_map().expect("a map was recorded");
         assert!(map.is_trusted("src/main.rs"));
         assert!(!map.is_trusted("src/fetched.json"));
+    }
+
+    /// A record written before every spelling of a path became one rule can hold two spellings of
+    /// one file, and the two now collapse to a single key. The untrusted answer is the one the
+    /// session actually gave about that file, so it has to be the one that survives; leaving the
+    /// collision to the record's sort order would let `src/./x` be overwritten by `src/x` and
+    /// hand the resumed turn a poisoned file as trusted content.
+    #[test]
+    fn two_recorded_spellings_of_one_path_resume_as_untrusted() {
+        let mut record = a_record();
+        record.trust = Some(vec![
+            StoredRule {
+                path: "src/./fetched.json".to_string(),
+                integrity: "untrusted".to_string(),
+            },
+            StoredRule {
+                path: "src/fetched.json".to_string(),
+                integrity: "trusted".to_string(),
+            },
+        ]);
+
+        let map = record.trust_map().expect("a map was recorded");
+        assert!(
+            !map.is_trusted("src/fetched.json"),
+            "a resume upgraded a file the session had marked untrusted"
+        );
     }
 
     /// A resumed session asks about writes, whatever the session that wrote the record was doing when
