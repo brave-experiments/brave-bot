@@ -104,10 +104,18 @@ impl std::error::Error for BedrockError {}
 
 /// The status AWS answers a request it will not accept the contents of.
 ///
-/// A validation refusal, which is what a model that does not do prompt caching answers a request
-/// carrying cache breakpoints. Not worth sending again unchanged, and the one thing worth changing
-/// is the part of the request nobody asked for.
+/// A validation refusal, which is what a model answers a parameter it does not define. Not worth
+/// sending again unchanged, and the one thing worth changing is the part of the request nobody
+/// asked for.
 const REFUSED_CONTENTS_STATUS: u16 = 400;
+
+/// The status a request carrying cache breakpoints is refused with.
+///
+/// A model that does not do prompt caching answers 403, not the validation status a rejected
+/// parameter gets, and it is the same 403 an expired credential gets. Nothing in the body is read
+/// to tell the two apart: the breakpoints are dropped and the request sent again, and a failure
+/// that survives that was the credential after all.
+const REFUSED_CACHING_STATUS: u16 = 403;
 
 /// The statuses AWS answers a credential it will not accept with.
 ///
@@ -141,6 +149,18 @@ impl BedrockError {
         matches!(
             self,
             Self::Egress(EgressError::Status { status, .. }) if *status == REFUSED_CONTENTS_STATUS
+        )
+    }
+
+    /// Whether this could be AWS refusing the cache breakpoints a request carried.
+    ///
+    /// Could be, rather than is: the status a model without prompt caching answers is the one an
+    /// expired credential answers too, and which it was is settled by asking again without them
+    /// rather than by reading the body.
+    pub fn may_refuse_caching(&self) -> bool {
+        matches!(
+            self,
+            Self::Egress(EgressError::Status { status, .. }) if *status == REFUSED_CACHING_STATUS
         )
     }
 }
@@ -177,6 +197,12 @@ pub struct BedrockClient<'a> {
     /// True until a model refuses one, which is the only way to find out that it does not do
     /// prompt caching: an inference-profile ARN does not say which model is behind it.
     breakpoints: bool,
+    /// Whether requests still carry the effort level a turn was given.
+    ///
+    /// True until a model refuses the field, which is the only way to find out that it does not
+    /// define one. The field belongs to the model's own provider rather than to this API, so a
+    /// model from another provider refuses it by name.
+    effort: bool,
 }
 
 impl<'a> BedrockClient<'a> {
@@ -186,6 +212,7 @@ impl<'a> BedrockClient<'a> {
             egress,
             cancel: None,
             breakpoints: true,
+            effort: true,
         }
     }
 
@@ -211,6 +238,10 @@ impl<'a> BedrockClient<'a> {
                     self.breakpoints = false;
                     probed = true;
                 }
+                Err(error) if self.worth_dropping_effort(&error) => {
+                    self.effort = false;
+                    probed = true;
+                }
                 Err(error) if worth_another_attempt(attempt, &error) => {
                     std::thread::sleep(backoff(attempt));
                     attempt += 1;
@@ -229,7 +260,15 @@ impl<'a> BedrockClient<'a> {
     /// The breakpoints are the one part of a request nobody asked for, so a service that refuses it
     /// is worth asking without them before the failure is anybody else's.
     fn worth_dropping_breakpoints(&self, error: &BedrockError) -> bool {
-        self.breakpoints && error.is_refused_on_contents()
+        self.breakpoints && error.may_refuse_caching()
+    }
+
+    /// Whether this failure is worth sending the same request again without its effort level.
+    ///
+    /// The level is the other part of a request nobody asked for, and the only one a validation
+    /// refusal can be about once the breakpoints are gone.
+    fn worth_dropping_effort(&self, error: &BedrockError) -> bool {
+        self.effort && error.is_refused_on_contents()
     }
 
     /// Settle what a probe found, once the request it was part of has finished one way or the other.
@@ -242,6 +281,7 @@ impl<'a> BedrockClient<'a> {
     fn probe_settled(&mut self, probed: bool, failed: bool) {
         if probed && failed {
             self.breakpoints = true;
+            self.effort = true;
         }
     }
 
@@ -309,6 +349,10 @@ impl<'a> BedrockClient<'a> {
             match self.stream_once(policy, request, attempt, &mut progress) {
                 Err(error) if self.worth_dropping_breakpoints(&error) => {
                     self.breakpoints = false;
+                    probed = true;
+                }
+                Err(error) if self.worth_dropping_effort(&error) => {
+                    self.effort = false;
                     probed = true;
                 }
                 Err(error) if worth_another_attempt(attempt, &error) => {
@@ -477,7 +521,7 @@ impl<'a> BedrockClient<'a> {
         let model = self.model_for(request)?;
 
         let converse = protocol::request_from(&request.messages, request.tools.as_deref())
-            .with_effort(request.effort);
+            .with_effort(request.effort.filter(|_| self.effort));
         let converse = if self.breakpoints {
             converse
         } else {
@@ -747,6 +791,14 @@ mod tests {
         }
     }
 
+    /// A refusal carrying one status, as the egress layer reports one.
+    fn refusal(status: u16) -> BedrockError {
+        BedrockError::Egress(EgressError::Status {
+            url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
+            status,
+        })
+    }
+
     fn config() -> Bedrock {
         Bedrock::from_lookup(|name| {
             match name {
@@ -1009,22 +1061,55 @@ mod tests {
     /// inference-profile ARN does not say which model is behind it. A model that refuses the
     /// breakpoints refuses the whole request, so without asking again without them, every request
     /// to such a model fails and the tier is unusable.
+    ///
+    /// The status is the one measured against a Bedrock-hosted OpenAI model, which answers 403 with
+    /// a message about prompt caching rather than the validation status a rejected parameter gets.
     #[test]
     fn a_request_refused_on_its_contents_is_asked_again_without_the_breakpoints() {
         let config = config();
         let egress = Egress::new();
         let mut client = BedrockClient::new(&config, &egress);
 
-        let refused = BedrockError::Egress(EgressError::Status {
-            url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
-            status: 400,
-        });
+        let refused = refusal(403);
         assert!(client.worth_dropping_breakpoints(&refused));
 
         // Once only. The answer is remembered, so a second refusal is the caller's rather than a
         // request sent for a third time carrying nothing new.
         client.breakpoints = false;
         assert!(!client.worth_dropping_breakpoints(&refused));
+    }
+
+    /// The level names a field the model's own provider defines, so a model from another provider
+    /// refuses the request on the field name. Measured: a Bedrock-hosted OpenAI model answers 400
+    /// `Unknown parameter: 'output_config'`, and answers the same to the OpenAI spelling, so the
+    /// level is not this model's to read under any name and the only fix is to stop sending it.
+    #[test]
+    fn a_request_refused_on_a_parameter_is_asked_again_without_the_effort_level() {
+        let config = config();
+        let egress = Egress::new();
+        let mut client = BedrockClient::new(&config, &egress);
+
+        let refused = refusal(400);
+        assert!(client.worth_dropping_effort(&refused));
+
+        client.effort = false;
+        assert!(!client.worth_dropping_effort(&refused));
+    }
+
+    /// The two are told apart by status alone, so neither concession is spent on the other's
+    /// refusal: a rejected parameter must not cost the session its caching, and a model without
+    /// caching must not cost it the level it was asked for.
+    #[test]
+    fn each_refusal_gives_up_only_its_own_part_of_the_request() {
+        let config = config();
+        let egress = Egress::new();
+        let client = BedrockClient::new(&config, &egress);
+
+        assert!(client.worth_dropping_breakpoints(&refusal(403)));
+        assert!(!client.worth_dropping_effort(&refusal(403)));
+
+        assert!(client.worth_dropping_effort(&refusal(400)));
+        assert!(!client.worth_dropping_breakpoints(&refusal(400)));
     }
 
     /// A request is refused on its contents for reasons that have nothing to do with the
@@ -1058,23 +1143,23 @@ mod tests {
         }
     }
 
-    /// Every other failure leaves the breakpoints alone. Dropping them on a timeout or an expired
-    /// credential would spend the rest of the session paying full price for a prefix the service
-    /// had already read, for a reason that was never about the request's contents.
+    /// Every other failure leaves both alone. Giving either up on a timeout or a fault would
+    /// spend the rest of the session without something nothing had refused.
     #[test]
     fn only_a_refusal_on_the_contents_drops_the_breakpoints() {
         let config = config();
         let egress = Egress::new();
         let client = BedrockClient::new(&config, &egress);
 
-        for status in [401, 403, 429, 500, 503] {
-            let error = BedrockError::Egress(EgressError::Status {
-                url: "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/converse".to_string(),
-                status,
-            });
+        for status in [402, 404, 429, 500, 503] {
+            let error = refusal(status);
             assert!(
                 !client.worth_dropping_breakpoints(&error),
                 "{status} dropped the breakpoints"
+            );
+            assert!(
+                !client.worth_dropping_effort(&error),
+                "{status} dropped the effort level"
             );
         }
 
