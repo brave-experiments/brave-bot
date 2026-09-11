@@ -1784,15 +1784,18 @@ fn event_loop(
     // for again: it is reported by the listing and nowhere else, and nothing on disk remembers it.
     adopt_budget_for_current_model(&mut session, config);
 
+    // What the session begins holding, which is what decides whether the startup question is put
+    // to its user at all. Read off `start` before the match below consumes it.
+    let beginning = beginning_of(&start);
+
     // Outlives every turn, which is the point: a turn begins with the exchange so far rather
     // than with nothing, so the user can say "try that again" and be understood. A resumed
     // session begins with an exchange that outlived the process it happened in.
-    let (mut conversation, mut stored, inherited_trust, mut programs) = match start {
+    let (mut conversation, mut stored, mut programs) = match start {
         // Already answered before the loop was entered: the picker runs once, in `run`.
         Start::Fresh | Start::Choose => (
             Conversation::new(),
             crate::sessions::Handle::begin(workspace.root()),
-            None,
             // A session that was never asked vouches for nothing, exactly as with the map.
             TrustedPrograms::new(),
         ),
@@ -1827,11 +1830,8 @@ fn event_loop(
             if let Some(note) = crate::sessions::build_note(record.build.as_deref(), crate::BUILD) {
                 session.note(note);
             }
-            // The trust map goes with the session, so picking one up carries the answer its own
-            // user gave. `None` for a record from before this was kept, which is asked about.
-            let inherited = record.trust_map();
-            // The programs go the same way and for the same reason: the person resuming is the
-            // person who vouched for them. Unlike the map there is nothing to ask about an
+            // The programs go the way the map does and for the same reason: the person resuming
+            // is the person who vouched for them. Unlike the map there is nothing to ask about an
             // absent list, since an empty one simply means every run asks.
             let vouched = record.trusted_programs();
             // The other half of `/add-dir`, which the map cannot carry: a directory has to be
@@ -1840,14 +1840,13 @@ fn event_loop(
             for note in record.reopen_added_directories(&mut workspace) {
                 session.note(note);
             }
-            (conversation, handle, inherited, vouched)
+            (conversation, handle, vouched)
         }
     };
 
     // Settled once, before any turn. Nothing means the user left at the question, and a session
     // they never agreed to have must not begin behind it.
-    let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), inherited_trust)
-    else {
+    let Some(mut trust) = opening_trust(terminal, &mut session, workspace.root(), beginning) else {
         return Ok(left_behind(&stored));
     };
 
@@ -2219,7 +2218,8 @@ fn event_loop(
                 // context and the directories opened under it go too, since opening one is a grant
                 // and leaving it reachable with nothing vouching for it would outlive its answer.
                 workspace.close_added_directories();
-                let Some(fresh) = opening_trust(terminal, &mut session, workspace.root(), None)
+                let Some(fresh) =
+                    opening_trust(terminal, &mut session, workspace.root(), Beginning::New)
                 else {
                     return Ok(left_behind(&stored));
                 };
@@ -2919,6 +2919,7 @@ fn set_theme(session: &mut Session, name: &str) {
 }
 
 /// Where a session's opening trust map came from, which is what it says about it.
+#[derive(Debug)]
 enum Whence {
     /// The person answered the startup question just now.
     Asked,
@@ -2926,6 +2927,56 @@ enum Whence {
     Resumed,
     /// Nobody was asked, because the mode in force answers this question too.
     Unasked,
+}
+
+/// What a session brings to the startup question, which is all that decides whether it is put.
+#[derive(Debug)]
+enum Beginning {
+    /// A launch with nothing behind it, and `/clear`, which begins a session too. Nothing is
+    /// carried in, whatever any earlier session in this directory answered.
+    New,
+    /// A resume, holding the map the record being picked up kept. `None` where that record
+    /// predates maps being kept, which is asked about like anything else unanswered.
+    Resumed(Option<TrustStore>),
+}
+
+/// What the way a session was started leaves it holding.
+///
+/// Only a resume brings a map, and the map it brings is the record of the session it is picking
+/// up, so the answer honoured is the one that session's own user gave. The directory's other
+/// records are not read: a map taken from one of those would be standing permission granted on
+/// behalf of somebody who was never asked.
+fn beginning_of(start: &Start) -> Beginning {
+    match start {
+        // Choosing has already resolved into one of the other two by the time this runs.
+        Start::Fresh | Start::Choose => Beginning::New,
+        Start::Resuming(record) => Beginning::Resumed(record.trust_map()),
+    }
+}
+
+/// Where a session's opening map comes from, or that there is nobody to take it from.
+#[derive(Debug)]
+enum Opening {
+    /// Settled without asking, and what that says about where it came from.
+    Settled(TrustStore, Whence),
+    /// Nothing has answered, so the person is.
+    Ask,
+}
+
+/// Where the map comes from for a session that began this way, under this mode.
+///
+/// Everything about the answer bar the terminal it is put on, separated from [`opening_trust`] so
+/// it can be decided without one, the way [`crate::trust_prompt::answered_by`] is.
+fn opening_for(beginning: Beginning, mode: bravebot_agent::PermissionMode) -> Opening {
+    match beginning {
+        // Before the mode is consulted, because the question is not being put in either case and
+        // the map this session's own user gave is the more specific record.
+        Beginning::Resumed(Some(trust)) => Opening::Settled(trust, Whence::Resumed),
+        Beginning::New | Beginning::Resumed(None) => match crate::trust_prompt::answered_by(mode) {
+            Some(trust) => Opening::Settled(trust, Whence::Unasked),
+            None => Opening::Ask,
+        },
+    }
 }
 
 /// The trust map the session starts with, or nothing if the user asked to leave.
@@ -2948,14 +2999,11 @@ fn opening_trust(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &mut Session,
     root: &std::path::Path,
-    inherited: Option<TrustStore>,
+    beginning: Beginning,
 ) -> Option<TrustStore> {
-    let (trust, whence) = match inherited {
-        Some(trust) => (trust, Whence::Resumed),
-        None => match crate::trust_prompt::answered_by(session.permission_mode()) {
-            Some(trust) => (trust, Whence::Unasked),
-            None => (crate::trust_prompt::ask(terminal, root)?, Whence::Asked),
-        },
+    let (trust, whence) = match opening_for(beginning, session.permission_mode()) {
+        Opening::Settled(trust, whence) => (trust, whence),
+        Opening::Ask => (crate::trust_prompt::ask(terminal, root)?, Whence::Asked),
     };
 
     if !trust.is_trusted(".") {
@@ -8852,6 +8900,107 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A session that ran in this directory and vouched for it, which is what an earlier answer
+    /// of yes leaves behind in the directory's list of sessions.
+    fn a_record_that_answered_yes_here() -> Box<crate::sessions::Record> {
+        Box::new(
+            serde_json::from_value(serde_json::json!({
+                "id": "1-2",
+                "directory": "/tmp/x",
+                "title": "an earlier session here",
+                "started": 1,
+                "updated": 1,
+                "trust": [{"path": ".", "integrity": "trusted"}],
+                "conversation": {"messages": [], "context": "trusted"},
+            }))
+            .expect("a record"),
+        )
+    }
+
+    /// The opening map comes from how this session was started and from nowhere else. A fresh
+    /// start brings no record, so the question is put: reading back the yes somebody gave in this
+    /// directory last week would grant standing permission over the tree on behalf of a user
+    /// nobody asked. `/clear` begins a session too, and reaches this with the same
+    /// `Beginning::New`.
+    #[test]
+    fn a_fresh_session_is_asked_rather_than_inheriting_a_map() {
+        use bravebot_agent::PermissionMode;
+
+        assert!(
+            matches!(
+                opening_for(beginning_of(&Start::Fresh), PermissionMode::Ask),
+                Opening::Ask
+            ),
+            "a session started fresh took an answer its own user never gave",
+        );
+    }
+
+    /// A resume is not an exception to that: the answer it honours is the one its own user gave,
+    /// and it comes with the rules that session's writes recorded, which is what stops a resumed
+    /// turn reading back a file an earlier turn of the same session poisoned.
+    #[test]
+    fn a_resume_starts_with_the_map_its_own_record_kept() {
+        use bravebot_agent::PermissionMode;
+
+        let record = a_record_that_answered_yes_here();
+        match opening_for(beginning_of(&Start::Resuming(record)), PermissionMode::Ask) {
+            Opening::Settled(trust, Whence::Resumed) => {
+                assert!(trust.is_trusted("."));
+                assert!(trust.is_trusted("src/main.rs"), "the rule covers the tree");
+            }
+            settled => panic!("a resume did not take its own record's map: {settled:?}"),
+        }
+    }
+
+    /// Nothing recorded is not the same as nothing trusted, so a record from before maps were
+    /// kept is asked about rather than resumed into a map that vouches for nothing.
+    #[test]
+    fn a_record_from_before_maps_were_kept_is_asked_about() {
+        use bravebot_agent::PermissionMode;
+
+        let mut record = a_record_that_answered_yes_here();
+        record.trust = None;
+
+        assert!(
+            matches!(
+                opening_for(beginning_of(&Start::Resuming(record)), PermissionMode::Ask),
+                Opening::Ask
+            ),
+            "a record that answered nothing was resumed as an answer",
+        );
+    }
+
+    /// Bypassing answers the question rather than putting it, but a resume is still the more
+    /// specific record: the question is not being put in either case, so the mode has nothing to
+    /// answer, and a no given inside a trusted tree must survive being picked up again.
+    #[test]
+    fn a_resume_keeps_its_own_map_even_where_the_mode_would_answer() {
+        use bravebot_agent::PermissionMode;
+
+        let mut record = a_record_that_answered_yes_here();
+        record.trust = Some(vec![
+            crate::sessions::StoredRule {
+                path: ".".to_string(),
+                integrity: "trusted".to_string(),
+            },
+            crate::sessions::StoredRule {
+                path: "vendor".to_string(),
+                integrity: "untrusted".to_string(),
+            },
+        ]);
+
+        match opening_for(
+            beginning_of(&Start::Resuming(record)),
+            PermissionMode::Bypass,
+        ) {
+            Opening::Settled(trust, Whence::Resumed) => assert!(
+                !trust.is_trusted("vendor/lib.js"),
+                "the mode's own answer replaced the one the record kept",
+            ),
+            settled => panic!("a resume was answered by the mode instead: {settled:?}"),
+        }
     }
 
     /// Both halves of what `/cd` does, together: the working directory moves, and the directory
