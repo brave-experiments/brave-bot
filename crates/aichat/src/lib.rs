@@ -14,6 +14,8 @@
 //! reported in the response is preserved because the server may substitute a different
 //! one than was requested.
 
+#![forbid(unsafe_code)]
+
 pub mod models;
 pub mod protocol;
 

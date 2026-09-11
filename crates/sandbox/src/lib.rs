@@ -12,6 +12,8 @@
 //! caller believes it has a guarantee it does not have, and the audit trail records a
 //! sandbox that was never applied.
 
+#![deny(unsafe_code)]
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "macos")]

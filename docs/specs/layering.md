@@ -4,6 +4,9 @@ title: Layering
 status: normative
 governs:
   - crates/*/Cargo.toml
+  - crates/*/src/lib.rs
+  - crates/*/src/main.rs
+  - crates/*/build.rs
 ---
 
 ## Scope
@@ -59,7 +62,33 @@ replaced, so the content cannot draw its own.
 `verified-by: bravebot_cli::progress::quarantined_content_is_shown_and_marked_on_every_line`
 `verified-by: bravebot_cli::progress::quarantined_content_cannot_paint_its_own_margin`
 
+<a id="LAYER-4"></a>
+### LAYER-4: a crate root says what it does about unsafe
+
+Every crate root declares `#![forbid(unsafe_code)]`, or `#![deny(unsafe_code)]` with an
+`#[allow(unsafe_code)]` at each site that needs one. A library, a binary and a build script are
+each a crate root, and a `cfg(test)` module is part of the crate it sits in, so an `unsafe` block
+there is one of the crate's own and is named the same way.
+
+**Why.** Nearly every crate here contains no `unsafe` at all. Undeclared, that is a property
+nothing records: it holds by accident, and the first `unsafe` to arrive arrives silently. Declared,
+the compiler decides it, and what a reviewer reads is the sites that name themselves rather than
+every crate in the workspace. Two crates name sites: `bravebot-sandbox`, whose landlock syscalls
+are its reason for existing, and `bravebot-skus`, whose tests point `HOME` at a scratch directory.
+Taking `deny` where `forbid` would do is the way the rule is kept in letter and lost in substance,
+because `deny` is the one an `allow` added later reopens.
+
+`verified-by: bravebot_cli::unsafe_code::every_crate_root_says_what_it_does_about_unsafe`
+`verified-by: bravebot_cli::unsafe_code::a_crate_that_exempts_nothing_forbids_rather_than_denies`
+`verified-by: bravebot_cli::unsafe_code::allowing_unsafe_at_a_root_is_not_a_declaration`
+
 ## Known costs
+
+- **A crate root says nothing about the test binaries beside it.** A file under `tests/` is its
+  own crate that no root attribute reaches, so the `unsafe` in `bravebot-agent`'s and
+  `bravebot-tui`'s test helpers sits outside what LAYER-4 decides. Nothing in such a file ships,
+  and covering them would take an attribute per file with nothing to keep a new file honest, which
+  is the accident LAYER-4 exists to remove.
 
 - **`bravebot-net` is not the only crate that opens a socket.** `bravebot-skus` builds its own HTTP
   client and talks to Brave's subscription service directly, without depending on `bravebot-net`. That traffic carries credentials and an order id, never workspace

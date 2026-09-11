@@ -1,5 +1,7 @@
 //! Command-line entry point.
 
+#![forbid(unsafe_code)]
+
 mod progress;
 
 use bravebot_agent::turn::{self, Task};

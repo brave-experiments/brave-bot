@@ -13,6 +13,8 @@
 //! as it sees the other backend's. The reply is labelled untrusted-public and nothing here reads it:
 //! this crate speaks the wire protocol and mints no witness.
 
+#![forbid(unsafe_code)]
+
 pub mod credentials;
 pub mod eventstream;
 pub mod protocol;

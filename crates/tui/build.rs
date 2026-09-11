@@ -4,6 +4,8 @@
 //! wrong. Without this, matching one to the code that produced it means inferring the build from
 //! its own symptoms, which is guesswork exactly when guesswork is least affordable.
 
+#![forbid(unsafe_code)]
+
 use std::process::Command;
 
 fn main() {

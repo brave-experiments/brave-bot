@@ -10,6 +10,8 @@
 //! runtime error for whoever was given the binary. Builds that genuinely have no
 //! credentials, CI in particular, set BRAVEBOT_ALLOW_UNCONFIGURED_BUILD=1.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::fs;
 use std::path::Path;

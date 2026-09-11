@@ -17,6 +17,8 @@
 //! [tools/lsp.md]: ../../../docs/specs/tools/lsp.md
 //! [mcp.md]: ../../../docs/specs/mcp.md
 
+#![forbid(unsafe_code)]
+
 pub mod protocol;
 pub mod server;
 #[cfg(test)]

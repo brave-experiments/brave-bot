@@ -35,6 +35,8 @@
 //!
 //! The profile is opened read-only and nothing is ever written back to it.
 
+#![deny(unsafe_code)]
+
 pub mod device;
 pub mod profile;
 pub mod store;

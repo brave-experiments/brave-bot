@@ -8,6 +8,8 @@
 //! `en-US` is the reference. It owns the set of messages and the name and kind of every argument,
 //! so a translation can never change what a call site has to pass.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;

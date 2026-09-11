@@ -6,6 +6,8 @@
 //! reflex, dumping the config, would otherwise put a live credential in a log or
 //! an issue report.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::fmt;
 

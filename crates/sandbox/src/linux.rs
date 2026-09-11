@@ -32,6 +32,8 @@ const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 ///
 /// Passing a null attribute pointer with `LANDLOCK_CREATE_RULESET_VERSION` returns the
 /// version without creating a ruleset. A negative result means Landlock is absent.
+// The exemption sits on the function because the function is the syscall.
+#[allow(unsafe_code)]
 fn landlock_abi_version() -> libc::c_long {
     const LANDLOCK_CREATE_RULESET_VERSION: libc::c_ulong = 1;
     // Landlock has no libc wrapper, so the syscall is issued directly.
@@ -137,6 +139,7 @@ impl Sandbox for LandlockSandbox {
         // ruleset is installed in the child between fork and exec.
         // `pre_exec` is unsafe by definition: its closure runs in the forked child, where
         // only async-signal-safe work is allowed.
+        #[allow(unsafe_code)]
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             command.pre_exec(move || {
