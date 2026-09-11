@@ -375,7 +375,11 @@ pub struct Plan {
     pub writes: Vec<PathBuf>,
     /// Every file the plan reads by naming it as a source for a stream.
     pub reads: Vec<PathBuf>,
-    /// The label of anything fed to the first step's standard input.
+    /// The label of bytes the policy layer supplies to the first step's standard input.
+    ///
+    /// Only those. A `<` redirection is the other route to the same place, and it carries no
+    /// label here: it names a file the run opens itself, and it appears in that step's routes and
+    /// in [`Plan::reads`]. [`Plan::releases_private`] reads both.
     pub stdin: Option<crate::label::Label>,
 }
 
@@ -386,8 +390,24 @@ impl Plan {
     }
 
     /// Whether running this would put the user's private data into a program.
+    ///
+    /// Two routes reach the same place and either one is enough. [`Plan::stdin`] is the label of
+    /// bytes the policy layer supplies, which may be anything the reference it came from was. A
+    /// `<` redirection carries no label: it names a file the run opens itself, and a file's bytes
+    /// are the user's own data whatever the trust map says about the path, by the same reasoning
+    /// that makes a file read private. So a redirection is a release whichever file it names,
+    /// which is what makes this answerable from the plan alone.
+    ///
+    /// Any step's redirection, not only the one at the head of the line: a step in the middle of
+    /// a pipeline is handed the file in place of what the step before it printed, and it is
+    /// opened for that step the same way.
     pub fn releases_private(&self) -> bool {
         self.stdin.is_some_and(|label| !label.is_public())
+            || self
+                .steps()
+                .iter()
+                .flat_map(|step| &step.routes)
+                .any(|route| matches!(route, Route::Stdin { .. }))
     }
 
     /// The plan as a person should read it before approving.
@@ -659,6 +679,54 @@ mod tests {
             shown,
             "( /usr/bin/a ) || /usr/bin/prog >> /work/out.txt 2>&1"
         );
+    }
+
+    /// A `<` redirection names a file the run opens itself, and a file holds the user's own data
+    /// whatever the trust map says about the path. Nobody hands the plan a label for those bytes,
+    /// so a plan that reported only the labels it was given would report no release for the one
+    /// route by which private input actually reaches a program.
+    #[test]
+    fn a_file_redirected_into_a_program_is_private_input() {
+        let mut reading = step("cat", &[]);
+        reading.routes = vec![Route::Stdin {
+            path: PathBuf::from("/home/someone/.ssh/id_rsa"),
+        }];
+        assert!(
+            plan(Steps::Pipeline(vec![reading])).releases_private(),
+            "a file fed to a program was not counted as private input"
+        );
+    }
+
+    /// Not only the step at the head of the line. A step in the middle of a pipeline is handed
+    /// the file in place of what the step before it printed, and it is opened for that step the
+    /// same way, so it releases the same data.
+    #[test]
+    fn a_redirection_on_a_later_step_is_private_input() {
+        let mut reading = step("cat", &[]);
+        reading.routes = vec![Route::Stdin {
+            path: PathBuf::from("/home/someone/.ssh/id_rsa"),
+        }];
+        let line = Steps::Join {
+            left: Box::new(Steps::Pipeline(vec![step("echo", &["x"])])),
+            joiner: Joiner::Then,
+            right: Box::new(Steps::Pipeline(vec![step("wc", &["-l"]), reading])),
+        };
+        assert!(
+            plan(line).releases_private(),
+            "a file fed to a step further down the line was not counted"
+        );
+    }
+
+    /// A plan that feeds a program nothing releases nothing, and where its bytes *go* is a
+    /// separate question with a gate of its own: a destination is not private input.
+    #[test]
+    fn a_plan_that_feeds_a_program_nothing_releases_nothing() {
+        let mut writing = step("cat", &[]);
+        writing.routes = vec![Route::Stdout {
+            path: PathBuf::from("/work/out.txt"),
+            append: false,
+        }];
+        assert!(!plan(Steps::Pipeline(vec![writing])).releases_private());
     }
 
     /// Every step that could run is listed, including one a branch may not reach: it was still

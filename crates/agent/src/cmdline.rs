@@ -2635,6 +2635,29 @@ mod tests {
         assert_eq!(plan.reads, [tree.root.join("in.txt")]);
     }
 
+    /// A `<` is a read and it is also standard input: the file's bytes go into a program, which
+    /// releases them somewhere this policy stops governing. The compiled plan is where the prompt
+    /// and the gate both read that from, so the compiler is what has to record it.
+    #[test]
+    fn an_input_redirection_is_private_input() {
+        let tree = Tree::new("private-input");
+        tree.file("in.txt");
+        let plan = compiled("cat < in.txt", &tree.root);
+        assert!(
+            plan.releases_private(),
+            "a line feeding a file to a program did not say it releases private data"
+        );
+    }
+
+    /// The other redirections release nothing: `>` is a destination, with a gate of its own, and
+    /// `2>&1` touches no file at all.
+    #[test]
+    fn a_line_that_only_writes_releases_nothing() {
+        let tree = Tree::new("writes-only");
+        let plan = compiled("cat > out.txt 2>&1", &tree.root);
+        assert!(!plan.releases_private());
+    }
+
     /// Renaming a descriptor touches no file. Recording it as a write would put a file called `1`
     /// in front of a person and ask them to endorse it.
     #[test]

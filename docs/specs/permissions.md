@@ -202,6 +202,7 @@ anybody, and the endorsement is minted for the path the person saw, so nothing a
 stand in for having looked.
 
 `verified-by: bravebot_core::policy::private_input_asks_even_for_a_command_a_rule_allows`
+`verified-by: bravebot_core::policy::private_input_asks_even_for_a_line_a_rule_allows`
 `verified-by: bravebot_core::policy::a_reference_named_write_asks_whatever_a_rule_says`
 
 <a id="PERM-10"></a>

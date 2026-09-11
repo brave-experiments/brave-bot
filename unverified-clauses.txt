@@ -1,7 +1,7 @@
 # Spec clauses whose verified-by value is none.
 # Source: docs/specs/**/*.md, one line per clause, as path:CLAUSE-ID: heading.
 # Withdrawn clauses carry no verified-by line at all and are not listed.
-# Total: 31 clauses across 19 specs.
+# Total: 30 clauses across 19 specs.
 
 docs/specs/cli.md:CLI-6: a failure exits non-zero
 docs/specs/incognito.md:INCOG-7: importing a subscription is refused rather than silently skipped
@@ -20,7 +20,6 @@ docs/specs/shell-mode.md:SHELL-4: only a line a human typed
 docs/specs/shell-mode.md:SHELL-5: the planner gets no shell tool, ever
 docs/specs/trace.md:TRACE-2: the trail holds no content
 docs/specs/trust-map.md:TRUST-8: a quarantined read offers the same rule, at the moment it bites
-docs/specs/tools/command-line.md:CMDLINE-5: a redirection target is a write destination and takes the write gates
 docs/specs/tools/command-line.md:CMDLINE-8: a plan may prove its output's label from what it read
 docs/specs/tools/command-line.md:CMDLINE-9: a read-proven plan does not prompt
 docs/specs/tools/command-line.md:CMDLINE-10: output comes back as text whenever the planner may read it

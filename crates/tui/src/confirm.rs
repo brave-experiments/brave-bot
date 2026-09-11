@@ -1419,6 +1419,52 @@ mod tests {
         assert_eq!(shouted, None, "the shifted spelling still answered");
     }
 
+    /// A plan with a `<` redirection, which is the route by which private input actually reaches
+    /// a program. The drawing and the handler both have to withhold `a` here for the same reason
+    /// they withhold it for supplied bytes: the run asks every time, so the key would promise
+    /// something that will not happen, over a file the entry it records would not even name.
+    #[test]
+    fn a_run_reading_a_file_offers_no_standing_permission() {
+        let drawn = rendered_run(&a_run_reading_a_file());
+        assert!(
+            drawn.contains("cannot be remembered"),
+            "the prompt offered to remember a run that will always ask: {drawn}"
+        );
+
+        let pressed = run_answer_for(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &a_run_reading_a_file(),
+        );
+        assert_eq!(
+            pressed, None,
+            "`a` answered a prompt that does not offer it"
+        );
+    }
+
+    /// A compiled plan that feeds a file to a program, as `cat < ~/.ssh/id_rsa` compiles.
+    fn a_run_reading_a_file() -> RunRequest {
+        let secret = std::path::PathBuf::from("/home/someone/.ssh/id_rsa");
+        let reading = bravebot_core::command::Step {
+            program: "cat".to_string(),
+            resolved: std::path::PathBuf::from("/bin/cat"),
+            args: Vec::new(),
+            environment: Vec::new(),
+            routes: vec![bravebot_core::command::Route::Stdin {
+                path: secret.clone(),
+            }],
+        };
+        RunRequest {
+            plan: bravebot_core::command::Plan {
+                line: "cat < /home/someone/.ssh/id_rsa".to_string(),
+                directory: std::path::PathBuf::from("/home/someone/project"),
+                steps: bravebot_core::command::Steps::Pipeline(vec![reading]),
+                writes: Vec::new(),
+                reads: vec![secret],
+                stdin: None,
+            },
+        }
+    }
+
     /// Refusing `a` must not take the answers the prompt does offer with it: a private run can
     /// still be approved for this one time, and still refused.
     #[test]
