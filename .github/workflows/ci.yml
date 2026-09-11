@@ -48,6 +48,34 @@ jobs:
       - name: Test
         run: cargo test --all --locked
 
+  # The macOS confinement backend is compiled on no other platform, so without this job the
+  # whole Seatbelt half of crates/sandbox, and every test that pins it, is neither built, run,
+  # nor linted anywhere in CI. Clippy runs here for the same reason as the tests: the `check`
+  # job cannot lint a module its target never compiles. Formatting is not repeated, since it
+  # does not vary by platform.
+  macos:
+    name: Lint and test on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Rust
+        # Pinned to a full commit SHA; see the note in the `check` job above.
+        # nosemgrep: brave-third-party-action-not-pinned-to-commit-sha
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all --locked
+
   npm-lockfile:
     name: npm lockfile
     runs-on: ubuntu-latest
