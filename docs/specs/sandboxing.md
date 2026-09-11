@@ -90,3 +90,6 @@ road.
 `verified-by: bravebot_sandbox::linux::a_policy_requiring_subprocess_denial_is_refused`
 `verified-by: bravebot_sandbox::lib::an_unavailable_backend_reports_no_confinement`
 `verified-by: bravebot_sandbox::policy::confinement_levels_render_for_the_audit_trail`
+`verified-by: bravebot_cli::main::doctor_names_the_confinement_level_in_force`
+`verified-by: bravebot_cli::main::doctor_says_whether_the_kernel_enforces_network_denial`
+`verified-by: bravebot_cli::main::confinement_that_could_not_be_established_fails_the_run`

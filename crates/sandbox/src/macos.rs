@@ -126,7 +126,24 @@ impl Sandbox for SeatbeltSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::process::Stdio;
+
+    /// `CURLE_COULDNT_CONNECT`: curl reached the connection and was refused it. Any other code
+    /// means it stopped before that, which is some other denial reported as this one.
+    const CURL_COULDNT_CONNECT: i32 = 7;
+
+    /// touch reporting that the operation it was asked for failed.
+    const TOUCH_FAILED: i32 = 1;
+
+    /// Answer one request, so a curl that was permitted a socket gets a reply and exits rather
+    /// than waiting out its own timeout. Called only where a connection is expected to arrive.
+    fn answer_one(listener: &TcpListener) {
+        let (mut stream, _) = listener.accept().expect("the connection arrives");
+        let _ = stream.read(&mut [0u8; 1024]);
+        let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+    }
 
     #[test]
     fn a_strict_profile_denies_by_default() {
@@ -243,8 +260,14 @@ mod tests {
             .allow_read("/usr")
             .allow_read("/bin");
 
-        let target = crate::testutil::scratch_dir("bravebot-sandbox-must-not-exist");
-        let _ = std::fs::remove_file(&target);
+        // The directory has to be there before touch runs, and empty. Into a parent that does
+        // not exist, touch fails with ENOENT and creates nothing whatever the profile permits,
+        // which holds just as well against a sandbox granting every write; and a file left by a
+        // run that failed would fail every run after it.
+        let dir = crate::testutil::scratch_dir("bravebot-sandbox-denied-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch directory is creatable");
+        let target = dir.join("must-not-exist");
 
         let mut child = sandbox
             .command("/usr/bin/touch", &[target.display().to_string()], &policy)
@@ -255,36 +278,73 @@ mod tests {
             .expect("should spawn");
         let status = child.wait().expect("should wait");
 
-        assert!(!status.success(), "write should have been denied");
+        // touch's own refusal, rather than any failure at all: sandbox-exec declining to exec it
+        // exits 71 and a process dying before main exits by signal, and neither of those says
+        // anything about a write.
+        assert_eq!(
+            status.code(),
+            Some(TOUCH_FAILED),
+            "the write was not what failed"
+        );
         assert!(!target.exists(), "file was created despite confinement");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Network denial is the property that makes exfiltration structurally impossible,
     /// so it is asserted against a real process rather than only in the profile text.
+    ///
+    /// Both halves run against a socket this test is listening on. The permitted half is what
+    /// makes the denied half mean anything: curl exits 7 against a port nothing is listening on
+    /// just as readily as against a socket it was refused, so without establishing that a
+    /// connection succeeds here, the denied half would pass against a sandbox that enforces
+    /// nothing.
     #[test]
     fn a_confined_process_cannot_reach_the_network() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port to connect to");
+        let port = listener.local_addr().expect("the bound address").port();
+
         let sandbox = SeatbeltSandbox::new().expect("sandbox-exec is present on macOS");
-        let policy = SandboxPolicy::strict()
+        let denied = SandboxPolicy::strict()
             .allow_read("/usr")
             .allow_read("/bin")
-            .allow_read("/etc")
+            // Resolved rather than /etc, which is a symlink to it. Seatbelt matches the resolved
+            // path, so a grant for /etc reaches nothing, and curl exits over its unreadable
+            // LibreSSL configuration before it opens a socket at all.
+            .allow_read("/private/etc")
             .allow_read("/System")
             .allow_read("/Library");
+        let permitted = denied.clone().allow_network_egress();
 
-        let args: Vec<String> = ["-s", "-m", "5", "-o", "/dev/null", "https://example.com"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let mut child = sandbox
-            .command("/usr/bin/curl", &args, &policy)
-            .expect("command builds")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("should spawn");
-        assert!(
-            !child.wait().expect("should wait").success(),
-            "network access should have been denied"
+        // An address, so no resolver is involved, and stdout is discarded, so curl needs no file
+        // to write the body to.
+        let curl = |policy: &SandboxPolicy| {
+            let args: Vec<String> = ["-s", "-m", "5", &format!("http://127.0.0.1:{port}/")]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            sandbox
+                .command("/usr/bin/curl", &args, policy)
+                .expect("command builds")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("should spawn")
+        };
+
+        let mut reaching = curl(&permitted);
+        answer_one(&listener);
+        assert_eq!(
+            reaching.wait().expect("should wait").code(),
+            Some(0),
+            "a permitted process could not reach the listener, so nothing below means anything"
+        );
+
+        let mut refused = curl(&denied);
+        assert_eq!(
+            refused.wait().expect("should wait").code(),
+            Some(CURL_COULDNT_CONNECT),
+            "the connection was not what failed, so this says nothing about network denial"
         );
     }
 }
