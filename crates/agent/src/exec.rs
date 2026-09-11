@@ -217,15 +217,26 @@ pub fn run_within(
             routes: Vec::new(),
         })
         .collect();
-    Running::new(directory, cancel, limit).finish(&Steps::Pipeline(steps))
+    // A pipeline carries no redirections, so there is nothing for it to report having opened.
+    Running::new(directory, cancel, limit).finish(&Steps::Pipeline(steps), &mut Vec::new())
 }
 
 /// Run a compiled command line and collect what it printed.
 ///
 /// Every part of the plan shares one deadline, because the limit is on the line rather than on
 /// any one program in it, and a part reached after the time ran out is not started.
-pub fn run_plan(plan: &Plan, cancel: &Cancel, limit: Duration) -> Result<Ran, ExecError> {
-    Running::new(&plan.directory, cancel, limit).finish(&plan.steps)
+///
+/// `opened` collects the destinations this line opened for writing, in the order they were
+/// opened, and is filled in whatever becomes of the line. The caller decides what the trust map
+/// records about a file bytes landed in, and the plan's write set cannot answer that: it names
+/// every branch, and a branch that is not taken opens nothing.
+pub fn run_plan(
+    plan: &Plan,
+    cancel: &Cancel,
+    limit: Duration,
+    opened: &mut Vec<std::path::PathBuf>,
+) -> Result<Ran, ExecError> {
+    Running::new(&plan.directory, cancel, limit).finish(&plan.steps, opened)
 }
 
 /// Where one of a step's streams goes.
@@ -253,6 +264,8 @@ struct Running<'a> {
     stderr: String,
     codes: Vec<Option<i32>>,
     stopped: Option<Duration>,
+    /// The destinations opened for writing so far, in the order the steps opened them.
+    wrote: Vec<std::path::PathBuf>,
 }
 
 impl<'a> Running<'a> {
@@ -266,11 +279,21 @@ impl<'a> Running<'a> {
             stderr: String::new(),
             codes: Vec::new(),
             stopped: None,
+            wrote: Vec::new(),
         }
     }
 
-    fn finish(mut self, steps: &Steps) -> Result<Ran, ExecError> {
-        let ended_well = self.run(steps)?;
+    fn finish(
+        mut self,
+        steps: &Steps,
+        opened: &mut Vec<std::path::PathBuf>,
+    ) -> Result<Ran, ExecError> {
+        let outcome = self.run(steps);
+        // Before the error is handed on. A destination is truncated as its step begins, so a line
+        // that could not start its next program has already written where it got to, and a caller
+        // that only heard about the files of a line that ended well would miss those.
+        opened.append(&mut self.wrote);
+        let ended_well = outcome?;
         Ok(Ran {
             stdout: self.stdout,
             stderr: self.stderr,
@@ -365,8 +388,17 @@ impl<'a> Running<'a> {
             // The duplicate is what `2>&1` needs: a second handle on wherever standard output is
             // going at that point, rather than a second place.
             let (writing, reading, duplicate) = destination(&out)?;
+            // Recorded once the file is open, so a target that could not be opened at all, a
+            // directory among them, is not reported as a file this line wrote.
+            if let Where::File(path, _) = &out {
+                self.wrote.push(path.clone());
+            }
             let (erring, err_reading) = match &err {
-                Where::File(path, append) => (Stdio::from(for_writing(path, *append)?), None),
+                Where::File(path, append) => {
+                    let file = for_writing(path, *append)?;
+                    self.wrote.push(path.clone());
+                    (Stdio::from(file), None)
+                }
                 Where::AsStdout => (
                     duplicate.ok_or_else(|| {
                         ExecError::Io(

@@ -1739,8 +1739,10 @@ impl Workspace {
     ///
     /// Relative to the primary root for a file in the project, and absolute for one in an added
     /// directory. That is the same spelling each would have to be given to reach the file again, so
-    /// a listing can be read and acted on without knowing which tree an entry came from.
-    fn relative_display(&self, path: &Path) -> String {
+    /// a listing can be read and acted on without knowing which tree an entry came from, and it is
+    /// the spelling the trust map keys a rule about that file under: the two namespaces it keeps
+    /// apart are exactly these.
+    pub(crate) fn relative_display(&self, path: &Path) -> String {
         match path.strip_prefix(&self.root) {
             Ok(relative) => relative.to_string_lossy().to_string(),
             Err(_) => path.to_string_lossy().to_string(),

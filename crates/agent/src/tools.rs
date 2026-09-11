@@ -2835,7 +2835,24 @@ fn run<S: Sink, C: Confirmer>(
         };
     }
 
-    match crate::exec::run_plan(&plan, tools.cancel, crate::exec::LIMIT) {
+    // A redirection is a write, so the map has to say what its destination holds once the line
+    // has run: untrusted bytes landing in a vouched-for tree must mark that path untrusted, or a
+    // later read hands them back to the planner as trusted.
+    //
+    // What the run reports opening, never the plan's write set. The set names every branch, so a
+    // destination a line decided against is in it, and a rule about a file nothing wrote would
+    // quarantine a file the planner can read today. Spelled the way a read of the file is
+    // spelled, because relative and absolute rules are separate namespaces in the map and a rule
+    // in the wrong one decides nothing.
+    let mut opened: Vec<std::path::PathBuf> = Vec::new();
+    let ran = crate::exec::run_plan(&plan, tools.cancel, crate::exec::LIMIT, &mut opened);
+    let written: Vec<String> = opened
+        .iter()
+        .map(|path| tools.workspace.relative_display(path))
+        .collect();
+    policy.reconcile_after_run(&written, label);
+
+    match ran {
         Ok(ran) => {
             // stdout and stderr together, because a program that failed usually explains itself
             // on stderr and a result that dropped the explanation would be the least useful thing

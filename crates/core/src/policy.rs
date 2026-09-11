@@ -2775,6 +2775,39 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         );
     }
 
+    /// Update the trust map for the destinations a command line opened for writing.
+    ///
+    /// `written` is the label the run gate fixed for the line's output, and `paths` are the files
+    /// it opened, spelled the way a read of them is spelled. A redirection is a write this system
+    /// performs, so untrusted output landing in a vouched-for tree marks those paths untrusted,
+    /// which is what stops the bytes being read back as trusted.
+    ///
+    /// One direction. A trusted line is no evidence that its destination holds only trusted
+    /// bytes: `>>` keeps whatever was already in the file, and the label is a statement about
+    /// who answered for the programs rather than about what any one file now holds. So a line
+    /// never raises a path's trust, and raising it stays something a person does.
+    pub fn reconcile_after_run(&mut self, paths: &[String], written: Label) {
+        if paths.is_empty() {
+            return;
+        }
+
+        if written.is_trusted() {
+            self.allow(
+                "trust",
+                format!(
+                    "{} left as the map had them: a line's output says nothing about what was \
+                     already in a file it added to",
+                    paths.join(", ")
+                ),
+            );
+            return;
+        }
+
+        for path in paths {
+            self.reconcile_after_write(path, written);
+        }
+    }
+
     /// Record that the user named `path` themselves, which is what vouches for it.
     ///
     /// A referenced file reaches a turn as precommitted routing, so the name came from the

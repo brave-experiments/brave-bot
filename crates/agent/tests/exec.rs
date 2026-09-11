@@ -641,10 +641,17 @@ fn a_grandchild_holding_the_pipe_does_not_hang_the_run() {
 
 /// Compile a line for `at` and run it, the way the tool will.
 fn line(text: &str, at: &std::path::Path) -> exec::Ran {
+    ran_and_opened(text, at).0
+}
+
+/// The same, keeping the destinations the run opened for writing.
+fn ran_and_opened(text: &str, at: &std::path::Path) -> (exec::Ran, Vec<std::path::PathBuf>) {
     let plan = bravebot_agent::cmdline::compile(text, at, None)
         .unwrap_or_else(|e| panic!("`{text}` should compile: {e}"));
-    exec::run_plan(&plan, &Cancel::new(), exec::LIMIT)
-        .unwrap_or_else(|e| panic!("`{text}` should run: {e}"))
+    let mut opened = Vec::new();
+    let ran = exec::run_plan(&plan, &Cancel::new(), exec::LIMIT, &mut opened)
+        .unwrap_or_else(|e| panic!("`{text}` should run: {e}"));
+    (ran, opened)
 }
 
 /// The plan is what executes. Nothing between the line and the process re-reads the text, so what
@@ -707,6 +714,46 @@ fn an_append_adds_rather_than_truncating() {
         std::fs::read_to_string(scratch.path.join("out.txt")).expect("the file was written"),
         "three\n"
     );
+}
+
+/// What the caller records in the trust map is what the line opened, so the report has to be
+/// what happened rather than what the plan proposed: a step that failed had already truncated its
+/// destination, and a branch that was not taken opened nothing at all.
+#[test]
+fn a_line_reports_the_destinations_it_opened_and_no_others() {
+    let scratch = Scratch::new("line-opened");
+    std::fs::write(scratch.path.join("first.txt"), "stale\n").expect("write");
+    let (ran, opened) = ran_and_opened(
+        "cat no-such-file > first.txt && echo second > second.txt",
+        &scratch.path,
+    );
+
+    assert!(!ran.succeeded(), "the first step was supposed to fail");
+    assert_eq!(opened, [scratch.path.join("first.txt")]);
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("first.txt")).expect("the file"),
+        "",
+        "the destination of the failing step was not truncated"
+    );
+    assert!(
+        !scratch.path.join("second.txt").exists(),
+        "the right side of an && ran after the left side failed"
+    );
+}
+
+/// A destination nothing could open is a file this line did not write. Reporting it would record
+/// a rule about a file whose contents are exactly what they were.
+#[test]
+fn a_destination_that_cannot_be_opened_is_not_reported() {
+    let scratch = Scratch::new("line-open-fails");
+    std::fs::create_dir(scratch.path.join("a-directory")).expect("mkdir");
+    let plan = bravebot_agent::cmdline::compile("echo x > a-directory", &scratch.path, None)
+        .expect("a literal target compiles");
+    let mut opened = Vec::new();
+    let outcome = exec::run_plan(&plan, &Cancel::new(), exec::LIMIT, &mut opened);
+
+    assert!(outcome.is_err(), "a directory was opened for writing");
+    assert!(opened.is_empty(), "a target that never opened was reported");
 }
 
 #[test]

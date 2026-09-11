@@ -353,6 +353,12 @@ Accepted deliberately. Do not "fix" one without changing this spec first.
   agent was allowed to run can all put a file inside a vouched-for tree and it will be read as
   trusted. TRUST-5 only fires on writes this system performs, so it never sees these.
 
+  A redirection is the one exception: the harness opens that file itself, so what a line writes
+  through `>` or `>>` is recorded
+  ([tools/command-line.md](tools/command-line.md#CMDLINE-5)), under the name the line spelled and
+  with the keying cost every other write has (below). A file the program opens on its own, which
+  is `cmd -o notes.txt` or anything a build writes, is not.
+
   This is not an oversight and cannot be closed by watching the filesystem: by the time anything
   noticed, the question would be whether to distrust a file the user may have created themselves,
   and asking that on every change would make the map useless. What vouching for a directory means

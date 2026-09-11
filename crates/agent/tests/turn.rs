@@ -7823,6 +7823,24 @@ fn a_run_turn(
     confirmer: &mut AskedAboutRuns,
     programs: bravebot_core::programs::TrustedPrograms,
 ) -> Result<turn::Outcome, turn::TurnError> {
+    a_run_turn_with_trust(
+        scratch,
+        arguments,
+        confirmer,
+        programs,
+        trusting_the_workspace(),
+    )
+}
+
+/// The same, with the map named rather than taken as a workspace the user vouched for. What a
+/// line's redirection does to the map depends on what the map already says about that path.
+fn a_run_turn_with_trust(
+    scratch: &Scratch,
+    arguments: &str,
+    confirmer: &mut AskedAboutRuns,
+    programs: bravebot_core::programs::TrustedPrograms,
+    trust: bravebot_core::trust::TrustStore,
+) -> Result<turn::Outcome, turn::TurnError> {
     let workspace = Workspace::new(&scratch.path).expect("workspace");
     let (endpoint, _received) =
         serve_sequence(vec![tool_request("run", arguments), reply_with("done")]);
@@ -7838,7 +7856,7 @@ fn a_run_turn(
         confirmer,
         &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        trusting_the_workspace(),
+        trust,
         programs,
         &bravebot_core::cancel::Cancel::new(),
     )
@@ -8006,6 +8024,104 @@ fn approving_once_leaves_the_session_vouching_for_nothing() {
     assert!(
         outcome.programs.is_empty(),
         "approving one run granted a standing permission"
+    );
+}
+
+/// A redirection is a write, and what lands in the file is what a program printed. A line no
+/// person vouched for prints bytes an earlier step may have read out of a page somebody else
+/// wrote, so the destination holds untrusted content however trusted the tree around it is. Left
+/// recorded as trusted, that file is the round trip the map exists to close: read back it would
+/// enter the planner's context as trusted.
+#[test]
+fn a_redirection_carrying_untrusted_output_distrusts_the_file_it_wrote() {
+    let scratch = Scratch::new("run-redirect-distrusts");
+    std::fs::write(scratch.path.join("notes.html"), "from the web\n").unwrap();
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+
+    let outcome = a_run_turn(
+        &scratch,
+        r#"{"command":"cat notes.html > summary.txt"}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("summary.txt")).unwrap(),
+        "from the web\n",
+        "the redirection did not write the file"
+    );
+    assert!(
+        !outcome.trust.is_trusted("summary.txt"),
+        "a file holding what an unvouched program printed reads back trusted"
+    );
+}
+
+/// A line a person vouched for prints trusted output, and writing it somewhere does not make
+/// that file trusted: an append keeps whatever was already in it, and the label answers for the
+/// programs rather than for the file. Trusting the path on the strength of it would hand back the
+/// older bytes as trusted too, which is the laundering the record exists to stop.
+#[test]
+fn a_line_a_person_vouched_for_does_not_trust_the_file_it_wrote() {
+    let scratch = Scratch::new("run-append-untrusted");
+    std::fs::create_dir_all(scratch.path.join("vendor")).unwrap();
+    std::fs::write(scratch.path.join("vendor/page.txt"), "from the web\n").unwrap();
+    // Answering "always" vouches for the line, so what it prints is trusted.
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always());
+
+    let mut trust = bravebot_core::trust::TrustStore::new();
+    trust.trust(".");
+    trust.distrust("vendor");
+
+    let outcome = a_run_turn_with_trust(
+        &scratch,
+        r#"{"command":"echo ours >> vendor/page.txt"}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+        trust,
+    )
+    .expect("the turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("vendor/page.txt")).unwrap(),
+        "from the web\nours\n",
+        "the append did not add to what the file held"
+    );
+    assert!(
+        !outcome.trust.is_trusted("vendor/page.txt"),
+        "a file still holding bytes from the web was recorded as trusted"
+    );
+}
+
+/// Every branch of a line is endorsed before any of it runs, so a write set names a destination
+/// the line may never open. A branch that is not taken writes nothing, and recording a rule about
+/// its destination would quarantine a file the planner can read today: a path recorded untrusted
+/// can no longer be examined or edited.
+#[test]
+fn a_branch_that_does_not_run_leaves_its_destination_as_it_was() {
+    let scratch = Scratch::new("run-branch-not-taken");
+    std::fs::create_dir_all(scratch.path.join("src")).unwrap();
+    std::fs::write(scratch.path.join("src/main.rs"), "our code\n").unwrap();
+    std::fs::write(scratch.path.join("notes.html"), "from the web\n").unwrap();
+    // Approved for this call alone, so nothing is vouched for and the output is untrusted.
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+
+    let outcome = a_run_turn(
+        &scratch,
+        r#"{"command":"false && cat notes.html > src/main.rs"}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("src/main.rs")).unwrap(),
+        "our code\n",
+        "the right side of an && ran after the left side failed"
+    );
+    assert!(
+        outcome.trust.is_trusted("src/main.rs"),
+        "a file nothing wrote lost the trust the workspace gave it"
     );
 }
 
