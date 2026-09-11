@@ -8375,6 +8375,63 @@ fn a_quarantined_run_says_what_would_make_it_visible() {
     );
 }
 
+/// The proof road from outside, which is the whole of what it buys a person: counting the lines of
+/// a file in a directory they vouched for puts no question on their screen, and what it printed
+/// comes back as text rather than as a reference the planner has to ask to see. The confirmer here
+/// refuses everything, so a prompt would mean nothing ran at all.
+#[test]
+fn a_line_that_only_reads_vouched_for_files_needs_no_prompt() {
+    let scratch = Scratch::new("run-read-proven");
+    // Seven lines, so the count cannot be matched by a model id, a token total or an identifier
+    // that happens to hold the same digit.
+    std::fs::write(
+        scratch.path.join("notes.txt"),
+        "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\n",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"wc -l notes.txt"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::reject());
+    let seen = confirmer.seen.clone();
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("how long is it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a line that only reads a vouched-for file was put to a person"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("7 notes.txt"),
+        "the planner was not shown what the line counted: {second}"
+    );
+    assert!(
+        !second.contains("could not be shown to you"),
+        "the result was quarantined behind a second call: {second}"
+    );
+}
+
 /// A result that no command produced says nothing about vouching, which would be advice about a
 /// tool the planner did not call.
 #[test]

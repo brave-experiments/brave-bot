@@ -323,14 +323,35 @@ A rule may also name a write destination, and a redirection target is matched as
 <a id="CMDLINE-8"></a>
 ### CMDLINE-8: a plan may prove its output's label from what it read
 
-The audited table that today proves a stdin-only filter's output is a function of its input is
-extended to plans that name files. A stage is **read-proven** when its resolved program is in the
-table and, for the exact argv given, the table's audit establishes all four:
+The audited table covers plans that name files and not only stdin-only filters. A stage is
+**read-proven** when its resolved program is in the table and, for the exact argv given, the
+table's audit establishes all four:
 
 1. it writes no file;
 2. it executes nothing and starts no process;
 3. it opens no socket;
 4. every byte it reads comes from stdin or from a path in its operands.
+
+**An entry lists the options a call may use, and anything else refuses the call.** A list of
+options to reject fails open, because an option nobody thought of reads as harmless and one of them
+makes a walk follow symlinks out of the tree it was pointed at. Spellings are matched whole, so an
+abbreviation of a long option is not that option: deciding what `--recursi` abbreviates is the
+parsing this road exists to avoid. An option that takes a value says so, and its value is skipped
+wherever it is written, so it is never counted as an operand.
+
+A stage whose line named a path rather than a program is not read-proven, and neither is one
+carrying an environment assignment or opening a file for a stream. The table's entries are claims
+about the programs a system provides under those names and are matched on the name a program
+resolved to, so a line naming a path would let a file called `wc` in the directory the line runs in
+answer as the audited one. An assignment decides what a program loads and reads before its own
+arguments are looked at, and a redirection opens a file the argv does not name, so neither is
+covered by an audit of an option surface. Joining standard error to standard output renames a
+descriptor and opens nothing, so it is not a redirection for this purpose.
+
+A plan running in any directory other than the one the trust map's rules are written against is not
+read-proven, since its operands and the map's rules would be spelled relative to different places.
+A plan with no steps is not read-proven either: the answer to what it read is that there was no
+proof.
 
 The plan's read set is those operand paths, glob-expanded. The output's first label is the meet of
 the labels over the read set and over stdin, which is the ordinary rule for a derived value,
@@ -338,16 +359,26 @@ applied to a process, and is not a relabel and grants nothing.
 
 Where every stage is read-proven and every path in the read set is one the trust map answers for,
 the output is trusted and the planner reads it. Where any stage is not, or any path is outside what
-the trust map covers, the output is untrusted and private exactly as it is today.
+the trust map covers, the output is untrusted and private, which is the default every other run
+gets.
+
+A path is one the map answers for when the map covers it **and everything beneath it**: a directory
+read as a tree is read whole, so a directory the user refused inside a project they vouched for
+decides the answer about that project. A path with a `..` component is outside what the map answers
+for whatever a rule spelled the same way says, because the map compares names by segment and a
+climbing path names a file through a directory nobody wrote a rule about.
 
 **This is the proof road, and it is not the assertion road.** A person vouching for a command is a
 person taking responsibility for it. This is a claim about a program, checked against that program's
 option surface by hand, and nothing a user says extends the table.
 
-**`grep -r` becomes provable, and that is the point.** Recursion is denied in the table today
-precisely because the output would be labelled from stdin while the data came from disk. With a read
-set that names the directory, the label comes from the directory, and the single most useful
-exploration command in a large repository stops being opaque.
+**`grep -r` is provable, and that is the point.** Recursion is provable exactly as far as the read
+set names what is walked: with a directory in the operands the label comes from that directory, and
+the single most useful exploration command in a large repository is not opaque. A recursive call
+naming no path is not proven, because what it walks is then the working directory under one
+implementation's convention and stdin under another's, and the difference is the whole of what the
+label would be taken from. `-R` is not proven either: it follows every symlink it meets, so the
+tree it reads is not the tree the read set names.
 
 **`git` is not provable and does not go in the table.** A repository's own config can define an
 alias that runs a command and a pager that runs a command, so `git log` is an interpreter whose
@@ -358,7 +389,32 @@ decide routing, and that is the thing that is never allowed.
 `sed` and `awk` never enter the table, for the reason they are excluded today: they are
 interpreters, and `awk`'s `system()` reaches the shell this repository excludes.
 
-`verified-by: none`
+`verified-by: bravebot_core::pure::a_named_file_is_the_answer_rather_than_a_refusal`
+`verified-by: bravebot_core::pure::a_recursive_search_answers_with_the_trees_it_walks`
+`verified-by: bravebot_core::pure::recursion_naming_no_path_proves_nothing`
+`verified-by: bravebot_core::pure::recursion_that_follows_symlinks_proves_nothing`
+`verified-by: bravebot_core::pure::an_unlisted_option_proves_nothing`
+`verified-by: bravebot_core::pure::an_abbreviated_long_option_proves_nothing`
+`verified-by: bravebot_core::pure::an_option_value_is_never_counted_as_a_path`
+`verified-by: bravebot_core::pure::an_option_bundled_with_others_is_still_looked_up`
+`verified-by: bravebot_core::pure::an_excluded_option_is_refused`
+`verified-by: bravebot_core::pure::no_option_is_both_listed_and_excluded`
+`verified-by: bravebot_core::pure::a_flag_that_supplies_the_pattern_proves_nothing`
+`verified-by: bravebot_core::pure::a_flag_naming_a_file_of_names_proves_nothing`
+`verified-by: bravebot_core::pure::a_word_past_the_end_of_flags_marker_is_an_operand`
+`verified-by: bravebot_core::pure::a_dash_occupies_an_operands_place`
+`verified-by: bravebot_core::pure::an_operand_a_program_has_no_reading_for_proves_nothing`
+`verified-by: bravebot_core::pure::interpreters_never_qualify_however_harmless_they_look`
+`verified-by: bravebot_core::trust::a_subtree_is_trusted_only_when_nothing_beneath_it_is_not`
+`verified-by: bravebot_core::policy::a_line_that_only_reads_vouched_for_paths_comes_back_trusted`
+`verified-by: bravebot_core::policy::a_line_reading_an_unvouched_path_still_asks`
+`verified-by: bravebot_core::policy::a_recursive_search_takes_its_label_from_the_whole_subtree`
+`verified-by: bravebot_core::policy::one_step_nothing_can_account_for_makes_the_whole_line_opaque`
+`verified-by: bravebot_core::policy::an_environment_assignment_leaves_a_step_unproven`
+`verified-by: bravebot_core::policy::a_redirection_leaves_a_step_unproven_and_a_descriptor_rename_does_not`
+`verified-by: bravebot_core::policy::a_program_named_by_path_is_not_proven`
+`verified-by: bravebot_core::policy::a_line_running_outside_the_project_root_is_not_proven`
+`verified-by: bravebot_core::policy::a_plan_with_no_steps_proves_nothing`
 
 <a id="CMDLINE-9"></a>
 ### CMDLINE-9: a read-proven plan does not prompt
@@ -378,11 +434,24 @@ prompt; it does not overrule a rule a person wrote.
 **Why this clause is the risky one.** It is the only place in this spec where a proof stops a human
 from being asked, and if the table is wrong somewhere then something ran that nobody saw. The
 mitigations are that the table is small, hand-audited per program against its full option list,
-keyed by resolved path rather than by name, and fails closed on any argv it does not fully
-recognise. If a reviewer will not accept it, [CMDLINE-8](#CMDLINE-8) still stands on its own and
-still removes the second round trip; what is lost is the first prompt, not the readable output.
+matched against the file name a program resolved to and only where the line named a program rather
+than a path, and fails closed on any argv it does not fully recognise.
+[CMDLINE-8](#CMDLINE-8) stands on its own without this clause and still removes the second round
+trip; what this clause adds is the first prompt, not the readable output.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::a_line_that_only_reads_vouched_for_files_needs_no_prompt`
+`verified-by: bravebot_core::policy::a_line_that_only_reads_vouched_for_paths_does_not_ask`
+`verified-by: bravebot_core::policy::a_line_reading_an_unvouched_path_still_asks`
+`verified-by: bravebot_core::policy::a_recursive_search_takes_its_label_from_the_whole_subtree`
+`verified-by: bravebot_core::policy::a_path_climbing_out_of_the_project_still_asks`
+`verified-by: bravebot_core::policy::a_read_proven_line_that_also_writes_still_asks`
+`verified-by: bravebot_core::policy::private_input_still_asks_about_a_read_proven_line`
+`verified-by: bravebot_core::policy::an_ask_rule_still_asks_about_a_read_proven_line`
+`verified-by: bravebot_core::policy::a_deny_rule_still_refuses_a_read_proven_line`
+`verified-by: bravebot_core::policy::one_step_nothing_can_account_for_makes_the_whole_line_opaque`
+`verified-by: bravebot_core::policy::an_environment_assignment_leaves_a_step_unproven`
+`verified-by: bravebot_core::policy::a_program_named_by_path_is_not_proven`
+`verified-by: bravebot_core::policy::a_line_running_outside_the_project_root_is_not_proven`
 
 <a id="CMDLINE-10"></a>
 ### CMDLINE-10: output comes back as text whenever the planner may read it
@@ -530,7 +599,7 @@ nothing until you have opened that file.
 | [run.md](run.md) | `run` takes a pipeline of argv stages, never a command string | Amended. The planner's spelling becomes a command line; the *execution path* stays argv-only, which is the half that carries the property. The clause's second paragraph survives verbatim and is the load-bearing one. |
 | [run.md](run.md) | argv is routing and must be endorsed by a person | Amended. Routing is the compiled plan rather than the argv the planner wrote. `(T,pub)` and exact binding are unchanged. |
 | [run.md](run.md) | the table of what output is labelled | Extended. A fourth row: output of a read-proven plan, labelled from its read set. The default is untouched. |
-| [run.md](run.md) | every run asks unless every stage was vouched for | **Narrowed by [CMDLINE-9](#CMDLINE-9).** "There is no read-only category" becomes "there is no *declared* read-only category, and one narrow *proven* one". This is the clause a reviewer is most likely to refuse, and the spec is still worth landing without it. |
+| [run.md](run.md) | every run asks unless every stage was vouched for | **Narrowed by [CMDLINE-9](#CMDLINE-9).** "There is no read-only category" becomes "there is no *declared* read-only category, and one narrow *proven* one". |
 | [run.md](run.md) | the vouched-for list is not an allowlist | Unchanged and reaffirmed. The audited table is not an allowlist either: it decides a label and a prompt, never whether something may run. Nothing is refused for being absent from it. |
 | [run.md](run.md) | a run has a wall-clock limit, and reaching it ends the run rather than failing it | Superseded by [CMDLINE-13](#CMDLINE-13), which keeps that behaviour and makes the limit per call. |
 | [shell-mode.md](../shell-mode.md) | the planner gets no shell tool, ever | **Amended, and this is the big one.** "The planner gets no shell tool" stands: no shell process is started for anything the planner wrote. What is withdrawn is the reading that also banned the notation. The clause should be restated as *the planner's line is never interpreted*, which is what it was protecting. |
@@ -552,9 +621,6 @@ nothing until you have opened that file.
 
 ## Open questions
 
-- Whether [CMDLINE-9](#CMDLINE-9) is acceptable at all, or whether the prompt must always be a
-  person's. The spec is deliberately written so that refusing it costs only the prompt and not the
-  readable output.
 - Whether a closed set of harness-supplied variables (workspace root, current directory) should be
   expanded at compile time. It is the same thing as the planner having written the value, so the
   objection in [CMDLINE-2](#CMDLINE-2) does not obviously reach it.
@@ -571,9 +637,19 @@ nothing until you have opened that file.
   wrong plan is still shown to a person as if it were right. The mitigation is that the plan, not
   the line, is what is displayed: a reader endorsing a plan that does not match the line they can
   see above it will notice.
-- **The audited table is maintenance.** Every entry is a claim checked against one program's option
-  surface, and option surfaces change with versions and with implementations. Keying on resolved
-  path limits the blast radius; it does not remove the work.
+- **The audited table is maintenance, and it goes stale towards the prompt.** Every entry is a claim
+  checked against one program's option surface, and option surfaces change with versions and with
+  implementations. An entry lists what it recognises, so a version that adds an option refuses the
+  calls that use it rather than accepting them, and only the options both the GNU and the BSD
+  spelling agree on can be listed at all. The cost is a prompt for a call that would have been fine,
+  which is the right direction and is still work.
+- **A proof is about paths, and the trust map answers about names.** A symlink inside a vouched-for
+  directory pointing at a file outside it is a name the map covers and bytes it never saw, so a
+  read-proven line reading through one comes back trusted. The table refuses the recursion flag that
+  follows links while walking, which closes the case where the planner never named the link; it does
+  not close a link the planner names. Keying the map on where a path lands is what closes it, and
+  that is a change to every rule the map holds, described under known costs in
+  [trust-map.md](../trust-map.md).
 - **More expressiveness is more that can be approved carelessly.** A one-line plan with eight stages
   and two redirections is harder to read at a prompt than `git log --oneline -50`. Bounding glob
   expansion helps; nothing fixes it entirely.

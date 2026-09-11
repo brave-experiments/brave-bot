@@ -1487,6 +1487,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     let mut policy = Policy::begin(routing, ReleasePlan::new(), capabilities, &mut sink)
         .map_err(|d| TurnError::Precommit(d.to_string()))?
         .with_trust(trust)
+        .with_root(workspace.root())
         .with_programs(programs)
         .with_permissions(task.permissions.clone())
         .resuming(conversation.context());
