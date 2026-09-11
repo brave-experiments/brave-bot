@@ -1269,8 +1269,7 @@ fn target_of<S: Sink>(
     // A processor has no single argument naming a target: what it is working on is the set of
     // references it was given, which are names the driver handed out and can read back.
     let named = if tool == "spawn_processor" {
-        let proof = policy.authorise_display_release("what a tool is working on");
-        references_in(arguments).declassify(&proof)
+        references_in(arguments)
     } else {
         let Some(key) = target_key(tool) else {
             return String::new();
@@ -1285,21 +1284,23 @@ fn target_of<S: Sink>(
         };
 
         match target_text(arguments, key) {
-            Some(text) => {
-                let value = Labelled::new(text, bravebot_core::label::Label::untrusted_public());
-                let proof = policy.authorise_display_release("what a tool is working on");
-                value.declassify(&proof)
-            }
+            Some(text) => Labelled::new(text, bravebot_core::label::Label::untrusted_public()),
             None => return String::new(),
         }
     };
 
     // The line a person reads says which file, always. A reference means something to the
     // planner and nothing at all to the person watching their own workspace being worked on.
-    if named.contains("ref:") {
-        return name_references(&named, &policy.names_for_display(slots));
-    }
-    named
+    //
+    // Substituted inside the kernel, while the value is still labelled, because finding a
+    // reference in the text is reading the text. A driver that released the bytes first and
+    // searched them afterwards would be inspecting content under a witness minted to put it on a
+    // screen, which LABEL-6 refuses. Text with no reference in it comes back as it went in, so
+    // there is nothing left here to test it for.
+    let names = policy.names_for_display(slots);
+    let shaped = policy.render_in_place(tool, &named, |text| name_references(&text, &names));
+    let proof = policy.authorise_display_release("what a tool is working on");
+    shaped.declassify(&proof)
 }
 
 /// How a call reads in the transcript of a session read back off disk.
@@ -2579,25 +2580,31 @@ fn todo_write<S: Sink, R: Reporter>(
     // The model's words, at the integrity of the context they came from.
     let list = policy.label_model_output("todo_write", List::new(items));
 
+    // The planner writes its list in the only terms it has, which are reference names. The
+    // person reading the list has the opposite problem: "write ref:1 back to its file" says
+    // nothing about their own workspace, and they are the only one entitled to know which file
+    // that is. So the names go in on the way to the screen and nowhere else.
+    let named = policy.names_for_display(slots);
+
     // Shaped inside the kernel, because choosing a glyph means reading the statuses and the
     // driver may not hold them. Every item yields a row, so nothing in the content decides
     // what the user is shown the existence of.
-    let rows = policy.render_in_place("todo_write", &list, |list| todo::rows(&list));
+    //
+    // The names go in here too, in the same reshape: finding a reference in a row is reading it,
+    // and a driver that released the rows first and searched them afterwards would be inspecting
+    // content under a witness minted to put it on a screen, which LABEL-6 refuses.
+    let rows = policy.render_in_place("todo_write", &list, |list| {
+        let mut rows = todo::rows(&list);
+        for row in &mut rows {
+            row.content = name_references(&row.content, &named);
+        }
+        rows
+    });
 
     // Showing a person what the model is doing is a release to a screen, which is one of the
     // destinations a witness exists for. It cannot feed an effect.
     let proof = policy.authorise_display_release("task list");
-    let mut rows = rows.declassify(&proof);
-
-    // The planner writes its list in the only terms it has, which are reference names. The
-    // person reading the list has the opposite problem: "write ref:1 back to its file" says
-    // nothing about their own workspace, and they are the only one entitled to know which file
-    // that is. So the names go in here, on the way to the screen and nowhere else.
-    let named = policy.names_for_display(slots);
-    for row in &mut rows {
-        row.content = name_references(&row.content, &named);
-    }
-    reporter.todos(rows);
+    reporter.todos(rows.declassify(&proof));
 
     // The model gets its own list back as the tool result, which is how it knows what is next:
     // the turn keeps no state, so the echo in the conversation *is* the memory. Rendered through
@@ -4125,6 +4132,24 @@ fn search<S: Sink>(
 
 #[cfg(test)]
 mod tests {
+    /// Where a gate shows up in the trail, so a test can say which of two reads happened first.
+    fn gate_at(sink: &bravebot_core::event::RecordingSink, gate: &str, detail: &str) -> usize {
+        sink.events()
+            .iter()
+            .position(|event| match event {
+                bravebot_core::event::Event::GatePassed {
+                    gate: passed,
+                    detail: said,
+                } => *passed == gate && said.contains(detail),
+                _ => false,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "no {gate} gate saying {detail:?} in the trail: {:?}",
+                    sink.events()
+                )
+            })
+    }
 
     /// A glob the matcher cannot read selects no files, and a search over no files reports no
     /// matches, which is the sentence a search that read the whole tree and found nothing
@@ -4773,6 +4798,61 @@ mod tests {
             let (note, _) = change_report(Intent::Edit, Some("same\n"), "same\n", None);
             assert_eq!(note, "added 0 lines, removed 0 lines");
         }
+
+        /// A call line names the file its reference stands for, and the naming happens inside the
+        /// kernel. Looking for a reference in the planner's own words is reading them, so a driver
+        /// that released the text first and searched it afterwards would be inspecting content
+        /// under a witness minted to put it on a screen. The trail is what says which of the two
+        /// happened: the reshape is recorded before the release rather than after it.
+        #[test]
+        fn a_call_line_names_its_reference_inside_the_kernel() {
+            use bravebot_core::capability::{Capability, CapabilitySet};
+            use bravebot_core::event::RecordingSink;
+            use bravebot_core::policy::{ReleasePlan, Routing};
+
+            let mut routing = Routing::new();
+            routing.insert_trusted("task", "read the notes");
+
+            let mut sink = RecordingSink::new();
+            let line = {
+                let mut policy = Policy::begin(
+                    routing,
+                    ReleasePlan::new(),
+                    CapabilitySet::from_iter([Capability::FileRead]),
+                    &mut sink,
+                )
+                .expect("policy");
+                let mut slots = SlotStore::new();
+                policy
+                    .defer(
+                        "read_file",
+                        SlotId::new("ref:1"),
+                        "notes.md",
+                        &Labelled::trusted("notes.md".to_string()),
+                        7,
+                        &mut slots,
+                    )
+                    .expect("the file is reserved");
+
+                target_of(
+                    &mut policy,
+                    "read_file",
+                    &slots,
+                    &json!({"path_ref": "ref:1"}),
+                )
+            };
+
+            // The reference, its label and the file: the planner has only the first of the three.
+            assert_eq!(line, "ref:1(U,priv):notes.md");
+
+            let reshaped = super::gate_at(&sink, "render", "read_file");
+            let released = super::gate_at(&sink, "display", "what a tool is working on");
+            assert!(
+                reshaped < released,
+                "the target was released before it was reshaped, so the driver held the bytes it searched: {:?}",
+                sink.events()
+            );
+        }
     }
 
     mod questions {
@@ -5367,6 +5447,59 @@ mod tests {
                     .map(|(content, status)| json!({"content": content, "status": status}))
                     .collect::<Vec<_>>()
             })
+        }
+
+        /// The name a reference stands for goes in inside the reshape that builds the rows. Looking
+        /// for a reference in a row is reading it, so a driver that released the rows first and
+        /// searched them afterwards would be inspecting content under a witness minted to put it on
+        /// a screen. The trail says which of the two happened: the names have to be in hand before
+        /// the reshape, because the reshape is what puts them in.
+        #[test]
+        fn a_task_list_is_named_inside_the_reshape_that_builds_it() {
+            let mut sink = RecordingSink::new();
+            let shown = {
+                let mut policy = Policy::begin(
+                    routing(),
+                    ReleasePlan::new(),
+                    CapabilitySet::from_iter([Capability::FileRead]),
+                    &mut sink,
+                )
+                .expect("policy");
+                let mut slots = SlotStore::new();
+                policy
+                    .defer(
+                        "read_file",
+                        SlotId::new("ref:1"),
+                        "game.js",
+                        &Labelled::trusted("game.js".to_string()),
+                        7,
+                        &mut slots,
+                    )
+                    .expect("the file is reserved");
+
+                let mut reporter = RecordingReporter::default();
+                todo_write(
+                    &mut policy,
+                    &mut reporter,
+                    &slots,
+                    &list(&[("Fix ref:1 and run it", "pending")]),
+                );
+                let rows = reporter.updates.last().expect("the display was told");
+                rows[0].content.clone()
+            };
+
+            // The person reading their own task list is told which of their files it means.
+            assert_eq!(shown, "Fix ref:1(U,priv):game.js and run it");
+
+            let named = super::gate_at(&sink, "display", "reference(s) named");
+            let reshaped = super::gate_at(&sink, "render", "todo_write: content reshaped");
+            let released = super::gate_at(&sink, "display", "task list");
+            assert!(
+                named < reshaped && reshaped < released,
+                "the rows have to be shaped after the names are in hand and before they are let \
+                 out, or the driver is naming rows it has already been handed: {:?}",
+                sink.events()
+            );
         }
 
         #[test]

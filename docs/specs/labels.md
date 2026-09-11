@@ -148,7 +148,14 @@ an HTTP body, or a human's screen. Each of those three destinations has a gate o
 putting content in front of the planner, one for reshaping it for display, and one for reading
 trusted content. A declassification anywhere else is almost certainly a violation.
 
-`verified-by: none`
+The witness a gate mints says the bytes may go to that destination. It does not say they may be
+examined on the way, so a caller holding released bytes may not then search them, count them or
+branch on them. Whatever needs reading is done by the policy layer, on a value that is still
+labelled, and recorded where it happens. Reshaping content for display is that: it is not a fourth
+destination, and it is a read a driver may not do for itself.
+
+`verified-by: bravebot_agent::tools::a_call_line_names_its_reference_inside_the_kernel`
+`verified-by: bravebot_agent::tools::a_task_list_is_named_inside_the_reshape_that_builds_it`
 
 ## Which direction a label may move
 
