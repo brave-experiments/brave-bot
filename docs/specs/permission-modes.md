@@ -60,9 +60,12 @@ stopped asking about programs would be granting the larger thing quietly.
 <a id="MODE-3"></a>
 ### MODE-3: plan mode refuses a write rather than asking about one
 
-The refusal does not depend on how the person would have answered: a write is refused where the
-prompt would have been approved. Commands, output and vouching are asked about as they are in every
-other mode.
+The refusal does not depend on how the person would have answered, nor on whether they would have
+been asked at all: writing is refused where the prompt would have been approved, and equally where
+a path the trust map already covers, or a path a rule in the settings file allows, would have
+raised no prompt. Commands, output and vouching are put to the person as they are in every other
+mode, and what a command does once it is approved is bounded by that prompt rather than by this
+clause.
 
 The planner is told, in the system prompt, that writing is refused for the turn and why.
 
@@ -70,6 +73,11 @@ The planner is told, in the system prompt, that writing is refused for the turn 
 planner proposes writes and reads back refusals it cannot account for, and a planner that cannot
 tell a policy from a mistake retries. Stating it once is what turns a series of refusals into a
 constraint the planner can work inside.
+
+A refusal that waited for the prompt would be no refusal in the sessions most likely to be in this
+mode. Somebody planning work in a tree they vouched for at startup is exactly the person whose
+writes raise no prompt, so the mode has to hold where the prompt is absent or it holds where it is
+least needed.
 
 Commands keep their prompt because research is most of what planning is. `git log`, a search and a
 test run are how a plan is arrived at, and a mode that could not read the tree would produce plans
@@ -79,6 +87,9 @@ made from less than the person can see themselves.
 `verified-by: bravebot_agent::permission_mode::plan_mode_still_lets_a_command_be_asked_about`
 `verified-by: bravebot_agent::permission_mode::only_plan_mode_says_anything_to_the_planner`
 `verified-by: bravebot_agent::turn::plan_mode_writes_nothing_even_where_writes_are_approved`
+`verified-by: bravebot_agent::turn::plan_mode_refuses_a_write_the_trust_map_would_have_let_through`
+`verified-by: bravebot_agent::turn::plan_mode_refuses_an_edit_the_trust_map_would_have_let_through`
+`verified-by: bravebot_agent::turn::plan_mode_refuses_a_write_a_settings_rule_would_have_let_through`
 
 <a id="MODE-4"></a>
 ### MODE-4: bypassing answers every permission question, including the ones that decide trust
@@ -211,10 +222,11 @@ wrong direction for this to be wrong in.
   content cannot *decide* what happens is structural and still holds; what goes is the narrower
   protection of not showing the planner bytes nobody vouched for. This is why the mode is for a
   sandbox rather than for a working machine.
-- **Plan mode constrains writes, not everything a turn can do.** Commands are still asked about, and
-  an approved command may write whatever it likes: it runs with the access the person's own shell
-  has. The mode refuses the write tools rather than making the turn incapable of changing anything.
-  [sandboxing.md](sandboxing.md) is what confines a process.
+- **Plan mode constrains writes, not everything a turn can do.** Commands are asked about, or
+  answered by a rule written in advance, and an approved command may write whatever it likes: it
+  runs with the access the person's own shell has. The mode refuses the write tools rather than
+  making the turn incapable of changing anything. [sandboxing.md](sandboxing.md) is what confines a
+  process.
 - **`defaultMode` in the settings file selects no mode.** The key is parsed so a file carrying it is
   not rejected, and a person who wrote `acceptEdits` there gets the prompts they would have got
   without it. The command line and the mode key are what choose a mode.

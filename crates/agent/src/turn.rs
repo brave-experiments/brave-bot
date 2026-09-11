@@ -2070,6 +2070,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         servers: servers.as_mut(),
                         spawned: &mut spawned,
                         jobs: &mut jobs,
+                        permission_mode: task.permission_mode,
                     },
                     &mut asking,
                     &mut reporter,

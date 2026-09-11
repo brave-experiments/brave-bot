@@ -1761,6 +1761,139 @@ fn plan_mode_writes_nothing_even_where_writes_are_approved() {
     );
 }
 
+/// Plan mode refuses a write into a path the trust map already covers, where no prompt is raised
+/// at all. A refusal that lives in the confirmer is only reached where something wanted to ask,
+/// so a session in a workspace the person trusted at startup would write unrefused: the mode is a
+/// statement about the turn, not an answer to a question somebody was going to be asked.
+#[test]
+fn plan_mode_refuses_a_write_the_trust_map_would_have_let_through() {
+    let scratch = Scratch::new("permissions-plan-mode-trusted");
+    std::fs::write(scratch.path.join("notes.md"), "original").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"notes.md","contents":"replaced"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task =
+        Task::new("rewrite the notes").with_permission_mode(bravebot_agent::PermissionMode::Plan);
+    let mut recording = RecordingConfirmer::approving();
+    let mut confirmer =
+        bravebot_agent::Confining::new(&mut recording, bravebot_agent::PermissionMode::Plan);
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
+        "original",
+        "plan mode wrote to a path the trust map covered"
+    );
+    assert!(
+        recording.seen.is_empty(),
+        "the write raised a prompt, so this is not the case the test is for"
+    );
+}
+
+/// The same for an edit. The two write tools are one rule, and a mode enforced in one of them
+/// would leave the other as the way round it.
+#[test]
+fn plan_mode_refuses_an_edit_the_trust_map_would_have_let_through() {
+    let scratch = Scratch::new("permissions-plan-mode-trusted-edit");
+    std::fs::write(scratch.path.join("notes.md"), "keep\nold\ntail\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"notes.md","old_text":"old","new_text":"new"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task =
+        Task::new("edit the notes").with_permission_mode(bravebot_agent::PermissionMode::Plan);
+    let mut recording = RecordingConfirmer::approving();
+    let mut confirmer =
+        bravebot_agent::Confining::new(&mut recording, bravebot_agent::PermissionMode::Plan);
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes.md")).unwrap(),
+        "keep\nold\ntail\n",
+        "plan mode edited a path the trust map covered"
+    );
+    assert!(
+        recording.seen.is_empty(),
+        "the edit raised a prompt, so this is not the case the test is for"
+    );
+}
+
+/// Plan mode refuses a write a rule in the settings file allows, which is the other way a write
+/// reaches the tree without anybody being asked. A rule decides whether there is a prompt; the
+/// mode decides whether there is a write, and the second cannot be conditional on the first.
+#[test]
+fn plan_mode_refuses_a_write_a_settings_rule_would_have_let_through() {
+    let scratch = Scratch::new("permissions-plan-mode-allowed");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request_2("write_file", r#"{"path":"notes.md","contents":"written"}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("write the notes")
+        .with_permissions(rules(&[], &[], &["Edit(**)"]))
+        .with_permission_mode(bravebot_agent::PermissionMode::Plan);
+    let mut recording = RecordingConfirmer::approving();
+    let mut confirmer =
+        bravebot_agent::Confining::new(&mut recording, bravebot_agent::PermissionMode::Plan);
+    turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert!(
+        !scratch.path.join("notes.md").exists(),
+        "plan mode wrote to a path an allow rule named"
+    );
+    assert!(
+        recording.seen.is_empty(),
+        "the write raised a prompt, so this is not the case the test is for"
+    );
+}
+
 /// The other half: an allow rule stops the prompt, so a write that would have been refused for
 /// want of anyone to ask goes through.
 ///
