@@ -9,6 +9,8 @@ use bravebot_core::cancel::Cancel;
 use bravebot_core::event::{Event, RecordingSink, Role};
 use bravebot_core::trust::TrustStore;
 use bravebot_i18n::t;
+use bravebot_sandbox::SandboxError;
+use bravebot_sandbox::policy::Capabilities;
 use bravebot_tui::sessions::Resumable;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
@@ -1252,7 +1254,13 @@ fn doctor() -> ExitCode {
     }
 
     println!();
-    report_confinement(&mut ok);
+    // Not a warning: without confinement, untrusted work will be refused rather than run, so
+    // this is a hard problem for the user to solve.
+    if !report_confinement(
+        bravebot_sandbox::for_current_platform().map(|sandbox| sandbox.capabilities()),
+    ) {
+        ok = false;
+    }
 
     if ok {
         ExitCode::SUCCESS
@@ -1371,10 +1379,6 @@ fn fact(name: impl AsRef<str>, value: impl AsRef<str>) {
     println!("{}", aligned(name, value, FACT));
 }
 
-fn detail(name: impl AsRef<str>, value: impl AsRef<str>) {
-    println!("{}", aligned(name, value, DETAIL));
-}
-
 /// Report the imported subscription, and how much of it is left.
 ///
 /// Counts only: a credential is a bearer secret, so none of it is printed. The environment rather
@@ -1394,32 +1398,59 @@ fn report_subscription() {
     }
 }
 
-/// Report the confinement actually achieved here.
+/// What `doctor` says about confinement: the lines, and whether there was any.
+struct Confinement {
+    lines: Vec<String>,
+    established: bool,
+}
+
+/// Report the confinement actually achieved here, and say whether there was any.
 ///
 /// Printed rather than assumed: the guarantee differs by platform and kernel, and a
 /// user is entitled to know which one they have before trusting the sandbox.
-fn report_confinement(ok: &mut bool) {
-    match bravebot_sandbox::for_current_platform() {
-        Ok(sandbox) => {
-            let caps = sandbox.capabilities();
-            println!("{}", t!(doctor_confinement, level = named(caps.level)));
-            detail(t!(doctor_mechanisms), caps.mechanisms.join(", "));
-            detail(
-                t!(doctor_network_denial),
-                if caps.network_denial_enforced {
-                    t!(doctor_kernel_enforced)
-                } else {
-                    t!(doctor_not_enforced)
-                },
-            );
+///
+/// Takes what the lookup found rather than calling it: a machine has only its own backend to
+/// look up, so what is said about the other two levels is otherwise unreachable.
+fn report_confinement(found: Result<Capabilities, SandboxError>) -> bool {
+    let report = confinement(found);
+    for line in &report.lines {
+        // A refusal is not a finding among the others: it goes where a problem goes.
+        match report.established {
+            true => println!("{line}"),
+            false => eprintln!("{line}"),
         }
-        Err(err) => {
-            // Not a warning: without confinement, untrusted work will be refused
-            // rather than run, so this is a hard problem for the user to solve.
-            eprintln!("{}", t!(doctor_confinement_unavailable));
-            eprintln!("  {err}");
-            *ok = false;
-        }
+    }
+    report.established
+}
+
+/// The confinement section of `doctor`: the level in force, and what enforces it.
+///
+/// Built rather than printed, so what the section says about a level is a value a test can hold.
+fn confinement(found: Result<Capabilities, SandboxError>) -> Confinement {
+    match found {
+        Ok(caps) => Confinement {
+            lines: vec![
+                t!(doctor_confinement, level = named(caps.level)).to_string(),
+                aligned(t!(doctor_mechanisms), caps.mechanisms.join(", "), DETAIL),
+                aligned(
+                    t!(doctor_network_denial),
+                    if caps.network_denial_enforced {
+                        t!(doctor_kernel_enforced)
+                    } else {
+                        t!(doctor_not_enforced)
+                    },
+                    DETAIL,
+                ),
+            ],
+            established: true,
+        },
+        Err(err) => Confinement {
+            lines: vec![
+                t!(doctor_confinement_unavailable).to_string(),
+                format!("  {err}"),
+            ],
+            established: false,
+        },
     }
 }
 
@@ -1430,6 +1461,7 @@ mod tests {
     use bravebot_core::event::Sink;
     use bravebot_core::label::Label;
     use bravebot_core::slot::SlotId;
+    use bravebot_sandbox::policy::ConfinementLevel;
     use std::path::PathBuf;
 
     /// A session that stayed where it started needs no directory: the shell reading this line is
@@ -1488,6 +1520,96 @@ mod tests {
     fn a_name_longer_than_its_column_still_leaves_a_gap() {
         let line = aligned("point de terminaison", "https://example", FACT);
         assert_eq!(line, "  point de terminaison https://example");
+    }
+
+    /// The lines `doctor` prints for a set of capabilities, for the two tests below.
+    fn confinement_report(level: ConfinementLevel, network_denial_enforced: bool) -> Vec<String> {
+        confinement(Ok(Capabilities {
+            level,
+            mechanisms: vec!["a mechanism"],
+            network_denial_enforced,
+        }))
+        .lines
+    }
+
+    /// The guarantee genuinely differs by platform and kernel, so which of the three is in force
+    /// is what somebody runs `doctor` to learn before trusting the sandbox with untrusted work. A
+    /// level it does not name is one they have to assume.
+    #[test]
+    fn doctor_names_the_confinement_level_in_force() {
+        // The opening line rather than the report, because "kernel-enforced" is also what the
+        // network denial line says, and a level reported into the wrong field is not reported.
+        let opening = |level| {
+            confinement_report(level, false)
+                .first()
+                .expect("the report opens with the level")
+                .clone()
+        };
+
+        for level in [
+            ConfinementLevel::Kernel,
+            ConfinementLevel::Partial,
+            ConfinementLevel::None,
+        ] {
+            let line = opening(level);
+            assert!(
+                line.contains(&named(level)),
+                "the level in force is not in the line that reports it: {line}"
+            );
+        }
+
+        // Three openings that read the same would satisfy the loop above while telling a reader
+        // nothing about which of the three they have.
+        assert_ne!(
+            opening(ConfinementLevel::Kernel),
+            opening(ConfinementLevel::Partial)
+        );
+        assert_ne!(
+            opening(ConfinementLevel::Partial),
+            opening(ConfinementLevel::None)
+        );
+        assert_ne!(
+            opening(ConfinementLevel::Kernel),
+            opening(ConfinementLevel::None)
+        );
+    }
+
+    /// An overstated capability is the failure this report exists to prevent. A backend that
+    /// leaves network denial to convention rather than to the kernel is the case somebody most
+    /// needs told, since it is the one where the guarantee they assume is not the one they have.
+    #[test]
+    fn doctor_says_whether_the_kernel_enforces_network_denial() {
+        // One level, so the difference can only be the answer to that question.
+        assert_ne!(
+            confinement_report(ConfinementLevel::Kernel, true).last(),
+            confinement_report(ConfinementLevel::Kernel, false).last(),
+            "the report reads the same whether or not the kernel enforces network denial"
+        );
+    }
+
+    /// Without a backend, untrusted work is refused rather than run unconfined, so this is a thing
+    /// the user has to go and fix: a `doctor` that reported it and still exited successfully would
+    /// present it as one finding among the others, and one that did not say what was missing would
+    /// leave them nothing to act on.
+    #[test]
+    fn confinement_that_could_not_be_established_fails_the_run() {
+        let missing = || SandboxError::Unavailable {
+            platform: "test",
+            detail: "no backend is implemented here".into(),
+        };
+
+        assert!(
+            !report_confinement(Err(missing())),
+            "doctor reported no confinement and still passed"
+        );
+
+        let lines = confinement(Err(missing())).lines;
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&missing().to_string())),
+            "the refusal does not say what was missing: {lines:?}"
+        );
     }
 
     /// The gateway a settings file configured, for the `doctor` tests below.
