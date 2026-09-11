@@ -1,7 +1,9 @@
 # Spec clauses whose verified-by value is none.
 # Source: docs/specs/**/*.md, one line per clause, as path:CLAUSE-ID: heading.
 # Withdrawn clauses carry no verified-by line at all and are not listed.
-# Total: 27 clauses across 18 specs.
+# No count is kept here. Two branches that each verify a clause both edit the count, so it conflicts
+# where the lists themselves merge cleanly, and a count nothing reads is wrong quietly. Count the
+# lines, or read the warnings check-spec prints.
 
 docs/specs/cli.md:CLI-6: a failure exits non-zero
 docs/specs/incognito.md:INCOG-7: importing a subscription is refused rather than silently skipped
