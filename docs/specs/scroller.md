@@ -79,6 +79,7 @@ the person opened with a key and closes with any of four.
 `verified-by: bravebot_tui::app::enter_sends_nothing_from_inside_the_scroller`
 `verified-by: bravebot_tui::app::a_key_the_scroller_does_not_take_does_nothing`
 `verified-by: bravebot_tui::app::the_line_comes_back_untouched_when_the_scroller_closes`
+`verified-by: bravebot_tui::app::a_paste_and_a_drop_do_not_reach_the_line_while_the_scroller_is_open`
 
 
 <a id="SCROLL-3"></a>

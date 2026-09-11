@@ -1223,6 +1223,13 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
 ///
 /// Nothing comes back, since both loops redraw every frame regardless of what the event was.
 pub fn handle_paste_while_working(session: &mut Session, text: &str) {
+    // The line is the scroller's to leave alone, and a paste is not a key: it arrives from the
+    // terminal whatever mode is open, so the guard that holds the box still for a keystroke never
+    // sees it. Nothing is said about it, because the scroller has the whole screen but its footer
+    // and a sentence drawn nowhere is no answer.
+    if session.scrolling() {
+        return;
+    }
     if !session.drop_files(text) {
         session.paste_text(text);
     }
@@ -1336,6 +1343,13 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
 /// Said once per session and then not again, because a user who has been told which key carries a
 /// picture does not need telling every time they use the other one.
 pub fn handle_paste(session: &mut Session, text: &str) -> Action {
+    // The line is the scroller's to leave alone, and a paste is not a key: it arrives from the
+    // terminal whatever mode is open, so the guard that holds the box still for a keystroke never
+    // sees it. Before the empty case as much as the rest, because that one spends a hint said
+    // once a session on a sentence the scroller leaves no room to draw.
+    if session.scrolling() {
+        return Action::None;
+    }
     // A picture copied to the clipboard reaches a terminal as a paste of nothing at all, since
     // the terminal hands over text and there is none. Said before anything else looks at the
     // text, because an empty paste is no more a drop than it is a prompt.
@@ -5077,6 +5091,46 @@ mod tests {
             // in the text: typing here has to land where it would have landed.
             handle_key(&mut session, key(KeyCode::Char('!')));
             assert_eq!(session.input(), "half a though!t");
+        }
+
+        /// A paste and a drop reach this process as events of their own rather than as keys, so
+        /// the guard that holds the box still for a keystroke does not see them. What the person
+        /// comes back to has to be the line they left: a fragment spliced in at a caret they
+        /// cannot see is a different prompt by the time the mode closes, and an attachment staged
+        /// from in here is one nobody asked for.
+        #[test]
+        fn a_paste_and_a_drop_do_not_reach_the_line_while_the_scroller_is_open() {
+            let directory = crate::testutil::scratch_dir("bravebot-app-drop-while-scrolling");
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).expect("scratch");
+            let file = directory.join("shot.png");
+            std::fs::write(&file, [0x89u8, 0x50]).expect("write");
+
+            let mut session = reading().in_workspace(&directory);
+            for c in "half a thought".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key(&mut session, key(KeyCode::Left));
+            handle_key(&mut session, ctrl('o'));
+
+            assert_eq!(handle_paste(&mut session, "pasted"), Action::None);
+            // The clipboard holding a picture, which arrives as a paste of nothing at all.
+            assert_eq!(handle_paste(&mut session, ""), Action::None);
+            handle_paste_while_working(&mut session, &file.to_string_lossy());
+
+            handle_key(&mut session, key(KeyCode::Char('q')));
+            assert_eq!(session.input(), "half a thought");
+            assert!(
+                session.attached().is_empty(),
+                "a drop staged an attachment from inside the scroller"
+            );
+
+            // The caret is where it was left, which is the half of the line's state that is not
+            // in the text.
+            handle_key(&mut session, key(KeyCode::Char('!')));
+            assert_eq!(session.input(), "half a though!t");
+
+            let _ = std::fs::remove_dir_all(&directory);
         }
 
         #[test]
