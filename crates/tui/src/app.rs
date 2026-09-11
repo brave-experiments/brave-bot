@@ -2694,8 +2694,11 @@ fn bedrock_models(
             // The figure a tier gets is a property of what an opaque profile ARN gets rather than of
             // a particular model. A block that stated one knew better.
             conversation_tokens: Some(entry.window()),
-            // The API this reaches defines the field, so a level sent there is read.
-            reads_effort: true,
+            // True until this model has refused the field. Bedrock has no listing to say which
+            // parameters a model takes, so the only way to find out is to have sent one, and a row
+            // that went on claiming otherwise would report a level as in force after the requests
+            // carrying it had stopped.
+            reads_effort: bravebot_agent::backend::bedrock_reads_effort(&entry.id),
         })
         .collect()
 }

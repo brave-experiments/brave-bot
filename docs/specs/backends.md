@@ -556,6 +556,19 @@ get, reported to them as in force. Where a roster answers the question there is 
 and where it does not, withholding what somebody asked for on the strength of a listing that never
 mentioned the subject would be deciding against them from silence.
 
+**Where there is no listing, a refusal is the answer.** AWS Bedrock describes no model's parameters,
+so nothing can be consulted before a level is sent and the level goes out to be judged. A model that
+refuses the field has answered the same question the listing answers elsewhere: no later request
+carries a level to it, and it is reported as reading none rather than as having one in force.
+
+**Why.** The judgment is the only description this service offers, and throwing it away leaves the
+interface reporting a charge somebody chose and stopped getting, which is the thing this clause
+exists to prevent. Learned rather than declared because an inference-profile ARN does not say which
+provider is behind it, and a settings file cannot state what its author does not know either.
+
+`verified-by: bravebot_bedrock::lib::what_a_model_refused_outlives_the_client_that_found_out`
+`verified-by: bravebot_bedrock::lib::a_probe_that_settled_nothing_is_not_remembered`
+`verified-by: bravebot_bedrock::lib::one_model_refusing_says_nothing_about_another`
 `verified-by: bravebot_aichat::models::a_gateway_model_that_does_not_take_the_effort_parameter_says_so`
 `verified-by: bravebot_aichat::models::a_gateway_that_states_no_parameters_is_not_taken_to_read_no_level`
 `verified-by: bravebot_tui::app::a_level_is_withheld_from_a_model_that_reads_none`
@@ -741,6 +754,7 @@ format, which has no field for this and asks for nothing.
 `verified-by: bravebot_bedrock::protocol::a_reply_without_a_breakpoint_still_parses`
 `verified-by: bravebot_bedrock::protocol::cached_tokens_are_counted_as_the_prompt_they_were`
 `verified-by: bravebot_bedrock::protocol::a_request_without_breakpoints_keeps_everything_that_was_asked_for`
+`verified-by: bravebot_bedrock::lib::what_a_model_refused_outlives_the_client_that_found_out`
 `verified-by: bravebot_bedrock::lib::a_request_refused_on_its_contents_is_asked_again_without_the_breakpoints`
 `verified-by: bravebot_bedrock::lib::only_a_refusal_on_the_contents_drops_the_breakpoints`
 

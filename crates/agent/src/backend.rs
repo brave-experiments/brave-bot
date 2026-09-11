@@ -114,6 +114,18 @@ pub enum Backend<'a> {
     },
 }
 
+/// Whether a level chosen for `model` is one that model reads.
+///
+/// True until it has refused the field, which is the only way to find out: Bedrock has no listing
+/// to describe a model's parameters, and an inference-profile ARN does not say which provider is
+/// behind it. Reported so an interface does not go on showing a level as in force after the requests
+/// carrying it stopped.
+///
+/// Not content. What a service refused is the transport's own report, read from a status.
+pub fn bedrock_reads_effort(model: &str) -> bool {
+    !bravebot_bedrock::refusals(model).effort
+}
+
 impl<'a> Backend<'a> {
     /// The backend that serves `model`.
     ///
