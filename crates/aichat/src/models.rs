@@ -143,7 +143,10 @@ pub fn list<S: Sink>(
     // network. The label records where the bytes came from; nothing here branches on them beyond
     // the shape the endpoint documents.
     let response = egress.fetch(policy, request, Label::untrusted_public())?;
-    let (bytes, _) = response.body.into_parts_for_decoding();
+    let label = response.body.label();
+    let (bytes, _) = policy
+        .decode_transport("models", label)
+        .decode(response.body);
 
     let listed: Vec<Listed> = serde_json::from_slice(&bytes).map_err(|e| ChatError::Decode {
         detail: format!("{e} (received {} bytes from /v1/models)", bytes.len()),
@@ -218,7 +221,10 @@ fn fetch_listing<S: Sink>(
         .header("authorization", format!("Bearer {token}"));
 
     let response = egress.fetch(policy, request, Label::untrusted_public())?;
-    let (bytes, _) = response.body.into_parts_for_decoding();
+    let label = response.body.label();
+    let (bytes, _) = policy
+        .decode_transport("gateway models", label)
+        .decode(response.body);
 
     let listed: GatewayListing = serde_json::from_slice(&bytes).map_err(|e| ChatError::Decode {
         detail: format!("{e} (received {} bytes from {url})", bytes.len()),

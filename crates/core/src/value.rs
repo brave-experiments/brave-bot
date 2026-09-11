@@ -8,8 +8,10 @@
 //! inspectable**. `Labelled` deliberately does not implement `Deref`, `PartialEq`,
 //! or `Display`, and exposes no infallible getter. Code can move it, store it, and
 //! hand it to a gate, but cannot branch on its contents, so untrusted data cannot
-//! reach a decision. Reading the inner value requires [`Labelled::declassify`],
-//! which demands a [`Declassification`] witness that only the policy layer can mint.
+//! reach a decision. The only two ways to the inner value are
+//! [`Labelled::declassify`], which demands a [`Declassification`] witness that only
+//! the policy layer can mint, and [`Labelled::into_trusted`], which fails on anything
+//! that is not already `(T,pub)` and so has nothing to declassify.
 //!
 //! This is the compile-time form of the rule that the driver carries content but
 //! never inspects it.
@@ -58,21 +60,6 @@ impl<T> Labelled<T> {
         } else {
             Err(self)
         }
-    }
-
-    /// Split a labelled value into its parts at a protocol boundary.
-    ///
-    /// Needed where a transport envelope must be decoded, a JSON response body say,
-    /// because the decoder has to see the bytes. The label is returned alongside so it
-    /// cannot be dropped silently, and callers are expected to re-wrap the decoded
-    /// value immediately.
-    ///
-    /// This is the one place the "carryable but not inspectable" rule is relaxed, so it
-    /// is named to stand out in review. It must never be used to *decide* anything:
-    /// branching on untrusted content requires [`Labelled::declassify`] and a
-    /// policy-minted witness.
-    pub fn into_parts_for_decoding(self) -> (T, Label) {
-        (self.value, self.label)
     }
 
     /// Re-label a value, which may only degrade it. Returns `None` if the requested

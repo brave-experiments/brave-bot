@@ -29,13 +29,13 @@ accident.
 decision is not removing it. "It is only for a message to the model" does not help either, because
 a message to the model *is* the planner's context.
 
-**3. A `declassify` outside the three gates.** A witness is not permission to inspect. Minting one
+**3. A `declassify` outside the gates.** A witness is not permission to inspect. Minting one
 records that bytes moved somewhere they were already allowed to go: a filesystem write, an HTTP
 body, or a person's screen. Each of those has a gate of its own, `Policy::present`,
-`Policy::render_in_place` and `Policy::read_trusted_content`. A `declassify` anywhere
-else is almost certainly a violation, and it can only be written inside the policy layer:
-`Declassification::authorise` is `pub(in crate::policy)`, so no other module and no other crate
-can mint one at all.
+`Policy::render_in_place` and `Policy::read_trusted_content`, and the planner's own arguments
+have `Policy::read_planner_argument`. A `declassify` anywhere else is almost certainly a
+violation, and it can only be written inside the policy layer: `Declassification::authorise` is
+`pub(in crate::policy)`, so no other module and no other crate can mint one at all.
 
 **4. A `Labelled` built by hand.** Never construct one to give a value a better label than its
 inputs had. That is laundering, whichever crate it happens in. If a value derived from

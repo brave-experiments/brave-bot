@@ -13,6 +13,9 @@ guards:
   - symbol: Declassification::authorise
   - symbol: Policy::present
   - symbol: Policy::label_model_output
+  - symbol: Policy::adopt_model_output
+  - symbol: Policy::read_planner_argument
+  - symbol: Policy::decode_transport
 ---
 
 ## Scope
@@ -87,6 +90,17 @@ witness, which only the policy layer can mint: the part of `bravebot-core` that 
 the only code here allowed to read untrusted bytes at all. Asking for them anywhere else returns a
 refusal naming this rule, not a value.
 
+The one accessor that needs no witness is fallible and refuses everything that is not already
+`(T,pub)`, handing the value back untouched rather than a value it declined to release, so a caller
+cannot take the untrusted case by discarding an error. Counting a value's lines and bytes is not
+reading it: those two numbers are what LABEL-3 already puts in front of the planner, and the bytes
+they were counted from never leave.
+
+Everything else the driver needs out of a labelled value it asks a gate for, and every gate records
+the read: the planner's own arguments, a transport envelope a decoder has to see, and a model's
+reply on its way out of that envelope. A driver holding the bytes without one is the shape this
+clause exists to stop.
+
 **`bravebot-core` and `bravebot-agent` are both the driver.** Moving a branch from one
 into the other does not remove it.
 
@@ -95,7 +109,9 @@ into the other does not remove it.
 `verified-by: bravebot_core::policy::a_witness_permits_reading`
 `verified-by: bravebot_core::value::debug_redacts_the_value`
 `verified-by: bravebot_core::value::content_can_be_measured_without_being_read`
-`verified-by: by-construction (Deref, PartialEq and Display are not implemented for Labelled)`
+`verified-by: bravebot_core::policy::reading_an_argument_is_recorded`
+`verified-by: bravebot_core::policy::decoding_a_transport_envelope_is_recorded_and_hands_back_the_label`
+`verified-by: by-construction (Deref, PartialEq and Display are not implemented for Labelled, and its only witness-free accessor returns Err on anything but (T,pub))`
 `verified-by: by-construction (Declassification::authorise is pub(in crate::policy), so no other module of bravebot-core and no crate downstream of it can mint a witness)`
 
 <a id="LABEL-5"></a>
@@ -110,7 +126,19 @@ is a comparison.
 Integrity is the only axis that matters here. Workspace content is private as a matter of course,
 and examining it in-process releases nothing.
 
+A tool's arguments are held to the same rule, by the context rather than by the wrapper they
+arrive in. Every argument is wrapped `(U,pub)` as a pessimism, which is what forces a proposed
+path through a promotion gate rather than letting it pass for routing a person chose; the bytes
+themselves are the planner's own words, and the integrity of those is the integrity of the context
+the planner wrote them in. So an argument may be read while that context has met nothing untrusted,
+and is refused once it has. Locating a passage to replace is the case that shows why: `old_text` is
+compared against the file, and a comparison decides whether the write happens at all.
+
 `verified-by: bravebot_core::policy::requesting_untrusted_content_is_refused`
+`verified-by: bravebot_core::policy::an_argument_cannot_be_read_once_the_context_has_met_something_untrusted`
+`verified-by: bravebot_core::policy::a_private_argument_is_refused_rather_than_read`
+`verified-by: bravebot_agent::tools::an_edit_from_a_trusted_context_replaces_the_passage`
+`verified-by: bravebot_agent::tools::an_edit_is_refused_once_the_context_has_met_something_untrusted`
 
 <a id="LABEL-6"></a>
 ### LABEL-6: minting a witness is not permission to inspect
@@ -151,8 +179,16 @@ policy layer tracked.
 
 If you find yourself relabelling a value that already has a label, stop: that is LABEL-7.
 
+A reply arrives from a backend wrapped in the label the *network* gave it, because a JSON string
+carries no provenance and a transport can know nothing else. Taking it out of that envelope and
+giving it the context's label is one step in the policy layer, not two in a driver: a driver doing
+it itself holds model output unlabelled in between, with nothing recording that it did.
+
 `verified-by: bravebot_core::policy::model_output_from_a_clean_context_is_trusted`
 `verified-by: bravebot_core::policy::observation_labels_come_from_the_capability`
+`verified-by: bravebot_core::policy::adopting_model_output_takes_the_context_s_label_not_the_transport_s`
+`verified-by: bravebot_core::policy::adopting_model_output_from_a_fallen_context_stays_untrusted`
+`verified-by: bravebot_core::policy::only_a_value_a_transport_labelled_can_be_adopted_as_model_output`
 
 <a id="LABEL-9"></a>
 ### LABEL-9: context integrity falls when the planner is shown something, never when a turn reads it

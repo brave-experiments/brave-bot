@@ -855,8 +855,9 @@ fn ask<S: Sink, R: Reporter>(
     *output_tokens += completion.usage.completion_tokens;
     *model = completion.model;
 
-    let (spoken, _) = completion.content.into_parts_for_decoding();
-    let labelled = policy.label_model_output(round, spoken);
+    let labelled = policy
+        .adopt_model_output(round, completion.content)
+        .map_err(|d| TurnError::Precommit(d.to_string()))?;
     policy
         .read_trusted_content(round, &labelled)
         .map_err(|d| TurnError::Precommit(d.to_string()))

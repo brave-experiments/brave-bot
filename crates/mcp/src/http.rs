@@ -86,7 +86,8 @@ impl HttpServer {
 
         // Decoding the envelope needs the bytes; the label is reapplied to extracted
         // content by the caller.
-        let (bytes, _label) = response.body.into_parts_for_decoding();
+        let label = response.body.label();
+        let (bytes, _label) = policy.decode_transport(method, label).decode(response.body);
 
         // A server may frame its reply as SSE even when JSON was requested.
         let text = String::from_utf8_lossy(&bytes);

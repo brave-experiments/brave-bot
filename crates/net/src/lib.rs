@@ -816,10 +816,26 @@ mod tests {
     }
 
     /// Reading a stream to the end, in the pieces the caller would see them in.
+    ///
+    /// Through a policy, because a chunk arrives labelled and the gate is the only way to the
+    /// bytes inside one. Nothing about the gate is under test here; it is how the caller under
+    /// test reads a chunk too.
     fn drain(mut stream: Streamed<'_>) -> (usize, bool) {
+        let mut routing = bravebot_core::policy::Routing::new();
+        routing.insert_trusted("task", "read a stream");
+        let mut sink = bravebot_core::event::NullSink;
+        let mut policy = bravebot_core::policy::Policy::begin(
+            routing,
+            bravebot_core::policy::ReleasePlan::new(),
+            bravebot_core::capability::CapabilitySet::none(),
+            &mut sink,
+        )
+        .expect("policy begins");
+
+        let decoding = policy.decode_transport("test", Label::untrusted_public());
         let mut total = 0;
         while let Some(chunk) = stream.next_chunk().expect("the read succeeds") {
-            total += chunk.into_parts_for_decoding().0.len();
+            total += decoding.decode(chunk).0.len();
         }
         (total, stream.truncated())
     }

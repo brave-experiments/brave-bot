@@ -346,10 +346,12 @@ impl<'a> AichatClient<'a> {
 
         let response = self.egress.fetch(policy, http, Label::untrusted_public())?;
 
-        // Decoding the transport envelope needs the raw bytes, so the label is taken
-        // out explicitly and reapplied to the extracted text below. The assistant's
-        // reply therefore stays untrusted; only the envelope is treated as protocol.
-        let (bytes, label) = response.body.into_parts_for_decoding();
+        // Decoding the transport envelope needs the raw bytes, so the kernel releases them
+        // through the gate that exists for exactly that and hands the label back to be
+        // reapplied to the extracted text below. The assistant's reply therefore stays
+        // untrusted; only the envelope is treated as protocol.
+        let label = response.body.label();
+        let (bytes, label) = policy.decode_transport("chat", label).decode(response.body);
 
         let parsed: ChatResponse =
             serde_json::from_slice(&bytes).map_err(|e| ChatError::Decode {
@@ -500,6 +502,8 @@ impl<'a> AichatClient<'a> {
 
         let mut decoder = SseDecoder::new();
         let mut accumulated = StreamAccumulator::new();
+        // One envelope, arriving in frames, so it is authorised once rather than once a frame.
+        let decoding = policy.decode_transport("chat stream", Label::untrusted_public());
 
         loop {
             let piece = match arriving.recv_timeout(WAKE) {
@@ -528,7 +532,7 @@ impl<'a> AichatClient<'a> {
             // The SSE envelope is transport structure, like the JSON envelope in `complete`: the
             // bytes are taken out to find where events begin and end, and the reply that comes out
             // is relabelled with exactly the label it arrived under.
-            let (bytes, _) = piece.into_parts_for_decoding();
+            let (bytes, _) = decoding.decode(piece);
 
             // Where the reply stood before this chunk was folded in, so what the chunk added can
             // be handed on without sending the whole reply again on every frame of a long one.

@@ -66,7 +66,11 @@ fn body_of(catalogue: &skills::Catalogue, name: &str) -> String {
         "a skill body reached the catalogue untrusted: {:?}",
         body.label()
     );
-    body.clone().into_parts_for_decoding().0
+    let mut sink = RecordingSink::new();
+    let mut policy = policy(&mut sink, &[]);
+    policy
+        .read_trusted_content("skills", body)
+        .expect("a trusted body reads")
 }
 
 /// The names of the skills that came from a disk, which is what every test here is about.

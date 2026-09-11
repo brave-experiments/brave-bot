@@ -198,10 +198,7 @@ pub fn ask<S: Sink>(
     // Relabelled from the context the way a round's own words are: what comes back from the
     // client carries the label the network gave it, and the kernel is the only thing that knows
     // what this model was shown.
-    let written = {
-        let (text, _) = completion.content.clone().into_parts_for_decoding();
-        policy.label_model_output("btw", text)
-    };
+    let written = policy.adopt_model_output("btw", completion.content.clone())?;
 
     // The record's gate: it says whether the planner could have held these words, which is what
     // decides whether they may be written down. A store of its own, thrown away with the request,
