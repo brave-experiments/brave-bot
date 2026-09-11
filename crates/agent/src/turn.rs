@@ -1636,8 +1636,11 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
             // the read so the read sees it.
             policy.vouch_for_named_path(&path);
 
-            let contents =
-                workspace.read_attachment(&mut policy, &Labelled::trusted(path.clone()), &media)?;
+            let contents = workspace.read_dropped_attachment(
+                &mut policy,
+                &Labelled::trusted(path.clone()),
+                &media,
+            )?;
             conversation.observed(policy.context_integrity());
 
             let slot = conversation.next_reference();

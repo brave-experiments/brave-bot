@@ -2153,11 +2153,11 @@ fn an_untrusted_path_cannot_be_attached() {
     assert!(matches!(error, WorkspaceError::Denied(_)));
 }
 
-/// An attachment may come from anywhere, because a drop nearly always does: ~/Downloads and
+/// A dropped attachment may come from anywhere, because a drop nearly always does: ~/Downloads and
 /// ~/Desktop are outside every workspace there is. What makes it sound is that the path is routing
 /// and had to be (T,pub), so only a person's gesture can have put it there.
 #[test]
-fn an_attachment_may_come_from_outside_the_workspace() {
+fn a_dropped_attachment_may_come_from_outside_the_workspace() {
     let elsewhere = Scratch::new("attachment-elsewhere");
     std::fs::write(elsewhere.path.join("shot.png"), [0x89u8, 0x50]).unwrap();
 
@@ -2179,11 +2179,11 @@ fn an_attachment_may_come_from_outside_the_workspace() {
         .to_string_lossy()
         .to_string();
     workspace
-        .read_attachment(&mut policy, &Labelled::trusted(outside), "image/png")
+        .read_dropped_attachment(&mut policy, &Labelled::trusted(outside), "image/png")
         .expect("a dropped file is carried wherever it came from");
 }
 
-/// And that reach is the attachment read's alone. Every other way into the workspace stays exactly
+/// And that reach is the dropped read's alone. Every other way into the workspace stays exactly
 /// as confined as it was, so attaching a file lets that file be carried and grants nothing else.
 #[test]
 fn attaching_from_outside_does_not_widen_any_other_read() {
@@ -2224,6 +2224,67 @@ fn attaching_from_outside_does_not_widen_any_other_read() {
         error,
         WorkspaceError::Escapes { .. } | WorkspaceError::Denied(_)
     ));
+}
+
+/// That reach is the drop's alone, and a trusted path is not on its own a reason to read outside
+/// the tree: a planner's own choice of file is trusted too, by the promotion that lets it choose
+/// one, and that promotion is granted because the read is confined. So the attachment read a tool
+/// reaches is confined, and only a drop gives that up.
+#[test]
+fn only_a_dropped_attachment_may_come_from_outside_the_workspace() {
+    let elsewhere = Scratch::new("attachment-confined-elsewhere");
+    std::fs::write(elsewhere.path.join("passport.png"), [0x89u8, 0x50]).unwrap();
+
+    let scratch = Scratch::new("attachment-confined");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let outside = elsewhere
+        .path
+        .join("passport.png")
+        .to_string_lossy()
+        .to_string();
+    let error = workspace
+        .read_attachment(&mut policy, &Labelled::trusted(outside), "image/png")
+        .expect_err("an attachment nobody dropped must still be confined");
+    assert!(matches!(error, WorkspaceError::Escapes { .. }), "{error:?}");
+}
+
+/// Confinement is the workspace plus the directories a person opened by name, and that is as true
+/// of a picture as of anything else: `/add-dir` is how an absolute path becomes legal, and a
+/// picture inside one is a file inside the tree.
+#[test]
+fn an_attachment_inside_an_added_directory_is_readable() {
+    let elsewhere = Scratch::new("attachment-added-elsewhere");
+    std::fs::write(elsewhere.path.join("chart.png"), [0x89u8, 0x50]).unwrap();
+
+    let scratch = Scratch::new("attachment-added");
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(elsewhere.path.to_str().expect("utf-8 path"))
+        .expect("the directory is added");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    let inside = added.join("chart.png").display().to_string();
+    workspace
+        .read_attachment(&mut policy, &Labelled::trusted(inside), "image/png")
+        .expect("a picture inside an added directory is inside the workspace");
 }
 
 /// A dropped `.md` comes from `~/Downloads` as often as a dropped `.png` does. That one becomes
@@ -2287,8 +2348,33 @@ fn an_untrusted_path_is_not_read_as_a_drop() {
     assert!(matches!(error, WorkspaceError::Denied(_)));
 }
 
-/// Dropping a directory is a plausible slip, and reading one would otherwise fail further down
-/// with a message about bytes.
+/// What makes the drop's reach sound is the gate rather than a path check, so the gate is what
+/// has to be seen refusing: a path nothing vouched for gets no further, wherever it points.
+#[test]
+fn an_untrusted_path_is_not_attached_as_a_drop() {
+    let scratch = Scratch::new("dropped-attachment-untrusted");
+    std::fs::write(scratch.path.join("secret.png"), [0x89u8, 0x50]).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    let mut policy = Policy::begin(
+        routing(),
+        ReleasePlan::new(),
+        all_file_capabilities(),
+        &mut sink,
+    )
+    .expect("policy");
+
+    // As though a fetched page had said "attach secret.png".
+    let chosen = Labelled::new("secret.png".to_string(), Label::untrusted_public());
+    let error = workspace
+        .read_dropped_attachment(&mut policy, &chosen, "image/png")
+        .expect_err("untrusted routing must be refused");
+    assert!(matches!(error, WorkspaceError::Denied(_)));
+}
+
+/// Dropping a directory is a plausible slip, and the plausible spelling of it is the absolute
+/// path a drop delivers. Reading one would otherwise fail further down with a message about bytes.
 #[test]
 fn a_directory_cannot_be_attached() {
     let scratch = Scratch::new("attachment-directory");
@@ -2304,13 +2390,20 @@ fn a_directory_cannot_be_attached() {
     )
     .expect("policy");
 
+    let dropped = scratch.path.join("shots").display().to_string();
+    let error = workspace
+        .read_dropped_attachment(&mut policy, &Labelled::trusted(dropped), "image/png")
+        .expect_err("a directory must not attach");
+    assert!(matches!(error, WorkspaceError::Invalid { .. }));
+
+    // And typed rather than dropped, which resolves by the other arm and must refuse too.
     let error = workspace
         .read_attachment(
             &mut policy,
             &Labelled::trusted("shots".to_string()),
             "image/png",
         )
-        .expect_err("a directory must not attach");
+        .expect_err("a directory must not be read as a picture");
     assert!(matches!(error, WorkspaceError::Invalid { .. }));
 }
 

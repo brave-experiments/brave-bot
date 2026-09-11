@@ -901,6 +901,61 @@ fn a_model_cannot_escape_the_workspace() {
     );
 }
 
+/// The same property for a picture, which leaves the tool by a different resolver. Confinement is
+/// a fact about who chose the path rather than about what the file holds, so an absolute path the
+/// planner proposed is refused whether the bytes come back as lines or as a `data:` URI.
+#[test]
+fn a_model_cannot_escape_the_workspace_with_a_picture() {
+    let elsewhere = Scratch::new("escape-picture-elsewhere");
+    std::fs::write(elsewhere.path.join("passport.png"), a_png()).unwrap();
+
+    let scratch = Scratch::new("escape-picture");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let outside = elsewhere
+        .path
+        .join("passport.png")
+        .to_string_lossy()
+        .to_string();
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("read_file", &format!(r#"{{"path":"{outside}"}}"#)),
+        reply_with("could not read it"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("look at the picture on the desktop");
+    let outcome = turn::run(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+    )
+    .expect("turn runs");
+
+    assert_eq!(outcome.steps, 1);
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    // The refusal itself, not the word "error": the system prompt and several tool descriptions
+    // contain that word, so a test that looked for it would pass against the escape it is here
+    // to catch.
+    assert!(
+        second.contains("resolves outside the workspace"),
+        "expected a refusal to be reported back: {second}"
+    );
+    // And nothing to point a processor at. A picture is handed back as a reference rather than as
+    // bytes, so the reference is what would make the file readable: a marker for one here means
+    // the read happened and its contents are a question away.
+    assert!(
+        !second.contains("passport.png (image/png"),
+        "a picture from outside the workspace was handed back as a reference: {second}"
+    );
+}
+
 /// Cancellation is what stops a model that never stops calling tools. There is no round
 /// limit any more, so this is the whole of the answer: the token is checked before every
 /// request and before every tool call, and setting it ends the turn at the next one.

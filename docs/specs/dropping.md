@@ -37,6 +37,7 @@ terminal's drop handling and nothing else.
 
 `verified-by: bravebot_tui::drop::dropping_an_image_puts_a_marker_in_the_line`
 `verified-by: bravebot_agent::workspace::an_untrusted_path_is_not_read_as_a_drop`
+`verified-by: bravebot_agent::workspace::an_untrusted_path_is_not_attached_as_a_drop`
 
 <a id="DROP-2"></a>
 ### DROP-2: a drop makes that file trusted
@@ -66,6 +67,8 @@ but that a person's gesture put its path there.
 `verified-by: bravebot_tui::drop::a_text_file_from_outside_the_workspace_is_dropped_all_the_same`
 `verified-by: bravebot_tui::drop::the_name_handed_to_the_task_is_relative_to_the_workspace`
 `verified-by: bravebot_agent::workspace::a_dropped_text_file_may_come_from_outside_the_workspace`
+`verified-by: bravebot_agent::workspace::a_dropped_attachment_may_come_from_outside_the_workspace`
+`verified-by: bravebot_agent::workspace::only_a_dropped_attachment_may_come_from_outside_the_workspace`
 `verified-by: bravebot_agent::turn::a_dropped_text_file_from_outside_the_workspace_becomes_context`
 `verified-by: bravebot_agent::turn::dropping_a_text_file_does_not_reach_anything_beside_it`
 
