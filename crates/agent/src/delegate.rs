@@ -62,7 +62,11 @@ about something you did not do, and neither costs you anything: you are not bein
 are being read by somebody who has to act on this.
 
 You cannot delegate. There is no tool for it and asking for one achieves nothing, so the work in \
-front of you is yours to do or to report back on.";
+front of you is yours to do or to report back on.
+
+You cannot fetch a URL either. Anything you need from the network has to be in a file here \
+already, so where a task turns on something only a fetch would settle, say so in the answer and \
+leave it to whoever asked.";
 
 /// What a kind is told it may not do.
 ///
@@ -312,6 +316,25 @@ mod tests {
             );
             assert!(
                 !prompt.contains("call todo_write"),
+                "a {name} was told to use a tool it does not have"
+            );
+        }
+    }
+
+    /// The absence is what makes it true, and saying it is what stops a delegate planning around
+    /// a fetch and spending a round finding out it cannot make one. Said once for all three
+    /// kinds rather than kind by kind, because no kind has it.
+    #[test]
+    fn no_kind_is_told_it_may_reach_the_network() {
+        for name in Kind::NAMES {
+            let kind = Kind::from_name(name).expect("enumerated");
+            let prompt = prompt_for(kind);
+            assert!(
+                prompt.contains("You cannot fetch a URL"),
+                "a {name} was not told it cannot reach the network"
+            );
+            assert!(
+                !prompt.contains("call fetch_url"),
                 "a {name} was told to use a tool it does not have"
             );
         }
