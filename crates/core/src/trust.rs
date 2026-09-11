@@ -183,7 +183,7 @@ fn is_absolute(key: &str) -> bool {
 /// relative path spelled the same way. Collapsing the two would be a security bug rather than an
 /// inconvenience: stripping the slash turns `/` into the empty key, which is the primary root's own
 /// rule, so trusting one added directory would silently trust the entire workspace.
-fn normalise(path: &str) -> String {
+pub(crate) fn normalise(path: &str) -> String {
     let trimmed = path.trim();
     let segments = trimmed
         .split('/')

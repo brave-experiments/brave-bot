@@ -11,7 +11,6 @@ docs/specs/pasting.md:PASTE-3: the media type is the driver's, never the content
 docs/specs/pasting.md:PASTE-4: the picture is inlined, never linked
 docs/specs/pasting.md:PASTE-5: a paste does not lower context integrity
 docs/specs/pasting.md:PASTE-9: a pasted picture is kept with the session and comes back on resume
-docs/specs/processors.md:PROC-6: an answer is for one document, and belongs only where the planner said
 docs/specs/processors.md:PROC-9: the confinement is the capability set, not an operating system boundary
 docs/specs/routing.md:ROUTE-7: before adding a tool, ask what its routing field is
 docs/specs/sessions.md:SESSION-2: nothing untrusted is ever written down
