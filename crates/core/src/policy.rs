@@ -224,6 +224,12 @@ pub struct Policy<'sink, S: Sink> {
     denials: usize,
     /// Which paths the user vouched for.
     trust: TrustStore,
+    /// The directory [`Policy::trust`] spells its relative rules against.
+    ///
+    /// A rule in the map means a path under this directory, so anything asked about a path has to
+    /// know which directory the path was written relative to. `None` where the caller has not said,
+    /// and then nothing that needs it holds.
+    root: Option<std::path::PathBuf>,
     /// Which programs the user has stopped being asked about, by resolved path.
     programs: crate::programs::TrustedPrograms,
     /// Rules the user wrote in advance about what to ask them about.
@@ -323,6 +329,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             sink,
             denials: 0,
             trust: TrustStore::new(),
+            root: None,
             programs: crate::programs::TrustedPrograms::new(),
             permissions: crate::permissions::Permissions::new(),
             vouch_asked: std::collections::BTreeSet::new(),
@@ -507,6 +514,15 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// The trust decisions in force, including any this turn recorded.
     pub fn trust(&self) -> &TrustStore {
         &self.trust
+    }
+
+    /// Say which directory the trust map's relative rules are written against.
+    ///
+    /// The workspace root. Without it, a gate that has to work out which rule covers a path it was
+    /// handed relative to somewhere else cannot, and refuses rather than guessing.
+    pub fn with_root(mut self, root: &std::path::Path) -> Self {
+        self.root = Some(root.to_path_buf());
+        self
     }
 
     /// Begin with the programs an earlier turn of this session was told to stop asking about.
@@ -3220,6 +3236,91 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         })
     }
 
+    /// The paths every step of the plan reads, or `None` where any step proves nothing.
+    ///
+    /// A step is read-proven when the line named a program rather than a path, the audited table
+    /// answers for what that name resolved to and for the exact argv, the step carries no
+    /// environment assignment, and it opens no file for a stream. `2>&1` renames a descriptor and
+    /// opens nothing, so it is not one.
+    ///
+    /// The table's entries are claims about the programs a system provides under those names, and
+    /// it matches on the file name a program resolved to, so a line naming a path would let a file
+    /// called `wc` anywhere a name can reach answer as the audited one. An assignment in front of a
+    /// program decides what that program loads and reads before its own arguments are looked at,
+    /// and a redirection opens a file the argv does not name, so neither is covered by an audit of
+    /// an option surface.
+    ///
+    /// Every step, not any step: one step nothing can account for is a transformation the answer
+    /// does not cover, and its output is what the next step reads. A plan with no steps proves
+    /// nothing rather than proving an empty read set.
+    fn read_proven(&self, plan: &crate::command::Plan) -> Option<Vec<String>> {
+        let steps = plan.steps();
+
+        // A plan with no steps establishes nothing, and "nothing was read" is the wrong way to say
+        // that: it is the answer a proof gives, and there was no proof.
+        if steps.is_empty() {
+            return None;
+        }
+
+        // The operands are spelled relative to the directory the line runs in, and the trust map's
+        // rules are spelled relative to the workspace. Asking the map about a path written against
+        // a different directory would answer about a different file.
+        if self.root.as_deref() != Some(plan.directory.as_path()) {
+            return None;
+        }
+
+        let mut paths = Vec::new();
+        for step in steps {
+            let opens_a_file = step
+                .routes
+                .iter()
+                .any(|route| !matches!(route, crate::command::Route::StderrToStdout));
+            if names_a_path(&step.program) || !step.environment.is_empty() || opens_a_file {
+                return None;
+            }
+            paths.extend(crate::pure::read_set(
+                &step.resolved.to_string_lossy(),
+                &step.args,
+            )?);
+        }
+        Some(paths)
+    }
+
+    /// The label a read-proven plan's output carries, or `None` where the plan is not read-proven.
+    ///
+    /// The meet over the paths the plan reads and over its standard input, which is the ordinary
+    /// rule for a derived value applied to a process. Not a relabel: it is the first label the
+    /// output ever receives, and it grants nothing, since an untrusted path in the read set yields
+    /// an untrusted result exactly as the opaque default does.
+    ///
+    /// Private throughout, from the capability, because bytes read out of the workspace do not
+    /// leave it without a declassification whatever the trust map says about their path.
+    ///
+    /// A path answers as trusted only where the trust map covers it and everything beneath it, and
+    /// a `..` component answers as untrusted whatever the map holds: it names a file somewhere the
+    /// map was never asked about, and the rule that would be consulted is about the spelling rather
+    /// than about the file.
+    fn read_proven_label(&self, plan: &crate::command::Plan) -> Option<Label> {
+        let paths = self.read_proven(plan)?;
+        let base = Capability::ShellExec.output_label()?;
+
+        let mut integrity = plan
+            .stdin
+            .map_or(Integrity::Trusted, |label| label.integrity);
+        for path in &paths {
+            let answer = match climbs_out(path) {
+                true => Integrity::Untrusted,
+                false => self
+                    .trust
+                    .integrity_beneath(path)
+                    .unwrap_or(Integrity::Untrusted),
+            };
+            integrity = integrity.meet(answer);
+        }
+
+        Some(Label::new(integrity, base.confidentiality))
+    }
+
     /// Whether a person has to be asked before this plan runs.
     ///
     /// The same order of questions a pipeline goes through: private input first and
@@ -3259,6 +3360,19 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 return needed;
             }
             crate::permissions::Decision::Unmatched => {}
+        }
+
+        if self
+            .read_proven_label(plan)
+            .is_some_and(|label| label.is_trusted())
+        {
+            self.allow(
+                "approval",
+                "every step is an audited call that reads what the line names and the user \
+                 vouched for every path it reads, no prompt"
+                    .to_string(),
+            );
+            return false;
         }
 
         if self.every_step_vouched(plan) {
@@ -3315,7 +3429,20 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             message: "command output must have a label".to_string(),
         })?;
 
-        let (label, why) = if self.every_step_vouched(plan) {
+        // The proof road first, and only where it reaches a trusted answer: an audited call that
+        // read an untrusted path proves its output untrusted, and a person who vouched for that
+        // same command asserted something stronger about it.
+        let proven = self
+            .read_proven_label(plan)
+            .filter(|label| label.is_trusted());
+
+        let (label, why) = if let Some(label) = proven {
+            (
+                label,
+                "every step is an audited call whose output is a function of paths the user \
+                 vouched for",
+            )
+        } else if self.every_step_vouched(plan) {
             (
                 Label::trusted_private(),
                 "every step is a command the user vouched for, output and all",
@@ -3688,6 +3815,25 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     pub fn finish(self) -> bool {
         self.denials == 0
     }
+}
+
+/// Whether a program was written as a path rather than as a name to look up.
+///
+/// A name is looked up in the user's own `$PATH`, which is their configuration. A path is whatever
+/// the line points at, including a file in the directory the line runs in.
+fn names_a_path(program: &str) -> bool {
+    program.contains('/') || (cfg!(windows) && program.contains('\\'))
+}
+
+/// Whether a path names something through a parent directory.
+///
+/// The trust map is keyed on names and compares them by segment, so a rule about a directory
+/// answers about `../secret` as readily as about a file inside it. A path that climbs is therefore
+/// one no rule was written about, whatever a rule appears to say.
+fn climbs_out(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
 }
 
 #[cfg(test)]
@@ -4930,6 +5076,284 @@ mod tests {
             reads: Vec::new(),
             stdin: None,
         }
+    }
+
+    /// A store that vouches for the whole project, which is what answering yes at startup writes.
+    fn trusting(paths: &[&str], distrusting: &[&str]) -> TrustStore {
+        let mut trust = TrustStore::new();
+        for path in paths {
+            trust.trust(path);
+        }
+        for path in distrusting {
+            trust.distrust(path);
+        }
+        trust
+    }
+
+    /// A policy in a project the user has answered about, whose rules are spelled against the
+    /// directory [`plan_of`] puts a plan in.
+    fn in_a_project<'s>(
+        sink: &'s mut RecordingSink,
+        distrusting: &[&str],
+    ) -> Policy<'s, RecordingSink> {
+        open_policy(sink)
+            .with_trust(trusting(&["."], distrusting))
+            .with_root(std::path::Path::new("/work"))
+    }
+
+    /// The point of the proof road. Nothing about `wc -l Cargo.toml` can write, and the file it
+    /// reads is one the user vouched for, so there is nothing left for a person to decide and the
+    /// prompt is a cost with nothing on the other side of it.
+    #[test]
+    fn a_line_that_only_reads_vouched_for_paths_does_not_ask() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let line = plan_of(vec![step_named("wc", &["-l", "Cargo.toml"])]);
+        assert!(
+            !policy.plan_needs_approval(&line),
+            "a line that only reads a vouched-for file asked anyway"
+        );
+    }
+
+    /// The output is a function of what went in, so a file the user vouched for yields a result the
+    /// planner may read. Nothing is upgraded: this is the first label those bytes carry.
+    #[test]
+    fn a_line_that_only_reads_vouched_for_paths_comes_back_trusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let line = plan_of(vec![
+            step_named("grep", &["error", "log.txt"]),
+            step_named("wc", &["-l"]),
+        ]);
+        policy.endorse_plan(&line);
+        let label = policy.before_plan(&line).expect("an endorsed plan runs");
+        assert_eq!(label, Label::trusted_private());
+    }
+
+    /// The half of the rule that has to hold for the other half to be worth anything. An audited
+    /// call reading a file nobody vouched for is an audited call printing an attacker's bytes, so
+    /// the proof says the output is untrusted rather than saying it is safe.
+    #[test]
+    fn a_line_reading_an_unvouched_path_still_asks() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &["vendor"]);
+
+        let line = plan_of(vec![step_named("wc", &["-l", "vendor/lib.js"])]);
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a line reading an untrusted file ran unasked"
+        );
+
+        policy.endorse_plan(&line);
+        let label = policy.before_plan(&line).expect("an endorsed plan runs");
+        assert!(
+            !label.is_trusted(),
+            "bytes out of an untrusted file came back trusted"
+        );
+    }
+
+    /// A recursive search reads a whole tree, so a directory the user refused inside a project they
+    /// vouched for has to decide the answer about that project. A label taken from the directory
+    /// named on the line would be taken from the one path in the walk nobody objected to.
+    #[test]
+    fn a_recursive_search_takes_its_label_from_the_whole_subtree() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &["src/vendor"]);
+
+        let whole_tree = plan_of(vec![step_named("grep", &["-r", "TODO", "src"])]);
+        assert!(
+            policy.plan_needs_approval(&whole_tree),
+            "a walk through an untrusted directory ran unasked"
+        );
+
+        let beside_it = plan_of(vec![step_named("grep", &["-r", "TODO", "src/handlers"])]);
+        assert!(
+            !policy.plan_needs_approval(&beside_it),
+            "a walk that never enters the untrusted directory asked anyway"
+        );
+    }
+
+    /// One step nothing can account for is a transformation the proof does not cover, and its
+    /// output is what the next step reads, so the whole line is opaque however ordinary the steps
+    /// either side of it look.
+    #[test]
+    fn one_step_nothing_can_account_for_makes_the_whole_line_opaque() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let line = plan_of(vec![step_named("git", &["log"]), step_named("wc", &["-l"])]);
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a line with an unaudited step ran unasked"
+        );
+
+        policy.endorse_plan(&line);
+        let label = policy.before_plan(&line).expect("an endorsed plan runs");
+        assert!(
+            !label.is_trusted(),
+            "an unaudited step printed trusted bytes"
+        );
+    }
+
+    /// The hole a file name alone would leave open. The table matches the name a program resolved
+    /// to, so a `wc` in the directory the line runs in would answer as the audited one and run
+    /// without anybody seeing it. A name is looked up in the user's own `$PATH`; a path is not.
+    #[test]
+    fn a_program_named_by_path_is_not_proven() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        for spelling in ["./wc", "/work/wc", "../bin/wc"] {
+            let mut step = step_named("wc", &["-l", "Cargo.toml"]);
+            step.program = spelling.to_string();
+            assert!(
+                policy.plan_needs_approval(&plan_of(vec![step])),
+                "a program named as {spelling} ran unasked"
+            );
+        }
+    }
+
+    /// An assignment in front of a program decides what that program loads and reads before its own
+    /// arguments are looked at, so an audit of an option surface says nothing about the call.
+    #[test]
+    fn an_environment_assignment_leaves_a_step_unproven() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let mut step = step_named("wc", &["-l", "Cargo.toml"]);
+        step.environment = vec![("LD_PRELOAD".to_string(), "./evil.so".to_string())];
+        assert!(
+            policy.plan_needs_approval(&plan_of(vec![step])),
+            "a line carrying an environment assignment ran unasked"
+        );
+    }
+
+    /// A redirection opens a file the argv does not name, so the answer would not cover what was
+    /// read. `2>&1` is not one: it renames a descriptor and opens nothing.
+    #[test]
+    fn a_redirection_leaves_a_step_unproven_and_a_descriptor_rename_does_not() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let mut reading = step_named("wc", &["-l"]);
+        reading.routes = vec![crate::command::Route::Stdin {
+            path: std::path::PathBuf::from("/work/vendor/lib.js"),
+        }];
+        assert!(
+            policy.plan_needs_approval(&plan_of(vec![reading])),
+            "a line fed a file by redirection ran unasked"
+        );
+
+        let mut joined = step_named("grep", &["-r", "TODO", "src"]);
+        joined.routes = vec![crate::command::Route::StderrToStdout];
+        assert!(
+            !policy.plan_needs_approval(&plan_of(vec![joined])),
+            "joining the streams, which opens no file, cost the line its proof"
+        );
+    }
+
+    /// The operands are spelled relative to the directory the line runs in, and the map's rules are
+    /// spelled relative to the workspace. A plan running somewhere else would have `lib.js` answered
+    /// by the rule about the project root rather than by the one about the directory it sits in.
+    #[test]
+    fn a_line_running_outside_the_project_root_is_not_proven() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &["vendor"]);
+
+        let mut line = plan_of(vec![step_named("wc", &["-l", "lib.js"])]);
+        line.directory = std::path::PathBuf::from("/work/vendor");
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a line running in another directory was answered by the wrong rule"
+        );
+    }
+
+    /// A plan with no steps establishes nothing, and the proof road must not report that as an
+    /// empty read set: the answer to what it read is that there was no proof.
+    #[test]
+    fn a_plan_with_no_steps_proves_nothing() {
+        let mut sink = RecordingSink::new();
+        let policy = in_a_project(&mut sink, &[]);
+
+        assert!(
+            policy.read_proven_label(&plan_of(Vec::new())).is_none(),
+            "a plan with nothing in it answered as proven"
+        );
+    }
+
+    /// A `..` names a file through a directory no rule was written about, and the map compares
+    /// names by segment, so the rule that appears to cover it is a rule about the spelling.
+    #[test]
+    fn a_path_climbing_out_of_the_project_still_asks() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let line = plan_of(vec![step_named("wc", &["-l", "../secret"])]);
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a line reading through a parent directory ran unasked"
+        );
+    }
+
+    /// A write has a destination as well as a program, and nothing about an audited call says where
+    /// its output lands. The proof is about what a program reads.
+    #[test]
+    fn a_read_proven_line_that_also_writes_still_asks() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let mut line = plan_of(vec![step_named("wc", &["-l", "Cargo.toml"])]);
+        line.writes = vec![std::path::PathBuf::from("/work/out.txt")];
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a line that writes a file ran unasked"
+        );
+    }
+
+    /// Handing the user's data to a program releases it somewhere this policy no longer governs,
+    /// which is a reason on confidentiality that no proof about reading answers.
+    #[test]
+    fn private_input_still_asks_about_a_read_proven_line() {
+        let mut sink = RecordingSink::new();
+        let mut policy = in_a_project(&mut sink, &[]);
+
+        let mut line = plan_of(vec![step_named("grep", &["error"])]);
+        line.stdin = Some(Label::untrusted_private());
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a line fed the user's private data ran unasked"
+        );
+    }
+
+    /// Proof removes the default prompt. It does not overrule a rule a person wrote, which is a
+    /// decision about this command made in advance and on purpose.
+    #[test]
+    fn an_ask_rule_still_asks_about_a_read_proven_line() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            in_a_project(&mut sink, &[]).with_permissions(permissions(&[], &["Bash(wc *)"], &[]));
+
+        let line = plan_of(vec![step_named("wc", &["-l", "Cargo.toml"])]);
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a rule saying ask was overruled by a proof"
+        );
+    }
+
+    /// A deny rule says the line does not run, so there is nothing for a proof to be about.
+    #[test]
+    fn a_deny_rule_still_refuses_a_read_proven_line() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            in_a_project(&mut sink, &[]).with_permissions(permissions(&["Bash(wc *)"], &[], &[]));
+
+        let line = plan_of(vec![step_named("wc", &["-l", "Cargo.toml"])]);
+        assert!(
+            policy.before_plan_rules(&line).is_err(),
+            "a rule saying deny was overruled by a proof"
+        );
     }
 
     #[test]

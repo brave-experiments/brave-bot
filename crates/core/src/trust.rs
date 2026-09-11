@@ -78,6 +78,27 @@ impl TrustStore {
             .map(|(_, integrity)| *integrity)
     }
 
+    /// The integrity of everything at or beneath `path`, by the meet of every rule that bears on
+    /// it.
+    ///
+    /// `integrity_of` answers about one file, by the longest rule covering it. A caller reading a
+    /// whole subtree needs the weakest answer inside that subtree instead, because a trusted
+    /// project may hold an untrusted directory and a result derived from both is only as good as
+    /// the worse of them.
+    ///
+    /// `None` when no rule covers `path` at all, which the caller should treat as untrusted, for
+    /// the same reason `integrity_of` returns an option: nobody has said.
+    pub fn integrity_beneath(&self, path: &str) -> Option<Integrity> {
+        let mut answer = self.integrity_of(path)?;
+        let path = normalise(path);
+        for (prefix, integrity) in self.rules() {
+            if covers(&path, prefix) {
+                answer = answer.meet(integrity);
+            }
+        }
+        Some(answer)
+    }
+
     /// Whether `path` is trusted. Anything not covered by a rule is not.
     pub fn is_trusted(&self, path: &str) -> bool {
         self.integrity_of(path) == Some(Integrity::Trusted)
@@ -225,6 +246,41 @@ mod tests {
         assert!(store.is_trusted("src/main.rs"));
         assert!(store.is_trusted("src/deep/nested.rs"));
         assert!(!store.is_trusted("other/main.rs"));
+    }
+
+    /// A search that walks a whole tree is only as trustworthy as the weakest thing in it, so an
+    /// untrusted directory inside a trusted project has to show up in the answer about the project.
+    #[test]
+    fn a_subtree_is_trusted_only_when_nothing_beneath_it_is_not() {
+        let mut store = TrustStore::new();
+        store.trust("src");
+        store.distrust("src/vendor");
+
+        assert_eq!(store.integrity_beneath("src"), Some(Integrity::Untrusted));
+        assert_eq!(
+            store.integrity_beneath("src/handlers"),
+            Some(Integrity::Trusted)
+        );
+        assert_eq!(
+            store.integrity_beneath("src/vendor"),
+            Some(Integrity::Untrusted)
+        );
+        assert_eq!(store.integrity_beneath("elsewhere"), None);
+    }
+
+    /// One file's own answer must not be weakened by a rule about a sibling, or vouching for a
+    /// project would be undone by any one directory inside it.
+    #[test]
+    fn a_rule_about_a_sibling_does_not_reach_a_file() {
+        let mut store = TrustStore::new();
+        store.trust(".");
+        store.distrust("vendor");
+
+        assert_eq!(
+            store.integrity_beneath("src/main.rs"),
+            Some(Integrity::Trusted)
+        );
+        assert_eq!(store.integrity_beneath("."), Some(Integrity::Untrusted));
     }
 
     /// Trusting the workspace root is the startup case, so it must cover everything.

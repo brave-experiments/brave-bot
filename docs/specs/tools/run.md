@@ -87,11 +87,14 @@ only the routing part has to be trustworthy.
 | Standard input | may be untrusted | a person approves when it is private |
 | Standard output and error | `(U,priv)` | quarantined |
 | …for a command a person vouched for | `(T,priv)` | RUN-7 |
+| …for a plan that proves what it read | the meet over its read set, private | [command-line.md](command-line.md) |
 
 A program may print bytes an earlier stage read out of a file an attacker wrote, so `(U,priv)` is
 the only label that holds without knowing what ran. Nothing a caller, a stage, or the planner can
-declare changes it. Only a person can, in one of the two ways below, and both are assertions
-rather than inferences.
+declare changes it. Two things can establish a better first label, and neither is a declaration: a
+person, in one of the two ways below, which is an assertion they take responsibility for, and a
+proof about one program's option surface, checked by hand against that program's full option list
+and covering the exact arguments given.
 
 Standard input reaches the second row by two routes, and the row governs both. The policy layer
 may supply the bytes of a quarantined reference, which arrive with that reference's label, and a
@@ -107,19 +110,26 @@ the trust map says about the path, so the second route is always private and alw
 `verified-by: bravebot_core::policy::one_unvouched_stage_makes_the_whole_output_untrusted`
 
 <a id="RUN-5"></a>
-### RUN-5: every run asks, unless every stage was vouched for
+### RUN-5: every run asks, unless every stage was vouched for or proven
 
-There is no read-only category. `foo --bar` might write to disk and nothing here can tell, and a
-stage declaring itself harmless only helps if the declaration is honest. A person having answered
-the question before, in this session, for this exact command is the **only** thing that may answer
-it: never a property of the argv, never a declaration by a stage, never anything derived from what
-a program printed.
+There is no *declared* read-only category. `foo --bar` might write to disk and nothing here can
+tell, and a stage declaring itself harmless only helps if the declaration is honest. Two things may
+answer the question, and nothing else: a person having answered it before, in this session, for this
+exact command, and the audited table in [command-line.md](command-line.md) establishing that these
+exact arguments write nothing and read only paths the user vouched for. Never a property of the
+argv, never a declaration by a stage, never anything derived from what a program printed.
 
-**Why.** An unprompted write is worse than an unwanted prompt.
+**Why.** An unprompted write is worse than an unwanted prompt, so nothing that could be wrong about
+a write may answer the question. An entry in the table is a claim checked by hand against one
+program's full option list, which is why it may, and it is narrow for the same reason: anything it
+does not fully recognise asks.
 
 `verified-by: bravebot_core::policy::a_command_nobody_vouched_for_is_put_to_a_person`
 `verified-by: bravebot_core::policy::a_vouched_command_is_not_asked_about_again`
 `verified-by: bravebot_core::policy::one_unvouched_stage_puts_the_whole_pipeline_to_a_person`
+`verified-by: bravebot_core::policy::a_line_that_only_reads_vouched_for_paths_does_not_ask`
+`verified-by: bravebot_core::policy::a_line_reading_an_unvouched_path_still_asks`
+`verified-by: bravebot_core::policy::one_step_nothing_can_account_for_makes_the_whole_line_opaque`
 
 <a id="RUN-6"></a>
 ### RUN-6: private input asks every time, whatever is vouched for
@@ -200,7 +210,9 @@ enumerated and not confined: they run with the access the user's shell would giv
 advance.
 
 Do not add an allowlist and treat it as the safety property. What holds is the label on the
-output, not a belief about the binary.
+output, not a belief about the binary. The audited table in [command-line.md](command-line.md) is
+not one: a program absent from it is neither refused nor confined, only asked about, and what the
+table establishes is what an output may be labelled rather than what may run.
 
 `verified-by: none`
 
