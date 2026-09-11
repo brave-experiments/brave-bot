@@ -145,5 +145,5 @@ processor in a subprocess would confine the wrong thing.
   that the reader holds nothing.
 - **One approval per candidate, not per change.** Where several files could be the one, each is
   read into its own slot, transformed with the same instruction, and written back to the path it
-  came from. A file the processor left alone is written back byte for byte, and still costs an
-  approval.
+  came from. A candidate the answer marked no document for is not written at all, so the
+  approvals count the files that changed rather than the files considered.

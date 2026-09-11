@@ -93,17 +93,13 @@ impl ProcessorSpec {
     /// Chosen by the planner out of the slots it named, before the processor exists, and it
     /// decides two things. The answer replaces that document and may be written to no other
     /// file: a processor produces one document however many it was given, and a planner that
-    /// assumed otherwise wrote a game's HTML into a Python script. And where nothing should
-    /// change, that document stands as the answer, so the processor says so in a word rather
-    /// than reproducing a file it was told to leave alone.
+    /// assumed otherwise wrote a game's HTML into a Python script. And where the answer marks no
+    /// document, this one stands as it was and there is nothing to write for it, so a processor
+    /// with nothing to change leaves the line out rather than reproducing a file it was told to
+    /// leave alone.
     pub fn about(&self) -> Option<&SlotId> {
         self.about.as_ref()
     }
-
-    /// What a processor says when the document should be left as it is.
-    ///
-    /// Safe by construction: a document whose entire content is this word is replaced by itself.
-    pub const UNCHANGED: &'static str = "UNCHANGED";
 
     /// The line that separates what a processor wants to say from what it produced.
     ///
@@ -112,8 +108,10 @@ impl ProcessorSpec {
     /// became the file. Twice.
     ///
     /// Everything before the line is a note for the person watching. Everything after it is the
-    /// document. An answer without the line at all is a document, which is what it always was, so
-    /// a processor that says nothing loses nothing.
+    /// document, whatever it says. An answer without the line at all names no document, so
+    /// nothing is written and the document the call was about stands as it was: that is also how
+    /// a processor says it found nothing to change, since a driver that read a word out of the
+    /// answer instead would be deciding from untrusted bytes.
     ///
     /// A document that contains this line splits at it, and the part before goes to a screen
     /// instead of into the file. That is a reshaping of untrusted content by untrusted content:

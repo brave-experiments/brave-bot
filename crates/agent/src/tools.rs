@@ -374,12 +374,11 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                         "type": "string",
                         "description": "Which of the references in reads this call is about. \
                                         The answer replaces that document and may be written to \
-                                        no other file, and where nothing should change that \
-                                        document stands as the answer, so the processor says so \
-                                        in a word rather than reproducing a file it was told to \
-                                        leave alone. Required when reads names more than one \
-                                        file: one answer has one destination, and nothing else \
-                                        can say which."
+                                        no other file, and an answer that marks no document \
+                                        leaves that one standing, which is how a processor with \
+                                        nothing to change says so. Required when reads names \
+                                        more than one file: one answer has one destination, and \
+                                        nothing else can say which."
                     },
                     "instruction": {
                         "type": "string",
@@ -394,7 +393,8 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                                         processor knows nothing but what you tell it and what \
                                         the references hold. May be conditional: say what the \
                                         document must look like if it is the one the task is \
-                                        about, and to return it unchanged if it is not."
+                                        about, and to say why and produce no document if it is \
+                                        not."
                     }
                 },
                 "required": ["reads", "instruction"]
@@ -785,8 +785,6 @@ pub struct Output {
     /// the middle stays reachable: a planner that needs it hands the reference to a processor or
     /// writes it to a file rather than running the command again.
     pub whole: Option<Labelled<String>>,
-    /// The slot this result stands for unchanged, where there is one.
-    pub unchanged_from: Option<SlotId>,
     /// Which document a processor's answer is about, where it produced one.
     pub answers_for: Option<Option<SlotId>>,
     /// What an isolated processor said about what it did. For the person watching only.
@@ -1002,10 +1000,6 @@ struct Produced {
     changes: Vec<crate::diff::Change>,
     /// Whether those lines are content nobody vouched for.
     untrusted: bool,
-    /// The slot this result stands for unchanged, where a processor said a document should not
-    /// change. The turn records it against the slot it mints, so a write of it can be
-    /// recognised as changing nothing.
-    unchanged_from: Option<SlotId>,
     /// Which document a processor's answer is about, where it produced one.
     ///
     /// `Some(None)` is a processor that was given several documents and told which of them it
@@ -1068,7 +1062,6 @@ impl Produced {
             whole: None,
             changes: Vec::new(),
             untrusted: false,
-            unchanged_from: None,
             answers_for: None,
             said: None,
             content: false,
@@ -1456,7 +1449,6 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
                 entries: produced.entries,
                 incomplete: produced.incomplete,
                 whole: produced.whole,
-                unchanged_from: produced.unchanged_from,
                 answers_for: produced.answers_for,
                 said: produced.said,
                 content: produced.content,
@@ -1530,7 +1522,6 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         entries: produced.entries,
         incomplete: produced.incomplete,
         whole: produced.whole,
-        unchanged_from: produced.unchanged_from,
         answers_for: produced.answers_for,
         said: produced.said,
         content: produced.content,
@@ -1560,7 +1551,6 @@ fn problem(text: impl Into<String>) -> Produced {
         whole: None,
         changes: Vec::new(),
         untrusted: false,
-        unchanged_from: None,
         answers_for: None,
         said: None,
         wakeup: None,
@@ -2304,13 +2294,13 @@ fn write_file<S: Sink, C: Confirmer>(
         Intent::Create
     };
 
-    // Nothing to do, and nothing to ask about. A processor told to leave a document alone hands
-    // back the document, and writing it puts the file back exactly as it is: a diff with nothing
-    // in it, put to a person once per file that turned out not to need changing. Approvals that
-    // say nothing are how the ones that say something get waved through.
+    // Nothing to do, and nothing to ask about. The slot holds what this very file was read as, so
+    // writing it puts the file back exactly as it is: a diff with nothing in it, put to a person
+    // once per file that turned out not to need changing. Approvals that say nothing are how the
+    // ones that say something get waved through.
     //
-    // The planner is told what it would have been told anyway. Which files a processor decided
-    // to leave alone is a fact about their contents, and those do not go into its context.
+    // The planner is told what it would have been told anyway. Which file this is says nothing
+    // about anybody's contents, and those do not go into its context.
     if !changes_anything {
         return confirmed(
             format!("{shown_path} holds what {body_from} holds. Nothing further to do for it."),
@@ -3296,8 +3286,8 @@ fn spawn_processor<S: Sink>(
         Err(refusal) => return problem(refusal),
     };
 
-    // Which document the call is about: the answer replaces that one, and where nothing should
-    // change it stands as the answer. The planner's own choice, out of the references it named,
+    // Which document the call is about: the answer replaces that one, and an answer that marks
+    // no document leaves it standing. The planner's own choice, out of the references it named,
     // fixed before the processor exists.
     let about = match argument(arguments, "about") {
         Some(named) => match policy.accept_reference("spawn_processor", "about", &named) {
@@ -3319,36 +3309,31 @@ fn spawn_processor<S: Sink>(
     let waited = asked_at.elapsed();
     match answer {
         Ok(done) => {
-            // Nothing to keep. A slot is written once and read by whatever the planner points
-            // at it, and a slot holding a copy of a document that is already in a slot has
-            // nothing for anyone to point at: the file it stands for is the file it came from,
-            // and that file needs no writing. So none is minted, and the planner is told there
-            // is nothing to write rather than handed a name for a copy.
-            if let Some(from) = &done.unchanged_from {
-                let mut produced = confirmed(
-                    format!(
-                        "{from} needs no change, so there is nothing to write for it. Do not \
-                         write it, and do not process it again."
-                    ),
-                    "left it alone",
-                )
-                .costing(done.usage)
-                .waiting(waited);
-                produced.said = done.note;
-                return produced;
-            }
-
             // Nothing to write, and nothing minted for it. An answer that never said which part
             // of itself was a file cannot become one: everything a processor writes is for a
             // person to read unless it declares where the document begins, and this one
-            // declared nothing.
+            // declared nothing. The document the call was about stands as it was, and no slot
+            // is minted for a copy of it: a slot is written once and read by whatever the
+            // planner points at it, and one holding a copy of a document already in a slot has
+            // nothing for anyone to point at.
+            //
+            // A processor with nothing to change and one that forgot the line hand back the
+            // same answer, and what would tell them apart is in bytes the driver may not read.
+            // So this says what is true of both and asks for the line, rather than reporting a
+            // verdict the reply is not entitled to give.
             let Some(document) = done.document else {
+                let stands = match spec.about() {
+                    Some(from) => format!("nothing was written and {from} is as it was"),
+                    None => "there is nothing to write".to_string(),
+                };
                 let mut produced = confirmed(
-                    "that answer named no document, so there is nothing to write. What it said \
-                     is on the screen. Ask again, and say that the whole file must follow the \
-                     line that marks where the document begins."
-                        .to_string(),
-                    "said something, produced no document",
+                    format!(
+                        "that answer marked no document, so {stands}. What it said is on the \
+                         screen. If the change is still needed, process it again and say that \
+                         the whole file must follow the line that marks where the document \
+                         begins."
+                    ),
+                    "produced no document",
                 )
                 .costing(done.usage)
                 .waiting(waited);
@@ -3374,7 +3359,6 @@ fn spawn_processor<S: Sink>(
                 .costing(done.usage)
                 .waiting(waited)
                 .of_content();
-            produced.unchanged_from = done.unchanged_from;
             produced.answers_for = Some(spec.about().cloned());
             produced.said = done.note;
             produced

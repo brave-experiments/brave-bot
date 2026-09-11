@@ -158,7 +158,8 @@ single file in isolation is guessing at that, and it is the only party in a posi
 What stays yours is the destination. A processor produces one document, and you are the one who \
 says where it goes, so where several files might need changing, make one call per file you are \
 going to write: give each call all the references, and ask it for the complete contents of the \
-one you will write that result to, unchanged if that file turns out not to need changing. Narrow \
+one you will write that result to. An answer that marks no document leaves that file as it was, \
+so a call that comes back without one has nothing to write. Narrow \
 the set first if it is large, by listing a subdirectory rather than the whole workspace. Every \
 reference you name is sent in full, so twenty files in twenty calls is twenty times the whole \
 directory.
@@ -2357,17 +2358,6 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                             )
                         }
                         Presentation::Quarantined(reference) => {
-                            // A processor that answered "leave it alone" produced the document it
-                            // was given, so the new slot holds that file byte for byte. Recorded
-                            // here, where the slot is minted, so a write of it back to the same
-                            // file can be seen to change nothing without reading either side.
-                            if let Some(from) = &output.unchanged_from {
-                                policy.copied_from(
-                                    &reference.slot,
-                                    from,
-                                    conversation.quarantine(),
-                                );
-                            }
                             // Only a slot a program printed may be offered to the user for reading,
                             // so the provenance is recorded here, where the slot is minted, together
                             // with the command as the person approved it.

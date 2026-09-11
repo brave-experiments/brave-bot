@@ -88,7 +88,7 @@ ok      promote: read_file.path proposed by the model, confined and non-destruct
 ok      file_read.path [routing] (T,pub)
 observe file_read produced (T,priv)
 ok      trust: notes.md read as trusted, from a trusted path
-ok      render: read_file: content reshaped for presentation, still (T,priv)
+ok      render: read_file: content reshaped without being read, still (T,priv)
 ok      present: tool_result: notes.md is (T,priv), so the planner may read it
 ```
 
@@ -110,6 +110,7 @@ ok      processor: processor over ref:1 reads ref:1 and writes (U,priv), with no
         no memory and nothing to write but that one slot
 ok      processor: input assembled from 1 slot(s) inside the kernel
 ok      processor: output labelled (U,priv) by taint over its inputs
+ok      render: processor: content reshaped without being read, still (U,priv)
 slot    ref:3 at (U,priv)
 ok      present: tool_result: quarantined as ref:3; the planner sees a reference only
 ok      resolve: write_file: ref:3 resolved to its quarantined content, (U,priv)

@@ -323,19 +323,6 @@ impl SlotStore {
         self.picture_of(id).is_some()
     }
 
-    /// Record that one slot holds exactly what another does.
-    ///
-    /// For a processor that answered that a document should not change: what went into the new
-    /// slot is the old one's bytes, so it is a copy of the same file.
-    pub(crate) fn copied_from(&mut self, id: &SlotId, source: &SlotId) {
-        let Some(origin) = self.verbatim_of(source).map(str::to_string) else {
-            return;
-        };
-        if let Some(Entry::Read { verbatim, .. }) = self.slots.get_mut(id) {
-            *verbatim = Some(origin);
-        }
-    }
-
     /// The file a slot is waiting on, where it is waiting on one.
     ///
     /// Metadata, like everything else a caller may ask a slot store: a path the planner chose
