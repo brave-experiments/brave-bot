@@ -335,6 +335,12 @@ impl Egress {
             // Redirects are handled here so each hop can be revalidated; letting the
             // client follow them silently would defeat the gate.
             .max_redirects(0)
+            // A status is a reply, not a failure to get one. Left as ureq has it, every non-2xx
+            // comes back as a transport error carrying the status in its text, so the status
+            // check below never runs and nothing downstream can tell 403 from a dead socket:
+            // a refused credential loses the sign-in that fixes it, and a 429 stops counting as
+            // worth another attempt.
+            .http_status_as_error(false)
             // Bounds connecting too, from the moment the name resolved.
             .timeout_resolve(Some(timeouts.resolve.max(timeouts.connect)))
             // Bounds the request going out too, from the moment the connection opened.
