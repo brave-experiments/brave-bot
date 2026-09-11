@@ -88,6 +88,58 @@ impl Tier {
     }
 }
 
+/// One model this account can be asked for.
+///
+/// A tier is one way a model gets here and not the only one, so the tier is optional: a `provider`
+/// block names models directly, as many as the file lists, and those have no tier to be. What every
+/// entry has is the name a request sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    /// The tier that named this model, where a tier variable did.
+    pub tier: Option<Tier>,
+    /// What a request names, which is a model id or an inference-profile ARN.
+    pub id: String,
+    /// What to show a person choosing, where the configuration said something friendlier.
+    ///
+    /// A tier has its own word for this and needs no other. A model named in a `provider` block has
+    /// only its id, which for an inference profile is an ARN nobody reads.
+    pub name: Option<String>,
+    /// The context window, where the configuration stated one.
+    ///
+    /// `None` reads as [`CONTEXT_WINDOW`]. A tier never states one, an opaque ARN having nothing to
+    /// state it from, and a `provider` block may.
+    pub context_window: Option<u64>,
+}
+
+impl Entry {
+    /// The model a tier names.
+    fn for_tier(tier: Tier, id: String) -> Self {
+        Self {
+            tier: Some(tier),
+            id,
+            name: None,
+            context_window: None,
+        }
+    }
+
+    /// What to show a person choosing this model.
+    ///
+    /// The tier word where a tier named it, since that is what the person wrote in their settings
+    /// file, and otherwise whatever the block called it, falling back to the id.
+    pub fn display_name(&self) -> &str {
+        match (&self.name, self.tier) {
+            (Some(name), _) => name,
+            (None, Some(tier)) => tier.display_name(),
+            (None, None) => &self.id,
+        }
+    }
+
+    /// The window to budget against, stated or assumed.
+    pub fn window(&self) -> u64 {
+        self.context_window.unwrap_or(CONTEXT_WINDOW)
+    }
+}
+
 /// Everything needed to talk to Bedrock, when a build is pointed at it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bedrock {
@@ -95,11 +147,11 @@ pub struct Bedrock {
     pub region: String,
     /// Which AWS profile to resolve credentials from, when one was named.
     pub profile: Option<String>,
-    /// The model each configured tier names, strongest first.
+    /// The models this account is configured to reach, strongest tier first.
     ///
     /// Possibly empty: a block that turns Bedrock on without naming a model is still Bedrock, and
     /// the resulting "no models configured" is a better thing to report than a guessed ARN.
-    models: Vec<(Tier, String)>,
+    models: Vec<Entry>,
 }
 
 /// The context window a Bedrock model is assumed to have, in prompt tokens.
@@ -138,7 +190,7 @@ impl Bedrock {
 
         let models = Tier::ALL
             .into_iter()
-            .filter_map(|tier| trimmed(lookup(tier.env_var())).map(|name| (tier, name)))
+            .filter_map(|tier| trimmed(lookup(tier.env_var())).map(|id| Entry::for_tier(tier, id)))
             .collect();
 
         Some(Self {
@@ -175,8 +227,21 @@ impl Bedrock {
         format!("bedrock-runtime.{}.amazonaws.com", self.region)
     }
 
-    /// Every configured tier and the model it names, strongest first.
-    pub fn models(&self) -> &[(Tier, String)] {
+    /// A configuration reaching the models a `provider` block named, rather than three tiers.
+    ///
+    /// The same account and the same transport; what differs is where the list came from and that
+    /// nothing in it is a tier. Kept here rather than beside the block because a request needs a
+    /// region to sign for and a profile to resolve, which is exactly what this holds.
+    pub fn from_provider(region: String, profile: Option<String>, models: Vec<Entry>) -> Self {
+        Self {
+            region,
+            profile,
+            models,
+        }
+    }
+
+    /// Every configured model, strongest tier first.
+    pub fn models(&self) -> &[Entry] {
         &self.models
     }
 
@@ -184,8 +249,13 @@ impl Bedrock {
     pub fn model_for(&self, tier: Tier) -> Option<&str> {
         self.models
             .iter()
-            .find(|(configured, _)| *configured == tier)
-            .map(|(_, name)| name.as_str())
+            .find(|entry| entry.tier == Some(tier))
+            .map(|entry| entry.id.as_str())
+    }
+
+    /// The entry a name refers to, if this configuration offers it.
+    pub fn entry(&self, model: &str) -> Option<&Entry> {
+        self.models.iter().find(|entry| entry.id == model)
     }
 
     /// The model to use when the person has not chosen one.
@@ -194,7 +264,7 @@ impl Bedrock {
     /// a hard question with the weakest model available, and the person who configured three tiers
     /// asked for the best of them by naming it.
     pub fn default_model(&self) -> Option<&str> {
-        self.models.first().map(|(_, name)| name.as_str())
+        self.models.first().map(|entry| entry.id.as_str())
     }
 
     /// Whether a name is one of the configured models.
@@ -203,7 +273,7 @@ impl Bedrock {
     /// model rather than substituting one, so a stale name from `~/.bravebot/model` has to be
     /// noticed here rather than sent.
     pub fn offers(&self, model: &str) -> bool {
-        self.models.iter().any(|(_, name)| name == model)
+        self.entry(model).is_some()
     }
 }
 
