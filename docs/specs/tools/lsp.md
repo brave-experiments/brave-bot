@@ -86,9 +86,25 @@ line count does for a file the planner may not read and as an exit status does u
 [RUN-13](run.md#RUN-13).
 
 The **text** at a location is content and gets no such treatment. Hover text, a signature, a
-docstring, a source excerpt: each is bytes the file chose, so each is labelled from the trust map
-by [LABEL-2](../labels.md#LABEL-2) and quarantined when it is untrusted. One result may therefore
-be a visible list of locations whose hover text is a reference.
+docstring, a source excerpt: each is bytes a file chose, so each is labelled by
+[LABEL-2](../labels.md#LABEL-2) from the file those bytes came from, and quarantined where that
+file is not one the trust map vouches for. One result may therefore be a visible list of locations
+whose hover text is a reference.
+
+**Where an answer does not say which file wrote the text, the text is untrusted.** That is not the
+same as a result derived from nothing, which carries no taint: here there is a file and its name is
+what is missing, so there is no entry to read and the text lands where any other output of a server
+lands. It is the case for every hover a server answers, because a hover response carries the prose
+and a position and no file at all.
+
+**The queried file's entry is not borrowed for it.** A doc comment is written wherever the symbol
+is defined, so hovering over a call in one file shows prose out of another, and over a tree with an
+untrusted vendor directory in it the two files have different entries. The positions a hover
+answer does carry are in the document that was asked about, so reading those as the prose's origin
+is borrowing the same entry by another name. Either way it is laundering with a path doing the
+work, and it would put bytes out of a directory the user deliberately left out of the trust map
+into the planner's context as trusted content, which is the one outcome this split exists to
+prevent.
 
 **Why a location is structure.** It was read off the server's index, computed from the file's
 syntax, and not selected by the file's own bytes in the sense that matters: an attacker who owns
@@ -114,8 +130,9 @@ as they would be had the planner guessed the path.
 `verified-by: bravebot_core::policy::a_location_from_an_untrusted_file_is_still_reportable`
 `verified-by: bravebot_core::policy::a_location_is_not_routing_for_a_later_effect`
 `verified-by: bravebot_lsp::protocol::a_location_carries_no_text_from_the_file`
+`verified-by: bravebot_lsp::protocol::a_hover_response_names_no_file`
 `verified-by: bravebot_agent::lsp::hover_text_from_an_untrusted_file_is_quarantined`
-`verified-by: bravebot_agent::lsp::hover_text_from_a_trusted_file_is_shown`
+`verified-by: bravebot_agent::lsp::hover_text_is_not_labelled_by_the_file_that_was_queried`
 `verified-by: bravebot_agent::lsp::locations_are_listed_even_where_the_text_is_quarantined`
 
 <a id="LSP-4"></a>
@@ -306,10 +323,14 @@ trade incognito already makes for the session record.
   what a location can do: it is never routing, so the worst case is a wasted read of a file the
   planner was already allowed to read.
 
-- **Hover text is where the value is, and hover text is content.** For an untrusted file the useful
-  half of `hover` comes back as a reference. That is the same trade `read_file` makes and is not
-  new, but it is worth saying that this tool is at its weakest exactly where a codebase is least
-  vouched for.
+- **Hover text is where the value is, and nothing in a hover response says which file wrote it.**
+  The protocol's answer is a position and some prose, with no field naming the file the prose was
+  written in, so [LSP-3](#LSP-3) has no entry to label it by and it is untrusted. The useful half
+  of `hover` therefore comes back as a reference in every workspace, including one the user vouched
+  for whole. That is the trade `read_file` makes for an untrusted file, reached for a different
+  reason: not that the prose is known to be untrustworthy, but that its file is unknown, and a
+  guess in the other direction is trusted bytes out of nowhere. It leaves `hover` the weakest
+  operation here rather than the most useful one, and the open question below is the way out.
 
 - **A server runs the dependency tree's code, and that is the price of the tool working at all.**
   [LSP-5](#LSP-5) grants a server the user's own access, so for Rust `build.rs` and proc macros out of
@@ -333,6 +354,11 @@ trade incognito already makes for the session record.
   [RUN-7](run.md#RUN-7), and its output handed over. That puts the approval where this repository
   usually puts it and narrows what [LSP-5](#LSP-5) has to grant, at the cost of a second moving part
   per ecosystem.
+
+- Whether a hover should be paired with a query for the definition, so its text can be labelled by
+  the file that defines the symbol rather than left unattributed. It would recover the useful half
+  of `hover` in a vouched-for tree, at the cost of a second request per question and of a label
+  that depends on two answers agreeing about one symbol.
 
 - Whether the cache needs an eviction rule, and what it should be keyed on. [LSP-10](#LSP-10)
   accumulates one directory per workspace and nothing removes them.

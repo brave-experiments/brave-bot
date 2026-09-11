@@ -296,7 +296,9 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
              were already shown by a search or a read; nothing here works out where a name is \
              for you. Answers with the places it found, one per line. Where a definition is in \
              a dependency rather than in this project the line says so, and read_file will not \
-             open it.",
+             open it. hover is the one operation that answers with prose, and that prose always \
+             comes back as a reference you cannot read rather than as text, because nothing in a \
+             server's answer says which file wrote it.",
             json!({
                 "type": "object",
                 "properties": {
@@ -3670,9 +3672,10 @@ fn patterns_in(arguments: &Value) -> Vec<Labelled<String>> {
 /// - The **locations** are written into a line by the driver, from a path and two integers it read
 ///   off the server's index. That line is the driver's own words, so it is trusted, the same footing
 ///   a line count or an exit status reaches the planner on. Nothing a file wrote is in it.
-/// - The **text**, where an operation reports any, keeps the label of the file it came from. So a
-///   hover over a vouched-for file is shown and a hover over `vendor/` comes back as a reference,
-///   with the locations listed either way.
+/// - The **text**, where an operation reports any, is bytes a file chose, and no answer says which
+///   file chose them: a hover response carries a position and no file. So it is untrusted and comes
+///   back as a reference, in a vouched-for tree as much as in `vendor/`, with the locations listed
+///   either way.
 ///
 /// [LSP-3]: ../../../docs/specs/tools/lsp.md
 fn lsp<S: Sink, C: Confirmer + ?Sized>(
@@ -3788,10 +3791,11 @@ fn lsp<S: Sink, C: Confirmer + ?Sized>(
     let described = crate::lsp::describe(operation, &answer, &root);
     let found = answer.locations.len();
 
-    // The text is the half that is content, so it keeps the label of the file it came from and the
-    // kernel decides whether the planner sees it. Where there is none, the result is the driver's
-    // own words about where things are, which is trusted.
-    let text = match crate::lsp::text_of(policy, &answer, &absolute) {
+    // The text is the half that is content, and nothing here labels it by the path this call
+    // named: a doc comment is written where the symbol is defined, which is a different file. The
+    // kernel decides whether the planner sees it. Where there is no text, the result is the
+    // driver's own words about where things are, which is trusted.
+    let text = match crate::lsp::text_of(policy, &answer) {
         Some(Ok(text)) => Some(text),
         Some(Err(denial)) => return problem(format!("refused: {denial}")),
         None => None,
