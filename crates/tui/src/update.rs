@@ -247,13 +247,14 @@ fn encode_answer(install: Install, answer: Answer) -> String {
     format!("{}\t{}\t{}", answer.at, install.source(), answer.latest)
 }
 
-/// A version from `major.minor.patch`, with the `v` a tag carries allowed in front.
+/// A version from `major.minor.patch`, with the single `v` a tag carries allowed in front.
 ///
 /// Three numbers and nothing else. A prerelease, a build suffix, or anything else that is not a
 /// number in one of the three places is no answer at all, so a `0.6.0-rc.1` on the registry leaves
 /// everybody where they were rather than sending them to a release candidate.
 fn parse_version(text: &str) -> Option<Version> {
-    let mut parts = text.trim().trim_start_matches('v').split('.');
+    let trimmed = text.trim();
+    let mut parts = trimmed.strip_prefix('v').unwrap_or(trimmed).split('.');
     let (Some(major), Some(minor), Some(patch), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
@@ -451,7 +452,16 @@ mod tests {
 
     #[test]
     fn a_version_that_is_not_three_numbers_is_no_answer() {
-        for text in ["", "1", "1.2", "1.2.3.4", "one.two.three", "1.-2.3", " "] {
+        for text in [
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "one.two.three",
+            "1.-2.3",
+            " ",
+            "vv1.2.3",
+        ] {
             assert_eq!(parse_version(text), None, "{text} was read as a version");
         }
     }
