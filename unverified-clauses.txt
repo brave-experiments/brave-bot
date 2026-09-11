@@ -1,11 +1,10 @@
 # Spec clauses whose verified-by value is none.
 # Source: docs/specs/**/*.md, one line per clause, as path:CLAUSE-ID: heading.
 # Withdrawn clauses carry no verified-by line at all and are not listed.
-# Total: 28 clauses across 19 specs.
+# Total: 27 clauses across 18 specs.
 
 docs/specs/cli.md:CLI-6: a failure exits non-zero
 docs/specs/incognito.md:INCOG-7: importing a subscription is refused rather than silently skipped
-docs/specs/labels.md:LABEL-6: minting a witness is not permission to inspect
 docs/specs/layering.md:LAYER-2: `bravebot-core` and `bravebot-agent` are both the driver
 docs/specs/naming-files.md:NAME-3: the rule outlives the read
 docs/specs/pasting.md:PASTE-3: the media type is the driver's, never the content's
