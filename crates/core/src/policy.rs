@@ -7087,8 +7087,9 @@ mod tests {
             .resolve("write_file", &reference.slot, &slots)
             .expect("resolves");
         assert_eq!(resolved.label(), Label::trusted_private());
+        let proof = Declassification::authorise("test");
         assert_eq!(
-            resolved.into_parts_for_decoding().0,
+            resolved.declassify(&proof),
             "head\nMIDDLE\ntail\n",
             "the middle did not survive being kept"
         );
