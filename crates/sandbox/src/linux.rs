@@ -189,24 +189,39 @@ impl Sandbox for LandlockSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::process::Stdio;
 
-    /// Landlock is absent on older kernels and in some container runtimes, notably
-    /// Docker Desktop's linuxkit kernel, which does not enable the LSM at all.
+    /// Landlock is absent on kernels before 5.13 and in container runtimes that do not
+    /// enable the LSM, notably Docker Desktop's linuxkit kernel.
     ///
-    /// Tests needing real enforcement skip there, but set `BRAVEBOT_REQUIRE_LANDLOCK=1` to
-    /// turn a skip into a failure. Without that switch a CI run on a kernel lacking
-    /// Landlock would report green while never having exercised the sandbox, which is
-    /// exactly the false confidence this crate exists to avoid.
-    fn sandbox_or_skip() -> Option<LandlockSandbox> {
+    /// A kernel without it fails the tests that need real enforcement rather than
+    /// skipping them. Those tests are the whole of what pins confinement on Linux, so a
+    /// suite reporting green having never installed a ruleset is the false confidence
+    /// this crate exists to avoid, and a kernel that cannot enforce one is worth hearing
+    /// about from the test run rather than from a process that was never confined.
+    /// `BRAVEBOT_ALLOW_MISSING_LANDLOCK=1` runs the rest of the suite on such a kernel
+    /// and says as it goes that it did.
+    fn sandbox_or_fail() -> Option<LandlockSandbox> {
         match LandlockSandbox::new() {
-            Ok(s) => Some(s),
+            Ok(sandbox) => Some(sandbox),
             Err(e) => {
-                if std::env::var("BRAVEBOT_REQUIRE_LANDLOCK").as_deref() == Ok("1") {
-                    panic!("BRAVEBOT_REQUIRE_LANDLOCK=1 but landlock is unavailable: {e}");
+                if std::env::var("BRAVEBOT_ALLOW_MISSING_LANDLOCK").as_deref() == Ok("1") {
+                    // Straight at the descriptor rather than through `eprintln!`, which the
+                    // test harness captures and replays only for a test that failed. A skip
+                    // announced that way is invisible in every run where it is the whole
+                    // story, which is a silent skip again by another road.
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "SKIPPED (BRAVEBOT_ALLOW_MISSING_LANDLOCK=1): {e}"
+                    );
+                    return None;
                 }
-                eprintln!("SKIPPED (landlock unavailable on this kernel): {e}");
-                None
+                panic!(
+                    "landlock is unavailable, so nothing here enforces confinement: {e}. \
+                     Set BRAVEBOT_ALLOW_MISSING_LANDLOCK=1 to run the rest of the suite on \
+                     a kernel that does not implement it."
+                );
             }
         }
     }
@@ -277,7 +292,7 @@ mod tests {
 
     #[test]
     fn a_confined_process_runs() {
-        let Some(sandbox) = sandbox_or_skip() else {
+        let Some(sandbox) = sandbox_or_fail() else {
             return;
         };
         let policy = SandboxPolicy::strict()
@@ -301,7 +316,7 @@ mod tests {
     /// The property the backend exists for: writes outside the granted paths fail.
     #[test]
     fn a_confined_process_cannot_write_outside_its_grants() {
-        let Some(sandbox) = sandbox_or_skip() else {
+        let Some(sandbox) = sandbox_or_fail() else {
             return;
         };
         let policy = SandboxPolicy::strict()
