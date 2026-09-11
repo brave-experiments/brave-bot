@@ -2,7 +2,7 @@
 
 use bravebot_agent::workspace::{Workspace, WorkspaceError};
 use bravebot_core::capability::{Capability, CapabilitySet};
-use bravebot_core::event::RecordingSink;
+use bravebot_core::event::{Event, RecordingSink};
 use bravebot_core::label::{Integrity, Label};
 use bravebot_core::policy::{Policy, ReleasePlan, Routing};
 use bravebot_core::trust::TrustStore;
@@ -3479,4 +3479,50 @@ fn a_file_that_names_no_picture_is_not_one() {
     ] {
         assert_eq!(media_for(named), None, "{named} was taken for a picture");
     }
+}
+
+/// An endorsed write is authorised by the approval, not by a promotion of its destination. A
+/// promoted write path is recorded as the model's proposal for a confined, non-destructive read,
+/// which a write is not, and the promotion is then the only reason the routing gate lets an
+/// effect through.
+#[test]
+fn a_write_does_not_promote_its_destination() {
+    let scratch = Scratch::new("write-no-promote");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let mut sink = RecordingSink::new();
+    {
+        let mut policy = Policy::begin(
+            routing(),
+            ReleasePlan::new(),
+            all_file_capabilities(),
+            &mut sink,
+        )
+        .expect("policy");
+
+        policy.issue_grant("file_write", "path", "notes.txt".to_string());
+        workspace
+            .write_endorsed(
+                &mut policy,
+                &Labelled::new("notes.txt".to_string(), Label::untrusted_public()),
+                &Labelled::trusted("delivered".to_string()),
+            )
+            .expect("an endorsed write lands");
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("notes.txt")).expect("the file is there"),
+        "delivered"
+    );
+    assert!(
+        !sink.events().iter().any(|e| matches!(
+            e,
+            Event::GatePassed {
+                gate: "promote",
+                ..
+            }
+        )),
+        "the write promoted its destination: {:?}",
+        sink.events()
+    );
 }

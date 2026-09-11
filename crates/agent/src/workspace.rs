@@ -943,19 +943,11 @@ impl Workspace {
     ) -> Result<PathBuf, WorkspaceError> {
         policy.before_capability(Capability::FileWrite)?;
 
-        // Promotion alone would not be enough for a write; the grant check below is what
-        // makes this safe, and it fails unless a person approved this exact path.
-        let promoted = policy.promote_confined_read("file_write", "path", path)?;
-        policy.before_granted_action("file_write", "path", &promoted)?;
+        // The path keeps the label it arrived with: the endorsement is the authority here, and
+        // promoting it first would leave the model's own proposal as the reason the write was
+        // routed anywhere.
+        let relative = policy.before_endorsed_destination("file_write", "path", path)?;
         policy.before_action("file_write", "contents", Role::Content, contents)?;
-
-        let relative = promoted
-            .clone()
-            .into_trusted()
-            .map_err(|_| WorkspaceError::Invalid {
-                path: "<untrusted>".into(),
-                reason: "the path was not trusted after endorsement",
-            })?;
 
         let resolved = self.resolve(&relative)?;
         self.record_backup(&resolved);

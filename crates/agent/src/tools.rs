@@ -2336,7 +2336,8 @@ fn write_file<S: Sink, C: Confirmer>(
         }
     }
 
-    // The approval is what makes the path trusted, and it is bound to this exact value.
+    // The approval is the path's authority rather than a relabelling of it, and it is bound to
+    // this exact value.
     policy.issue_grant("file_write", "path", proposed_path.clone());
 
     match workspace.write_endorsed(policy, &path, &body) {
@@ -2490,7 +2491,9 @@ fn edit_file<S: Sink, C: Confirmer>(
     policy.issue_grant("file_write", "path", proposed_path.clone());
 
     let occurrences = replaced.occurrences;
-    match workspace.write_endorsed_if_unchanged(policy, &path, &body, &current) {
+    // The path as the planner gave it, not the copy promoted above for the read. A write routed
+    // on a promoted value would be routed by the model's own proposal.
+    match workspace.write_endorsed_if_unchanged(policy, &proposed, &body, &current) {
         Ok(_) => {
             policy.reconcile_after_write(&proposed_path, body_label);
             let (note, changes) = change_report(Intent::Edit, Some(&current), &shown, None);
