@@ -392,26 +392,39 @@ fn injected_text_in_a_file_cannot_add_a_step() {
 #[test]
 fn a_write_lands_where_the_plan_said_and_carries_what_it_never_read() {
     let scratch = Scratch::new("write");
-    std::fs::write(scratch.path.join("in.md"), "raw text").unwrap();
+    std::fs::write(scratch.path.join("a.md"), "first").unwrap();
+    std::fs::write(scratch.path.join("b.md"), "second").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
+    // Two candidates, each transformed on its own and written back to its own path: the shape a
+    // plan takes when it cannot know which file the task means. Which destination a step uses
+    // comes from the routing lock, so a driver reading it from the slot instead would land the
+    // answers in each other's files.
     let (endpoint, _received) = serve(vec![
         any_shape(),
         plan(json!([
-            {"capability": "FILE_READ", "args": {"path": "in.md", "out_slot": "raw"}},
-            {"capability": "TRANSFORM", "args": {"reads": ["raw"], "instruction": "shout", "out_slot": "loud"}},
-            {"capability": "FILE_WRITE", "args": {"path": "out.md", "from_slot": "loud"}},
+            {"capability": "FILE_READ", "args": {"path": "a.md", "out_slot": "ra"}},
+            {"capability": "FILE_READ", "args": {"path": "b.md", "out_slot": "rb"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["ra"], "instruction": "shout", "out_slot": "la"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["rb"], "instruction": "shout", "out_slot": "lb"}},
+            {"capability": "FILE_WRITE", "args": {"path": "a.md", "from_slot": "la"}},
+            {"capability": "FILE_WRITE", "args": {"path": "b.md", "from_slot": "lb"}},
         ])),
-        processor_reply("RAW TEXT"),
+        processor_reply("FIRST"),
+        processor_reply("SECOND"),
     ]);
     let config = config_for(&endpoint);
     let mut sink = RecordingSink::new();
 
-    let outcome = run(&config, &workspace, "shout in.md into out.md", &mut sink).expect("runs");
+    let outcome = run(&config, &workspace, "shout both files", &mut sink).expect("runs");
     assert!(outcome.clean);
     assert_eq!(
-        std::fs::read_to_string(scratch.path.join("out.md")).unwrap(),
-        "RAW TEXT"
+        std::fs::read_to_string(scratch.path.join("a.md")).unwrap(),
+        "FIRST"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("b.md")).unwrap(),
+        "SECOND"
     );
 }
 
@@ -443,6 +456,154 @@ fn an_unmarked_transform_does_not_become_a_file() {
     assert!(
         !scratch.path.join("out.md").exists(),
         "the remark was written as a file"
+    );
+}
+
+/// An answer the plan named no document for belongs nowhere, and a plan naming a destination
+/// for it does not make it belong there. Every gate passed when a planner wrote a game's HTML
+/// into a Python script: the destination was a path it named and a person approved the diff.
+/// The plan here is that one, and the write it reaches is the write that did it.
+#[test]
+fn a_planned_answer_about_nothing_in_particular_is_written_nowhere() {
+    let scratch = Scratch::new("no-home");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let original = "print('serving')\n";
+    std::fs::write(scratch.path.join("server.py"), original).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_READ", "args": {"path": "game.js", "out_slot": "game"}},
+            {"capability": "FILE_READ", "args": {"path": "server.py", "out_slot": "server"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["game", "server"], "instruction": "fix the speed bug", "out_slot": "fixed"}},
+            {"capability": "FILE_WRITE", "args": {"path": "server.py", "from_slot": "fixed"}},
+        ])),
+        processor_reply("const SPEED = 50;"),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let failure =
+        run(&config, &workspace, "fix the speed bug", &mut sink).expect_err("must refuse");
+    assert!(
+        failure.to_string().contains("written nowhere"),
+        "unhelpful message: {failure}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        original,
+        "an answer for no document in particular was written to one anyway"
+    );
+}
+
+/// An answer is for the one document the processor was given, so a plan that sends it to some
+/// other file is refused. A plan is a precommitment rather than a wider permission: the same
+/// call made from a turn is held to the same destination.
+#[test]
+fn a_planned_answer_cannot_be_written_to_a_file_it_is_not_about() {
+    let scratch = Scratch::new("write-elsewhere");
+    let original = "raw text";
+    std::fs::write(scratch.path.join("in.md"), original).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_READ", "args": {"path": "in.md", "out_slot": "raw"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["raw"], "instruction": "shout", "out_slot": "loud"}},
+            {"capability": "FILE_WRITE", "args": {"path": "out.md", "from_slot": "loud"}},
+        ])),
+        processor_reply("RAW TEXT"),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let failure =
+        run(&config, &workspace, "shout in.md into out.md", &mut sink).expect_err("must refuse");
+    assert!(
+        failure
+            .to_string()
+            .contains("cannot be written anywhere else"),
+        "unhelpful message: {failure}"
+    );
+    assert!(
+        !scratch.path.join("out.md").exists(),
+        "an answer about one document became another file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("in.md")).unwrap(),
+        original,
+        "the document it was about was changed instead"
+    );
+}
+
+/// A second transform gives an answer no document it did not already have. A call over a file
+/// and one earlier answer is a call over more than one input, so it is told no document either,
+/// however few of its inputs are files: turning a game into a page and then asking about that
+/// page and a script wrote the page into the script while every gate passed.
+#[test]
+fn a_second_transform_does_not_find_a_document_for_an_answer() {
+    let scratch = Scratch::new("chained");
+    std::fs::write(scratch.path.join("game.js"), "const SPEED = 100;\n").unwrap();
+    let original = "print('serving')\n";
+    std::fs::write(scratch.path.join("server.py"), original).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_READ", "args": {"path": "game.js", "out_slot": "game"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["game"], "instruction": "make a page of it", "out_slot": "page"}},
+            {"capability": "FILE_READ", "args": {"path": "server.py", "out_slot": "server"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["page", "server"], "instruction": "return the first document", "out_slot": "out"}},
+            {"capability": "FILE_WRITE", "args": {"path": "server.py", "from_slot": "out"}},
+        ])),
+        processor_reply("<html>GAME</html>"),
+        processor_reply("<html>GAME</html>"),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let failure =
+        run(&config, &workspace, "make a page of the game", &mut sink).expect_err("must refuse");
+    assert!(
+        failure.to_string().contains("written nowhere"),
+        "unhelpful message: {failure}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("server.py")).unwrap(),
+        original,
+        "a second transform found a document for an answer that had none"
+    );
+}
+
+/// One file is one document however the plan spells its path. A gate that compared the spellings
+/// instead would refuse a plan for writing an answer back to the very file it was read from, and
+/// say the answer belonged to some other file while doing it.
+#[test]
+fn two_spellings_of_one_path_are_one_document() {
+    let scratch = Scratch::new("spelling");
+    std::fs::write(scratch.path.join("in.md"), "raw text").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, _received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_READ", "args": {"path": "./in.md", "out_slot": "raw"}},
+            {"capability": "TRANSFORM", "args": {"reads": ["raw"], "instruction": "shout", "out_slot": "loud"}},
+            {"capability": "FILE_WRITE", "args": {"path": "in.md", "from_slot": "loud"}},
+        ])),
+        processor_reply("RAW TEXT"),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let outcome = run(&config, &workspace, "shout in.md", &mut sink).expect("runs");
+    assert!(outcome.clean);
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("in.md")).unwrap(),
+        "RAW TEXT"
     );
 }
 

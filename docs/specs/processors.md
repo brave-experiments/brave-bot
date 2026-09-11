@@ -86,14 +86,25 @@ It is presented like any other untrusted content: a reference, and nothing else.
 ### PROC-6: an answer is for one document, and belongs only where the planner said
 
 A write of a processor's answer is refused anywhere but the file the planner said the call was
-about. Where the planner said nothing and there was more than one
-input, the answer belongs nowhere and may be written nowhere.
+about. Where the planner said nothing, the answer belongs nowhere and may be written nowhere,
+unless the whole of what the processor was given is one document, which is then the document its
+answer is for. One file beside any other input is not that: an answer over a document and an
+earlier answer is for neither of them.
+
+A plan fixed before the run is no exception. It names its destinations in advance, which says
+nothing about which document an answer is for.
 
 **Why.** This is not a label rule and cannot be one. Every gate passed when a planner wrote a
 game's HTML into a Python script, because the destination was a path it named and a person
 approved it.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::an_answer_about_nothing_in_particular_can_be_written_nowhere`
+`verified-by: bravebot_agent::turn::an_answer_cannot_be_written_to_a_file_it_is_not_about`
+`verified-by: bravebot_agent::manifest::a_planned_answer_about_nothing_in_particular_is_written_nowhere`
+`verified-by: bravebot_agent::manifest::a_planned_answer_cannot_be_written_to_a_file_it_is_not_about`
+`verified-by: bravebot_agent::manifest::a_second_transform_does_not_find_a_document_for_an_answer`
+`verified-by: bravebot_agent::manifest::two_spellings_of_one_path_are_one_document`
+`verified-by: bravebot_core::policy::a_file_beside_another_input_is_not_taken_for_the_document`
 
 <a id="PROC-7"></a>
 ### PROC-7: nothing a processor writes is a file unless it says where the file begins

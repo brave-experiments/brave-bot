@@ -1976,18 +1976,21 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ));
         }
 
-        // Where the planner named none and there is exactly one file in front of the processor,
+        // Where the planner named none and the whole of what the processor is given is one file,
         // that file is what "leave it alone" can only mean, so the way to say it is offered
         // whether or not the planner thought to. One that had no way to say it said it in prose
         // instead, several sentences of reasoning about the instruction, and the sentences
         // became the file. There is nothing for the planner to opt into here: an answer that
         // stands for the one document it was given is the document it was given.
-        let about = about.or_else(|| {
-            let mut files = reads
-                .iter()
-                .filter(|slot| slots.verbatim_of(slot).is_some());
-            let only = files.next()?;
-            files.next().is_none().then(|| only.clone())
+        //
+        // One input, not one file among several. Counting only the files let a call over a file
+        // and anything else at all, a page fetched or an earlier answer, take that file as its
+        // document, and a write of the answer then landed there however little of it the file
+        // had to do with. Two calls were enough: one to turn a game into a page, a second over
+        // that page and a script, and the page went into the script with every gate passing.
+        let about = about.or_else(|| match reads {
+            [only] if slots.verbatim_of(only).is_some() => Some(only.clone()),
+            _ => None,
         });
 
         let spec =
@@ -2407,9 +2410,10 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// Say which file an answer is for, so a write of it can go nowhere else.
     ///
     /// The file is the one the planner said the call was about, taken from that slot's own
-    /// record: a slot id in, a slot id in, and the path copied between them inside here. Where
-    /// it said nothing and the processor was given more than one document, the answer is for
-    /// nothing in particular and may be written nowhere until the planner says which.
+    /// record: a slot id in, a slot id in, and the path copied between them inside here. A
+    /// slot's path is written once, when its bytes arrive, so the path read here is the one the
+    /// call was made against. Where nothing said which document the answer is for, it is for
+    /// nothing in particular and may be written nowhere until something does.
     pub fn answers_for(
         &mut self,
         slot: &SlotId,
@@ -2426,7 +2430,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         };
         let said = match &home {
             crate::slot::Home::Only { path, .. } => format!("{slot} answers for {path}"),
-            _ => format!("{slot} answers for no file in particular, so it may be written nowhere"),
+            _ => format!(
+                "{slot} answers for no document in particular, so it may be written nowhere"
+            ),
         };
         slots.set_home(slot, home);
         self.allow("slot", said);
@@ -2445,7 +2451,15 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     ) -> Gated<()> {
         match slots.home_of(slot) {
             crate::slot::Home::Anywhere => Ok(()),
-            crate::slot::Home::Only { path: home, .. } if home == path => Ok(()),
+            // One file is one document however either side spells its path, the same way the
+            // trust map holds one rule per file rather than one per spelling. Comparing the
+            // spellings refused a write of an answer back to the file it was read from, and told
+            // the planner the answer belonged to a different file while doing it.
+            crate::slot::Home::Only { path: home, .. }
+                if crate::trust::normalise(&home) == crate::trust::normalise(path) =>
+            {
+                Ok(())
+            }
             // Named by its reference, never by its path. The planner reaches this having chosen a
             // destination it may not be able to name, and a refusal that spelled the other file
             // out would hand it a filename the listing had quarantined. One session read two
@@ -2462,9 +2476,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 "write",
                 Principle::IntegrityGate,
                 format!(
-                    "{slot} came from a processor given more than one document, and nothing said \
-                     which of them it was for, so it may be written nowhere. Name that reference \
-                     as 'about' when you ask, and one answer will have one destination."
+                    "{slot} came from a processor that was never told which document its answer \
+                     is for, so it may be written nowhere. Ask about the one document you mean, \
+                     and one answer will have one destination."
                 ),
             )),
         }
@@ -7717,6 +7731,65 @@ mod tests {
             ));
             let labelled = policy.label_processor_output(&spec, flattering, &store);
             assert!(!labelled.document.expect("a document").label().is_trusted());
+        }
+
+        /// A file beside any other input is not the document an answer is for. Counting only
+        /// the files among the inputs meant a call over a file and one earlier answer took that
+        /// file as its document, so a write of the answer landed there: two calls, one turning a
+        /// game into a page and a second over that page and a script, put the page in the script.
+        #[test]
+        fn a_file_beside_another_input_is_not_taken_for_the_document() {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+            let mut slots = SlotStore::new();
+
+            let file = SlotId::new("ref:0");
+            policy
+                .defer(
+                    "read_file",
+                    file.clone(),
+                    "server.py",
+                    &Labelled::trusted("server.py".to_string()),
+                    17,
+                    &mut slots,
+                )
+                .expect("a file may be reserved");
+            policy
+                .materialise("process", &file, &mut slots, |_| {
+                    Ok("print('serving')\n".to_string())
+                })
+                .expect("the file is read when something needs it");
+
+            let earlier = SlotId::new("ref:1");
+            slots
+                .writer_for(earlier.clone(), Label::untrusted_private())
+                .unwrap()
+                .write("<html>GAME</html>")
+                .unwrap();
+
+            let alone = policy
+                .before_processor(
+                    "p",
+                    std::slice::from_ref(&file),
+                    &instruction(),
+                    None,
+                    &slots,
+                )
+                .expect("a processor over one file");
+            assert_eq!(
+                alone.about(),
+                Some(&file),
+                "the one document a call was given is what leaving it alone could only mean"
+            );
+
+            let beside = policy
+                .before_processor("q", &[earlier, file], &instruction(), None, &slots)
+                .expect("a processor over two slots");
+            assert_eq!(
+                beside.about(),
+                None,
+                "a file beside another input was taken for the answer's document"
+            );
         }
 
         /// A processor is given exactly the slots its spec names, so a reference the planner

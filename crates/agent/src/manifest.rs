@@ -180,7 +180,12 @@ Rules that the manifest is checked against, so a plan breaking one is refused ou
 You cannot read a file yourself, so you cannot know what one contains. To say something about a \
 file's contents, read it into a slot and TRANSFORM that slot: the transform is an isolated model \
 that does see the text. To answer the user, ANSWER a slot a transform produced. Only use \
-FILE_WRITE with contents for a file whose whole body you can write from the task alone.";
+FILE_WRITE with contents for a file whose whole body you can write from the task alone.
+
+A transform's answer belongs to the document it was given, and FILE_WRITE from_slot writes it \
+back to that file and to no other. So to rewrite a file, read the whole of that one file into a \
+slot and transform that slot alone. A transform over several slots, or over anything but a whole \
+file, answers for no document: ANSWER can show what it produced, and no write can take it.";
 
 /// How the planner is told about one capability.
 ///
@@ -1261,7 +1266,9 @@ fn run_step<S: Sink, C: Confirmer>(
             crate::tools::materialise(policy, workspace, slots, "process", step.reads())?;
 
             // `about` is a turn-loop field the schema does not name. Passing nothing is the
-            // driver not inventing a slot the plan did not.
+            // driver not inventing a slot the plan did not: what comes back names the one
+            // document the call was given, where the whole of what it was given is one document,
+            // and no document otherwise.
             let spec = policy
                 .before_processor(
                     &format!("step_{index}"),
@@ -1290,8 +1297,14 @@ fn run_step<S: Sink, C: Confirmer>(
             });
             let note = release_note(policy, note);
             policy
-                .quarantine("process", out_slot, "a transform", &document, slots)
+                .quarantine("process", out_slot.clone(), "a transform", &document, slots)
                 .map_err(|d| d.to_string())?;
+            // An answer is for one document however many the processor was given. Recorded here,
+            // where the slot is minted, from the document its spec named before the call, whose
+            // path is written once and so is still the one the call was made against. A plan is a
+            // precommitment rather than a wider permission, so an answer minted here carries the
+            // home the same call would give it in a turn.
+            policy.answers_for(&out_slot, spec.about(), slots);
             Ok(Done {
                 note,
                 tokens: processed.usage.total(),
@@ -1407,6 +1420,12 @@ fn write<S: Sink, C: Confirmer>(
         // reading one of them.
         Some(name) => {
             let slot = SlotId::new(name);
+            // Where an answer belongs, decided when the processor was asked and not now. The
+            // destination passed the routing lock, which says nothing about which document the
+            // bytes are for: an answer the plan sends to some other file is refused here.
+            policy
+                .write_belongs_here(&path, &slot, slots)
+                .map_err(|d| d.to_string())?;
             let content = policy
                 .resolve("write_file", &slot, slots)
                 .map_err(|d| d.to_string())?;
