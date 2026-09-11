@@ -124,7 +124,11 @@ impl From<Denial> for WorkspaceError {
     }
 }
 
-/// How far a read of a file's text may reach.
+/// How far a read of a file may reach.
+///
+/// One question for a file's text and for its bytes. A dropped `.md` and a dropped `.png` come
+/// from the same gesture, and a path the planner proposed is confined whichever of the two it
+/// names: what a file turns out to hold is not a reason to resolve its path differently.
 ///
 /// Named rather than passed as a flag because the two are not variants of a setting: everything
 /// here is confined to the workspace, and the one exception exists because a person's own gesture
@@ -483,17 +487,18 @@ impl Workspace {
         Ok(resolved)
     }
 
-    /// Where an attachment's bytes are, which may be anywhere the user pointed at.
+    /// Where an attachment's bytes are.
     ///
-    /// Relative paths resolve against the root like everything else. An absolute one is taken as
-    /// given, because a person dropped it: see [`Workspace::read_attachment`] for why that is the
-    /// boundary rather than a directory check, and why nothing else here resolves this way.
+    /// Confined resolution is the ordinary one: a relative path against the root, an absolute one
+    /// only inside a directory the user added. A drop resolves an absolute path as given instead,
+    /// because a person pointed at it: see [`Workspace::read_dropped_attachment`] for why that is
+    /// the boundary rather than a directory check, and why nothing else here resolves this way.
     ///
-    /// A directory is refused. Dropping one is a plausible slip and reading it would otherwise
-    /// fail further down with a message about bytes.
-    fn resolve_attachment(&self, named: &str) -> Result<PathBuf, WorkspaceError> {
+    /// A directory is refused. Naming one is a plausible slip, whether it was dropped or typed,
+    /// and reading it would otherwise fail further down with a message about bytes.
+    fn resolve_attachment(&self, named: &str, reach: Reach) -> Result<PathBuf, WorkspaceError> {
         let candidate = Path::new(named);
-        let resolved = if candidate.is_absolute() {
+        let resolved = if matches!(reach, Reach::Dropped) && candidate.is_absolute() {
             candidate.canonicalize().map_err(|e| WorkspaceError::Io {
                 path: named.to_string(),
                 detail: e.to_string(),
@@ -505,7 +510,7 @@ impl Workspace {
         if resolved.is_dir() {
             return Err(WorkspaceError::Invalid {
                 path: named.to_string(),
-                reason: "a directory cannot be attached",
+                reason: "is a directory, not a file",
             });
         }
 
@@ -600,7 +605,7 @@ impl Workspace {
         // and it says so from the shape of the gesture that produced the path.
         let resolved = match reach {
             Reach::Confined => self.resolve(&relative)?,
-            Reach::Dropped => self.resolve_attachment(&relative)?,
+            Reach::Dropped => self.resolve_attachment(&relative, reach)?,
         };
         let label = policy.observe_path(Capability::FileRead, &relative)?;
 
@@ -622,7 +627,7 @@ impl Workspace {
         Ok(Labelled::new(contents, label))
     }
 
-    /// Read a file the user attached, as a `data:` URI.
+    /// Read a file as a `data:` URI, confined to the workspace like every other read.
     ///
     /// The one read here that does not refuse a binary file, because a binary file is the point:
     /// an attachment is a screenshot or a PDF, and [`Workspace::read`] answers `Binary` for both.
@@ -633,21 +638,16 @@ impl Workspace {
     /// extensions, never from the file's bytes: sniffing content to decide how to describe it
     /// would be a decision derived from the very bytes nobody has vouched for.
     ///
-    /// Every gate [`Workspace::read`] passes, in the same order and for the same reasons. The path
-    /// is routing, so it must be `(T,pub)`; the contents are the user's data, so their integrity
-    /// comes from the trust map.
+    /// Every gate [`Workspace::read`] passes, in the same order and for the same reasons, and
+    /// confinement is one of them. The path is routing, so it must be `(T,pub)`; the contents are
+    /// the user's data, so their integrity comes from the trust map; and the file has to sit in the
+    /// workspace or in a directory the user added by name.
     ///
-    /// The one thing it does not share is path confinement, and that is deliberate. A drop hands
-    /// over an absolute path, and it is nearly always `~/Downloads` or `~/Desktop`, so confining
-    /// this to the workspace would refuse the case the feature exists for. What makes it sound is
-    /// not a path check but where the path can have come from: an attachment is precommitted into
-    /// routing before the turn starts, from a gesture a person made, and the routing gate above
-    /// refuses anything that is not `(T,pub)`. There is no tool that adds one, so nothing a model
-    /// says can reach this, and no file's contents can either.
-    ///
-    /// Scoped to this one function on purpose. [`Workspace::resolve`] is untouched, so reading,
-    /// writing, editing, listing and searching stay confined exactly as they were: attaching a
-    /// file lets that file be carried, and grants nothing else anywhere.
+    /// Confined because a tool the planner calls arrives here, and what lets the planner choose a
+    /// file at all is that the read is confined and changes nothing. That argument is about the
+    /// path rather than about what the bytes turn out to be, so it holds a picture to the same
+    /// tree a page of text is held to. [`Workspace::read_dropped_attachment`] is the read that
+    /// reaches further, and only a path a person's own gesture fixed can get to it.
     ///
     /// Capped, unlike `read`. The whole file goes into the request and is re-sent on every later
     /// round, so an attachment nobody bounded is a cost multiplier that grows with the
@@ -658,6 +658,40 @@ impl Workspace {
         policy: &mut Policy<'_, S>,
         path: &Labelled<String>,
         media: &str,
+    ) -> Result<Labelled<String>, WorkspaceError> {
+        self.read_attachment_with(policy, path, media, Reach::Confined)
+    }
+
+    /// Read a picture or a PDF a person dropped on the window, wherever on the disk it sits.
+    ///
+    /// [`Workspace::read_attachment`] in every respect but path confinement, and it gives that up
+    /// for the same reason [`Workspace::read_dropped_text`] does: a drop hands over an absolute
+    /// path, and it is nearly always `~/Downloads` or `~/Desktop`, so confining this to the
+    /// workspace would refuse the case the gesture exists for.
+    ///
+    /// What makes reaching out sound is not a path check but where the path can have come from: an
+    /// attachment is precommitted into routing before the turn starts, from a gesture a person
+    /// made, and the routing gate refuses anything that is not `(T,pub)`. No tool adds one, so
+    /// nothing a model says can reach this, and no file's contents can either.
+    ///
+    /// Scoped to this one function on purpose. [`Workspace::resolve`] is untouched, so reading,
+    /// writing, editing, listing and searching stay confined exactly as they were: dropping a file
+    /// lets that file be carried, and grants nothing else anywhere.
+    pub fn read_dropped_attachment<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        media: &str,
+    ) -> Result<Labelled<String>, WorkspaceError> {
+        self.read_attachment_with(policy, path, media, Reach::Dropped)
+    }
+
+    fn read_attachment_with<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+        media: &str,
+        reach: Reach,
     ) -> Result<Labelled<String>, WorkspaceError> {
         policy.before_capability(Capability::FileRead)?;
         policy.before_action("file_read", "path", Role::Routing, path)?;
@@ -671,7 +705,9 @@ impl Workspace {
                 reason: "the path was not trusted",
             })?;
 
-        let resolved = self.resolve_attachment(&relative)?;
+        // The reach is the caller's, from the shape of the gesture that produced the path, and
+        // never from anything the file holds.
+        let resolved = self.resolve_attachment(&relative, reach)?;
         let label = policy.observe_path(Capability::FileRead, &relative)?;
 
         let raw = std::fs::read(&resolved).map_err(|e| WorkspaceError::Io {

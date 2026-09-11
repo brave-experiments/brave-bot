@@ -62,8 +62,17 @@ A read changes nothing and is confined to the working directory, so the choice i
 than put to a person, and every such choice is recorded as a promotion so an audit can separate
 the planner's decisions from the user's.
 
+The promotion grants routing and not reach, so the confinement it rests on holds however the result
+comes back. A picture read into a `data:` URI is held to the working directory and the directories
+the user added exactly as a page of text is: what the file turns out to contain is not a reason to
+resolve its path differently.
+
 `verified-by: bravebot_core::policy::a_model_proposal_can_be_promoted_for_a_confined_read`
 `verified-by: bravebot_core::policy::a_read_and_a_write_leave_different_trails`
+`verified-by: bravebot_agent::turn::a_model_cannot_escape_the_workspace`
+`verified-by: bravebot_agent::turn::a_model_cannot_escape_the_workspace_with_a_picture`
+`verified-by: bravebot_agent::workspace::only_a_dropped_attachment_may_come_from_outside_the_workspace`
+`verified-by: bravebot_agent::workspace::an_attachment_inside_an_added_directory_is_readable`
 
 <a id="READ-5"></a>
 ### READ-5: a picture is quarantined whatever the trust map says, and only a processor looks at it
