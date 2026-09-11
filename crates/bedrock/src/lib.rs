@@ -372,7 +372,10 @@ impl<'a> BedrockClient<'a> {
         // The envelope is protocol, like the JSON envelope in the other backend: the bytes come out
         // to find the reply inside, and the reply is relabelled with exactly the label it arrived
         // under.
-        let (bytes, label) = response.body.into_parts_for_decoding();
+        let label = response.body.label();
+        let (bytes, label) = policy
+            .decode_transport("converse", label)
+            .decode(response.body);
 
         let parsed: protocol::ConverseResponse =
             serde_json::from_slice(&bytes).map_err(|e| BedrockError::Decode {
@@ -500,6 +503,8 @@ impl<'a> BedrockClient<'a> {
 
         let mut decoder = FrameDecoder::new();
         let mut reply = Reply::default();
+        // One envelope, arriving in frames, so it is authorised once rather than once a frame.
+        let decoding = policy.decode_transport("converse stream", Label::untrusted_public());
 
         loop {
             let piece = match arriving.recv_timeout(WAKE) {
@@ -523,7 +528,7 @@ impl<'a> BedrockClient<'a> {
                 return Err(BedrockError::Cancelled);
             }
 
-            let (bytes, _) = piece.into_parts_for_decoding();
+            let (bytes, _) = decoding.decode(piece);
             let written_before = reply.text.len();
 
             for event in decoder.push(&bytes)? {

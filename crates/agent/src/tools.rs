@@ -1635,7 +1635,8 @@ fn read_file<S: Sink, C: Confirmer>(
     // What the reference that comes back is said to be of. The planner's own path where it
     // typed one, and the reference's name where it did not: a read through a reference must not
     // hand back the filename the reference exists to hold.
-    let (proposed, destination, shown_path) = (found.path, found.destination, found.shown);
+    let (proposed, destination, shown_path, proposed_path) =
+        (found.path, found.destination, found.shown, found.released);
 
     let path = match destination {
         // The promotion the model's own choice of file already gets: the read is confined to the
@@ -1660,8 +1661,6 @@ fn read_file<S: Sink, C: Confirmer>(
         .and_then(Value::as_u64)
         .unwrap_or(u64::MAX)
         .min(usize::MAX as u64) as usize;
-
-    let (proposed_path, _) = proposed.into_parts_for_decoding();
 
     // The trust question, put where it bites rather than only at startup. A file is quarantined
     // because nobody vouched for it, and that is the user's decision to make: they are shown the
@@ -1852,11 +1851,14 @@ fn path_argument<S: Sink>(
         ),
         (None, None) => Err("error: one of 'path' or 'path_ref' is required".to_string()),
         (Some(path), None) => {
-            let shown = path.clone().into_parts_for_decoding().0;
+            let shown = policy
+                .read_planner_argument(tool, "path", &path)
+                .map_err(|denial| format!("refused: {denial}"))?;
             refuse_denied_path(policy, purpose, &shown)?;
             Ok(PathArgument {
                 path,
                 destination: Destination::Named,
+                released: shown.clone(),
                 shown,
             })
         }
@@ -1867,30 +1869,47 @@ fn path_argument<S: Sink>(
             // Which gate the name comes out of is decided by what this call will do with it: a
             // read may promote it, an effect may not and needs a person instead. Asking the
             // wrong one is not possible from here, because the caller says which it is.
-            let path = match purpose {
-                Purpose::Read => policy
-                    .promote_reference_for_read(tool, "path_ref", &slot, slots)
-                    .map_err(|denial| format!("refused: {denial}"))?,
+            //
+            // Both hand the name back as well as the value, because this name is not the
+            // planner's words and must not be read as though it were: it came out of a
+            // directory nobody vouched for, which is the whole reason the reference exists.
+            // The gate that released it is the one above, which is why nothing below asks a
+            // second one for the same string.
+            let (path, resolved) = match purpose {
+                Purpose::Read => {
+                    let promoted = policy
+                        .promote_reference_for_read(tool, "path_ref", &slot, slots)
+                        .map_err(|denial| format!("refused: {denial}"))?;
+                    let resolved = promoted
+                        .clone()
+                        .into_trusted()
+                        .map_err(|_| "error: the reference was not promoted".to_string())?;
+                    (promoted, resolved)
+                }
                 Purpose::Effect => {
-                    let path = policy
+                    let named = policy
                         .destination_from_reference(tool, "path_ref", &slot, slots)
                         .map_err(|denial| format!("refused: {denial}"))?;
                     // Untrusted and public, which is what a name out of a directory nobody
                     // vouched for is. The endorsement is what will authorise it, not its label.
-                    Labelled::new(path, bravebot_core::label::Label::untrusted_public())
+                    let path = Labelled::new(
+                        named.clone(),
+                        bravebot_core::label::Label::untrusted_public(),
+                    );
+                    (path, named)
                 }
             };
             // A rule covers the file, not the spelling of it. A path that arrived through a
             // reference is the same file as one the planner typed, so the rule that would have
             // refused the second refuses the first. The path itself stays out of the refusal:
             // what goes back to the planner names the reference, as it does everywhere else.
-            let resolved = path.clone().into_parts_for_decoding().0;
             refuse_denied_path(policy, purpose, &resolved)
                 .map_err(|_| denied_by_rule(&slot.to_string()))?;
             Ok(PathArgument {
                 path,
                 destination: Destination::Reference,
                 shown: slot.to_string(),
+                released: resolved,
             })
         }
     }
@@ -1943,6 +1962,12 @@ struct PathArgument {
     path: Labelled<String>,
     destination: Destination,
     shown: String,
+    /// The same path as plain text, released once by whichever gate this came out of.
+    ///
+    /// Carried rather than read again by each caller. Reading it twice would put two identical
+    /// lines in the trail for one path and read as the driver having looked at it twice, and for
+    /// a reference it is not even the same string: `shown` is the reference's name.
+    released: String,
 }
 
 /// Put the file a reference names into a line a person is about to read.
@@ -2039,11 +2064,12 @@ fn list_files<S: Sink>(
 
     // The directory a listing would walk. A rule that keeps a tree from being read keeps it from
     // being enumerated too: the names in a directory are what is in it.
-    {
-        let (named, _) = directory.clone().into_parts_for_decoding();
-        if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &named) {
-            return problem(refusal);
-        }
+    let proposed_dir = match policy.read_planner_argument("list_files", "directory", &proposed) {
+        Ok(directory) => directory,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+    if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &proposed_dir) {
+        return problem(refusal);
     }
 
     // A filter only narrows a confined, non-destructive read, so it is promotable on the
@@ -2062,8 +2088,6 @@ fn list_files<S: Sink>(
         .get("depth")
         .and_then(Value::as_u64)
         .map(|depth| depth.max(1).min(usize::MAX as u64) as usize);
-
-    let (proposed_dir, _) = proposed.into_parts_for_decoding();
 
     match workspace.list(policy, &directory, pattern.as_ref(), depth) {
         Ok(listing) => {
@@ -2209,10 +2233,10 @@ fn write_file<S: Sink, C: Confirmer>(
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
-    let (path, destination, shown_path) = (found.path, found.destination, found.shown);
-
-    // The path is routing, so naming a destination from it is not a content decision.
-    let proposed_path = path.clone().into_parts_for_decoding().0;
+    // The path is routing, so naming a destination from it is not a content decision, and the
+    // gate that released it ran where the argument was read.
+    let (path, destination, shown_path, proposed_path) =
+        (found.path, found.destination, found.shown, found.released);
 
     let written = argument(arguments, "contents");
     let named = argument(arguments, "contents_ref");
@@ -2246,10 +2270,10 @@ fn write_file<S: Sink, C: Confirmer>(
         }
         // The body is the model's words. Its integrity is that of the context the model was
         // working from, which the kernel tracked: nothing here upgrades anything.
-        (Some(contents), None) => {
-            let (raw_body, _) = contents.into_parts_for_decoding();
-            policy.label_model_output("write_file", raw_body)
-        }
+        (Some(contents), None) => match policy.adopt_model_output("write_file", contents) {
+            Ok(body) => body,
+            Err(denial) => return problem(format!("refused: {denial}")),
+        },
         // Quarantined content, going where the planner said without the planner or the driver
         // having read a byte of it. The user still sees it, which is what an approval is.
         (None, Some(reference)) => {
@@ -2374,7 +2398,8 @@ fn edit_file<S: Sink, C: Confirmer>(
         Ok(found) => found,
         Err(refusal) => return problem(refusal),
     };
-    let (proposed, destination, shown_path) = (found.path, found.destination, found.shown);
+    let (proposed, destination, shown_path, proposed_path) =
+        (found.path, found.destination, found.shown, found.released);
     let Some(old_text) = argument(arguments, "old_text") else {
         return problem("error: 'old_text' is required and must be a string");
     };
@@ -2387,6 +2412,23 @@ fn edit_file<S: Sink, C: Confirmer>(
         .get("replace_all")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+
+    // Both are the planner's own words, and locating a passage by comparing them against the
+    // file is a decision taken from them. The gate is what says the planner's words may be read
+    // at all: it refuses once this context has met anything untrusted, which is the moment they
+    // stop being the planner's own.
+    //
+    // Asked before the file is opened. A refusal here means no edit is going to happen, and a
+    // refusal that has already spent a read capability and put an observation in the trail is a
+    // refusal that did something.
+    let old_text = match policy.read_planner_argument("edit_file", "old_text", &old_text) {
+        Ok(text) => text,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+    let new_text = match policy.read_planner_argument("edit_file", "new_text", &new_text) {
+        Ok(text) => text,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
 
     // Reading to locate the passage is non-destructive and confined, so the path may be
     // promoted here exactly as it is for read_file. The write below is what needs a person.
@@ -2413,15 +2455,10 @@ fn edit_file<S: Sink, C: Confirmer>(
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
-    let (old_text, _) = old_text.into_parts_for_decoding();
-    let (new_text, _) = new_text.into_parts_for_decoding();
-
     let replaced = match crate::replace::replace(&current, &old_text, &new_text, replace_all) {
         Ok(r) => r,
         Err(e) => return problem(format!("error: {e}")),
     };
-
-    let (proposed_path, _) = proposed.into_parts_for_decoding();
 
     // The result is the model's edit applied to trusted text, so its integrity is that of the
     // context the model was working from.
@@ -3006,7 +3043,10 @@ fn fetch_url<S: Sink, C: Confirmer>(
             // Decoded lossily rather than refused for not being text. What a server sends is
             // untrusted either way, and a page with one bad byte is still the page that was asked
             // for: nothing here reads it, so there is nothing for a decoding failure to protect.
-            let (bytes, body_label) = response.body.into_parts_for_decoding();
+            let label = response.body.label();
+            let (bytes, body_label) = policy
+                .decode_transport("fetch_url", label)
+                .decode(response.body);
             let text = String::from_utf8_lossy(&bytes).into_owned();
 
             let note = format!(
@@ -3945,11 +3985,12 @@ fn search<S: Sink>(
 
     // The directory a search would walk, on the same footing as a listing: a match quotes the
     // line it was found on, so searching a tree is reading it.
-    {
-        let (named, _) = directory.clone().into_parts_for_decoding();
-        if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &named) {
-            return problem(refusal);
-        }
+    let proposed_where = match policy.read_planner_argument("search", "directory", &proposed_dir) {
+        Ok(directory) => directory,
+        Err(denial) => return problem(format!("refused: {denial}")),
+    };
+    if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &proposed_where) {
+        return problem(refusal);
     }
 
     let include = match argument(arguments, "include") {
@@ -3967,8 +4008,6 @@ fn search<S: Sink>(
         .get("case_sensitive")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-
-    let (proposed_where, _) = proposed_dir.into_parts_for_decoding();
 
     match workspace.grep(
         policy,
@@ -5459,6 +5498,143 @@ mod tests {
 
             assert_eq!(reporter.updates.len(), 1);
             assert!(policy.finish(), "a gate refused something");
+        }
+    }
+
+    /// Editing compares the planner's `old_text` against the file to find the passage to
+    /// replace, and that comparison decides whether the write happens at all.
+    mod editing {
+        use super::*;
+        use bravebot_core::capability::{Capability, CapabilitySet};
+        use bravebot_core::event::{Event, RecordingSink};
+        use bravebot_core::label::Integrity;
+        use bravebot_core::policy::{ReleasePlan, Routing};
+        use bravebot_core::trust::TrustStore;
+
+        /// A directory that removes itself, so a test leaves nothing behind.
+        struct Scratch {
+            path: std::path::PathBuf,
+        }
+
+        impl Scratch {
+            fn new(name: &str) -> Self {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since| since.as_nanos())
+                    .unwrap_or(0);
+                // The name carries the pid and a nanosecond stamp, and `create_dir` below
+                // refuses a name already taken rather than reusing it, which is the secure
+                // creation this rule asks for. A fixed name would also collide with another
+                // run of the suite on the same machine, which is not hypothetical here.
+                // nosemgrep: rust.lang.security.temp-dir.temp-dir
+                let path = std::env::temp_dir().join(format!(
+                    "bravebot-editing-{name}-{}-{stamp}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&path).expect("create scratch");
+                Self { path }
+            }
+        }
+
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.path);
+            }
+        }
+
+        fn routing() -> Routing {
+            let mut r = Routing::new();
+            r.insert_trusted("task", "edit a file");
+            r
+        }
+
+        /// A policy that vouches for every relative path, so the file's own contents are
+        /// trusted and locating a passage in them is permitted. The question each test asks is
+        /// about the *arguments*, so the file must not be what refuses.
+        ///
+        /// The rule is `"."` rather than the scratch directory because a workspace read asks
+        /// about the path relative to its root, and a trust rule only ever covers a path of
+        /// the same kind: an absolute rule would be dead here and the tests would be passing
+        /// for a reason nobody wrote down.
+        fn policy_vouching(sink: &mut RecordingSink) -> Policy<'_, RecordingSink> {
+            let mut store = TrustStore::new();
+            store.trust(".");
+            Policy::begin(
+                routing(),
+                ReleasePlan::new(),
+                CapabilitySet::from_iter([Capability::FileRead, Capability::FileWrite]),
+                sink,
+            )
+            .expect("policy")
+            .with_trust(store)
+        }
+
+        fn edit(policy: &mut Policy<'_, RecordingSink>, workspace: &Workspace) -> String {
+            let produced = edit_file(
+                policy,
+                workspace,
+                &SlotStore::new(),
+                &mut crate::confirm::ApproveWrites,
+                &json!({"path": "a.txt", "old_text": "old", "new_text": "new"}),
+            );
+            let proof = policy.authorise_display_release("test inspects the tool result");
+            produced.text.declassify(&proof)
+        }
+
+        /// The baseline: with the file vouched for and a context that has met nothing
+        /// untrusted, the edit lands. Without this the refusal below would prove nothing.
+        #[test]
+        fn an_edit_from_a_trusted_context_replaces_the_passage() {
+            let scratch = Scratch::new("trusted");
+            std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+            let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_vouching(&mut sink);
+            let told = edit(&mut policy, &workspace);
+
+            assert!(told.starts_with("edited a.txt"), "{told}");
+            assert_eq!(
+                std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+                "keep\nnew\ntail\n"
+            );
+        }
+
+        /// The property the gate exists for. `old_text` is the planner's words, and a planner
+        /// whose context has met untrusted content is writing words an attacker may have
+        /// steered. Comparing them against the file decides whether a write happens, so the
+        /// read is refused and the file is left alone.
+        #[test]
+        fn an_edit_is_refused_once_the_context_has_met_something_untrusted() {
+            let scratch = Scratch::new("fallen");
+            std::fs::write(scratch.path.join("a.txt"), "keep\nold\ntail\n").unwrap();
+            let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+            let mut sink = RecordingSink::new();
+            let mut policy = policy_vouching(&mut sink).resuming(Integrity::Untrusted);
+            let told = edit(&mut policy, &workspace);
+
+            assert!(told.starts_with("refused:"), "{told}");
+            assert!(
+                told.contains("must not decide anything"),
+                "the refusal does not say why: {told}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+                "keep\nold\ntail\n",
+                "the file was edited from a context that had met untrusted content"
+            );
+            // And the refusal did nothing on the way to refusing. An edit that cannot happen
+            // must not have opened the file first: that spends the read capability and puts an
+            // observation in the trail for a turn in which nothing was read.
+            assert!(
+                !sink
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, Event::Observed { .. })),
+                "the file was read before the refusal: {:?}",
+                sink.events()
+            );
         }
     }
 }

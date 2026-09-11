@@ -23,9 +23,60 @@ use crate::event::{Event, Principle, Role, Sink};
 use crate::label::{Integrity, Label};
 use crate::slot::SlotId;
 use crate::trust::TrustStore;
-use crate::value::{Declassification, Labelled};
+use crate::value::Labelled;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::marker::PhantomData;
+
+/// Proof that a read of labelled content has been authorised and recorded.
+///
+/// Lives here, and not beside [`Labelled`], because of who is allowed to make one.
+/// [`Declassification::authorise`] is `pub(in crate::policy)`, so a witness can be minted
+/// only by the gates in this module: not by another module of this crate, and not by any
+/// crate downstream of it. [`Labelled::declassify`] therefore cannot be reached without
+/// passing a gate that recorded why.
+#[derive(Debug)]
+pub struct Declassification {
+    reason: &'static str,
+}
+
+impl Declassification {
+    pub(in crate::policy) fn authorise(reason: &'static str) -> Self {
+        Self { reason }
+    }
+
+    /// Why this read was permitted, recorded in the audit trail.
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+}
+
+/// Permission to take the bytes out of a transport envelope, for as long as the decoder needs.
+///
+/// Confined to `Vec<u8>`, which is the shape of an envelope off a socket. A tool argument, a
+/// proposed path, a file body and a model's reply are all `Labelled<String>`, so none of them
+/// can be read through this door; the gate for the planner's own words is
+/// [`Policy::read_planner_argument`], and it asks a question this one has no business asking.
+///
+/// Minted only by [`Policy::decode_transport`], which records it, and it borrows that policy
+/// for as long as it lives: a decoder cannot keep one past the turn it was issued in, and
+/// nothing else can use the policy while one is outstanding.
+#[derive(Debug)]
+pub struct TransportDecoding<'p> {
+    proof: Declassification,
+    policy: PhantomData<&'p mut ()>,
+}
+
+impl TransportDecoding<'_> {
+    /// The bytes of one envelope, with the label to put back on whatever is extracted from them.
+    ///
+    /// The label comes back alongside rather than being dropped, so a decoder labels what it
+    /// found from where the bytes came rather than inventing a label for it.
+    pub fn decode(&self, body: Labelled<Vec<u8>>) -> (Vec<u8>, Label) {
+        let label = body.label();
+        (body.declassify(&self.proof), label)
+    }
+}
 
 /// A refusal. Carries the principle upheld so a caller can explain the block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -736,6 +787,44 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             format!("{tool}: model output labelled {label} from its context"),
         );
         Labelled::new(value, label)
+    }
+
+    /// Take model output out of the envelope the transport wrapped it in, and label it from
+    /// the context it was produced in.
+    ///
+    /// A backend client labels a reply with the label the *network* gave it, because that is
+    /// all a transport can know: a JSON string arrives with no provenance. The kernel tracked
+    /// what entered the context, so it is the only thing that can say what the reply's
+    /// integrity really is, which is what [`Policy::label_model_output`] does.
+    ///
+    /// It exists so that no driver ever holds the bytes in between. Taking the text out of the
+    /// transport's label and putting the context's label back on it is two steps, and a driver
+    /// doing them itself is a driver holding model output unlabelled for the width of a
+    /// statement, with nothing recording that it did.
+    ///
+    /// **Refuses anything that is not already `(U,pub)`.** That is the label a transport puts
+    /// on a body, and it is the label of a value with *no* provenance yet, which is the only
+    /// kind LABEL-8 lets a first label be assigned to. Anything else already has provenance the
+    /// kernel tracked, and re-assigning one of those would be laundering rather than labelling:
+    /// a workspace file is `(U,priv)` or `(T,priv)`, and handing one of those in would otherwise
+    /// come back `(T,pub)` and pass a routing gate. Nothing calls it that way today, and the
+    /// refusal is what keeps it that way.
+    pub fn adopt_model_output<T>(&mut self, tool: &str, value: Labelled<T>) -> Gated<Labelled<T>> {
+        let arrived = value.label();
+        if arrived != Label::untrusted_public() {
+            return Err(self.deny(
+                "provenance",
+                Principle::IntegrityGate,
+                format!(
+                    "{tool}: only a value a transport labelled {} can be adopted as model \
+                     output, and this is {arrived}; it already has a provenance of its own",
+                    Label::untrusted_public()
+                ),
+            ));
+        }
+        let proof = Declassification::authorise("model output taken out of its transport envelope");
+        let inner = value.declassify(&proof);
+        Ok(self.label_model_output(tool, inner))
     }
 
     /// Turn a person's replies to a series of questions into text the planner may read.
@@ -1856,7 +1945,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         let out_label = crate::label::taint_all(labels);
         // Read, not carried: see the note above on why an instruction is not routing. Public
         // was checked before this point, so nothing private is being opened.
-        let (instruction, _) = instruction.clone().into_parts_for_decoding();
+        let proof = Declassification::authorise("a processor instruction the planner wrote");
+        let instruction = instruction.clone().declassify(&proof);
         // The fallback has to be one of the inputs. Anything else would let the answer stand for
         // a document the processor was never given, and the planner chooses it before the
         // processor exists either way.
@@ -1953,7 +2043,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // Read, not carried, and only now: a name has to be compared against the enumerated set
         // to select anything at all. Comparing it decides nothing an attacker steers, because
         // this run has met nothing an attacker wrote.
-        let (name, _) = kind.clone().into_parts_for_decoding();
+        let proof = Declassification::authorise("a delegate kind the planner named");
+        let name = kind.clone().declassify(&proof);
         let Some(selected) = crate::delegate::Kind::from_name(&name) else {
             return Err(self.deny(
                 "delegate",
@@ -1986,7 +2077,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             );
         }
 
-        let (task, _) = task.clone().into_parts_for_decoding();
+        let proof = Declassification::authorise("a delegate's prompt, carried not read");
+        let task = task.clone().declassify(&proof);
         let spec = crate::delegate::DelegateSpec::new(id, selected, task, held, selected.rounds());
 
         self.allow(
@@ -2668,8 +2760,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             "declassify",
             format!("{slot} released into {path}, which is inside the workspace"),
         );
-        let (text, _) = value.into_parts_for_decoding();
-        Labelled::new(text, to)
+        let proof = Declassification::authorise("written back inside the workspace it came from");
+        Labelled::new(value.declassify(&proof), to)
     }
 
     /// Whether writing data of `contents` integrity to `path` must be shown to a person.
@@ -3283,6 +3375,66 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(Declassification::authorise("precommitted release source"))
     }
 
+    /// Read an argument the planner supplied, so the driver may act on what it asked for.
+    ///
+    /// Every tool argument is wrapped `(U,pub)` on the way in. That label is a deliberate
+    /// pessimism rather than a claim about where the bytes came from: it is what forces a
+    /// proposed path through [`Policy::promote_confined_read`] and a proposed reference through
+    /// [`Policy::accept_reference`], so no argument can be mistaken for routing the user chose.
+    /// The bytes themselves are the planner's own words, and the integrity of the planner's
+    /// words is the integrity of the context it wrote them in. That is the same reading
+    /// [`Policy::label_model_output`] already takes of the `contents` argument to a write.
+    ///
+    /// So this gate asks the context, not the wrapper:
+    ///
+    /// - **Private is refused.** A private argument is the user's data in a field the driver
+    ///   reads, which means something laundered it into the planner's hands upstream.
+    /// - **A fallen context is refused.** Once the planner's context has met something
+    ///   untrusted, what the planner writes is untrusted too, and reading it would be the
+    ///   driver taking a decision from bytes an attacker may have steered, which is what
+    ///   LABEL-5 forbids.
+    ///
+    /// **The second refusal cannot fire today, and that is the point.** A context only becomes
+    /// untrusted by resuming one that already was, so on the paths that exist this returns the
+    /// argument every time. The gate is the invariant written down where a change that ever
+    /// let untrusted bytes into the planner's context has to get past it: every tool argument
+    /// stops being readable at that moment rather than quietly continuing to decide things.
+    pub fn read_planner_argument(
+        &mut self,
+        tool: &str,
+        field: &str,
+        value: &Labelled<String>,
+    ) -> Gated<String> {
+        let label = value.label();
+        if !label.is_public() {
+            return Err(self.deny(
+                "argument",
+                Principle::Confinement,
+                format!(
+                    "{tool}.{field} is {label}, and private content must not reach a planner's \
+                     arguments; name a reference to it instead"
+                ),
+            ));
+        }
+        if self.context != Integrity::Trusted {
+            return Err(self.deny(
+                "argument",
+                Principle::IntegrityGate,
+                format!(
+                    "{tool}.{field} cannot be read: this context has met untrusted content, so \
+                     what the planner writes is untrusted too and must not decide anything"
+                ),
+            ));
+        }
+
+        self.allow(
+            "argument",
+            format!("{tool}.{field} read as the planner's own words, from a trusted context"),
+        );
+        let proof = Declassification::authorise("an argument the planner wrote");
+        Ok(value.clone().declassify(&proof))
+    }
+
     /// Promote a model-proposed value to routing for a **non-destructive, confined**
     /// operation.
     ///
@@ -3328,7 +3480,8 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ));
         }
 
-        let value = proposed.clone().into_parts_for_decoding().0;
+        let proof = Declassification::authorise("a path the planner proposed, confined");
+        let value = proposed.clone().declassify(&proof);
         self.allow(
             "promote",
             format!("{tool}.{field} proposed by the model, confined and non-destructive"),
@@ -3363,9 +3516,35 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             ));
         }
 
-        let (name, _) = named.clone().into_parts_for_decoding();
+        let proof = Declassification::authorise("a reference name the driver itself minted");
+        let name = named.clone().declassify(&proof);
         self.allow("reference", format!("{tool}.{field} names {name}"));
         Ok(SlotId::new(name))
+    }
+
+    /// Let a protocol decoder see the bytes of a transport envelope.
+    ///
+    /// A reply arrives as one labelled blob and the content inside it has to be found before
+    /// anything can carry it: a JSON body, an SSE frame, a listing of models. The decoder has
+    /// to see those bytes, and no gate can hand it less than all of them.
+    ///
+    /// Authorised once per envelope rather than once per piece, which is why it hands back a
+    /// [`TransportDecoding`] instead of the bytes. A streamed reply is one envelope arriving in
+    /// frames, and a trail with a line for every frame of every reply says less about a session
+    /// than one with a line for every reply.
+    ///
+    /// Cannot fail, and records the read anyway, like [`Policy::authorise_content_release`]:
+    /// what makes this safe is not a check, it is that every use of it is in the audit trail
+    /// and in the `guards` list a reviewer reads.
+    pub fn decode_transport(&mut self, what: &str, arriving: Label) -> TransportDecoding<'_> {
+        self.allow(
+            "transport",
+            format!("{what}: an {arriving} envelope decoded, its label reapplied by the decoder"),
+        );
+        TransportDecoding {
+            proof: Declassification::authorise("a transport envelope decoded"),
+            policy: PhantomData,
+        }
     }
 
     /// Authorise releasing a value for display to the user.
@@ -3553,6 +3732,166 @@ mod tests {
             .filter_map(crate::processor::Piece::text)
             .collect::<Vec<_>>()
             .concat()
+    }
+
+    /// The other half of `bravebot_core::value::untrusted_values_cannot_be_read_without_a_witness`:
+    /// a witness is what turns a value nothing can read into one something can. It lives here
+    /// rather than beside the type because minting one is the policy layer's alone, so this is
+    /// the only module that can write the test.
+    #[test]
+    fn a_witness_permits_reading() {
+        let v = Labelled::new("page body".to_string(), Label::untrusted_public());
+        let proof = Declassification::authorise("test");
+        assert_eq!(v.declassify(&proof), "page body");
+    }
+
+    /// An argument is a `Labelled`, and the whole point of that type is that a driver cannot
+    /// take the value out of one. The gate is the only door, so it has to be the one that
+    /// records the read: an unrecorded read is a read nobody can find afterwards.
+    #[test]
+    fn reading_an_argument_is_recorded() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let argument = Labelled::new("src/main.rs".to_string(), Label::untrusted_public());
+        let read = policy
+            .read_planner_argument("read_file", "path", &argument)
+            .expect("the planner's own words read from a trusted context");
+
+        assert_eq!(read, "src/main.rs");
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed { gate: "argument", detail } if detail.contains("read_file.path")
+            )),
+            "reading an argument left no trail: {:?}",
+            sink.events()
+        );
+    }
+
+    /// The clause this gate exists for. Once the planner's context has met untrusted content,
+    /// what the planner writes is untrusted too, so an argument stops being the planner's own
+    /// words and the driver must not decide anything from it. Refusing beats returning the
+    /// bytes, because a caller that would rather have them cannot quietly take them.
+    #[test]
+    fn an_argument_cannot_be_read_once_the_context_has_met_something_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).resuming(Integrity::Untrusted);
+
+        let argument = Labelled::new("old text".to_string(), Label::untrusted_public());
+        let denial = policy
+            .read_planner_argument("edit_file", "old_text", &argument)
+            .expect_err("a fallen context must not have its arguments read");
+
+        assert_eq!(denial.principle, Principle::IntegrityGate);
+        assert!(
+            denial.message.contains("must not decide anything"),
+            "the refusal does not say why: {denial}"
+        );
+        assert!(!policy.finish(), "the refusal was not recorded");
+    }
+
+    /// A private argument is the user's data in a field the driver reads back out. Nothing
+    /// upstream should have put it there, so this refuses rather than laundering it into a
+    /// string the driver then acts on.
+    #[test]
+    fn a_private_argument_is_refused_rather_than_read() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let argument = Labelled::new("~/.ssh/id_ed25519".to_string(), Label::untrusted_private());
+        let denial = policy
+            .read_planner_argument("read_file", "path", &argument)
+            .expect_err("private content must not be read as an argument");
+
+        assert_eq!(denial.principle, Principle::Confinement);
+    }
+
+    /// A value that already has a provenance the kernel assigned is not a value the kernel may
+    /// assign a first one to. Without this, a workspace file handed in would come back `(T,pub)`
+    /// and pass a routing gate, which is the laundering LABEL-7 forbids.
+    #[test]
+    fn only_a_value_a_transport_labelled_can_be_adopted_as_model_output() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let from_the_workspace =
+            Labelled::new("the user's file".to_string(), Label::untrusted_private());
+        let denial = policy
+            .adopt_model_output("chat", from_the_workspace)
+            .expect_err("a workspace file is not model output");
+
+        assert_eq!(denial.principle, Principle::IntegrityGate);
+        assert!(
+            denial.message.contains("provenance of its own"),
+            "the refusal does not say why: {denial}"
+        );
+        assert!(!policy.finish(), "the refusal was not recorded");
+    }
+
+    /// Decoding cannot fail and cannot refuse: a decoder needs every byte of the envelope. So
+    /// what stands in for a check is the record, which is the only reason it takes the policy
+    /// at all.
+    #[test]
+    fn decoding_a_transport_envelope_is_recorded_and_hands_back_the_label() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let body = Labelled::new(b"{\"ok\":true}".to_vec(), Label::untrusted_public());
+        let (bytes, label) = policy.decode_transport("chat", body.label()).decode(body);
+
+        assert_eq!(bytes, b"{\"ok\":true}");
+        assert_eq!(
+            label,
+            Label::untrusted_public(),
+            "the decoder was not given the label to reapply"
+        );
+        assert!(
+            sink.events().iter().any(|e| matches!(
+                e,
+                Event::GatePassed { gate: "transport", detail } if detail.contains("chat")
+            )),
+            "decoding an envelope left no trail: {:?}",
+            sink.events()
+        );
+    }
+
+    /// What the transport labels a reply is where the bytes came off a socket, which is all a
+    /// transport can know. The kernel tracked what the model was shown, so the reply's integrity
+    /// is the context's. Doing both halves here is what keeps a driver from ever holding the
+    /// text in between.
+    #[test]
+    fn adopting_model_output_takes_the_context_s_label_not_the_transport_s() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+
+        let off_the_wire = Labelled::new("the reply".to_string(), Label::untrusted_public());
+        let adopted = policy
+            .adopt_model_output("chat", off_the_wire)
+            .expect("a reply off the wire is model output");
+
+        assert_eq!(adopted.label(), Label::trusted_public());
+        assert_eq!(adopted.into_trusted().expect("trusted"), "the reply");
+    }
+
+    /// And never an upgrade. A context that has met something untrusted produces untrusted
+    /// words, whatever the transport labelled them, so adopting must not hand back a value the
+    /// driver can read.
+    #[test]
+    fn adopting_model_output_from_a_fallen_context_stays_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).resuming(Integrity::Untrusted);
+
+        let off_the_wire = Labelled::new("the reply".to_string(), Label::untrusted_public());
+        let adopted = policy
+            .adopt_model_output("chat", off_the_wire)
+            .expect("a reply off the wire is model output");
+
+        assert_eq!(adopted.label().integrity, Integrity::Untrusted);
+        assert!(
+            adopted.into_trusted().is_err(),
+            "the reply came back readable"
+        );
     }
 
     /// The point of deferring: naming a file costs nothing until something wants what is in it.
@@ -6915,7 +7254,9 @@ mod tests {
                 .compose_processor_input(&spec, &store)
                 .expect("input assembled");
 
-            let (pieces, label) = input.into_parts_for_decoding();
+            let label = input.label();
+            let proof = Declassification::authorise("test");
+            let pieces = input.declassify(&proof);
             let text = joined_text(pieces);
             assert!(text.contains("fetched from the web"));
             assert!(

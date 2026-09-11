@@ -179,10 +179,7 @@ pub fn compact<S: Sink>(
     // Relabelled from the context the way a round's own words are, and for the same reason: what
     // comes back from the client carries the label the network gave it, and the kernel is the
     // only thing that knows what this model was shown.
-    let written = {
-        let (text, _) = completion.content.into_parts_for_decoding();
-        policy.label_model_output("compact", text)
-    };
+    let written = policy.adopt_model_output("compact", completion.content)?;
     let summary = policy.adopt_summary(&written)?;
     let kept = conversation.len() - boundary;
     conversation.compacted(boundary, &summary);

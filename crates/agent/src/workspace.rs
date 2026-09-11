@@ -885,9 +885,9 @@ impl Workspace {
         contents: &Labelled<String>,
         expected: &str,
     ) -> Result<PathBuf, WorkspaceError> {
-        // Checked before the gates so a stale edit is reported as staleness rather than
-        // consuming the single-use endorsement.
-        let relative = self.peek_relative(path)?;
+        // Checked before the write gates so a stale edit is reported as staleness rather than
+        // consuming the single-use endorsement. Reading the path is itself gated, below.
+        let relative = self.peek_relative(policy, path)?;
         let current = self.peek_for_review(&relative).unwrap_or_default();
         if current != expected {
             return Err(WorkspaceError::Stale { path: relative });
@@ -898,11 +898,21 @@ impl Workspace {
 
     /// The path as a plain string, for a check made on the user's behalf.
     ///
-    /// Does not promote or trust anything: the value is used to look at the filesystem,
-    /// never to decide that a write may proceed. The gates in [`Workspace::write_endorsed`]
-    /// still run afterwards.
-    fn peek_relative(&self, path: &Labelled<String>) -> Result<String, WorkspaceError> {
-        let (value, _) = path.clone().into_parts_for_decoding();
+    /// Promotes nothing and endorses nothing: the value is used to look at the filesystem,
+    /// never to decide that a write may proceed, and the gates in
+    /// [`Workspace::write_endorsed`] still run afterwards.
+    ///
+    /// Reading it is a read, so it goes through the gate for the planner's own words rather
+    /// than taking the value out directly, and it is recorded as `workspace.path` rather than
+    /// as a write: a staleness check is not the write, and a trail that said `file_write` here
+    /// would claim an endorsement that has not happened yet. A refusal surfaces as a
+    /// [`WorkspaceError`], which is what every other gate in this file does.
+    fn peek_relative<S: Sink>(
+        &self,
+        policy: &mut Policy<'_, S>,
+        path: &Labelled<String>,
+    ) -> Result<String, WorkspaceError> {
+        let value = policy.read_planner_argument("workspace", "path", path)?;
         self.resolve(&value)?;
         Ok(value)
     }

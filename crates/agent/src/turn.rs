@@ -1292,10 +1292,9 @@ fn record_answer<S: Sink>(
     conversation: &mut Conversation,
     said: &Labelled<String>,
 ) -> Result<Labelled<String>, TurnError> {
-    let answer = {
-        let (spoken, _) = said.clone().into_parts_for_decoding();
-        policy.label_model_output("chat", spoken)
-    };
+    let answer = policy
+        .adopt_model_output("chat", said.clone())
+        .map_err(|d| TurnError::Precommit(d.to_string()))?;
     let slot = conversation.next_reference();
     let presented = policy
         .present(
@@ -2002,10 +2001,9 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
             }
             ran = ran || requested.iter().any(|name| tools::runs_a_program(name));
 
-            let spoken = {
-                let (text, _) = completion.content.clone().into_parts_for_decoding();
-                policy.label_model_output("chat", text)
-            };
+            let spoken = policy
+                .adopt_model_output("chat", completion.content.clone())
+                .map_err(|d| TurnError::Precommit(d.to_string()))?;
             let slot = conversation.next_reference();
             let presented = policy
                 .present(
@@ -2569,10 +2567,9 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // the same reasoning: it is what this model said, labelled from the context it said it in.
     // A session that has met nothing untrusted can be asked "shorter, please" and know what to
     // shorten; one that has met something untrusted is told that it answered and no more.
-    let answer = {
-        let (spoken, _) = completion.content.clone().into_parts_for_decoding();
-        policy.label_model_output("chat", spoken)
-    };
+    let answer = policy
+        .adopt_model_output("chat", completion.content.clone())
+        .map_err(|d| TurnError::Precommit(d.to_string()))?;
     let slot = conversation.next_reference();
     let presented = policy
         .present(

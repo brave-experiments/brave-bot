@@ -8,35 +8,17 @@
 //! inspectable**. `Labelled` deliberately does not implement `Deref`, `PartialEq`,
 //! or `Display`, and exposes no infallible getter. Code can move it, store it, and
 //! hand it to a gate, but cannot branch on its contents, so untrusted data cannot
-//! reach a decision. Reading the inner value requires [`Labelled::declassify`],
-//! which demands a [`Declassification`] witness that only the policy layer can mint.
+//! reach a decision. The only two ways to the inner value are
+//! [`Labelled::declassify`], which demands a [`Declassification`] witness that only
+//! the policy layer can mint, and [`Labelled::into_trusted`], which fails on anything
+//! that is not already `(T,pub)` and so has nothing to declassify.
 //!
 //! This is the compile-time form of the rule that the driver carries content but
 //! never inspects it.
 
 use crate::label::Label;
+use crate::policy::Declassification;
 use std::fmt;
-
-/// Proof that a read of untrusted content has been authorised and recorded.
-///
-/// Only the policy layer constructs these, via [`Declassification::authorise`],
-/// which is `pub(crate)`. Downstream crates cannot fabricate one, so
-/// [`Labelled::declassify`] cannot be called without going through a gate.
-#[derive(Debug)]
-pub struct Declassification {
-    reason: &'static str,
-}
-
-impl Declassification {
-    pub(crate) fn authorise(reason: &'static str) -> Self {
-        Self { reason }
-    }
-
-    /// Why this read was permitted, recorded in the audit trail.
-    pub fn reason(&self) -> &'static str {
-        self.reason
-    }
-}
 
 /// A value carrying a provenance label.
 ///
@@ -80,21 +62,6 @@ impl<T> Labelled<T> {
         }
     }
 
-    /// Split a labelled value into its parts at a protocol boundary.
-    ///
-    /// Needed where a transport envelope must be decoded, a JSON response body say,
-    /// because the decoder has to see the bytes. The label is returned alongside so it
-    /// cannot be dropped silently, and callers are expected to re-wrap the decoded
-    /// value immediately.
-    ///
-    /// This is the one place the "carryable but not inspectable" rule is relaxed, so it
-    /// is named to stand out in review. It must never be used to *decide* anything:
-    /// branching on untrusted content requires [`Labelled::declassify`] and a
-    /// policy-minted witness.
-    pub fn into_parts_for_decoding(self) -> (T, Label) {
-        (self.value, self.label)
-    }
-
     /// Re-label a value, which may only degrade it. Returns `None` if the requested
     /// label is not reachable by degradation from the current one.
     pub fn relabel(self, to: Label) -> Option<Self> {
@@ -105,6 +72,34 @@ impl<T> Labelled<T> {
             })
         } else {
             None
+        }
+    }
+}
+
+/// How much content there is, which is the one thing anyone outside may learn about
+/// content they may not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Shape {
+    pub lines: usize,
+    pub bytes: usize,
+}
+
+impl Labelled<String> {
+    /// Count the lines and bytes without releasing the content.
+    ///
+    /// Not a read, and so not a hole in the rule above: what comes back is derived from how
+    /// many bytes there are and never from what they say, and those two numbers are exactly
+    /// what LABEL-3 already puts in front of the planner for content it is not shown. The
+    /// value itself never leaves, so there is nothing to declassify and no witness to mint.
+    ///
+    /// `pub(crate)` all the same, so that the one thing outside this crate can learn about
+    /// quarantined content stays the [`crate::slot::Measured`] a slot hands back. A driver that
+    /// could ask any labelled value how long it is could branch on the answer, and repeating
+    /// the question is a side channel on bytes the quarantine exists to withhold.
+    pub(crate) fn shape(&self) -> Shape {
+        Shape {
+            lines: self.value.lines().count(),
+            bytes: self.value.len(),
         }
     }
 }
@@ -150,13 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn a_witness_permits_reading() {
-        let v = Labelled::new("page body".to_string(), Label::untrusted_public());
-        let proof = Declassification::authorise("test");
-        assert_eq!(v.declassify(&proof), "page body");
-    }
-
-    #[test]
     fn relabel_may_degrade() {
         let v = Labelled::trusted(1u8);
         let degraded = v.relabel(Label::untrusted_private()).expect("may degrade");
@@ -174,6 +162,19 @@ mod tests {
     fn relabel_refuses_incomparable_labels() {
         let v = Labelled::new(1u8, Label::untrusted_private());
         assert!(v.relabel(Label::trusted_public()).is_none());
+    }
+
+    /// How much content there is, is not what the content says. The quarantine hands the
+    /// planner a line count and a byte count for content it will never be shown, so counting
+    /// them cannot itself require a witness; what must never come back is the text.
+    #[test]
+    fn content_can_be_measured_without_being_read() {
+        let v = Labelled::new("one\ntwo\nthree".to_string(), Label::untrusted_private());
+        let shape = v.shape();
+
+        assert_eq!(shape.lines, 3);
+        assert_eq!(shape.bytes, 13);
+        assert!(v.into_trusted().is_err(), "measuring released the value");
     }
 
     /// Debug output must never contain the value, or private content leaks into logs.

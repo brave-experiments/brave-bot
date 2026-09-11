@@ -332,7 +332,10 @@ fn ask(install: Install) -> Option<Version> {
     let response = egress
         .fetch(&mut policy, request, Label::untrusted_public())
         .ok()?;
-    let (bytes, _) = response.body.into_parts_for_decoding();
+    let label = response.body.label();
+    let (bytes, _) = policy
+        .decode_transport("update check", label)
+        .decode(response.body);
     version_in(install, &bytes)
 }
 

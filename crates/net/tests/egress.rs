@@ -334,7 +334,8 @@ fn a_reply_still_arriving_is_not_cut_off_for_taking_longer_than_it_took_to_start
 
     assert_eq!(response.status, 200);
     assert!(!response.truncated);
-    let (body, _) = response.body.into_parts_for_decoding();
+    let label = response.body.label();
+    let (body, _) = policy.decode_transport("test", label).decode(response.body);
     assert_eq!(String::from_utf8_lossy(&body), "one two three four five");
 }
 
@@ -420,7 +421,8 @@ fn a_reply_that_takes_longer_than_the_send_bound_to_start_is_not_a_failed_send()
 
     assert_eq!(response.status, 200);
     assert!(!response.truncated);
-    let (body, _) = response.body.into_parts_for_decoding();
+    let label = response.body.label();
+    let (body, _) = policy.decode_transport("test", label).decode(response.body);
     assert_eq!(
         String::from_utf8_lossy(&body),
         "an answer worth waiting for"

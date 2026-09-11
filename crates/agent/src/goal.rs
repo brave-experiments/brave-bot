@@ -283,10 +283,7 @@ pub fn assess<S: Sink>(
     // Relabelled from the context the way a round's own words are: what comes back from the client
     // carries the label the network gave it, and the kernel is the only thing that knows what this
     // model was shown.
-    let written = {
-        let (text, _) = completion.content.clone().into_parts_for_decoding();
-        policy.label_model_output("goal", text)
-    };
+    let written = policy.adopt_model_output("goal", completion.content)?;
 
     // The gate that decides whether the driver may read this at all. A store of its own, thrown
     // away with the request, because nothing ever resolves this reference: a quarantined verdict
