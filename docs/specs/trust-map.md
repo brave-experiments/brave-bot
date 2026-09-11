@@ -151,6 +151,9 @@ an exception: the answer honoured is the one that session's own user gave, and i
 that session's writes recorded, which is what stops a resumed turn reading back a file an earlier
 turn of the same session poisoned.
 
+`verified-by: bravebot_tui::app::a_fresh_session_is_asked_rather_than_inheriting_a_map`
+`verified-by: bravebot_tui::app::a_resume_starts_with_the_map_its_own_record_kept`
+`verified-by: bravebot_tui::app::a_record_from_before_maps_were_kept_is_asked_about`
 `verified-by: bravebot_tui::sessions::a_record_that_predates_the_map_has_none_rather_than_an_empty_one`
 `verified-by: bravebot_tui::sessions::a_distrusted_path_inside_a_trusted_tree_survives_the_record`
 `verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
@@ -174,11 +177,13 @@ there, since the question is not being put in that case either and the answer it
 more specific record.
 
 `verified-by: bravebot_tui::trust_prompt::trusting_covers_the_whole_workspace`
+`verified-by: bravebot_tui::trust_prompt::only_y_trusts_and_enter_answers_nothing`
 `verified-by: bravebot_tui::trust_prompt::declining_trusts_nothing`
 `verified-by: bravebot_tui::trust_prompt::leaving_starts_no_session`
 `verified-by: bravebot_tui::trust_prompt::ctrl_c_leaves_rather_than_answering_the_question`
 `verified-by: bravebot_tui::trust_prompt::bypassing_trusts_the_workspace_instead_of_asking`
 `verified-by: bravebot_tui::trust_prompt::every_other_mode_leaves_the_question_to_the_person`
+`verified-by: bravebot_tui::app::a_resume_keeps_its_own_map_even_where_the_mode_would_answer`
 
 ## The ways a rule is written
 

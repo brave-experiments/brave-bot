@@ -338,13 +338,37 @@ mod tests {
             .expect("must not panic on a small area");
     }
 
-    /// Trusting records the root, which covers the whole tree.
+    /// Trusting records the root, which covers the whole tree. Asked of the answer rather than of
+    /// a store built here, for the reason [`declining_trusts_nothing`] is: a `trust_for` that
+    /// returned an empty map on a yes would satisfy a test that trusted `.` itself, and every
+    /// write would be shown to somebody who said yes.
     #[test]
     fn trusting_covers_the_whole_workspace() {
-        let mut trust = TrustStore::new();
-        trust.trust(".");
+        let trust = trust_for(Answer::Trust).expect("trusting starts a session");
+        assert!(trust.is_trusted("."));
         assert!(trust.is_trusted("src/main.rs"));
         assert!(trust.is_trusted("deep/nested/file.txt"));
+    }
+
+    /// The key that grants standing permission over a whole tree is the deliberate one and no
+    /// other. Enter is the key most likely to be pressed out of habit, so it answers nothing: a
+    /// keystroke made without reading must not be the answer that costs the most to get wrong.
+    #[test]
+    fn only_y_trusts_and_enter_answers_nothing() {
+        let pressed = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        assert_eq!(answer_for(pressed(KeyCode::Char('y'))), Some(Answer::Trust));
+        assert_eq!(answer_for(pressed(KeyCode::Char('Y'))), Some(Answer::Trust));
+        assert_eq!(
+            answer_for(pressed(KeyCode::Char('n'))),
+            Some(Answer::Decline)
+        );
+        assert_eq!(
+            answer_for(pressed(KeyCode::Char('N'))),
+            Some(Answer::Decline)
+        );
+        assert_eq!(answer_for(pressed(KeyCode::Esc)), Some(Answer::Decline));
+        assert_eq!(answer_for(pressed(KeyCode::Enter)), None);
     }
 
     /// Ctrl-C is the interrupt everyone reaches for, and raw mode turns it into an ordinary key
