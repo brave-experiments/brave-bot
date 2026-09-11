@@ -4658,6 +4658,55 @@ mod tests {
         );
     }
 
+    /// Vouching for a command is not consenting to hand it the user's data, so a line that feeds
+    /// a file to a program is asked about every time whatever is on the vouched list. What `a`
+    /// records is a program and its exact argv and never the files a line redirects, so a gate
+    /// that consulted only that list would let the entry made for one redirected file cover the
+    /// same program fed any other file.
+    #[test]
+    fn private_input_asks_even_for_a_vouched_line() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/cat", &[]));
+
+        let plain = plan_of(vec![step_named("cat", &[])]);
+        assert!(
+            !policy.plan_needs_approval(&plain),
+            "the vouched entry did not cover the command it was made for"
+        );
+
+        let secret = std::path::PathBuf::from("/home/someone/.ssh/id_rsa");
+        let mut reading = step_named("cat", &[]);
+        reading.routes = vec![crate::command::Route::Stdin {
+            path: secret.clone(),
+        }];
+        let mut line = plan_of(vec![reading]);
+        line.reads = vec![secret];
+        assert!(
+            policy.plan_needs_approval(&line),
+            "a private file was fed to a program with nobody asked"
+        );
+    }
+
+    /// A rule saying which commands may run is not consent to hand one the user's data, so the
+    /// question comes before the rules rather than after them: an allow rule covering the line
+    /// answers the question about running it and not the one about what it is fed.
+    #[test]
+    fn private_input_asks_even_for_a_line_a_rule_allows() {
+        let mut sink = RecordingSink::new();
+        let mut policy =
+            open_policy(&mut sink).with_permissions(permissions(&[], &[], &["Bash(cat *)"]));
+
+        let mut reading = step_named("cat", &[]);
+        reading.routes = vec![crate::command::Route::Stdin {
+            path: std::path::PathBuf::from("/home/someone/.ssh/id_rsa"),
+        }];
+        assert!(
+            policy.plan_needs_approval(&plan_of(vec![reading])),
+            "a settings-file rule released private data with no prompt"
+        );
+    }
+
     /// The default label, and the only one that holds without knowing what ran: a program may
     /// print bytes an earlier step read out of a file an attacker wrote.
     #[test]

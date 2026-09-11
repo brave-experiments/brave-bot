@@ -93,6 +93,14 @@ the only label that holds without knowing what ran. Nothing a caller, a stage, o
 declare changes it. Only a person can, in one of the two ways below, and both are assertions
 rather than inferences.
 
+Standard input reaches the second row by two routes, and the row governs both. The policy layer
+may supply the bytes of a quarantined reference, which arrive with that reference's label, and a
+`<` redirection names a file the run opens itself. A file's bytes are the user's own data whatever
+the trust map says about the path, so the second route is always private and always meets the gate.
+
+`verified-by: bravebot_core::command::a_file_redirected_into_a_program_is_private_input`
+`verified-by: bravebot_core::command::a_redirection_on_a_later_step_is_private_input`
+`verified-by: bravebot_core::command::a_plan_that_feeds_a_program_nothing_releases_nothing`
 `verified-by: bravebot_core::policy::output_nobody_vouched_for_is_untrusted_and_private`
 `verified-by: bravebot_core::policy::output_of_a_vouched_command_is_trusted`
 `verified-by: bravebot_core::policy::output_of_a_vouched_command_is_still_private`
@@ -123,7 +131,18 @@ too, and `a` is not offered for those runs at all.
 **Why.** Vouching for what a file contains is not consenting to send it somewhere, and trusting a
 command is not consenting to hand it the user's data.
 
+**Why `a` is withheld rather than narrowed.** What the key records is a program and its exact
+arguments, and a `<` redirection is in neither: an entry made while one file was redirected in
+would cover the same program fed any other file. Withholding the key is what keeps the entry
+honest about what it covers, and the refusal is made twice: once where the prompt is drawn, and
+again where an answer is acted on, since an invariant about what the trusted list may hold does
+not rest on a drawing.
+
 `verified-by: bravebot_core::policy::private_input_asks_even_for_a_vouched_command`
+`verified-by: bravebot_core::policy::private_input_asks_even_for_a_vouched_line`
+`verified-by: bravebot_agent::cmdline::an_input_redirection_is_private_input`
+`verified-by: bravebot_agent::turn::a_line_that_reads_a_file_is_not_remembered_however_it_is_answered`
+`verified-by: bravebot_tui::confirm::a_run_reading_a_file_offers_no_standing_permission`
 `verified-by: bravebot_tui::confirm::a_run_that_releases_private_data_offers_no_standing_permission`
 `verified-by: bravebot_tui::confirm::pressing_always_at_a_private_input_prompt_grants_nothing`
 

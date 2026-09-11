@@ -7682,6 +7682,30 @@ fn vouching_for_a_program_carries_out_of_the_turn() {
     );
 }
 
+/// A line that feeds a file to a program is asked about every time, so nothing it is answered with
+/// may put the program on the session's list. The terminal does not offer `a` for such a run, and
+/// this is the same refusal one layer down: an entry recording the program and its argv would not
+/// name the redirected file, so it would cover the same program fed any other file.
+#[test]
+fn a_line_that_reads_a_file_is_not_remembered_however_it_is_answered() {
+    let scratch = Scratch::new("run-always-private-input");
+    std::fs::write(scratch.path.join("in.txt"), "content").unwrap();
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always());
+
+    let outcome = a_run_turn(
+        &scratch,
+        r#"{"command":"cat < in.txt"}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn runs");
+
+    assert!(
+        outcome.programs.is_empty(),
+        "a line feeding a file to a program was recorded as vouched for"
+    );
+}
+
 /// Approving once is not approving always: a run approved for this call alone leaves the session
 /// vouching for nothing.
 #[test]

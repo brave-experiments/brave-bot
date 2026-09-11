@@ -239,8 +239,10 @@ set, it is shown at the prompt, and it is subject to every rule that governs wri
 permission rules, the trust map's answer for that path, and the confinement that keeps a write
 inside the workspace.
 
-`>>` is a write. `<` is a read and joins the read set. `2>&1` renames a descriptor and touches no
-file.
+`>>` is a write. `<` is a read and joins the read set, and it is standard input as well: the
+file's bytes go into a program, so the plan reports it as private input and it takes the
+standard-input gate of [run.md](run.md#RUN-6) whichever file it names. `2>&1` renames a
+descriptor and touches no file.
 
 A redirection whose target is a glob, or anything else that does not compile to one literal path,
 is a compile error.
@@ -249,7 +251,11 @@ is a compile error.
 and it is exactly the one that becomes safe once the destination is a named field. Refusing
 redirection while allowing pipes would be refusing the easy half.
 
-`verified-by: none`
+`verified-by: bravebot_agent::cmdline::a_redirection_joins_the_write_set`
+`verified-by: bravebot_agent::cmdline::an_append_writes_and_an_input_reads`
+`verified-by: bravebot_agent::cmdline::an_input_redirection_is_private_input`
+`verified-by: bravebot_agent::cmdline::a_line_that_only_writes_releases_nothing`
+`verified-by: bravebot_agent::cmdline::joining_the_streams_writes_no_file`
 
 <a id="CMDLINE-6"></a>
 ### CMDLINE-6: every branch that could run is endorsed before anything runs
