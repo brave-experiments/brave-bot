@@ -7113,9 +7113,14 @@ fn a_turn_cannot_read_outside_the_workspace_without_adding_it() {
 }
 
 /// Answers a series with fixed replies, and records what it was shown.
+///
+/// Given no replies it answers nothing, which is what a test asserting that the person was never
+/// shown anything wants: the record is the assertion, and a double that decided would report only
+/// that the tool ran.
 struct AnswersWith {
     replies: Vec<bravebot_core::ask::Answer>,
     asked: Vec<bravebot_core::ask::Asking>,
+    hosts: Vec<String>,
 }
 
 impl AnswersWith {
@@ -7123,6 +7128,7 @@ impl AnswersWith {
         Self {
             replies,
             asked: Vec::new(),
+            hosts: Vec::new(),
         }
     }
 }
@@ -7151,8 +7157,9 @@ impl bravebot_agent::Confirmer for AnswersWith {
 
     fn confirm_fetch(
         &mut self,
-        _request: &bravebot_agent::confirm::FetchRequest,
+        request: &bravebot_agent::confirm::FetchRequest,
     ) -> bravebot_agent::Decision {
+        self.hosts.push(request.summary());
         bravebot_agent::Decision::Reject
     }
 
@@ -10412,6 +10419,177 @@ fn a_call_to_spawn_agent_from_inside_a_delegate_does_nothing() {
     assert!(
         delegates.iter().any(|body| body.contains("no such tool")),
         "a delegate's call to spawn_agent was not refused: {delegates:?}"
+    );
+}
+
+/// Records every task list it is handed, so a test can assert it was handed none.
+#[derive(Default)]
+struct RecordsTaskLists {
+    lists: Vec<Vec<bravebot_core::todo::Row>>,
+}
+
+impl bravebot_agent::report::Reporter for RecordsTaskLists {
+    fn todos(&mut self, rows: Vec<bravebot_core::todo::Row>) {
+        self.lists.push(rows);
+    }
+}
+
+/// A delegate's task came from a planner rather than from a person, so a question about it would
+/// ask somebody to arbitrate something they never set up, and the list on the screen belongs to
+/// the turn they are actually watching. Neither tool is offered inside a delegate, and a model
+/// naming one anyway is answered as an unknown name: models routinely name tools they were not
+/// offered, which is the whole reason the second refusal exists.
+#[test]
+fn a_delegate_naming_ask_user_or_todo_write_reaches_neither_the_person_nor_the_screen() {
+    let scratch = Scratch::new("delegate-asks");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "DELEGATE-THE-WORK",
+            vec![
+                tool_request("spawn_agent", r#"{"kind":"worker","task":"DO-THE-WORK"}"#),
+                reply_with("waiting"),
+                reply_with("done"),
+            ],
+        ),
+        (
+            "DO-THE-WORK",
+            vec![
+                tool_request(
+                    "ask_user",
+                    r#"{"questions":[{"header":"Scope","question":"WHICH-ONE-DID-YOU-MEAN","options":[{"label":"the first"},{"label":"the second"}]}]}"#,
+                ),
+                tool_request(
+                    "todo_write",
+                    r#"{"todos":[{"content":"STEPS-OF-A-SUB-TASK","status":"in_progress"}]}"#,
+                ),
+                reply_with("I could not ask and I could not write a list"),
+            ],
+        ),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let cancel = bravebot_core::cancel::Cancel::new();
+    let mut confirmer = AnswersWith::new(Vec::new());
+    let mut reporter = RecordsTaskLists::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("DELEGATE-THE-WORK"),
+        &mut confirmer,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &cancel,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.asked.is_empty(),
+        "a delegate put a question to the person: {:?}",
+        confirmer.asked
+    );
+    assert!(
+        reporter.lists.is_empty(),
+        "a delegate replaced the task list on the person's screen: {:?}",
+        reporter.lists
+    );
+
+    let asked = every_request(&received);
+    let delegates: Vec<&String> = asked
+        .iter()
+        .filter(|body| !body.contains("DELEGATE-THE-WORK"))
+        .collect();
+    // The delegate's own first request, before it had called anything: the tool list is what is
+    // under test, and every request after this one replays the calls it made and the refusals.
+    let offered = delegates.first().expect("the delegate asked for nothing");
+    assert!(
+        !offered.contains("ask_user"),
+        "a delegate was offered a question to put to somebody"
+    );
+    assert!(
+        !offered.contains("todo_write"),
+        "a delegate was offered the task list a person is watching"
+    );
+    // The delegate's last request, which replays both results: counting the requests that mention
+    // a refusal would count the same refusal again on every round after it.
+    let replayed = delegates.last().expect("the delegate asked for nothing");
+    assert_eq!(
+        replayed.matches("no such tool").count(),
+        2,
+        "both of a delegate's calls were not refused"
+    );
+}
+
+/// Every kind holds the network capability because a planner is a model call, and that is the
+/// whole of what it buys: the driver's own request to the endpoint on this delegate's behalf.
+/// No tool a delegate is offered points anywhere else, and one it names anyway is answered as an
+/// unknown name rather than putting a host to the person for a sub-task they never set.
+#[test]
+fn a_delegate_naming_fetch_url_reaches_no_host() {
+    let scratch = Scratch::new("delegate-fetches");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_by_marker(vec![
+        (
+            "DELEGATE-THE-WORK",
+            vec![
+                tool_request("spawn_agent", r#"{"kind":"reader","task":"DO-THE-WORK"}"#),
+                reply_with("waiting"),
+                reply_with("done"),
+            ],
+        ),
+        (
+            "DO-THE-WORK",
+            vec![
+                tool_request("fetch_url", r#"{"url":"https://notes.example/page"}"#),
+                reply_with("I could not fetch it"),
+            ],
+        ),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let cancel = bravebot_core::cancel::Cancel::new();
+    let mut confirmer = AnswersWith::new(Vec::new());
+    let mut reporter = RecordsTaskLists::default();
+
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("DELEGATE-THE-WORK"),
+        &mut confirmer,
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        &cancel,
+    )
+    .expect("turn runs");
+
+    assert!(
+        confirmer.hosts.is_empty(),
+        "a delegate put a host to the person: {:?}",
+        confirmer.hosts
+    );
+
+    let asked = every_request(&received);
+    let delegates: Vec<&String> = asked
+        .iter()
+        .filter(|body| !body.contains("DELEGATE-THE-WORK"))
+        .collect();
+    let offered = delegates.first().expect("the delegate asked for nothing");
+    assert!(
+        !offered.contains("fetch_url"),
+        "a delegate was offered a way to reach a host of its own"
+    );
+    assert!(
+        delegates.iter().any(|body| body.contains("no such tool")),
+        "a delegate's call to fetch_url was not refused: {delegates:?}"
     );
 }
 

@@ -101,9 +101,16 @@ Every kind additionally reaches the network, because a planner is a model call a
 is egress like any other. No tool a delegate is offered reaches it, so what it buys is the ability
 to ask the endpoint on that delegate's behalf. A kind without it is a kind that cannot think.
 
+A delegate naming a tool that reaches the network anyway is answered the way any other unknown
+name is. The capability is held, so no gate refuses that call, which is why the absence from the
+tool list is written out a second time as a refusal.
+
 `verified-by: bravebot_core::policy::a_delegate_holds_no_more_than_the_run_that_spawned_it`
 `verified-by: bravebot_core::delegate::the_kinds_are_ordered_by_what_they_hold`
 `verified-by: bravebot_core::delegate::every_kind_can_reach_the_endpoint_and_nothing_else_remote`
+`verified-by: bravebot_agent::tools::no_kind_is_offered_a_tool_that_reaches_the_network`
+`verified-by: bravebot_agent::turn::a_delegate_naming_fetch_url_reaches_no_host`
+`verified-by: bravebot_agent::delegate::no_kind_is_told_it_may_reach_the_network`
 
 <a id="DELEGATE-5"></a>
 ### DELEGATE-5: the prompt belongs to the kind, and the planner writes no word of it
@@ -207,14 +214,19 @@ Nothing else about a delegate's policy survives it.
 <a id="DELEGATE-12"></a>
 ### DELEGATE-12: a delegate puts no question of its own to a person
 
-It is offered no way to ask one and no task list to write to. Its task came from a planner rather
-than from the person, so a question about it asks somebody to arbitrate something they never set
-up, and the list on the screen belongs to the turn they are actually watching.
+It is offered no way to ask one and no task list to write to, and a call to either anyway is
+answered the way any other unknown name is. Its task came from a planner rather than from the
+person, so a question about it asks somebody to arbitrate something they never set up, and the
+list on the screen belongs to the turn they are actually watching.
+
+Two refusals rather than one, because a model naming a tool it was never offered is ordinary, and
+a rule resting on the tool list alone rests on the model reading it.
 
 What it could not settle goes in the report, and the parent asks.
 
 `verified-by: bravebot_agent::tools::a_delegate_is_offered_no_task_list_and_no_way_to_ask`
 `verified-by: bravebot_agent::delegate::no_kind_is_told_it_may_ask_a_person_or_delegate`
+`verified-by: bravebot_agent::turn::a_delegate_naming_ask_user_or_todo_write_reaches_neither_the_person_nor_the_screen`
 
 <a id="DELEGATE-13"></a>
 ### DELEGATE-13: one trail records both runs

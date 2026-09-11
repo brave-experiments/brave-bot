@@ -689,7 +689,7 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
 /// offered to a run whose gates refuse it on every call is a tool the model has to be told to
 /// ignore.
 ///
-/// Four are left out by name, each for its own reason:
+/// Five are left out by name, each for its own reason:
 ///
 /// - `spawn_agent`, because a delegate cannot delegate. The bound on a tree of them is the
 ///   product of the bounds, which is a number nobody chose, and a person approving a write at
@@ -701,16 +701,20 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
 ///   they did not ask about.
 /// - `schedule_next`, because only a tick of a self-paced loop may say when the next is due, and
 ///   a delegate is not one.
+/// - `fetch_url`, because every kind holds the capability for reaching the network so the driver
+///   can make its model call, and that is the whole of what it buys. A delegate pointing a
+///   request at a host of its own would be egress nobody approved for this sub-task, and the
+///   person shown the host would be answering for a task they never set. The capability being
+///   held is what makes this one a name and not a capability check: no gate would refuse it.
 pub fn for_delegate(capabilities: &bravebot_core::capability::CapabilitySet) -> Vec<Tool> {
     use bravebot_core::capability::Capability;
 
     available(false)
         .into_iter()
         .filter(|tool| match tool.function.name.as_str() {
-            "spawn_agent" | "ask_user" | "todo_write" | "schedule_next" => false,
+            "spawn_agent" | "ask_user" | "todo_write" | "schedule_next" | "fetch_url" => false,
             "write_file" | "edit_file" => capabilities.contains(Capability::FileWrite),
             "run" | "read_output" | "job_output" => capabilities.contains(Capability::ShellExec),
-            "fetch_url" => capabilities.contains(Capability::WebFetch),
             // LSP-9: asking a server is its own grant, so a delegate holding file reads has not
             // thereby been given one. Named rather than left to the catch-all below, which would
             // hand it over with `FileRead`.
@@ -847,13 +851,14 @@ pub struct Tools<'a> {
     /// find only what the workspace holds, and a user whose conventions live in their home
     /// directory would have them apply to the turn and not to the work it handed on.
     pub home: Option<&'a std::path::Path>,
-    /// Whether this turn is itself a delegate's, and so may not spawn one.
+    /// Whether this turn is itself a delegate's, and so may not spawn one, ask a person, write
+    /// the task list on their screen, or reach a host.
     ///
     /// Read by dispatch as well as by the tool table, for the reason `self_paced` is: a delegate
-    /// is offered no way to delegate, and a call it makes anyway has to be answered the way any
-    /// other unknown name is rather than quietly starting a second level. Two refusals rather
-    /// than one, because the depth is what bounds the whole tree and a bound that rests on the
-    /// tool list alone rests on the model reading it.
+    /// is offered none of those four, and a call it makes anyway has to be answered the way any
+    /// other unknown name is rather than quietly working. Two refusals rather than one, because a
+    /// rule resting on the tool list alone rests on the model reading it, and a model naming a
+    /// tool it was never offered is ordinary.
     pub delegated: bool,
     /// The language servers this session has started, or `None` where the host offers none.
     ///
@@ -1451,16 +1456,24 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
         "lsp" => lsp(policy, tools, confirmer, &arguments),
         "write_file" => write_file(policy, tools, confirmer, &arguments),
         "edit_file" => edit_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
-        "todo_write" => todo_write(policy, reporter, tools.slots, &arguments),
+        // The list on the screen belongs to the turn the person is watching, so a delegate that
+        // names this is answered the way any other unknown name is rather than replacing what
+        // they were reading with the steps of a sub-task they did not ask about.
+        "todo_write" if !tools.delegated => todo_write(policy, reporter, tools.slots, &arguments),
         "spawn_processor" => spawn_processor(policy, tools, &arguments),
         // A delegate is never offered this, so a call to it from one is answered the way any
         // other unknown name is rather than quietly starting a second level.
         "spawn_agent" if !tools.delegated => spawn_agent(policy, tools, reporter, &arguments),
         "load_skill" => load_skill(policy, tools.skills, &arguments),
-        "ask_user" => ask_user(policy, confirmer, &arguments),
+        // A delegate's task came from a planner, so the question would ask the person to
+        // arbitrate something they never set up. Refused here as well as absent from the list.
+        "ask_user" if !tools.delegated => ask_user(policy, confirmer, &arguments),
         "run" => run(policy, tools, confirmer, &arguments),
         "read_output" => read_output(policy, tools, confirmer, &arguments),
-        "fetch_url" => fetch_url(policy, tools, confirmer, &arguments),
+        // A kind's network capability buys the driver's own model call and nothing a delegate can
+        // point somewhere, so this one is refused here too: the gate would pass it, since the
+        // capability really is held.
+        "fetch_url" if !tools.delegated => fetch_url(policy, tools, confirmer, &arguments),
         "job_output" => job_output(policy, tools, &arguments),
         "schedule_next" if tools.self_paced => schedule_next(policy, &arguments),
         other => problem(format!("error: no such tool '{other}'")),
@@ -4179,6 +4192,31 @@ mod tests {
             assert!(
                 !offered.iter().any(|t| t == "schedule_next"),
                 "a {name} was offered a way to pace a loop it is not a tick of"
+            );
+        }
+    }
+
+    /// A kind holds the network capability so the driver can make its model call, and that is
+    /// the whole of what it buys: a delegate pointing a request at a host of its own would be
+    /// egress nobody approved for this sub-task, and the person asked about the host would be
+    /// arbitrating a task they never set. The one tool whose capability is held and whose name is
+    /// still withheld, so it is worth a test of its own.
+    #[test]
+    fn no_kind_is_offered_a_tool_that_reaches_the_network() {
+        for name in bravebot_core::delegate::Kind::NAMES {
+            let kind = bravebot_core::delegate::Kind::from_name(name).expect("enumerated");
+            let capabilities = kind.capabilities();
+            assert!(
+                capabilities.contains(bravebot_core::capability::Capability::WebFetch),
+                "a {name} could not have made its own requests"
+            );
+            let offered: Vec<String> = for_delegate(&capabilities)
+                .iter()
+                .map(|t| t.function.name.clone())
+                .collect();
+            assert!(
+                !offered.iter().any(|t| t == "fetch_url"),
+                "a {name} was offered a way to reach a host of its own"
             );
         }
     }
