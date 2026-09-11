@@ -19,6 +19,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// What to open when nothing is configured, in the order they are tried.
 ///
@@ -143,12 +144,23 @@ fn scratch(kind: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
         .unwrap_or(0);
-    // The name carries the pid and a nanosecond stamp, and `write_scratch` below creates it
+    let nth = SCRATCH_NAMES.fetch_add(1, Ordering::Relaxed);
+    // The name carries the pid, a stamp and a count, and `write_scratch` below creates it
     // with `create_new` and mode 0600 -- the secure creation this rule asks for, and the
     // reason a name already taken is refused rather than reused.
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
-    std::env::temp_dir().join(format!("bravebot-{kind}-{}-{stamp}.md", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "bravebot-{kind}-{}-{stamp}-{nth}.md",
+        std::process::id()
+    ))
 }
+
+/// What tells two scratch names from one process apart.
+///
+/// The stamp is in nanoseconds and the clock behind it is not: it holds a value for thousands of
+/// reads, so two names taken in the same moment are routinely the same name. The pid separates
+/// processes and this separates the calls within one.
+static SCRATCH_NAMES: AtomicU64 = AtomicU64::new(0);
 
 /// Write the line where the editor will find it.
 ///
@@ -355,6 +367,44 @@ fn start(program: &Path, arguments: &[String], path: &Path) -> Result<(), Failur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name already taken is refused rather than reused, so two names that are the same name
+    /// cost whichever prompt asked second its editor.
+    ///
+    /// Taken at once, because that is the only way to reach it: the stamp is in nanoseconds and
+    /// the clock behind it is not, so two reads in the same moment return the same value, and
+    /// nothing else in the name varies within a process.
+    #[test]
+    fn scratch_names_taken_at_once_still_differ() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Barrier};
+
+        const AT_ONCE: usize = 8;
+        const ROUNDS: usize = 25;
+
+        let mut taken: HashSet<PathBuf> = HashSet::new();
+        for _ in 0..ROUNDS {
+            let gate = Arc::new(Barrier::new(AT_ONCE));
+            let together: Vec<_> = (0..AT_ONCE)
+                .map(|_| {
+                    let gate = Arc::clone(&gate);
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        scratch("prompt")
+                    })
+                })
+                .collect();
+
+            for opened in together {
+                let name = opened.join().expect("the thread finished");
+                assert!(
+                    taken.insert(name.clone()),
+                    "two scratch names taken at once were the same name: {}",
+                    name.display()
+                );
+            }
+        }
+    }
 
     /// The convention both variables are part of: `$EDITOR` is the one that must work anywhere,
     /// and `$VISUAL` is what to use when the terminal can do more than print a line at a time.
