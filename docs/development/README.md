@@ -23,5 +23,5 @@ make check     # fmt, clippy -D warnings, tests, and toolchain age: what CI enfo
 | [version-stamp.md](version-stamp.md) | which build produced a session, and reading a transcript against it |
 | [releasing.md](releasing.md) | cross-builds, naming a version, and the two manual publishes |
 
-[../best-practices/README.md](../best-practices/README.md) is what a pull request is reviewed
+[../best_practices.md](../best_practices.md) is what a pull request is reviewed
 against: the rules nothing mechanical can decide.
