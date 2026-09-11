@@ -64,6 +64,6 @@ alone. If they could not, it does not get built.
 before a commit and before a push, what one commit contains, the specs the code is developed
 against, the security scan, configuration, releasing, and how an issue is labelled.
 
-[docs/best-practices/](docs/best-practices/README.md) is what a pull request is reviewed against,
+[docs/best_practices.md](docs/best_practices.md) is what a pull request is reviewed against,
 and holds only rules a person has to read a diff to decide. A rule a tool enforces or could enforce
 is a check, not an entry there.
