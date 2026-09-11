@@ -131,6 +131,11 @@ impl<C: Confirmer> Confirmer for Confining<'_, C> {
     /// and that is the right thing to tell the planner: what it needs to know is that the write did
     /// not happen and retrying will not help. Plan mode also says so in the system prompt, which is
     /// where the reason belongs.
+    ///
+    /// Refusing here is not what enforces plan mode, and cannot be: this is reached only where
+    /// something wanted to prompt, and a write into a path the trust map covers or a rule allows
+    /// wants no prompt. The write tools refuse on the mode itself, before any of that. What this
+    /// arm holds is the mode's answer wherever a write prompt does get raised.
     fn confirm_write(&mut self, request: &WriteRequest) -> Decision {
         match self.mode {
             PermissionMode::AcceptEdits | PermissionMode::Bypass => Decision::Approve,

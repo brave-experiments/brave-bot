@@ -20,7 +20,9 @@ A one-shot run has nobody to ask, and most of what makes it different follows fr
 ### CLI-1: where nobody can be asked, nothing is approved
 
 Effects are refused rather than applied unseen, and the planner's own questions are declined
-rather than answered on the user's behalf.
+rather than answered on the user's behalf. A rule written in advance that refuses, or that forces
+an ask, holds here as it does in a session; one that allows does not, since what it answers is a
+prompt and there is nobody to prompt.
 
 `--dangerously-skip-permissions` is the one way a run nobody is watching may write, and it is the
 person's own instruction rather than a default: what it selects, and what it costs, is
@@ -32,9 +34,16 @@ planner is told a reply came from a person, so inventing one would be worse than
 somebody typed is not a guess, which is what makes it the only thing that may lift the first half of
 this and nothing that may lift the second.
 
+An allow rule is not a guess either, and that is not what disqualifies it. It says which prompts to
+stop raising, which is a decision about a session somebody is sitting in front of; read here it
+would say which effects may happen unwatched, and one line in a file in the home directory would
+do what the flag is named and warned about for.
+
 `verified-by: bravebot_agent::turn::an_unattended_run_declines_every_question_in_the_series`
 `verified-by: bravebot_agent::turn::a_refused_write_does_not_happen`
 `verified-by: bravebot_cli::main::permissions_are_enforced_unless_the_flag_is_given`
+`verified-by: bravebot_cli::main::an_allow_rule_decides_nothing_for_a_run_nobody_is_watching`
+`verified-by: bravebot_cli::main::the_flag_is_what_lets_an_allow_rule_decide_again`
 
 <a id="CLI-2"></a>
 ### CLI-2: stdin is read only when it is not a terminal

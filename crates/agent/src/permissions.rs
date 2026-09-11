@@ -26,13 +26,42 @@ pub fn from_settings(
     home: Option<&std::path::Path>,
 ) -> (Permissions, Vec<Rejected>) {
     let lists = settings.permissions();
+    Permissions::parse(&lists.deny, &lists.ask, &lists.allow, &anchors(home))
+}
+
+/// The same rules for a run with nobody at it, which is every list but the one that allows.
+///
+/// An allow rule answers a prompt in advance. Where nobody can be asked there is no prompt for it
+/// to answer, so honouring one would not be saving somebody a keystroke: it would be letting a
+/// line in a settings file write, run a program or fetch a URL in a run nobody is watching, beside
+/// the command-line flag that is meant to be the only way that happens.
+///
+/// The other two carry over, because both still say something such a run can act on. A deny rule
+/// refuses before there is anything to prompt about, and an ask rule turns a write that would have
+/// gone through silently into one there is nobody to approve.
+pub fn for_an_unattended_run(
+    settings: &Settings,
+    home: Option<&std::path::Path>,
+) -> (Permissions, Vec<Rejected>) {
+    let lists = settings.permissions();
+    let anchors = anchors(home);
+    let (permissions, mut rejected) = Permissions::parse(&lists.deny, &lists.ask, &[], &anchors);
+    // Read for its rejects and then dropped, rather than not read at all. A line the person
+    // believes is in force and that nothing can act on is worth saying out loud wherever it was
+    // written, and an allow rule that is silently unreadable here reads to them as one that holds.
+    let (_, unreadable) = Permissions::parse(&[], &[], &lists.allow, &anchors);
+    rejected.extend(unreadable);
+    (permissions, rejected)
+}
+
+/// What a leading `~` and a leading `/` in a rule are resolved against.
+fn anchors(home: Option<&std::path::Path>) -> Anchors {
     let home = home.map(|home| home.display().to_string());
-    let anchors = Anchors {
+    Anchors {
         // The settings file lives in the global state directory, so a `/` rule is anchored there.
         settings_dir: home.as_ref().map(|home| format!("{home}/.bravebot")),
         home,
-    };
-    Permissions::parse(&lists.deny, &lists.ask, &lists.allow, &anchors)
+    }
 }
 
 /// The directories a settings file said to open, in the order it named them.
@@ -97,6 +126,49 @@ mod tests {
         assert_eq!(permissions.len(), 1);
         assert_eq!(rejected.len(), 1);
         assert!(rejected[0].to_string().contains("Nonsense"));
+    }
+
+    /// A run with nobody at it keeps the two lists it can act on and loses the one that answers a
+    /// prompt, because there is no prompt for that one to answer.
+    #[test]
+    fn a_run_nobody_is_watching_keeps_every_rule_but_the_ones_that_allow() {
+        let settings = Settings::parse(
+            r#"{
+              "permissions": {
+                "allow": ["Bash(git diff *)"],
+                "ask": ["Bash(git push *)"],
+                "deny": ["Read(./.env)"]
+              }
+            }"#,
+        );
+        let (permissions, rejected) =
+            for_an_unattended_run(&settings, Some(&PathBuf::from("/home/x")));
+        assert!(rejected.is_empty());
+        assert_eq!(
+            permissions.for_command("git diff --stat"),
+            Decision::Unmatched
+        );
+        assert_eq!(
+            permissions.for_command("git push origin main"),
+            Decision::Ruled(Ruling::Ask)
+        );
+        assert_eq!(
+            permissions.for_path(Subject::Read, ".env"),
+            Decision::Ruled(Ruling::Deny)
+        );
+    }
+
+    /// An allow rule that cannot be read is still named, though nothing would have acted on it
+    /// here. A rule reported nowhere reads to the person who wrote it as one that is in force, and
+    /// the same file is read by a session where it decides something.
+    #[test]
+    fn an_unreadable_allow_rule_is_reported_to_a_run_nobody_is_watching() {
+        let settings = Settings::parse(r#"{"permissions": {"allow": ["Bash(git diff *"]}}"#);
+        let (permissions, rejected) =
+            for_an_unattended_run(&settings, Some(&PathBuf::from("/home/x")));
+        assert!(permissions.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].to_string().contains("git diff"));
     }
 
     /// A single leading slash is anchored at the settings file's own directory, which is the

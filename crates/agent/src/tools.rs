@@ -880,6 +880,14 @@ pub struct Tools<'a> {
     /// Held by the turn so they end with it: a background job outliving the turn that started one
     /// would be an effect nobody is watching and nobody can stop.
     pub jobs: &'a mut Jobs,
+    /// The standing answer this turn runs under, for the one mode that refuses rather than answers.
+    ///
+    /// Read by dispatch, for the reason `self_paced` and `delegated` are: a mode that refuses
+    /// writes has to refuse them here, because the confirmer that carries the same mode is
+    /// consulted only where something wanted to prompt. A path the trust map already covers, and a
+    /// path a rule in the settings file allows, raise no prompt at all, so a refusal that waited
+    /// for one would let exactly those writes through.
+    pub permission_mode: crate::PermissionMode,
 }
 
 /// The background pipelines a turn has started.
@@ -1452,6 +1460,13 @@ pub fn dispatch<S: Sink, C: Confirmer, R: Reporter>(
     reporter.tool_started(Activity::running(verb, target.clone()));
 
     let produced = match name.as_str() {
+        // A mode that refuses writes refuses them whether or not anybody would have been asked,
+        // which is what makes it a statement about the turn rather than an answer given on the
+        // person's behalf. Checked before the tool runs, so nothing is read and no path resolved.
+        writing if tools.permission_mode.refuses_writes() && writes_a_file(writing) => problem(
+            "refused: this turn is in plan mode, so writing is refused however the user would \
+             have answered. Do not retry; say what you would change and why.",
+        ),
         "read_file" => read_file(policy, tools.workspace, tools.slots, confirmer, &arguments),
         "list_files" => list_files(policy, tools.workspace, &arguments),
         "search" => search(policy, tools.workspace, &arguments),
