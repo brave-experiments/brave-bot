@@ -446,8 +446,8 @@ fn scroller_key(session: &mut Session, key: KeyEvent) -> Action {
         return Action::Redraw;
     }
 
-    // A search being typed takes the letters back, because typing is what they mean. Only the
-    // three keys that finish one are read as anything else.
+    // A search being typed takes the letters back, because typing is what they mean. What else
+    // means anything here either finishes the search or leaves the mode.
     if session.typing_a_search() {
         return match key.code {
             KeyCode::Enter => {
@@ -465,6 +465,18 @@ fn scroller_key(session: &mut Session, key: KeyEvent) -> Action {
                 if !session.backspace_search() {
                     session.abandon_search();
                 }
+                Action::Redraw
+            }
+            // The two chords that close the mode close it from in here too, and a needle half
+            // typed into a mode that is going away goes with it. Neither is a character, so
+            // neither is read as typing, and leaving both to do nothing left a mode whose only
+            // way out was Escape.
+            // The two chords that close the mode close it from in here too, and a needle half
+            // typed into a mode that is going away goes with it. Neither is a character, so
+            // neither is read as typing, and leaving both to do nothing left a mode whose only
+            // way out was Escape.
+            KeyCode::Char('o') | KeyCode::Char('c') if ctrl => {
+                session.close_scroller();
                 Action::Redraw
             }
             KeyCode::Char(c) if !ctrl => {
@@ -5308,6 +5320,29 @@ mod tests {
                 "abandoning the search closed the scroller"
             );
             assert_eq!(session.scroll, looking_at);
+        }
+
+        /// A mode with no way out is what this interface is most careful about, and the loops
+        /// hand these two presses to the scroller before anything else sees them: one that
+        /// swallowed them would leave a person pressing Ctrl-C at a turn it never reaches, with
+        /// nothing on the screen changing to say why.
+        #[test]
+        fn the_chords_that_close_the_scroller_close_it_while_a_search_is_typed() {
+            for closing in [ctrl('o'), ctrl('c')] {
+                let mut session = opened();
+                handle_key(&mut session, key(KeyCode::Char('/')));
+                for c in "ne".chars() {
+                    handle_key(&mut session, key(KeyCode::Char(c)));
+                }
+                assert!(session.typing_a_search(), "the search was not being typed");
+
+                assert_eq!(
+                    handle_key(&mut session, closing),
+                    Action::Redraw,
+                    "{closing:?} did nothing at all"
+                );
+                assert!(!session.scrolling(), "{closing:?} did not close it");
+            }
         }
 
         /// The nearest thing there is to stop, which is the ladder every other stop key here

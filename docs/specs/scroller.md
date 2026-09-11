@@ -55,6 +55,7 @@ one.
 `verified-by: bravebot_tui::app::ctrl_c_closes_the_scroller_before_it_reaches_anything_else`
 `verified-by: bravebot_tui::app::the_scroller_answers_the_stop_keys_before_the_turn_does`
 `verified-by: bravebot_tui::app::a_turn_goes_on_running_while_the_scroller_is_open`
+`verified-by: bravebot_tui::app::the_chords_that_close_the_scroller_close_it_while_a_search_is_typed`
 
 
 <a id="SCROLL-2"></a>
