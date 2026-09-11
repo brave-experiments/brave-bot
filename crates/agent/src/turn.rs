@@ -2235,7 +2235,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         Some(deferral) => policy
                             .defer(
                                 "read_file",
-                                slot,
+                                slot.clone(),
                                 &deferral.origin,
                                 &deferral.path,
                                 deferral.bytes,
@@ -2247,7 +2247,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         // reaching the planner is the thing being kept out.
                         None if output.picture.is_some() => policy.present_a_picture(
                             "tool_result",
-                            slot,
+                            slot.clone(),
                             &origin,
                             &output.text,
                             conversation.quarantine(),
@@ -2257,13 +2257,43 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         ),
                         None => policy.present(
                             "tool_result",
-                            slot,
+                            slot.clone(),
                             &origin,
                             &output.text,
                             conversation.quarantine(),
                         ),
                     }
                     .map_err(|d| TurnError::Precommit(d.to_string()))?;
+
+                    // A cap bounds what the conversation holds, not what the command printed, so
+                    // the whole of it goes into the slot this result reserved and a visible one
+                    // leaves unused. Without this the one case where the cap bites is the one case
+                    // with no way back to the middle short of running the command again.
+                    let whole = match (&presented, &output.whole) {
+                        (Presentation::Visible(_), Some(whole)) => {
+                            let reference = policy
+                                .keep_whole(
+                                    "tool_result",
+                                    slot,
+                                    &origin,
+                                    whole,
+                                    conversation.quarantine(),
+                                )
+                                .map_err(|d| TurnError::Precommit(d.to_string()))?;
+                            // Only a slot a program printed may be offered to the user for
+                            // reading, so the provenance is recorded here, where the slot is
+                            // minted, together with the command as the person approved it.
+                            if let Some(command) = &output.printed_by {
+                                policy.came_from_command(
+                                    &reference.slot,
+                                    &command.line,
+                                    conversation.quarantine(),
+                                );
+                            }
+                            Some(reference)
+                        }
+                        _ => None,
+                    };
 
                     // Only where the result is workspace content. A read of a file the planner
                     // already holds a reference to answers with a sentence the driver wrote, and
@@ -2312,7 +2342,21 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
 
                     match &presented {
                         Presentation::Visible(text) => {
-                            format!("{TOOL_RESULT_PREFIX}{}:\n\n{ended}{text}", output.tool)
+                            // After the sample rather than in the middle of it, where the
+                            // notice naming what went is: what wrote that notice dropped the
+                            // bytes and does not know the slot they were kept in.
+                            let rest = match &whole {
+                                Some(reference) => format!(
+                                    "\n\nThe whole of this output, middle included, is a \
+                                     reference:\n{}",
+                                    reference.describe()
+                                ),
+                                None => String::new(),
+                            };
+                            format!(
+                                "{TOOL_RESULT_PREFIX}{}:\n\n{ended}{text}{rest}",
+                                output.tool
+                            )
                         }
                         Presentation::Quarantined(reference) => {
                             // A processor that answered "leave it alone" produced the document it

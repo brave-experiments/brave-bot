@@ -422,7 +422,11 @@ to a file without running the command again.
 The cap is a context-budget decision and belongs beside the other ones: a single tool result must
 never be able to spend a large fraction of the conversation.
 
-`verified-by: none`
+`verified-by: bravebot_agent::tools::a_capped_output_keeps_its_head_and_its_tail`
+`verified-by: bravebot_agent::tools::an_output_inside_the_cap_is_left_alone`
+`verified-by: bravebot_core::policy::content_the_planner_saw_a_sample_of_is_kept_whole`
+`verified-by: bravebot_agent::turn::the_middle_of_a_capped_output_stays_reachable`
+`verified-by: bravebot_agent::turn::the_middle_of_a_capped_job_output_stays_reachable`
 
 <a id="CMDLINE-12"></a>
 ### CMDLINE-12: the working directory persists across calls, and shell state does not

@@ -7803,6 +7803,7 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
 /// A confirmer that records what it was asked about a run and answers as it was told.
 struct AskedAboutRuns {
     answer: bravebot_agent::RunDecision,
+    writes: bravebot_agent::Decision,
     seen: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::RunRequest>>>,
 }
 
@@ -7810,8 +7811,16 @@ impl AskedAboutRuns {
     fn answering(answer: bravebot_agent::RunDecision) -> Self {
         Self {
             answer,
+            writes: bravebot_agent::Decision::Reject,
             seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
+    }
+
+    /// Also approves writes, for a test that follows a reference out of a result into a file.
+    /// Separate from approving the run, so no test picks up a write approval it never asked for.
+    fn approving_writes(mut self) -> Self {
+        self.writes = bravebot_agent::Decision::Approve;
+        self
     }
 }
 
@@ -7829,7 +7838,7 @@ impl bravebot_agent::Confirmer for AskedAboutRuns {
         &mut self,
         _request: &bravebot_agent::WriteRequest,
     ) -> bravebot_agent::Decision {
-        bravebot_agent::Decision::Reject
+        self.writes
     }
 
     fn confirm_run(&mut self, request: &bravebot_agent::RunRequest) -> bravebot_agent::RunDecision {
@@ -11398,6 +11407,80 @@ fn what_a_command_printed_reaches_the_person_watching() {
     );
 }
 
+/// The cap is on what enters the conversation, not on what the command printed. A build log's
+/// middle is where its first error is, and a planner whose only way back to it is running the
+/// build again has been handed a bill rather than a result.
+#[test]
+fn the_middle_of_a_capped_output_stays_reachable() {
+    let scratch = Scratch::new("run-capped");
+    // Comfortably past the cap, with a line in the middle that nothing else prints: what the
+    // planner reads is a sample, and this is the part of it a sample cannot hold.
+    let mut log = String::new();
+    for line in 0..2000 {
+        if line == 1000 {
+            log.push_str("MIDDLE-MARKER-XYZZY\n");
+        }
+        log.push_str(&format!("line {line} of a long build log\n"));
+    }
+    std::fs::write(scratch.path.join("build.log"), &log).unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cat build.log"}"#),
+        // Following the reference into a file, which is one of the two things a planner holding
+        // one can do with it. The second reference of the turn: the planner's own reply took the
+        // first.
+        tool_request(
+            "write_file",
+            r#"{"path":"recovered.log","contents_ref":"ref:1"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Vouching is what makes output readable at all, and a readable result is the only one the
+    // cap ever bites on.
+    let mut confirmer =
+        AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always()).approving_writes();
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("build it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let bodies: Vec<String> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+    let read = bodies
+        .iter()
+        .find(|body| body.contains("line 0 of a long build log"))
+        .expect("what the command printed never reached the planner");
+    assert!(
+        !read.contains("MIDDLE-MARKER-XYZZY"),
+        "the whole output entered the conversation, so the cap did nothing"
+    );
+    assert!(
+        read.contains("[ref:1]"),
+        "the planner was given no reference to the rest of it"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("recovered.log"))
+            .expect("the reference resolved to nothing"),
+        log,
+        "the middle of the output existed nowhere but the sample"
+    );
+}
+
 /// A page server, for the fetch tests. Answers every connection with the same reply and reports
 /// the request lines it was sent, so a test can tell what actually went out.
 fn serve_pages(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
@@ -11926,6 +12009,86 @@ fn what_a_background_job_printed_is_quarantined_like_any_other_output() {
             .iter()
             .all(|body| !body.contains("SENTINEL-BACKGROUND")),
         "what a background job printed reached the planner unvouched for"
+    );
+}
+
+/// Backgrounding changes when the planner reads a result, not what a cap does to one. A job that
+/// printed a long log has a middle too, and reaching it by starting the job again is what the
+/// reference exists to make unnecessary.
+#[test]
+fn the_middle_of_a_capped_job_output_stays_reachable() {
+    let scratch = Scratch::new("background-capped");
+
+    let mut log = String::new();
+    for line in 0..2000 {
+        if line == 1000 {
+            log.push_str("MIDDLE-MARKER-XYZZY\n");
+        }
+        log.push_str(&format!("line {line} of a long build log\n"));
+    }
+    std::fs::write(scratch.path.join("big.log"), &log).unwrap();
+
+    // Printed and then over, so what the job has printed is all of what it will print: a job
+    // still running would make the size of the result a race against the clock.
+    let script = scratch.path.join("noisy");
+    std::fs::write(&script, "#!/bin/sh\ncat big.log\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"./noisy","background":true}"#),
+        tool_request("run", r#"{"command":"sleep 1"}"#),
+        tool_request("job_output", r#"{"job":"job:1"}"#),
+        // Every result of the turn takes a number, the planner's own replies included, and this
+        // is the one the job's output reached.
+        tool_request(
+            "write_file",
+            r#"{"path":"recovered.log","contents_ref":"ref:5"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // Vouching is what makes the output readable, and a readable result is the only one the cap
+    // ever bites on.
+    let mut confirmer =
+        AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always()).approving_writes();
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("start it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn runs");
+
+    let bodies: Vec<String> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+    let read = bodies
+        .iter()
+        .find(|body| body.contains("line 0 of a long build log"))
+        .expect("what the job printed never reached the planner");
+    assert!(
+        !read.contains("MIDDLE-MARKER-XYZZY"),
+        "the whole of it entered the conversation, so the cap did nothing"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("recovered.log"))
+            .expect("the reference resolved to nothing"),
+        log,
+        "the middle of what the job printed existed nowhere but the sample"
     );
 }
 
