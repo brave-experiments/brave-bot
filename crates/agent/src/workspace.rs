@@ -18,6 +18,7 @@ use bravebot_core::event::{Role, Sink};
 use bravebot_core::label::Label;
 use bravebot_core::policy::{Denial, Policy};
 use bravebot_core::value::Labelled;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -209,6 +210,64 @@ fn overlaps(one: &Path, other: &Path) -> bool {
     one.starts_with(other) || other.starts_with(one)
 }
 
+/// The most symlinks one path may be followed through by name before it is treated as a cycle.
+///
+/// A link the operating system can resolve is resolved by it, under a limit of its own. Only the
+/// ones it will not resolve are followed here, and two of those in a row is already pathological.
+const MAX_LINKS_FOLLOWED: usize = 8;
+
+/// Where an operation on `path` would land, with every symlink on the way already followed.
+///
+/// A path that does not exist cannot be canonicalised, so the deepest ancestor that can is, and
+/// the components that do not exist yet are appended to it. Those components are created by the
+/// operation itself, so nothing can redirect them; the ones that already exist are resolved
+/// before the comparison rather than after, which is what catches a directory symlink leaving
+/// the tree. A link the operating system will not resolve is followed by name instead, since a
+/// write follows a dangling one too and creates its target.
+///
+/// `None` where no destination can be named: a cycle, or an entry that is there and will not
+/// resolve, including one whose directory cannot be searched. A caller confining an operation
+/// refuses that, because it cannot say where the operation would go.
+///
+/// Says where an operation goes now, not where it goes when it happens; the window between the
+/// two is a known cost against the clause this serves.
+fn destination(path: &Path) -> Option<PathBuf> {
+    let mut missing: Vec<OsString> = Vec::new();
+    let mut existing = path.to_path_buf();
+    let mut followed = 0usize;
+
+    loop {
+        // Asked about the entry rather than what it points at, so that a link with nothing at
+        // the other end is not taken for a name nothing occupies.
+        match existing.symlink_metadata() {
+            Ok(entry) => {
+                if let Ok(canonical) = existing.canonicalize() {
+                    let mut resolved = canonical;
+                    resolved.extend(missing.iter().rev());
+                    return Some(resolved);
+                }
+                if !entry.is_symlink() || followed >= MAX_LINKS_FOLLOWED {
+                    return None;
+                }
+                followed += 1;
+                let target = existing.read_link().ok()?;
+                existing = if target.is_absolute() {
+                    target
+                } else {
+                    existing.parent()?.join(target)
+                };
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(existing.file_name()?.to_os_string());
+                existing = existing.parent()?.to_path_buf();
+            }
+            // A component whose directory cannot be searched is not a free name either, and
+            // treating it as one would name a destination for a link this cannot see.
+            Err(_) => return None,
+        }
+    }
+}
+
 impl Workspace {
     /// Create a workspace at `root`, which must exist.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, WorkspaceError> {
@@ -245,28 +304,15 @@ impl Workspace {
     /// the plan names the file and the run opens it directly, so the confinement every other write
     /// goes through has to be applied to the path rather than to a call through here.
     ///
-    /// The file need not exist yet, so the nearest ancestor that does is what is canonicalised.
-    /// That is also what catches a symlink pointing out of the tree, since the link is resolved
-    /// before the comparison rather than after.
+    /// The file need not exist yet, so the destination is what is tested rather than the name:
+    /// the same test every write through this workspace gets, so the two cannot come apart.
     pub fn confines(&self, path: &Path) -> Result<(), WorkspaceError> {
         let escapes = || WorkspaceError::Escapes {
             path: path.display().to_string(),
         };
-        let mut existing = path;
-        let mut trailing = PathBuf::new();
-        while !existing.exists() {
-            let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
-                return Err(escapes());
-            };
-            trailing = Path::new(name).join(&trailing);
-            existing = parent;
-        }
-        let canonical = existing
-            .canonicalize()
-            .map_err(|_| escapes())?
-            .join(trailing);
-        if canonical.starts_with(&self.root)
-            || self.added.iter().any(|dir| canonical.starts_with(dir))
+        let resolved = destination(path).ok_or_else(escapes)?;
+        if resolved.starts_with(&self.root)
+            || self.added.iter().any(|dir| resolved.starts_with(dir))
         {
             return Ok(());
         }
@@ -394,9 +440,15 @@ impl Workspace {
     /// directory the user added by name, and is refused otherwise: an absolute path was refused
     /// outright before `/add-dir` existed, and naming a directory is what makes one reachable.
     ///
-    /// Rejects any `..` component. `..` is rejected before touching the filesystem rather than by
-    /// canonicalising afterwards, because the target of a write may not exist yet, and a check
-    /// that only works for existing files would leave writes unprotected.
+    /// Rejects any `..` component rather than resolving one. Resolving would admit it: a path
+    /// that climbs out of the root and back in by its own name lands inside, and would pass a
+    /// test on where it lands.
+    ///
+    /// Containment is then decided against where the path lands and not against how it is spelled,
+    /// so it holds for a path that does not exist yet: a write creates what it names, and a
+    /// directory symlink on the way out of the tree would otherwise carry the bytes outside a
+    /// lexical test that saw nothing wrong. What comes back is that destination, so a caller that
+    /// needs the file rather than the name has it.
     fn resolve(&self, relative: &str) -> Result<PathBuf, WorkspaceError> {
         let candidate = Path::new(relative);
 
@@ -421,28 +473,16 @@ impl Workspace {
             }
         }
 
-        let joined = self.root.join(candidate);
-
-        // For paths that already exist, confirm the resolved location is still inside
-        // the root. This is what catches a symlink pointing out of the workspace.
-        if let Ok(canonical) = joined.canonicalize() {
-            if !canonical.starts_with(&self.root) {
-                return Err(WorkspaceError::Escapes {
-                    path: relative.to_string(),
-                });
-            }
-            return Ok(canonical);
+        let escapes = || WorkspaceError::Escapes {
+            path: relative.to_string(),
+        };
+        let resolved = destination(&self.root.join(candidate)).ok_or_else(escapes)?;
+        if !resolved.starts_with(&self.root) {
+            return Err(escapes());
         }
-
-        Ok(joined)
+        Ok(resolved)
     }
 
-    /// Resolve an absolute path, which is legal only inside a directory the user added.
-    ///
-    /// The containment test is against the canonical path where one exists, so a symlink inside an
-    /// added directory pointing elsewhere is refused exactly as one in the primary root is. Where
-    /// the file does not exist yet, the lexical path is tested instead, which is what lets a write
-    /// create a file; `..` is rejected first, so there is nothing lexical containment can miss.
     /// Where an attachment's bytes are, which may be anywhere the user pointed at.
     ///
     /// Relative paths resolve against the root like everything else. An absolute one is taken as
@@ -472,6 +512,11 @@ impl Workspace {
         Ok(resolved)
     }
 
+    /// Resolve an absolute path, which is legal only inside a directory the user added.
+    ///
+    /// The containment test is against where the path lands, so a symlink inside an added
+    /// directory pointing elsewhere is refused exactly as one in the primary root is, whether or
+    /// not the file it names exists yet.
     fn resolve_added(&self, candidate: &Path, named: &str) -> Result<PathBuf, WorkspaceError> {
         if candidate
             .components()
@@ -482,23 +527,14 @@ impl Workspace {
             });
         }
 
-        let inside = |path: &Path| self.added.iter().any(|dir| path.starts_with(dir));
-
-        if let Ok(canonical) = candidate.canonicalize() {
-            if !inside(&canonical) {
-                return Err(WorkspaceError::Escapes {
-                    path: named.to_string(),
-                });
-            }
-            return Ok(canonical);
+        let escapes = || WorkspaceError::Escapes {
+            path: named.to_string(),
+        };
+        let resolved = destination(candidate).ok_or_else(escapes)?;
+        if !self.added.iter().any(|dir| resolved.starts_with(dir)) {
+            return Err(escapes());
         }
-
-        if !inside(candidate) {
-            return Err(WorkspaceError::Escapes {
-                path: named.to_string(),
-            });
-        }
-        Ok(candidate.to_path_buf())
+        Ok(resolved)
     }
 
     /// Read a file in full. The path is checked as routing, so it must be `(T,pub)`.

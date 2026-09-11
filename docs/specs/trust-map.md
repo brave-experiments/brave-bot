@@ -254,9 +254,24 @@ resolved, in an added directory exactly as in the project, and a symlink leaving
 A relative path always means the project, so no file has two spellings. Naming a directory
 includes nothing, since a directory is somewhere to type through rather than a file to read.
 
+Confinement is decided by where an operation lands and not by how its path is spelled, so it holds
+for a file that does not exist yet: a write creates what it names, and a symlink out of the tree is
+refused whether or not there is anything at the other end of it.
+
+**Why.** A directory symlink is an ordinary entry in a repository, so confinement that tested only
+existing paths would let a checkout choose where a write lands. A person approved a path and the
+prompt showed that path, so the bytes go there.
+
 `verified-by: bravebot_agent::workspace::an_absolute_path_outside_every_added_directory_is_still_refused`
 `verified-by: bravebot_agent::workspace::a_parent_component_cannot_climb_out_of_an_added_directory`
 `verified-by: bravebot_agent::workspace::a_symlink_out_of_an_added_directory_is_refused`
+`verified-by: bravebot_agent::workspace::creating_a_file_through_a_symlinked_directory_out_of_the_workspace_is_refused`
+`verified-by: bravebot_agent::workspace::creating_a_file_through_a_symlinked_directory_in_an_added_directory_is_refused`
+`verified-by: bravebot_agent::workspace::writing_to_a_dangling_symlink_out_of_the_workspace_is_refused`
+`verified-by: bravebot_agent::workspace::overwriting_a_file_through_a_symlink_out_of_the_workspace_is_refused`
+`verified-by: bravebot_agent::workspace::creating_a_file_through_a_symlink_inside_the_workspace_returns_where_it_landed`
+`verified-by: bravebot_agent::workspace::writing_to_a_dangling_symlink_inside_the_workspace_lands_at_its_target`
+`verified-by: bravebot_agent::workspace::a_destination_reached_through_a_dangling_symlink_out_of_the_workspace_is_refused`
 
 <a id="TRUST-11"></a>
 ### TRUST-11: the map does not govern `~/.bravebot`
@@ -341,3 +356,15 @@ Accepted deliberately. Do not "fix" one without changing this spec first.
   The practical consequence is worth saying plainly: trusting a directory trusts what lands in it,
   so a tree that a build or a dependency manager writes into is a tree you are vouching for
   ahead of time.
+- **Confinement is decided before an operation runs, not while it runs.** Where a path lands is
+  worked out by resolving it, and the operation happens after that, so a component that is a
+  directory when it is resolved and a symlink when the file is opened carries the bytes with it.
+  Closing that needs every component opened in turn with link-following refused, which is a
+  different walk from the one that answers where a path goes. A tree already arranged to escape is
+  refused; one rearranged inside that window is not.
+- **A rule is keyed on the name, so one file inside the workspace can have two.** Confinement
+  resolves a path to where it lands, but the record is written and read under the name the
+  operation used. A symlink inside the workspace therefore gives one file two spellings and two
+  rules: content written as untrusted through one is read back as trusted under the other, which
+  is the round trip TRUST-4 exists to close. Keying the record on the destination instead is what
+  closes it, and that is a change to every rule the map holds rather than to confinement.
