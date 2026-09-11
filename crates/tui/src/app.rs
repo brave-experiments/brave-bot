@@ -446,8 +446,8 @@ fn scroller_key(session: &mut Session, key: KeyEvent) -> Action {
         return Action::Redraw;
     }
 
-    // A search being typed takes the letters back, because typing is what they mean. Only the
-    // three keys that finish one are read as anything else.
+    // A search being typed takes the letters back, because typing is what they mean. What else
+    // means anything here either finishes the search or leaves the mode.
     if session.typing_a_search() {
         return match key.code {
             KeyCode::Enter => {
@@ -465,6 +465,18 @@ fn scroller_key(session: &mut Session, key: KeyEvent) -> Action {
                 if !session.backspace_search() {
                     session.abandon_search();
                 }
+                Action::Redraw
+            }
+            // The two chords that close the mode close it from in here too, and a needle half
+            // typed into a mode that is going away goes with it. Neither is a character, so
+            // neither is read as typing, and leaving both to do nothing left a mode whose only
+            // way out was Escape.
+            // The two chords that close the mode close it from in here too, and a needle half
+            // typed into a mode that is going away goes with it. Neither is a character, so
+            // neither is read as typing, and leaving both to do nothing left a mode whose only
+            // way out was Escape.
+            KeyCode::Char('o') | KeyCode::Char('c') if ctrl => {
+                session.close_scroller();
                 Action::Redraw
             }
             KeyCode::Char(c) if !ctrl => {
@@ -1223,6 +1235,13 @@ fn navigate(session: &mut Session, key: KeyEvent) -> Action {
 ///
 /// Nothing comes back, since both loops redraw every frame regardless of what the event was.
 pub fn handle_paste_while_working(session: &mut Session, text: &str) {
+    // The line is the scroller's to leave alone, and a paste is not a key: it arrives from the
+    // terminal whatever mode is open, so the guard that holds the box still for a keystroke never
+    // sees it. Nothing is said about it, because the scroller has the whole screen but its footer
+    // and a sentence drawn nowhere is no answer.
+    if session.scrolling() {
+        return;
+    }
     if !session.drop_files(text) {
         session.paste_text(text);
     }
@@ -1336,6 +1355,13 @@ pub fn handle_key_while_working(session: &mut Session, key: KeyEvent) -> Action 
 /// Said once per session and then not again, because a user who has been told which key carries a
 /// picture does not need telling every time they use the other one.
 pub fn handle_paste(session: &mut Session, text: &str) -> Action {
+    // The line is the scroller's to leave alone, and a paste is not a key: it arrives from the
+    // terminal whatever mode is open, so the guard that holds the box still for a keystroke never
+    // sees it. Before the empty case as much as the rest, because that one spends a hint said
+    // once a session on a sentence the scroller leaves no room to draw.
+    if session.scrolling() {
+        return Action::None;
+    }
     // A picture copied to the clipboard reaches a terminal as a paste of nothing at all, since
     // the terminal hands over text and there is none. Said before anything else looks at the
     // text, because an empty paste is no more a drop than it is a prompt.
@@ -5170,6 +5196,46 @@ mod tests {
             assert_eq!(session.input(), "half a though!t");
         }
 
+        /// A paste and a drop reach this process as events of their own rather than as keys, so
+        /// the guard that holds the box still for a keystroke does not see them. What the person
+        /// comes back to has to be the line they left: a fragment spliced in at a caret they
+        /// cannot see is a different prompt by the time the mode closes, and an attachment staged
+        /// from in here is one nobody asked for.
+        #[test]
+        fn a_paste_and_a_drop_do_not_reach_the_line_while_the_scroller_is_open() {
+            let directory = crate::testutil::scratch_dir("bravebot-app-drop-while-scrolling");
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).expect("scratch");
+            let file = directory.join("shot.png");
+            std::fs::write(&file, [0x89u8, 0x50]).expect("write");
+
+            let mut session = reading().in_workspace(&directory);
+            for c in "half a thought".chars() {
+                handle_key(&mut session, key(KeyCode::Char(c)));
+            }
+            handle_key(&mut session, key(KeyCode::Left));
+            handle_key(&mut session, ctrl('o'));
+
+            assert_eq!(handle_paste(&mut session, "pasted"), Action::None);
+            // The clipboard holding a picture, which arrives as a paste of nothing at all.
+            assert_eq!(handle_paste(&mut session, ""), Action::None);
+            handle_paste_while_working(&mut session, &file.to_string_lossy());
+
+            handle_key(&mut session, key(KeyCode::Char('q')));
+            assert_eq!(session.input(), "half a thought");
+            assert!(
+                session.attached().is_empty(),
+                "a drop staged an attachment from inside the scroller"
+            );
+
+            // The caret is where it was left, which is the half of the line's state that is not
+            // in the text.
+            handle_key(&mut session, key(KeyCode::Char('!')));
+            assert_eq!(session.input(), "half a though!t");
+
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+
         #[test]
         fn enter_sends_nothing_from_inside_the_scroller() {
             let mut session = opened();
@@ -5345,6 +5411,29 @@ mod tests {
                 "abandoning the search closed the scroller"
             );
             assert_eq!(session.scroll, looking_at);
+        }
+
+        /// A mode with no way out is what this interface is most careful about, and the loops
+        /// hand these two presses to the scroller before anything else sees them: one that
+        /// swallowed them would leave a person pressing Ctrl-C at a turn it never reaches, with
+        /// nothing on the screen changing to say why.
+        #[test]
+        fn the_chords_that_close_the_scroller_close_it_while_a_search_is_typed() {
+            for closing in [ctrl('o'), ctrl('c')] {
+                let mut session = opened();
+                handle_key(&mut session, key(KeyCode::Char('/')));
+                for c in "ne".chars() {
+                    handle_key(&mut session, key(KeyCode::Char(c)));
+                }
+                assert!(session.typing_a_search(), "the search was not being typed");
+
+                assert_eq!(
+                    handle_key(&mut session, closing),
+                    Action::Redraw,
+                    "{closing:?} did nothing at all"
+                );
+                assert!(!session.scrolling(), "{closing:?} did not close it");
+            }
         }
 
         /// The nearest thing there is to stop, which is the ladder every other stop key here
