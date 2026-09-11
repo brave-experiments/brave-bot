@@ -5498,12 +5498,13 @@ fn the_terminal_names_the_file_and_says_who_read_it() {
     );
 }
 
-/// A processor told to leave a file alone says so in a word, and the file it was given is what
-/// lands. One that explained itself instead put the explanation in the file: "this is a simple
-/// HTTP server, it contains no game logic, returning the file contents unchanged", followed by
-/// the file in a code fence, all of it written to server.py.
+/// A processor with nothing to change says so and leaves the document line out, so nothing is
+/// minted for it, nothing is written, and the file it was given stays exactly as it was. One that
+/// explained itself after the line put the explanation in the file: "this is a simple HTTP server,
+/// it contains no game logic, returning the file contents unchanged", followed by the file in a
+/// code fence, all of it written to server.py.
 #[test]
-fn a_file_left_alone_is_written_back_exactly_as_it_was() {
+fn a_file_a_processor_left_alone_stays_exactly_as_it_was() {
     let scratch = Scratch::new("unchanged-answer");
     let original = "#!/usr/bin/env python3\nprint('serving')\n";
     std::fs::write(scratch.path.join("server.py"), original).unwrap();
@@ -5511,17 +5512,17 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
 
     let (endpoint, received) = serve_sequence(vec![
         tool_request("list_files", r#"{"directory":"."}"#),
-        // No unchanged_ref: with one file in front of it, a processor can say so anyway.
+        // No about_ref: with one file in front of it, the driver takes that one as the document
+        // the call is about, so an answer that marks none leaves it standing.
         tool_request(
             "spawn_processor",
             r#"{"reads":["ref:1"],"instruction":"fix the speed bug if this is the game, otherwise leave it"}"#,
         ),
-        // What a processor says when there is nothing to change.
-        reply_with("UNCHANGED"),
-        tool_request(
-            "write_file",
-            r#"{"path_ref":"ref:1","contents_ref":"ref:3"}"#,
+        // What a processor says when there is nothing to change: the account, and no line.
+        reply_with(
+            "This is a simple HTTP server, it contains no game logic, so I have left it as it is.",
         ),
+        // Nothing for the planner to write, and no reference it could write, so the turn ends.
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -5558,16 +5559,19 @@ fn a_file_left_alone_is_written_back_exactly_as_it_was() {
         confirmer.seen
     );
 
-    // Nor was a reference handed out for a copy of a file that is already in a slot: a slot is
-    // written once and read by whatever the planner points at it, and there is nothing here for
-    // it to point at.
-    let told = received
-        .try_iter()
-        .find(|body: &String| body.contains("needs no change"))
-        .expect("the planner was not told there is nothing to write");
+    // The planner is told which file stands, and told it without being handed a reference: a slot
+    // is written once and read by whatever the planner points at it, and a slot holding a copy of
+    // a file that is already in one has nothing for anyone to point at.
+    let bodies: Vec<String> = received.try_iter().collect();
     assert!(
-        !told.contains("[ref:3]"),
-        "a slot was minted for a document nobody needs: {told}"
+        bodies
+            .iter()
+            .any(|body| body.contains("nothing was written and ref:1 is as it was")),
+        "the planner was not told there is nothing to write"
+    );
+    assert!(
+        !bodies.iter().any(|body| body.contains("ref:3")),
+        "a slot was minted for a document nobody needs"
     );
 }
 

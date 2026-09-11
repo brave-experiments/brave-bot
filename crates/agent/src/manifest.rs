@@ -1276,35 +1276,22 @@ fn run_step<S: Sink, C: Confirmer>(
                 crate::processor::run(policy, chat, slots, &spec).map_err(|e| e.to_string())?;
             let waited = asked_at.elapsed();
 
-            // A processor that answered "leave it" still has to fill the slot the plan named:
-            // a later write or answer reads that slot, and skipping the mint would leave the
-            // rest of the plan with nowhere to go.
-            let (document, unchanged_from) = match (processed.document, processed.unchanged_from) {
-                (Some(document), from) => (document, from),
-                (None, Some(from)) => {
-                    let content = policy
-                        .resolve("process", &from, slots)
-                        .map_err(|d| d.to_string())?;
-                    (content, Some(from))
-                }
-                (None, None) => {
-                    return Err(
-                        "the processor produced no document, so there is nothing to store"
-                            .to_string(),
-                    );
-                }
+            // An answer that marked no document has nothing for the slot the plan named, and the
+            // input is not a substitute for it: a plan reads that slot to write somewhere else,
+            // so standing the input in would copy one file over whatever comes next. The step
+            // fails instead, which is the direction an unmarked answer fails in everywhere.
+            let Some(document) = processed.document else {
+                return Err(
+                    "the processor produced no document, so there is nothing to store".to_string(),
+                );
             };
             let note = policy.render_in_place("process", &document, |text| {
                 crate::tools::tally(text.lines().count(), "line", "lines")
             });
             let note = release_note(policy, note);
-            let stored = out_slot.clone();
             policy
                 .quarantine("process", out_slot, "a transform", &document, slots)
                 .map_err(|d| d.to_string())?;
-            if let Some(from) = unchanged_from {
-                policy.copied_from(&stored, &from, slots);
-            }
             Ok(Done {
                 note,
                 tokens: processed.usage.total(),

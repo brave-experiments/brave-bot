@@ -191,12 +191,6 @@ pub struct Processed {
     /// Quarantined exactly as the output is, and shown to nobody but the person watching: it is
     /// in no model's context, which is the point of it existing separately at all.
     pub note: Option<Labelled<String>>,
-    /// The input this stands for, where the processor answered that it should not change.
-    ///
-    /// The driver carries it back so the new slot can be recorded as holding the same file. It
-    /// is never shown to the planner: what a processor decided about a document is a fact about
-    /// that document, and the planner may not have those.
-    pub unchanged_from: Option<SlotId>,
 }
 
 /// Where a write's destination came from.
@@ -1097,6 +1091,12 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// inside a lambda. Deciding from content is [`Policy::read_trusted_content`], which refuses
     /// when the content is untrusted.
     ///
+    /// Nor is it only for a screen. Taking the packaging off a document on the way into a file is
+    /// a reshape of that kind, so it belongs here as much as a truncation notice does: a fence
+    /// around the whole of an answer is what that answer looks like, the same bytes go to the
+    /// same file whether one was there or not, and nothing about which it was reaches the caller.
+    /// See [`Policy::unfence`].
+    ///
     /// The output is not required to be a string. Presentation is not always text: a terminal
     /// needs styled rows, and forcing them through a `String` would mean the driver parsing them
     /// back out, which is exactly the handling of content this avoids.
@@ -1109,7 +1109,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         let label = content.label();
         self.allow(
             "render",
-            format!("{tool}: content reshaped for presentation, still {label}"),
+            format!("{tool}: content reshaped without being read, still {label}"),
         );
         let proof = Declassification::authorise("reshaped without being exposed");
         Labelled::new(shape(content.clone().declassify(&proof)), label)
@@ -2304,21 +2304,17 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // no line names no document at all.
         let (note, document) = self.split_note(spec.id(), reply);
 
-        // The verdict is a word, and a processor says it where it likes: as the whole document,
-        // or as the last thing before the line, or as the last thing in an answer that named no
-        // document. Whichever it was, what came before it is a remark rather than a file.
-        let (note, document, unchanged_from) = self.leave_unchanged(spec, note, document, slots);
-
+        // Nothing else is taken from the reply. Whether a document was marked is the split above,
+        // which is the one read of it licensed here, and which document the call is about was
+        // fixed by the planner before the processor ran. There is no word for a processor to
+        // leave a file alone with, and nowhere for one to say it: what follows the line is the
+        // file, so a reply reading `UNCHANGED` after the line is a file reading `UNCHANGED`.
         let document = document.map(|document| {
-            let document = self.unfence(spec.id(), document);
+            let document = self.unfence(document);
             self.keep_the_last_newline(spec, document, slots)
         });
 
-        Processed {
-            document,
-            note,
-            unchanged_from,
-        }
+        Processed { document, note }
     }
 
     /// Give back the last newline where the document had one and the answer does not.
@@ -2329,9 +2325,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// person is asked to approve a diff that looks like nothing, and the file on disk now ends
     /// mid-line for whatever reads it next.
     ///
-    /// A reshape and not a decision, with the standing [`Policy::unfence`] has. The write happens
-    /// either way; what changes is one byte of a document, in the direction of the document it
-    /// came from.
+    /// This does read untrusted bytes to decide something, and it is the second of the two places
+    /// Known costs in `docs/specs/labels.md` licenses. The write happens either way; what changes
+    /// is one byte of a document, in the direction of the document it came from.
     fn keep_the_last_newline(
         &mut self,
         spec: &crate::processor::ProcessorSpec,
@@ -2363,9 +2359,10 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
     /// Take what a processor wanted to say off the front of what it produced.
     ///
-    /// See [`crate::processor::ProcessorSpec::NOTE_MARKER`]. Reads the reply to find the line,
-    /// which is the standing [`Policy::unfence`] already has: content in, content out, both
-    /// halves still quarantined, and no branch outside these lines.
+    /// See [`crate::processor::ProcessorSpec::NOTE_MARKER`]. Searching the reply for the line is
+    /// a decision taken from untrusted bytes, and it is the first of the two places Known costs
+    /// in `docs/specs/labels.md` licenses: content in, content out, both halves still
+    /// quarantined, and no branch outside these lines.
     fn split_note(
         &mut self,
         id: &str,
@@ -2405,97 +2402,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
 
         let note = (!note.is_empty()).then(|| Labelled::new(note, label));
         (note, Some(Labelled::new(document, label)))
-    }
-
-    /// Answer with the input where the processor said the document should not change.
-    ///
-    /// Reproducing a file byte for byte to say "no change" is a thing models are bad at and have
-    /// no reason to be good at: one asked to leave a file alone explained in a paragraph that it
-    /// was leaving the file alone, and the paragraph became the file. A word it can say instead
-    /// costs nothing to get right, and what lands is the document it was given.
-    ///
-    /// Safe by construction where the document *is* that word: it is replaced by itself.
-    ///
-    /// Reads the reply, like [`Policy::unfence`], and decides nothing outside these lines: what
-    /// changes is which bytes go into a slot nobody reads, and both candidates came from the same
-    /// place.
-    fn leave_unchanged(
-        &mut self,
-        spec: &crate::processor::ProcessorSpec,
-        note: Option<Labelled<String>>,
-        document: Option<Labelled<String>>,
-        slots: &crate::slot::SlotStore,
-    ) -> (
-        Option<Labelled<String>>,
-        Option<Labelled<String>>,
-        Option<SlotId>,
-    ) {
-        let Some(slot) = spec.about() else {
-            return (note, document, None);
-        };
-
-        let word = crate::processor::ProcessorSpec::UNCHANGED;
-        let proof = Declassification::authorise("checked for the unchanged answer");
-
-        // Said as the whole document: the ordinary way, and the one the instruction asks for.
-        if let Some(text) = &document {
-            let label = text.label();
-            let text = text.clone().declassify(&proof);
-            if text.trim() == word {
-                return match self.stands_unchanged(spec, slot, label, slots) {
-                    Some(stood) => (note, Some(stood), Some(slot.clone())),
-                    None => (note, Some(Labelled::new(text, label)), None),
-                };
-            }
-        }
-
-        // Or said at the end of what it was saying, in an answer that named no document. That is
-        // a processor explaining why it is leaving a file alone, which is a remark and a
-        // verdict in one, and the remark used to become the file.
-        let Some(remark) = note else {
-            return (None, document, None);
-        };
-        let label = remark.label();
-        let text = remark.declassify(&proof);
-        let ends_with_it = text
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .is_some_and(|last| last.trim() == word);
-
-        if !ends_with_it || document.is_some() {
-            return (Some(Labelled::new(text, label)), document, None);
-        }
-
-        let before = match text.rfind(word) {
-            Some(at) => text[..at].trim().to_string(),
-            None => String::new(),
-        };
-        let kept = (!before.is_empty()).then(|| Labelled::new(before, label));
-
-        match self.stands_unchanged(spec, slot, label, slots) {
-            Some(stood) => (kept, Some(stood), Some(slot.clone())),
-            None => (Some(Labelled::new(text, label)), document, None),
-        }
-    }
-
-    /// The document a call was about, standing as its answer.
-    fn stands_unchanged(
-        &mut self,
-        spec: &crate::processor::ProcessorSpec,
-        slot: &SlotId,
-        label: Label,
-        slots: &crate::slot::SlotStore,
-    ) -> Option<Labelled<String>> {
-        let original = slots.take_for_effect(slot).ok()?;
-        self.allow(
-            "processor",
-            format!("{}: said {slot} should not change, so it stands", spec.id()),
-        );
-        // The input's own label, met with the one the spec fixed, which is where it came from.
-        let label = crate::label::taint_all([label, original.label()]);
-        let proof = Declassification::authorise("an input standing as the unchanged answer");
-        Some(Labelled::new(original.declassify(&proof), label))
     }
 
     /// Say which file an answer is for, so a write of it can go nowhere else.
@@ -2671,20 +2577,6 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         Ok(Labelled::new(text, label))
     }
 
-    /// slot names it was given and reads neither.
-    pub fn copied_from(
-        &mut self,
-        slot: &SlotId,
-        source: &SlotId,
-        slots: &mut crate::slot::SlotStore,
-    ) {
-        slots.copied_from(slot, source);
-        self.allow(
-            "slot",
-            format!("{slot} holds what {source} holds, so it is that file unchanged"),
-        );
-    }
-
     /// Whether writing this slot to this path would change the file.
     ///
     /// `false` only where the kernel filled the slot from that very path and nothing has
@@ -2719,29 +2611,17 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// arrived. One did, and `server.py` on disk began with ```` ```python ```` and ended with
     /// ```` ``` ````, which is not a Python file.
     ///
-    /// This reads the content, which needs saying plainly. It reads it to reshape it and for no
-    /// other purpose: the same bytes come out, minus a wrapper, still quarantined, still at the
-    /// same label, going to the same place they were already going. Nothing branches on what it
-    /// finds outside these lines, so an attacker who controls the text controls what is in the
-    /// file they already controlled and nothing else. That is the standing of
-    /// [`Policy::render_in_place`], which reshapes untrusted content for a screen.
+    /// Through [`Policy::render_in_place`], the gate a reshape of untrusted content goes through,
+    /// so this mints no witness of its own and asks nothing about the answer.
+    /// [`crate::fence::unwrapped`] is total, so there is nothing here to branch on: the same
+    /// bytes come out, minus a wrapper, still quarantined, still at the same label, going to the
+    /// file they were already going to, and the trail records the reshape whether or not there
+    /// was a fence to take off.
     ///
     /// Only a fence that wraps the *whole* answer is removed, since that is the one that is
     /// packaging rather than content. A document with fences inside it is left alone.
-    fn unfence(&mut self, id: &str, reply: Labelled<String>) -> Labelled<String> {
-        let label = reply.label();
-        let proof = Declassification::authorise("reshaped on the way out of a processor");
-        let text = reply.declassify(&proof);
-
-        let Some(inner) = crate::fence::strip(&text) else {
-            return Labelled::new(text, label);
-        };
-
-        self.allow(
-            "processor",
-            format!("{id}: a code fence wrapped the whole answer and was removed"),
-        );
-        Labelled::new(inner, label)
+    fn unfence(&mut self, reply: Labelled<String>) -> Labelled<String> {
+        self.render_in_place("processor", &reply, crate::fence::unwrapped)
     }
 
     /// Release a quarantined value into the workspace it came from.
@@ -4301,8 +4181,9 @@ mod tests {
         assert_eq!(note.declassify(&proof), "I left the imports alone.");
     }
 
-    /// The two halves compose: a processor that leaves a document alone still says why, and the
-    /// word it answers with is what is left after its account is taken off the front.
+    /// A processor with nothing to change says so and leaves the line out. The whole of what it
+    /// said is a remark then, and none of it is a document, even though the call was about one:
+    /// which document that is belongs to the planner, and the reply gets no say in it.
     #[test]
     fn a_processor_can_say_why_it_left_a_document_alone() {
         let mut sink = RecordingSink::new();
@@ -4324,25 +4205,23 @@ mod tests {
             )
             .expect("a spec");
 
-        let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
         let produced = policy.label_processor_output(
             &spec,
             Labelled::new(
-                format!("This is a server, not the game.\n{marker}\nUNCHANGED"),
+                "This is a server, not the game, so I have left it as it is.".to_string(),
                 Label::untrusted_private(),
             ),
             &slots,
         );
 
-        assert_eq!(produced.unchanged_from, Some(SlotId::new("ref:1")));
+        assert!(
+            produced.document.is_none(),
+            "an answer that marked no document produced one anyway"
+        );
         let proof = Declassification::authorise("test");
         assert_eq!(
             produced.note.expect("it said why").declassify(&proof),
-            "This is a server, not the game."
-        );
-        assert_eq!(
-            produced.document.expect("a document").declassify(&proof),
-            "the original"
+            "This is a server, not the game, so I have left it as it is."
         );
     }
 
@@ -4433,103 +4312,111 @@ mod tests {
         );
     }
 
-    /// A processor that had decided a file should be left alone wrote a paragraph saying why
-    /// and then the word, without the line that separates them, and the paragraph became the
-    /// file: seven hundred bytes of explanation where a Python script had been. The verdict is
-    /// the last thing it says, and what came before it is what it wanted somebody to know.
+    /// A marked answer produced a document, and the document is whatever it says. The driver used
+    /// to compare it against the word `UNCHANGED` and hand back the input instead, which is a
+    /// branch on untrusted bytes in the policy layer and the reason a file whose whole content is
+    /// that word could not be written at all: issue #28.
     #[test]
-    fn the_word_is_read_wherever_the_sentence_explaining_it_ended() {
-        let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
-        let mut slots = SlotStore::new();
-        slots
-            .writer_for(SlotId::new("ref:6"), Label::untrusted_private())
-            .unwrap()
-            .write("print('serving')\n")
-            .unwrap();
-
-        let spec = policy
-            .before_processor(
-                "p",
-                &[SlotId::new("ref:6")],
-                &Labelled::trusted("fix the speed bug".to_string()),
-                Some(SlotId::new("ref:6")),
-                &slots,
-            )
-            .expect("a spec");
-
-        let produced = policy.label_processor_output(
-            &spec,
-            Labelled::new(
-                "This is a server, not the game, so I am returning it unchanged.\n\nUNCHANGED\n"
-                    .to_string(),
-                Label::untrusted_private(),
-            ),
-            &slots,
-        );
-
-        assert_eq!(produced.unchanged_from, Some(SlotId::new("ref:6")));
-        let proof = Declassification::authorise("test");
-        assert_eq!(
-            produced.document.expect("a document").declassify(&proof),
-            "print('serving')\n"
-        );
-        assert!(
-            produced
-                .note
-                .expect("the explanation was kept")
-                .declassify(&proof)
-                .contains("not the game"),
-            "what it wanted to say was thrown away"
-        );
-    }
-
-    /// A document that merely mentions the word is not a verdict: the verdict is the whole of
-    /// the last thing it says.
-    #[test]
-    fn a_document_mentioning_the_word_is_still_a_document() {
+    fn a_marked_document_is_the_document_whatever_word_it_reads() {
         let mut sink = RecordingSink::new();
         let mut policy = open_policy(&mut sink);
         let mut slots = SlotStore::new();
         slots
             .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
             .unwrap()
-            .write("the original\n")
+            .write("status = PENDING\n")
             .unwrap();
 
         let spec = policy
             .before_processor(
                 "p",
                 &[SlotId::new("ref:1")],
-                &Labelled::trusted("rewrite it".to_string()),
+                &Labelled::trusted("set the status".to_string()),
                 Some(SlotId::new("ref:1")),
                 &slots,
             )
             .expect("a spec");
 
+        let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
         let produced = policy.label_processor_output(
             &spec,
             Labelled::new(
-                format!(
-                    "{}\n# UNCHANGED is a status in this file\nstatus = UNCHANGED_OK\n",
-                    crate::processor::ProcessorSpec::NOTE_MARKER
-                ),
+                format!("Set it.\n{marker}\nUNCHANGED"),
                 Label::untrusted_private(),
             ),
             &slots,
         );
 
-        assert_eq!(
-            produced.unchanged_from, None,
-            "a document was read as a verdict"
-        );
         let proof = Declassification::authorise("test");
+        assert_eq!(
+            produced.document.expect("a document").declassify(&proof),
+            "UNCHANGED\n",
+            "a document was read as a verdict and replaced by the file it was meant to replace"
+        );
+    }
+
+    /// Taking a fence off an answer is a reshape, so it goes through the gate reshapes go through
+    /// and the trail says so whether there was a fence to remove or not. It used to ask the fence
+    /// stripper whether it had found one and return early on the answer, which is a branch on
+    /// untrusted bytes and left the audit trail describing what was in the reply: issue #28.
+    #[test]
+    fn a_fence_comes_off_through_the_gate_that_reshapes_content() {
+        let reshaped = |answer: &str| {
+            let mut sink = RecordingSink::new();
+            let mut policy = open_policy(&mut sink);
+            let mut slots = SlotStore::new();
+            slots
+                .writer_for(SlotId::new("ref:1"), Label::untrusted_private())
+                .unwrap()
+                .write("print('old')\n")
+                .unwrap();
+
+            let spec = policy
+                .before_processor(
+                    "p",
+                    &[SlotId::new("ref:1")],
+                    &Labelled::trusted("rewrite it".to_string()),
+                    Some(SlotId::new("ref:1")),
+                    &slots,
+                )
+                .expect("a spec");
+
+            let marker = crate::processor::ProcessorSpec::NOTE_MARKER;
+            let produced = policy.label_processor_output(
+                &spec,
+                Labelled::new(
+                    format!("Rewritten.\n{marker}\n{answer}"),
+                    Label::untrusted_private(),
+                ),
+                &slots,
+            );
+            let proof = Declassification::authorise("test");
+            let document = produced.document.expect("a document").declassify(&proof);
+            let trail: Vec<String> = sink
+                .events()
+                .iter()
+                .filter_map(|e| match e {
+                    Event::GatePassed { gate, detail } => Some(format!("{gate}: {detail}")),
+                    _ => None,
+                })
+                .collect();
+            (document, trail)
+        };
+
+        let (fenced, said_of_fenced) = reshaped("```python\nprint('new')\n```");
+        let (plain, said_of_plain) = reshaped("print('new')\n");
+
+        assert_eq!(fenced, "print('new')\n", "the fence stayed on the file");
+        assert_eq!(plain, "print('new')\n");
+        assert_eq!(
+            said_of_fenced, said_of_plain,
+            "the trail said which of the two answers had a fence in it"
+        );
         assert!(
-            produced
-                .document
-                .expect("a document")
-                .declassify(&proof)
-                .contains("status =")
+            said_of_plain.iter().any(|said| {
+                said.starts_with("render: processor: content reshaped without being read")
+            }),
+            "the reshape went round the gate: {said_of_plain:?}"
         );
     }
 

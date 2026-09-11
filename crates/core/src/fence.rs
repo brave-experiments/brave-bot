@@ -10,9 +10,22 @@
 //! strict: the first line opens a fence, the last line closes one, and nothing between them
 //! closes it early.
 
+/// `text` without the fence that wraps the whole of it, and `text` itself where no fence wraps
+/// it.
+///
+/// Total on purpose. Whether an answer arrived fenced is a fact about untrusted bytes, and a
+/// caller handed an `Option` would have to ask: the document goes into the same file either way,
+/// so there is nothing there for anyone to decide and nothing here says which it was.
+pub fn unwrapped(text: String) -> String {
+    inside(&text).unwrap_or(text)
+}
+
 /// The document inside a fence that wraps the whole of `text`, or `None` if there is no such
 /// fence.
-pub fn strip(text: &str) -> Option<String> {
+///
+/// Private, so the only thing that can be done with the absence of a fence is to leave the text
+/// alone.
+fn inside(text: &str) -> Option<String> {
     let trimmed = text.trim();
     let mut lines = trimmed.lines();
 
@@ -51,21 +64,23 @@ mod tests {
     /// The case that put ```` ```python ```` at the top of somebody's server.py.
     #[test]
     fn a_fence_around_the_whole_answer_is_packaging() {
-        let stripped = strip("```python\nprint(1)\nprint(2)\n```").expect("a wrapped document");
-        assert_eq!(stripped, "print(1)\nprint(2)\n");
+        assert_eq!(
+            unwrapped("```python\nprint(1)\nprint(2)\n```".to_string()),
+            "print(1)\nprint(2)\n"
+        );
     }
 
     #[test]
     fn a_fence_with_no_language_is_still_a_fence() {
-        assert_eq!(strip("```\nplain\n```"), Some("plain\n".to_string()));
+        assert_eq!(unwrapped("```\nplain\n```".to_string()), "plain\n");
     }
 
     /// Whitespace around the answer is the model's, not the document's.
     #[test]
     fn surrounding_blank_lines_do_not_hide_the_fence() {
         assert_eq!(
-            strip("\n\n```js\nlet a = 1;\n```\n\n"),
-            Some("let a = 1;\n".to_string())
+            unwrapped("\n\n```js\nlet a = 1;\n```\n\n".to_string()),
+            "let a = 1;\n"
         );
     }
 
@@ -74,19 +89,23 @@ mod tests {
     #[test]
     fn a_document_containing_fences_is_left_alone() {
         let markdown = "# Title\n\n```rust\nfn main() {}\n```\n\nMore prose.\n";
-        assert_eq!(strip(markdown), None);
+        assert_eq!(unwrapped(markdown.to_string()), markdown);
     }
 
     /// Two blocks and nothing else is still not one block.
     #[test]
     fn two_fenced_blocks_are_not_one_wrapper() {
-        assert_eq!(strip("```\none\n```\n```\ntwo\n```"), None);
+        let two = "```\none\n```\n```\ntwo\n```";
+        assert_eq!(unwrapped(two.to_string()), two);
     }
 
     #[test]
     fn an_ordinary_file_is_left_alone() {
-        assert_eq!(strip("fn main() {}\n"), None);
-        assert_eq!(strip(""), None);
-        assert_eq!(strip("```not closed\nbody\n"), None);
+        assert_eq!(unwrapped("fn main() {}\n".to_string()), "fn main() {}\n");
+        assert_eq!(unwrapped("".to_string()), "");
+        assert_eq!(
+            unwrapped("```not closed\nbody\n".to_string()),
+            "```not closed\nbody\n"
+        );
     }
 }
