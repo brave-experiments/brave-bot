@@ -56,6 +56,8 @@ inside a `vendor` a person marked untrusted, without that answer leaking to its 
 `verified-by: bravebot_core::trust::a_trusted_subpath_overrides_an_untrusted_parent`
 `verified-by: bravebot_core::trust::a_rule_matches_whole_segments_only`
 `verified-by: bravebot_core::trust::equivalent_path_spellings_are_the_same_rule`
+`verified-by: bravebot_core::trust::every_equivalent_spelling_of_a_path_reaches_the_same_rule`
+`verified-by: bravebot_agent::workspace::a_second_spelling_of_a_distrusted_file_is_read_as_untrusted`
 `verified-by: bravebot_core::trust::a_later_decision_replaces_an_earlier_one`
 
 <a id="TRUST-3"></a>
@@ -84,6 +86,7 @@ prefix problem one map could not tell them apart.
 `verified-by: bravebot_core::trust::one_added_directory_does_not_cover_a_sibling`
 `verified-by: bravebot_core::trust::the_deepest_absolute_rule_wins`
 `verified-by: bravebot_core::trust::equivalent_absolute_spellings_are_the_same_rule`
+`verified-by: bravebot_core::trust::every_equivalent_absolute_spelling_reaches_the_same_rule`
 
 ## What a write does
 
@@ -124,6 +127,7 @@ write is shown.
 `verified-by: bravebot_core::policy::untrusted_data_into_an_untrusted_path_is_silent_and_changes_nothing`
 `verified-by: bravebot_core::policy::an_unvouched_path_prompts_either_way`
 `verified-by: bravebot_core::policy::a_file_written_with_untrusted_data_reads_back_untrusted`
+`verified-by: bravebot_core::policy::a_file_read_back_under_another_spelling_is_still_untrusted`
 
 <a id="TRUST-5"></a>
 ### TRUST-5: reconciliation marks the exact path, never the parent
@@ -156,6 +160,7 @@ turn of the same session poisoned.
 `verified-by: bravebot_tui::app::a_record_from_before_maps_were_kept_is_asked_about`
 `verified-by: bravebot_tui::sessions::a_record_that_predates_the_map_has_none_rather_than_an_empty_one`
 `verified-by: bravebot_tui::sessions::a_distrusted_path_inside_a_trusted_tree_survives_the_record`
+`verified-by: bravebot_tui::sessions::two_recorded_spellings_of_one_path_resume_as_untrusted`
 `verified-by: bravebot_tui::sessions::sessions_are_written_read_back_and_kept_per_directory`
 
 <a id="TRUST-7"></a>
