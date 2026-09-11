@@ -12,6 +12,8 @@
 //! makes injected text unable to redirect an action. Ali built the first prototype of it
 //! in SafeHouse; this applies the same idea to a general-purpose agent.
 
+#![forbid(unsafe_code)]
+
 pub mod ask;
 pub mod cancel;
 pub mod capability;

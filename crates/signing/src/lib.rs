@@ -24,6 +24,8 @@
 //! changes the digest, which changes the signing string, which invalidates the
 //! signature.
 
+#![forbid(unsafe_code)]
+
 pub mod sigv4;
 
 use base64::Engine;

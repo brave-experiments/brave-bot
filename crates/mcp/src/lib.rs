@@ -15,6 +15,8 @@
 //! needs to label parts of a call separately: a file path as routing, its contents as
 //! content, and an opaque MCP call would erase that distinction.
 
+#![forbid(unsafe_code)]
+
 pub mod http;
 pub mod protocol;
 pub mod stdio;

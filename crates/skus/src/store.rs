@@ -542,6 +542,8 @@ mod tests {
         with_home(None, body)
     }
 
+    // These tests need `HOME` pointed somewhere else, and there is no safe way to do that.
+    #[allow(unsafe_code)]
     fn with_home<T>(dir: Option<PathBuf>, body: impl FnOnce() -> T) -> T {
         let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 

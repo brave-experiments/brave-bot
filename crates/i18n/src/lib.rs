@@ -55,6 +55,8 @@
 //! bravebot_i18n::t!(chosen);
 //! ```
 
+#![forbid(unsafe_code)]
+
 /// The catalog format and its parser, shared with the build script that reads it.
 pub mod catalog;
 /// Which plural category a number falls into, per language.

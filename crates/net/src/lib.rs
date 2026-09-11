@@ -18,6 +18,8 @@
 //! content inspection: the bytes are never parsed to decide anything, they are handed
 //! back for the caller to label.
 
+#![forbid(unsafe_code)]
+
 use bravebot_core::cancel::Cancel;
 use bravebot_core::event::Sink;
 use bravebot_core::label::Label;
