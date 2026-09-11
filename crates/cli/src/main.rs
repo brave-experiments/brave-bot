@@ -353,14 +353,13 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    // The rules the settings file carried. A one-shot run refuses every write anyway, so what
-    // these add here is the deny list: a rule keeping a file from being read holds for a run
-    // nobody is watching exactly as it does for a session. Anything unreadable is named on stderr,
-    // beside the rest of what this run has to say about itself.
+    // The rules the settings file carried. Anything unreadable is named on stderr, beside the rest
+    // of what this run has to say about itself.
     let settings = bravebot_config::Settings::load();
-    let (permissions, rejected) = bravebot_agent::permissions::from_settings(
+    let (permissions, rejected) = rules_for_a_one_shot_run(
         &settings,
         bravebot_agent::home::directory().as_deref(),
+        skip_permissions,
     );
     for problem in &rejected {
         eprintln!(
@@ -550,6 +549,29 @@ fn run_task(args: &[String], skip_permissions: bool) -> ExitCode {
             eprintln!("{err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The rules a one-shot run works under.
+///
+/// Nobody is watching one, so the allow list is left out: an allow rule answers a prompt in
+/// advance, and where there is nobody to ask it would instead be a line in a settings file letting
+/// the run write, execute or fetch unwatched, beside the flag that is meant to be the only way
+/// that happens. The deny and ask lists carry over, and both still decide something here.
+///
+/// With the flag, the person answered every one of those prompts themselves when they typed it, so
+/// their file is read whole.
+fn rules_for_a_one_shot_run(
+    settings: &bravebot_config::Settings,
+    home: Option<&Path>,
+    skip_permissions: bool,
+) -> (
+    bravebot_core::permissions::Permissions,
+    Vec<bravebot_core::permissions::Rejected>,
+) {
+    match skip_permissions {
+        true => bravebot_agent::permissions::from_settings(settings, home),
+        false => bravebot_agent::permissions::for_an_unattended_run(settings, home),
     }
 }
 
@@ -2170,5 +2192,56 @@ mod tests {
         assert_eq!(reply, "ok\n");
         assert!(beside.contains("not usable"), "got: {beside}");
         assert!(!reply.contains("not usable"));
+    }
+
+    /// Nobody is watching a one-shot run, so the list that answers a prompt in advance answers
+    /// nothing: there is no prompt for it to reach. Without the flag an allow rule decides no
+    /// more than a line nobody wrote, while the two lists that refuse and that force an ask carry
+    /// over, because those say something a run with nobody at it can still act on.
+    #[test]
+    fn an_allow_rule_decides_nothing_for_a_run_nobody_is_watching() {
+        use bravebot_core::permissions::{Decision, Ruling, Subject};
+
+        let settings = bravebot_config::Settings::parse(
+            r#"{
+              "permissions": {
+                "allow": ["Edit(**)"],
+                "ask": ["Bash(git push *)"],
+                "deny": ["Read(./.env)"]
+              }
+            }"#,
+        );
+
+        let (permissions, rejected) = rules_for_a_one_shot_run(&settings, None, false);
+        assert!(rejected.is_empty());
+        assert_eq!(
+            permissions.for_path(Subject::Edit, "notes.md"),
+            Decision::Unmatched,
+            "an allow rule answered a write prompt in a run with nobody to prompt"
+        );
+        assert_eq!(
+            permissions.for_path(Subject::Read, ".env"),
+            Decision::Ruled(Ruling::Deny)
+        );
+        assert_eq!(
+            permissions.for_command("git push origin main"),
+            Decision::Ruled(Ruling::Ask)
+        );
+    }
+
+    /// With the flag the person answered every prompt themselves, so their file is read whole: the
+    /// list is theirs, and the run may act because they said so on the command line.
+    #[test]
+    fn the_flag_is_what_lets_an_allow_rule_decide_again() {
+        use bravebot_core::permissions::{Decision, Ruling, Subject};
+
+        let settings =
+            bravebot_config::Settings::parse(r#"{"permissions": {"allow": ["Edit(**)"]}}"#);
+
+        let (permissions, _) = rules_for_a_one_shot_run(&settings, None, true);
+        assert_eq!(
+            permissions.for_path(Subject::Edit, "notes.md"),
+            Decision::Ruled(Ruling::Allow)
+        );
     }
 }
