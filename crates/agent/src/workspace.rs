@@ -1296,6 +1296,36 @@ pub struct Matches {
     /// question "was this search complete?" has an answer in the result rather than in
     /// another call.
     pub searched: usize,
+    /// Whether a permission rule kept files out of the walk.
+    ///
+    /// The third reason a search read nothing, and the one the other two must not be mistaken
+    /// for: a glob that selected no files is a query to rewrite, and a rule is not. Whether, never
+    /// which: the names are what the rule is keeping back.
+    pub withheld: bool,
+}
+
+/// What a walk is collecting into.
+///
+/// One value rather than two arguments because the cap is over the pair: a walk that filled one of
+/// these has spent the other's budget too, so nothing may add to either without counting both.
+struct Collected<'a> {
+    /// Paths the walk reports.
+    files: &'a mut Vec<String>,
+    /// Directories a bounded walk did not descend into.
+    stopped_at: &'a mut Vec<String>,
+    /// Whether a permission rule kept anything out.
+    ///
+    /// Not a count, and deliberately not the names: what a caller needs is whether the result is
+    /// short of the tree for a reason no query can get around, so that it does not report an empty
+    /// answer as evidence about what the tree holds.
+    withheld: bool,
+}
+
+impl Collected<'_> {
+    /// How much of the cap has been spent.
+    fn len(&self) -> usize {
+        self.files.len() + self.stopped_at.len()
+    }
 }
 
 impl Workspace {
@@ -1306,6 +1336,9 @@ impl Workspace {
     /// and a file could be named to look like an instruction.
     /// `pattern` narrows the result to matching paths. It is routing like the directory: a
     /// filter chooses what is looked at, so untrusted text must not supply one.
+    ///
+    /// A path a `deny` rule covers is left out of the listing, whether the call named it or the
+    /// walk reached it from a directory above it.
     pub fn list<S: Sink>(
         &self,
         policy: &mut Policy<'_, S>,
@@ -1347,13 +1380,18 @@ impl Workspace {
         // Ignored here: what a listing left out is the entry it drops below, which the count
         // answers exactly.
         let patterns = glob.as_deref().map(crate::glob::expand);
+        let denied = |path: &str| policy.read_is_denied(path);
         let _ = self.walk_filtered(
             &root,
             patterns.as_deref(),
             depth,
             MAX_ENTRIES,
-            &mut found,
-            &mut stopped_at,
+            &denied,
+            &mut Collected {
+                files: &mut found,
+                stopped_at: &mut stopped_at,
+                withheld: false,
+            },
         )?;
         found.sort();
         stopped_at.sort();
@@ -1390,6 +1428,9 @@ impl Workspace {
     ///
     /// The patterns and directory are routing; the matches are untrusted-private, exactly like a
     /// file read.
+    ///
+    /// A file a `deny` rule covers is never opened, whether the call named it or the walk reached
+    /// it from a directory above it. Searching a tree is reading it.
     ///
     /// More than one pattern because the alternative is more than one call. A search is a
     /// round trip, and a round trip is the expensive part of a turn: the tool itself returns
@@ -1484,14 +1525,21 @@ impl Workspace {
         let mut ignored = Vec::new();
         // Expanded once for the whole walk, not once per path.
         let expanded = glob.as_deref().map(crate::glob::expand);
+        let denied = |path: &str| policy.read_is_denied(path);
+        let mut collected = Collected {
+            files: &mut paths,
+            stopped_at: &mut ignored,
+            withheld: false,
+        };
         let unvisited = self.walk_filtered(
             &root,
             expanded.as_deref(),
             None,
             self.search_files,
-            &mut paths,
-            &mut ignored,
+            &denied,
+            &mut collected,
         )?;
+        let withheld = collected.withheld;
         paths.sort();
         let considered = paths.len();
 
@@ -1548,6 +1596,7 @@ impl Workspace {
                 timed_out,
                 considered,
                 searched,
+                withheld,
             },
             label,
         ))
@@ -1568,14 +1617,21 @@ impl Workspace {
     /// Filtering afterwards would make a narrow pattern return nothing in a large tree, which
     /// looks identical to the file being absent.
     ///
+    /// `denied` answers whether a permission rule covers reading a path, and an entry it covers is
+    /// left out. Asked of every entry rather than of the root alone, because a rule names a file
+    /// and a walk arrives at that file from whichever directory the call happened to name. A
+    /// directory the rule covers is not descended into at all, so nothing under it is opened or
+    /// reported. The root is the caller's to gate: it is the argument a call named, so it is
+    /// refused where the call is rather than filtered out from under it.
+    ///
     /// Answers whether it stopped at the cap with entries still unvisited, which the length of
-    /// `out` cannot: a directory holding exactly one past the cap fills it without anything
-    /// being left behind.
+    /// what it collected cannot: a directory holding exactly one past the cap fills it without
+    /// anything being left behind.
     ///
     /// `remaining`, when given, is how many more levels may be descended. A directory at the
-    /// boundary is put in `stopped_at` instead of being walked, so the caller can say the tree
-    /// continues there. The filter does not apply to those: `patterns` narrows which files are
-    /// reported, and the shape of the tree is not a file.
+    /// boundary is collected as one the walk stopped at instead of being walked, so the caller can
+    /// say the tree continues there. The filter does not apply to those: `patterns` narrows which
+    /// files are reported, and the shape of the tree is not a file.
     ///
     /// Entries are sorted within each directory, and a directory's own files are taken before
     /// any of its subdirectories are descended into. Neither is cosmetic. `read_dir` order is
@@ -1591,8 +1647,8 @@ impl Workspace {
         patterns: Option<&[String]>,
         remaining: Option<usize>,
         limit: usize,
-        out: &mut Vec<String>,
-        stopped_at: &mut Vec<String>,
+        denied: &dyn Fn(&str) -> bool,
+        collected: &mut Collected<'_>,
     ) -> Result<bool, WorkspaceError> {
         let entries = std::fs::read_dir(directory).map_err(|e| WorkspaceError::Io {
             path: self.relative_display(directory),
@@ -1628,22 +1684,39 @@ impl Workspace {
         directories.sort();
 
         for path in files {
-            if out.len() + stopped_at.len() > limit {
+            if collected.len() > limit {
                 return Ok(true);
             }
             let relative = self.relative_display(&path);
+            // A rule is about the file, not about the directory the call named, so a walk that
+            // reached this one from above drops it exactly as a read of it by name is refused.
+            // Dropped before the pattern is consulted and never charged to the cap: a denied
+            // file is not a file this walk may report, so it is not one the budget is spent on
+            // either.
+            if denied(&relative) {
+                collected.withheld = true;
+                continue;
+            }
             match patterns {
                 Some(patterns) if !crate::glob::matches_any(patterns, &relative) => continue,
-                _ => out.push(relative),
+                _ => collected.files.push(relative),
             }
         }
 
         for path in directories {
-            if out.len() + stopped_at.len() > limit {
+            if collected.len() > limit {
                 return Ok(true);
             }
+            let relative = self.relative_display(&path);
+            // A rule that covers a directory fences the tree under it, so the walk neither
+            // descends into it nor names it: a rule reaching one file of a directory is written
+            // against the files, and one reaching the directory is written against all of them.
+            if denied(&relative) {
+                collected.withheld = true;
+                continue;
+            }
             if remaining.is_some_and(|left| left <= 1) {
-                stopped_at.push(self.relative_display(&path));
+                collected.stopped_at.push(relative);
                 continue;
             }
             // Propagated rather than left to the next iteration's check, which a directory
@@ -1653,8 +1726,8 @@ impl Workspace {
                 patterns,
                 remaining.map(|left| left - 1),
                 limit,
-                out,
-                stopped_at,
+                denied,
+                collected,
             )? {
                 return Ok(true);
             }

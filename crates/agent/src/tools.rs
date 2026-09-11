@@ -3965,12 +3965,20 @@ fn search<S: Sink>(
 
             let rendered = policy.render_in_place("search", &found, |found| {
                 let mut body = if found.matches.is_empty() {
-                    // The two ways a search comes back empty, which used to print the same
+                    // The three ways a search comes back empty, which used to print the same
                     // sentence. Files were read and the needle was not in them, which is an
                     // answer. Or the include glob selected nothing, so nothing was read and
-                    // the tree was never asked. Told apart here because a reader who cannot
-                    // tell them apart takes a broken query for proof of absence.
-                    if had_include && found.considered == 0 {
+                    // the tree was never asked. Or a rule covers what was selected, which no
+                    // query can get around. Told apart here because a reader who cannot tell
+                    // them apart takes a broken query for proof of absence, and rewrites a glob
+                    // that was never the problem.
+                    if found.withheld && found.considered == 0 {
+                        "(a deny rule in the user's settings covers what this search would \
+                         have read, so nothing was searched. Do not retry with another \
+                         pattern or glob: work without it, or say in your reply what you \
+                         needed it for)"
+                            .to_string()
+                    } else if had_include && found.considered == 0 {
                         let mut text = "(the include glob matched no files, so nothing was \
                                         searched; this says nothing about whether the pattern \
                                         is in the tree)"

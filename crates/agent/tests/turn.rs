@@ -2029,6 +2029,148 @@ fn a_deny_rule_holds_against_a_trusted_workspace() {
     }
 }
 
+/// A rule is about the file, not about the directory a call happened to name. A search of the tree
+/// above a denied file reaches it from above, where the rule was never consulted, and quotes the
+/// line it was looking for straight into the planner's context.
+#[test]
+fn a_deny_rule_holds_when_a_search_walks_the_directory_above_the_file() {
+    let scratch = Scratch::new("permissions-denied-under-a-search");
+    std::fs::write(scratch.path.join(".env"), "SECRET_TOKEN=hunter2").unwrap();
+    // The needle is in this file too, so the search has something to find. Without that the
+    // assertion below holds just as well for a search that never ran at all.
+    std::fs::write(
+        scratch.path.join("notes.md"),
+        "SECRET_TOKEN is set elsewhere",
+    )
+    .unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("search", r#"{"pattern":"SECRET_TOKEN","directory":"."}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task = Task::new("what is the token").with_permissions(rules(&["Read(./.env)"], &[], &[]));
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let mut searched = false;
+    for body in received.try_iter() {
+        assert!(
+            !body.contains("hunter2"),
+            "a search read a denied file because the walk started above it: {body}"
+        );
+        searched |= body.contains("notes.md");
+    }
+    assert!(
+        searched,
+        "the search matched nothing at all, so it proves nothing about what it left out"
+    );
+}
+
+/// What the planner is told when a rule is the reason a search read nothing. Reported as an include
+/// glob that matched no files, it reads as a spelling to fix, and the planner rewrites globs against
+/// a rule none of them can satisfy.
+#[test]
+fn a_search_a_rule_emptied_names_the_rule_and_not_the_glob() {
+    let scratch = Scratch::new("permissions-denied-search-empty");
+    std::fs::create_dir_all(scratch.path.join("secrets")).unwrap();
+    std::fs::write(scratch.path.join("secrets/key.pem"), "SECRET_TOKEN=hunter2").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "search",
+            r#"{"pattern":"SECRET_TOKEN","directory":".","include":"secrets/**"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task =
+        Task::new("what is the token").with_permissions(rules(&["Read(secrets/**)"], &[], &[]));
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let mut told = false;
+    for body in received.try_iter() {
+        assert!(
+            !body.contains("include glob matched no files"),
+            "a rule was reported as a glob the planner could rewrite: {body}"
+        );
+        told |= body.contains("a deny rule in the user's settings covers what this search");
+    }
+    assert!(
+        told,
+        "the planner was not told a rule is why the search read nothing"
+    );
+}
+
+/// The same gap for the enumeration half of the rule. A denied file is not enumerated either, and a
+/// listing of the directory above it is where its name comes back.
+#[test]
+fn a_deny_rule_holds_when_a_listing_walks_the_directory_above_the_file() {
+    let scratch = Scratch::new("permissions-denied-under-a-listing");
+    std::fs::write(scratch.path.join(".env"), "SECRET_TOKEN=hunter2").unwrap();
+    std::fs::write(scratch.path.join("notes.md"), "nothing secret here").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("list_files", r#"{"directory":"."}"#),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let task =
+        Task::new("what is in the workspace").with_permissions(rules(&["Read(./.env)"], &[], &[]));
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut bravebot_agent::confirm::ApproveWrites,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let mut listed = false;
+    for body in received.try_iter() {
+        assert!(
+            !body.contains(".env"),
+            "a listing enumerated a denied file: {body}"
+        );
+        listed |= body.contains("notes.md");
+    }
+    assert!(
+        listed,
+        "the listing named nothing at all, so it proves nothing about what it left out"
+    );
+}
+
 /// The model's own account of what it is doing is the best progress report there is, and it
 /// used to be thrown away: only the final reply survived, so a turn that explained each step
 /// showed none of those explanations.
