@@ -10,6 +10,8 @@
 # bot would post, minus the posting.
 #
 #   check-reviewdog.sh            what this branch adds, against its merge base
+#                                 with upstream/main, or origin/main where there is
+#                                 no upstream remote to compare against
 #   check-reviewdog.sh --full     the whole tree, however old the finding is
 #
 # The two modes are the action's own two modes. On a pull request it runs
@@ -36,7 +38,16 @@ ALL_RUNNERS="safesvg opengrep sveltegrep npm-audit pip-audit"
 
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bravebot-reviewdog"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-BASE_REF="origin/main"
+# Where the branch is measured from. A checkout that has an `upstream/main` is a fork
+# checkout, and there `origin` is the fork, whose `main` is only as current as the last
+# time somebody updated it. Scanning against that charges this branch with a finding for
+# every upstream commit the fork is behind. Without that ref, `origin` is the repository
+# itself and is the base.
+if git rev-parse --verify --quiet upstream/main >/dev/null; then
+    BASE_REF="upstream/main"
+else
+    BASE_REF="origin/main"
+fi
 MODE="diff"
 RAW=0
 RUNNERS=""
@@ -53,7 +64,8 @@ usage() {
 usage: check-reviewdog.sh [--full] [--base REF] [--runners LIST] [--raw]
 
   --full           Scan the whole tree instead of this branch's changes
-  --base REF       Compare against REF (default: origin/main)
+  --base REF       Compare against REF (default: upstream/main in a fork
+                   checkout, origin/main otherwise)
   --runners LIST   Space or comma separated subset of:
                      safesvg opengrep sveltegrep npm-audit pip-audit
   --raw            Leave the <br> markup in, as the PR comments carry it
