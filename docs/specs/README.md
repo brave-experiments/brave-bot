@@ -91,7 +91,15 @@ Front matter, then numbered clauses. Everything outside a clause is commentary a
   the moment an issue or a commit pointing at that clause most needs the link to survive.
 - **`governs`** lists the paths this spec decides. A diff touching one of them is reviewed against
   this file. Anything under no spec's `governs` is ordinary code and reviewed as such.
-- **`guards`** lists symbols whose every use is review-required.
+- **`guards`** lists symbols whose every use is review-required. An entry may also pin where it is
+  used, as a `sites:` list of `path: count` items, and the check fails when the tree and the list
+  disagree in either direction. The count is how many times the symbol occurs in that file's code:
+  two uses on one line are two, one call rustfmt wrapped across three lines is one, and a comment
+  naming the symbol is not a use of it at all. A count rather than a line number, so moving a call
+  inside a file changes nothing, while adding or removing one is an edit to this spec that a
+  reviewer sees. `make check-spec` prints the number it found, which is the number to record.
+  Within one spec, either every entry pins its sites or none does: an unpinned entry beside pinned
+  ones reads as though it were checked too.
 - **`verified-by:`** lines name the tests that pin a clause, as `crate::module::test_name`. The
   coverage check reads them, fails when a name does not resolve to a test that exists, and posts a
   bug for any clause whose value is `none`. `by-construction` is for a clause nothing can execute,

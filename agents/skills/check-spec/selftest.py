@@ -37,6 +37,8 @@ governs:
   - crates/demo/src/lib.rs
 guards:
   - symbol: Gate::open
+    sites:
+      - crates/demo/src/lib.rs: 1
 ---
 
 ## Clauses
@@ -113,6 +115,51 @@ def edit_spec(root, old, new):
     text = path.read_text(encoding="utf-8")
     assert old in text, f"fixture does not contain {old!r}"
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def use_the_gate_elsewhere(root):
+    """A file the allowlist has never heard of, which is the shape a new escape hatch takes."""
+    (root / "crates" / "demo" / "src" / "extra.rs").write_text(
+        "use crate::Gate;\n\nfn reach(gate: &Gate) {\n    gate.open();\n}\n", encoding="utf-8"
+    )
+
+
+def use_the_gate_again(root):
+    path = root / "crates" / "demo" / "src" / "lib.rs"
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\nfn reach(gate: &Gate) {\n    gate.open();\n}\n",
+        encoding="utf-8",
+    )
+
+
+def use_the_gate_twice_on_one_line(root):
+    """Two uses folded onto one line, with the pin raised to what counting lines would give.
+    Only counting occurrences reports this, so the case fails if the unit ever goes back to
+    being the line."""
+    path = root / "crates" / "demo" / "src" / "lib.rs"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\nfn reach(a: &Gate, b: &Gate) {\n    a.open(); b.open();\n}\n",
+        encoding="utf-8",
+    )
+    edit_spec(root, "crates/demo/src/lib.rs: 1", "crates/demo/src/lib.rs: 2")
+
+
+def mention_the_gate_in_comments(root):
+    """Prose about a gate is not a use of it, in all four shapes the tree contains: a comment at
+    the margin, a comment after code, a block comment across lines, and a `//` inside a string
+    that is not a comment at all. None of them may move the count."""
+    path = root / "crates" / "demo" / "src" / "lib.rs"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\n// Gate::open is the only way in.\n"
+        + "fn document() {\n"
+        + '    let _url = "https://example.test/open"; // Gate::open again\n'
+        + "    /* Gate::open, and gate.open(),\n"
+        + "       described across two lines */\n"
+        + "}\n",
+        encoding="utf-8",
+    )
 
 
 def cite_another_spec(root):
@@ -208,6 +255,58 @@ CASES = [
         "guard-missing",
     ),
     (
+        "a guarded symbol used in a file its allowlist does not name",
+        use_the_gate_elsewhere,
+        "guard-site-unlisted",
+    ),
+    (
+        "a guarded symbol used more times than its allowlist pins",
+        use_the_gate_again,
+        "guard-site-count",
+    ),
+    (
+        "an allowlist left above the uses that are left",
+        lambda root: edit_spec(root, "crates/demo/src/lib.rs: 1", "crates/demo/src/lib.rs: 2"),
+        "guard-site-count",
+    ),
+    (
+        "a guarded symbol used twice on one line",
+        use_the_gate_twice_on_one_line,
+        "guard-site-count",
+    ),
+    ("a guarded symbol named only in comments", mention_the_gate_in_comments, None),
+    (
+        # The exact set, because a missing count once reported the file as unlisted too, which
+        # sends the author to add a path that is already there.
+        "an allowlisted site that is not a path and a count",
+        lambda root: edit_spec(root, "crates/demo/src/lib.rs: 1", "crates/demo/src/lib.rs"),
+        {"guard-sites-malformed"},
+    ),
+    (
+        "an allowlisted site pinned at no uses at all",
+        lambda root: edit_spec(root, "crates/demo/src/lib.rs: 1", "crates/demo/src/lib.rs: 0"),
+        "guard-sites-malformed",
+    ),
+    (
+        "the same path pinned twice",
+        lambda root: edit_spec(
+            root,
+            "      - crates/demo/src/lib.rs: 1\n",
+            "      - crates/demo/src/lib.rs: 1\n      - crates/demo/src/lib.rs: 1\n",
+        ),
+        "guard-sites-malformed",
+    ),
+    (
+        "a sites list indented out of the guards entry it belongs to",
+        lambda root: edit_spec(root, "    sites:\n", "  sites:\n"),
+        "front-matter-unknown-key",
+    ),
+    (
+        "one guarded symbol pinning its sites while another does not",
+        lambda root: edit_spec(root, "guards:\n", "guards:\n  - symbol: opens_twice\n"),
+        "guard-sites-partial",
+    ),
+    (
         "a spec citing another spec's clause ids",
         lambda root: cite_another_spec(root),
         "cross-spec-citation",
@@ -262,6 +361,9 @@ def main():
             if expected is None:
                 ok = not kinds
                 detail = f"reported {kinds}"
+            elif isinstance(expected, set):
+                ok = set(kinds) == expected
+                detail = f"reported {kinds}, wanted exactly {sorted(expected)}"
             else:
                 ok = expected in kinds
                 detail = f"reported {kinds}, wanted {expected}"

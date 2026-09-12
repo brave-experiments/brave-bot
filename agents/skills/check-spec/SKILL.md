@@ -127,6 +127,8 @@ finding to look at first. Nothing else. The report is the deliverable.
 | `verified-by: none` | mechanical | warning |
 | `governs` paths exist | mechanical | error |
 | `guards` symbols exist | mechanical | error |
+| A `guards` entry that pins its sites is used in exactly those files, that many times | mechanical | error |
+| Front matter carries no key nothing reads, such as a `sites:` indented out of its entry | mechanical | error |
 | No spec cites another spec's clause ids | mechanical | error |
 | The README table lists every spec, with the right id and count | mechanical | error |
 | No em-dash | mechanical | error |

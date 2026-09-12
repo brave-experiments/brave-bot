@@ -92,6 +92,20 @@ jobs:
           npm ci --ignore-scripts
           npm run lint:lockfile
 
+  # The mechanical half of docs/specs, which decides nothing a person has to read a diff for:
+  # clause numbering, the tests a clause names, the paths it governs, and the call sites a
+  # guarded symbol pins. Standard library Python over the checkout, so it needs no toolchain
+  # and answers in seconds. Without it the guard allowlist only holds for whoever remembers to
+  # run it, which is the state it exists to replace.
+  specs:
+    name: Specs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the specs against the implementation
+        run: make check-spec
+
   # Builds against the declared minimum toolchain. The pinned cross-build container
   # ships an older Rust than most developers have locally, so without this a feature
   # that only compiles on a newer toolchain reaches the release build unnoticed.

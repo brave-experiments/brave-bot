@@ -70,7 +70,29 @@ class Spec:
 
     @property
     def guards(self):
-        return self.front.get("guards", [])
+        return [
+            entry["symbol"] if isinstance(entry, dict) else entry
+            for entry in self.front.get("guards", [])
+        ]
+
+    @property
+    def pinned_guards(self):
+        """The guards entries that pin where they may be used. The one definition of what
+        counts as pinned, since a caller that asks how many entries pin their sites and a
+        caller that asks which sites a symbol pins have to agree."""
+        return [
+            entry
+            for entry in self.front.get("guards", [])
+            if isinstance(entry, dict) and "sites" in entry
+        ]
+
+    @property
+    def allowlists(self):
+        """Symbol to the `path: count` items it pins. A symbol absent from this mapping pins
+        nothing, which is not the same as one that pins no sites at all. What was written under
+        `sites:` is passed through as it was read, so a value that is not a list of those items
+        is reported rather than quietly treated as pinning nothing."""
+        return {entry["symbol"]: entry["sites"] for entry in self.pinned_guards}
 
     @property
     def commentary(self):
@@ -83,9 +105,13 @@ class Spec:
 
 
 def _parse_front_matter(lines):
-    """The small YAML subset the specs actually use: scalars, and lists of either
-    plain strings or a single `symbol:` key. A real parser is not worth a dependency,
-    and anything outside that subset is reported rather than guessed at."""
+    """The small YAML subset the specs actually use: scalars, lists of plain strings, and a
+    `symbol:` item that may carry keys of its own, one of which may be a further list. A real
+    parser is not worth a dependency, and anything outside that subset is reported rather than
+    guessed at.
+
+    A `symbol:` item becomes a mapping so that the keys under it stay attached to it. Callers
+    that only want the names read `Spec.guards`, which flattens either shape."""
     if not lines or lines[0].strip() != "---":
         return None, 0
     end = None
@@ -98,25 +124,41 @@ def _parse_front_matter(lines):
 
     front = {}
     key = None
+    entry = None
+    entry_indent = 0
+    nested = None
     for raw in lines[1:end]:
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        if raw.startswith(("  - ", "- ")):
-            item = raw.split("- ", 1)[1].strip()
-            if item.startswith("symbol:"):
-                item = item.split("symbol:", 1)[1].strip()
+        indent = len(raw) - len(raw.lstrip())
+        stripped = raw.strip()
+
+        if stripped.startswith("- "):
+            item = stripped[2:].strip()
+            if nested is not None and indent > entry_indent:
+                nested.append(item)
+                continue
             if key is None:
                 return None, end + 1
-            front.setdefault(key, [])
-            if not isinstance(front[key], list):
+            values = front.setdefault(key, [])
+            if not isinstance(values, list):
                 return None, end + 1
-            front[key].append(item)
+            entry, nested, entry_indent = None, None, indent
+            if item.startswith("symbol:"):
+                entry = {"symbol": item.split("symbol:", 1)[1].strip()}
+                item = entry
+            values.append(item)
             continue
-        if ":" not in raw:
+
+        if ":" not in stripped:
             return None, end + 1
-        key, value = raw.split(":", 1)
-        key = key.strip()
-        value = value.strip()
+        name, value = stripped.split(":", 1)
+        name, value = name.strip(), value.strip()
+        if entry is not None and indent > entry_indent:
+            entry[name] = value if value else []
+            nested = entry[name] if not value else None
+            continue
+        key, entry, nested = name, None, None
         front[key] = value if value else []
     return front, end + 1
 

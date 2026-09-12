@@ -35,15 +35,23 @@ body, or a person's screen. Each of those has a gate of its own, `Policy::presen
 `Policy::render_in_place` and `Policy::read_trusted_content`, and the planner's own arguments
 have `Policy::read_planner_argument`. A `declassify` anywhere else is almost certainly a
 violation, and it can only be written inside the policy layer: `Declassification::authorise` is
-`pub(in crate::policy)`, so no other module and no other crate can mint one at all.
+`pub(in crate::policy)`, so no other module and no other crate can mint one at all. Every file
+that declassifies is pinned with a count in [specs/labels.md](../specs/labels.md), so
+`make check-spec` fails on a new one until somebody records it there, which is where a reviewer
+is asked whether it belongs.
 
 **4. A `Labelled` built by hand.** Never construct one to give a value a better label than its
 inputs had. That is laundering, whichever crate it happens in. If a value derived from
 untrusted input has to be trusted for something to work, the design is wrong, not the label.
+This is the shape no check pins: the constructor is how the program labels its own data, so it is
+used everywhere legitimately, and only a reader can tell the two apart.
 
 Two places in the kernel do branch on untrusted bytes, deliberately. Both are named under Known
 costs in [specs/labels.md](../specs/labels.md), because an unlisted exception is indistinguishable
-from a violation.
+from a violation. A third that mints a witness of its own moves a pinned count and so cannot
+arrive quietly. One added inside a function that already holds a counted `declassify` moves
+nothing: the counts pin how many times the bytes are released, not how many decisions are then
+taken from them, so `crates/core/src/policy.rs` still has to be read rather than counted.
 
 ## The inverse mistake: inventing a violation
 

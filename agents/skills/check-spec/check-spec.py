@@ -35,6 +35,8 @@ from specs import EM_DASH, README, SPEC_DIR, TestIndex, crate_directories, load_
 ERROR = "error"
 WARNING = "warning"
 
+FRONT_MATTER_KEYS = {"id", "title", "status", "governs", "guards"}
+
 
 def finding(spec, severity, kind, summary, clause=None, evidence=None, fix=None):
     return {
@@ -69,6 +71,14 @@ def check_front_matter(spec):
             ERROR,
             "front-matter-missing",
             "front matter lists no `governs` paths, so no diff is ever reviewed against it",
+        )
+    for name in sorted(set(spec.front) - FRONT_MATTER_KEYS):
+        yield finding(
+            spec.rel,
+            ERROR,
+            "front-matter-unknown-key",
+            f"front matter has a `{name}` key, which nothing reads",
+            fix="a `sites:` indented out of its `guards` entry lands here and pins nothing",
         )
 
 
@@ -237,33 +247,189 @@ def check_governs(spec):
             )
 
 
-def guard_sites(symbol, sources):
-    """Where a guarded symbol is named. `Type::method` also matches `.method(`, since
-    that is how most call sites read once the receiver has a type.
+def strip_comments(lines):
+    """The same lines with their comments blanked out, since a symbol named in prose is not a
+    use of it. Half the lines naming `Policy::present` are the trust argument written around
+    the gate rather than calls to it, and counting those would make the allowlists below a
+    record of the documentation that fails on every reworded sentence.
 
-    The definition is matched on the whole name rather than on a prefix. A guard named
-    `vouch` matching `fn vouching_for_one_command` would report a renamed symbol as
-    present, which is the one answer this check must never give."""
-    bare = symbol.split("::")[-1]
+    Line comments are cut wherever they start rather than only at the margin, block comments
+    are followed across lines, and a `//` inside a string stays: all three shapes are in the
+    files whose counts are pinned, and a stripper that got any of them wrong would move a
+    count without anybody touching a call.
+
+    A string is not followed across lines. Rust has such strings, but one holding an unclosed
+    `/*` would have to be for this to matter, and the counts are checked against the tree."""
+    stripped = []
+    in_block = False
+    for raw in lines:
+        kept = []
+        in_string = False
+        i = 0
+        while i < len(raw):
+            pair = raw[i : i + 2]
+            if in_block:
+                if pair == "*/":
+                    in_block = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if in_string:
+                if raw[i] == "\\":
+                    i += 2
+                    continue
+                in_string = raw[i] != '"'
+                kept.append(raw[i])
+                i += 1
+                continue
+            if pair == "//":
+                break
+            if pair == "/*":
+                in_block = True
+                i += 2
+                continue
+            in_string = raw[i] == '"'
+            kept.append(raw[i])
+            i += 1
+        stripped.append("".join(kept))
+    return stripped
+
+
+def guard_sites(symbol, sources):
+    """Every use of a guarded symbol, as `(path, line, text, count)`. `Type::method` also
+    matches `.method(`, since that is how most call sites read once the receiver has a type.
+
+    Occurrences rather than lines. Two uses on one line are two uses, and rustfmt reflowing
+    one call across two lines is still one, which is what lets an allowlist pin a count and
+    survive a formatting change.
+
+    The definition is matched on the whole name rather than on a prefix, because a guard named
+    `vouch` matching `fn vouching_for_one_command` would report a renamed symbol as present,
+    which is the one answer this check must never give. For a qualified guard the file has to
+    name the qualifier too: an unrelated `fn present` in another crate is not `Policy::present`,
+    and counting it would put a file in the allowlist that never touches a label."""
+    parts = symbol.split("::")
+    bare = parts[-1]
+    qualifier = parts[0] if len(parts) > 1 else None
     definition = re.compile(rf"\bfn\s+{re.escape(bare)}\s*[(<]")
     call = f".{bare}("
     hits = []
     for path, lines in sources.items():
-        for number, raw in enumerate(lines, start=1):
-            if symbol in raw or call in raw or definition.search(raw):
-                hits.append((str(path), number, raw.strip()))
+        code = strip_comments(lines)
+        owns = qualifier is None or any(qualifier in line for line in code)
+        for number, raw in enumerate(code, start=1):
+            count = raw.count(symbol) + raw.count(call)
+            if owns:
+                count += len(definition.findall(raw))
+            if count:
+                hits.append((str(path), number, raw.strip(), count))
     return hits
 
 
 def check_guards(spec, sources):
+    """A guarded symbol exists, and where the entry pins its call sites, they are the sites
+    it has. Presence alone catches a rename and nothing else: a new use of an escape hatch
+    reads as ordinary code, which is how one lands without anybody deciding it should."""
+    entries = spec.front.get("guards", [])
+    allowlists = spec.allowlists
+    pinned = spec.pinned_guards
+    if pinned and len(pinned) != len(entries):
+        yield finding(
+            spec.rel,
+            ERROR,
+            "guard-sites-partial",
+            "some `guards` entries pin their call sites and some do not",
+            fix="an unpinned entry beside pinned ones reads as though it were checked too",
+        )
+
     for symbol in spec.guards:
-        if not guard_sites(symbol, sources):
+        sites = guard_sites(symbol, sources)
+        if not sites:
             yield finding(
                 spec.rel,
                 ERROR,
                 "guard-missing",
                 f"`guards` names `{symbol}`, which appears nowhere in crates/",
                 fix="a guarded symbol that was renamed stops being review-required silently",
+            )
+            continue
+        if symbol in allowlists:
+            yield from check_allowlist(spec, symbol, allowlists[symbol], sites)
+
+
+def check_allowlist(spec, symbol, listed, sites):
+    """Compare a pinned `sites:` list against the tree, file by file.
+
+    The count has to match rather than merely not be exceeded. A ceiling left above the real
+    figure hands back the slots that were freed, so a removed use silently pays for a new one,
+    and the recorded number stops being a fact about the tree."""
+    if not isinstance(listed, list):
+        yield finding(
+            spec.rel,
+            ERROR,
+            "guard-sites-malformed",
+            f"`{symbol}` has a `sites:` that is not a list of `path: count` items",
+        )
+        return
+
+    allowed = {}
+    unusable = set()
+    for item in listed:
+        head, separator, tail = item.rpartition(":")
+        # With no separator the whole item is the path and the count is missing, rather than
+        # the other way round, so that the file below is still recognised as one that was named.
+        path, count = (head.strip(), tail.strip()) if separator else (item.strip(), "")
+        problem = None
+        if not path or not count.isdigit():
+            problem = "is not `path: count`"
+        elif count == "0":
+            problem = "pins no sites, which is what leaving the path out says"
+        elif path in allowed or path in unusable:
+            problem = "names a path the list already pins"
+        if problem:
+            # The path is remembered as unusable so that the comparison below stays quiet about
+            # it. One typo should read as one problem, not as the file having gone unlisted.
+            unusable.add(path)
+            allowed.pop(path, None)
+            yield finding(
+                spec.rel,
+                ERROR,
+                "guard-sites-malformed",
+                f"`{symbol}` pins `{item}`, which {problem}",
+            )
+            continue
+        allowed[path] = int(count)
+
+    found = {}
+    where = {}
+    for path, number, _, count in sites:
+        found[path] = found.get(path, 0) + count
+        where.setdefault(path, []).append(number)
+
+    for path in sorted((set(allowed) | set(found)) - unusable):
+        actual = found.get(path, 0)
+        numbers = where.get(path, [])
+        lines = ", ".join(str(n) for n in numbers[:12])
+        if len(numbers) > 12:
+            lines += f", and {len(numbers) - 12} more"
+        if path not in allowed:
+            yield finding(
+                spec.rel,
+                ERROR,
+                "guard-site-unlisted",
+                f"`{symbol}` is used in `{path}`, which its `sites:` list does not name",
+                evidence=f"{path}:{lines}",
+                fix="add the file with its count, or use the gate that already covers this",
+            )
+        elif actual != allowed[path]:
+            yield finding(
+                spec.rel,
+                ERROR,
+                "guard-site-count",
+                f"`{symbol}` is pinned at {allowed[path]} uses in `{path}` and has {actual}",
+                evidence=f"{path}:{lines}" if lines else f"{path}: no uses left",
+                fix=f"a use of this symbol is review-required: record `{path}: {actual}`",
             )
 
 
@@ -389,8 +555,17 @@ def select(specs, selectors, changed_base):
         touched = set(changed_files(changed_base))
         chosen = []
         for spec in specs:
+            # A pinned path counts as well as a governed one. The files a guard allowlist pins
+            # are mostly not the files the spec governs, so selecting on `governs` alone would
+            # leave the branch run silent about the one edit the allowlist exists to catch.
+            patterns = list(spec.governs) + [
+                item.rpartition(":")[0].strip()
+                for sites in spec.allowlists.values()
+                if isinstance(sites, list)
+                for item in sites
+            ]
             if spec.rel in touched or any(
-                any(fnmatch(f, pattern) for f in touched) for pattern in spec.governs
+                any(fnmatch(f, pattern) for f in touched) for pattern in patterns if pattern
             ):
                 chosen.append(spec)
         return chosen, []
@@ -442,7 +617,8 @@ what the clauses actually need.
 Governed source files (this spec decides these paths):
 {governed}
 
-Guarded symbols and every place they are named (each use is review-required):
+Guarded symbols and every place they are used (each use is review-required). Comments are not
+listed, so a symbol you find named in prose is not missing from this list:
 {guards}
 
 Tests the clauses in your scope name, already confirmed to exist:
@@ -519,8 +695,9 @@ def build_prompt(spec, clauses, sources, crates, index, results_file):
     guard_lines = []
     for symbol in spec.guards:
         sites = guard_sites(symbol, sources)
-        guard_lines.append(f"- `{symbol}`: {len(sites)} sites")
-        for path, number, _ in sites[:40]:
+        uses = sum(count for _, _, _, count in sites)
+        guard_lines.append(f"- `{symbol}`: {uses} uses")
+        for path, number, _, _ in sites[:40]:
             guard_lines.append(f"    - {path}:{number}")
         if len(sites) > 40:
             guard_lines.append(f"    - ... and {len(sites) - 40} more, grep for it")
