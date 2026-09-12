@@ -2531,7 +2531,7 @@ fn edit_file<S: Sink, C: Confirmer>(
             if body_label.is_trusted() {
                 let told = policy.render_in_place("edit_file", &body, |contents| {
                     match crate::replace::changed_region(&current, &contents) {
-                        Some(excerpt) => format!("{headline}\n\n{excerpt}"),
+                        Some(excerpt) => format!("{excerpt}\n\n{headline}"),
                         None => headline.clone(),
                     }
                 });
@@ -5736,7 +5736,10 @@ mod tests {
             let mut policy = policy_vouching(&mut sink);
             let told = edit(&mut policy, &workspace);
 
-            assert!(told.starts_with("edited a.txt"), "{told}");
+            assert!(
+                told.trim_end().ends_with("edited a.txt: 1 replacement(s)"),
+                "the count belongs after the lines it produced: {told}"
+            );
             assert_eq!(
                 std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
                 "keep\nnew\ntail\n"
