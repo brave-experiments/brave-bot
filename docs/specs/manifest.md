@@ -105,13 +105,22 @@ Every destination the plan will use is inserted through the gate that refuses an
 trusted and public, before a single byte has been read. Steps read their destinations out of
 that lock, not out of themselves.
 
-Optional routing is filled at validation with an explicit default, so the driver never invents a
-destination that did not pass the lock. An omitted listing pattern or search include is locked
-as no filter, not as a glob of the empty string, which would match nothing.
+A destination is text. Validation establishes that for every routing field, so a field the plan
+filled with a number or a list refuses the plan whole rather than reaching the lock.
+
+Optional routing is filled at validation with an explicit default, where the plan omitted the
+field or left it empty and nowhere else, so the driver never invents a destination that did not
+pass the lock and a default never stands in for a value the plan gave. An omitted listing pattern
+or search include is locked as no filter, not as a glob of the empty string, which would match
+nothing.
 
 `verified-by: bravebot_core::manifest::every_effect_destination_is_named_for_the_routing_lock`
 `verified-by: bravebot_core::manifest::an_omitted_search_directory_is_locked_as_the_workspace`
 `verified-by: bravebot_core::manifest::an_omitted_list_pattern_is_locked_as_no_filter`
+`verified-by: bravebot_core::manifest::a_pattern_the_plan_left_empty_is_locked_as_no_filter`
+`verified-by: bravebot_core::manifest::a_routing_field_that_is_not_text_is_refused`
+`verified-by: bravebot_core::manifest::a_routing_default_never_replaces_a_field_the_plan_gave`
+`verified-by: bravebot_agent::manifest::a_plan_whose_routing_field_is_not_text_is_refused`
 `verified-by: bravebot_agent::manifest::a_write_lands_where_the_plan_said_and_carries_what_it_never_read`
 `verified-by: bravebot_agent::manifest::a_listing_with_no_pattern_lists_the_tree`
 
