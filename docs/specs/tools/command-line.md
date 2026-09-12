@@ -512,7 +512,7 @@ needs it.
 plan, so carrying it is visible. An environment that accumulated invisibly across calls would change
 what a later plan does without appearing in that plan.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::the_working_directory_persists_across_calls`
 
 <a id="CMDLINE-13"></a>
 ### CMDLINE-13: a call may name its own deadline, under a ceiling

@@ -12851,3 +12851,83 @@ fn a_non_integer_deadline_is_refused() {
         "the refusal did not explain the problem: {second}"
     );
 }
+
+/// CMDLINE-12: A call may name a directory to run in, inside the workspace.
+/// Absent one, a line runs where the last one ran, and the first runs at the workspace root.
+#[test]
+fn the_working_directory_persists_across_calls() {
+    let scratch = Scratch::new("cmdline-12-directory");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    let other = scratch.path.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        // First call: runs at workspace root with no directory argument.
+        tool_request("run", r#"{"command":"echo first"}"#),
+        // Second call: names a subdirectory.
+        tool_request("run", r#"{"command":"echo second","directory":"sub"}"#),
+        // Third call: no directory named, persists from the previous call ("sub").
+        tool_request("run", r#"{"command":"echo third"}"#),
+        // Fourth call: names another directory ("other").
+        tool_request("run", r#"{"command":"echo fourth","directory":"other"}"#),
+        // Fifth call: resets to workspace root with ".".
+        tool_request("run", r#"{"command":"echo fifth","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test persistence of working directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 5, "all five runs were asked about");
+
+    let expected_root = scratch.path.canonicalize().unwrap();
+    let expected_sub = subdir.canonicalize().unwrap();
+    let expected_other = other.canonicalize().unwrap();
+
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "first call runs at workspace root"
+    );
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_sub,
+        "second call runs in named directory 'sub'"
+    );
+    assert_eq!(
+        asked[2].plan.directory.canonicalize().unwrap(),
+        expected_sub,
+        "third call persists working directory from previous call"
+    );
+    assert_eq!(
+        asked[3].plan.directory.canonicalize().unwrap(),
+        expected_other,
+        "fourth call runs in 'other'"
+    );
+    assert_eq!(
+        asked[4].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "fifth call resets to workspace root via '.'"
+    );
+}
