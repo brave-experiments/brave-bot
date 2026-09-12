@@ -2813,13 +2813,12 @@ fn an_edit_is_reviewed_as_a_diff() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    // Trusted so the passage can be located, but the destination is a path the user did not
-    // vouch for, so the write itself is still reviewed.
+    // Trusted so the passage can be located, but a rule requires approval for the write,
+    // so the write itself is still reviewed as a diff.
     let mut trust = bravebot_core::trust::TrustStore::new();
     trust.trust("a.txt");
-    trust.distrust("out");
 
-    let task = Task::new("edit a.txt");
+    let task = Task::new("edit a.txt").with_permissions(rules(&[], &["Edit(a.txt)"], &[]));
     turn::run_with_trust(
         &config,
         &egress,
@@ -2831,9 +2830,17 @@ fn an_edit_is_reviewed_as_a_diff() {
     )
     .expect("turn runs");
 
-    // a.txt is trusted and the data is trusted, so this one is silent. The diff shape is
-    // asserted by the confirm module's own tests. What matters here is that the edit applied
-    // to only the matched passage.
+    // a.txt is trusted and the data is trusted, but the rule required approval.
+    // The edit applies to only the matched passage.
+    assert!(
+        !confirmer.seen.is_empty(),
+        "an edit reviewed as a diff must reach the confirmer"
+    );
+    assert_eq!(confirmer.seen[0].intent, bravebot_agent::Intent::Edit);
+    assert_eq!(
+        confirmer.seen[0].existing.as_deref(),
+        Some("keep\nold\ntail\n")
+    );
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
         "keep\nnew\ntail\n"
@@ -2904,16 +2911,22 @@ fn a_refused_edit_does_not_happen() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::rejecting();
 
-    let task = Task::new("edit a.txt");
-    turn::run(
+    let task = Task::new("edit a.txt").with_permissions(rules(&[], &["Edit(a.txt)"], &[]));
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
         &mut sink,
+        trusting_the_workspace(),
     )
     .expect("turn runs");
+
+    assert!(
+        !confirmer.seen.is_empty(),
+        "a refused edit must reach the approval prompt"
+    );
 
     assert_eq!(
         std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
@@ -2922,6 +2935,142 @@ fn a_refused_edit_does_not_happen() {
     );
 }
 
+#[test]
+fn a_stale_edit_is_refused() {
+    let scratch = Scratch::new("edit-stale");
+    std::fs::write(scratch.path.join("a.txt"), "original\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"original","new_text":"replaced"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    struct StaleConfirmer {
+        path: std::path::PathBuf,
+    }
+    impl bravebot_agent::Confirmer for StaleConfirmer {
+        fn confirm_server(
+            &mut self,
+            _request: &bravebot_agent::confirm::ServerRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_write(
+            &mut self,
+            _request: &bravebot_agent::WriteRequest,
+        ) -> bravebot_agent::Decision {
+            std::fs::write(&self.path, "stale\n").unwrap();
+            bravebot_agent::Decision::Approve
+        }
+        fn confirm_run(
+            &mut self,
+            _request: &bravebot_agent::RunRequest,
+        ) -> bravebot_agent::RunDecision {
+            bravebot_agent::RunDecision::reject()
+        }
+        fn confirm_read_output(
+            &mut self,
+            _request: &bravebot_agent::confirm::OutputRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_fetch(
+            &mut self,
+            _request: &bravebot_agent::confirm::FetchRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_vouch(
+            &mut self,
+            _request: &bravebot_agent::confirm::VouchRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn ask_user(
+            &mut self,
+            _asking: &bravebot_core::ask::Asking,
+        ) -> Vec<bravebot_core::ask::Answer> {
+            Vec::new()
+        }
+        fn interjection(&mut self) -> Option<String> {
+            None
+        }
+    }
+
+    let mut confirmer = StaleConfirmer {
+        path: scratch.path.join("a.txt"),
+    };
+
+    let task = Task::new("edit a.txt").with_permissions(rules(&[], &["Edit(a.txt)"], &[]));
+    turn::run_with_trust(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut sink,
+        trusting_the_workspace(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().unwrap();
+    let second = received.recv().unwrap();
+    assert!(second.contains("changed after it was read; read it again before editing"));
+
+    assert_eq!(
+        std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
+        "stale\n"
+    );
+}
+
+#[test]
+fn an_edit_of_a_missing_passage_is_refused() {
+    let scratch = Scratch::new("edit-missing-passage");
+    std::fs::write(scratch.path.join("a.txt"), "original\n").unwrap();
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request_2(
+            "edit_file",
+            r#"{"path":"a.txt","old_text":"missing","new_text":"replaced"}"#,
+        ),
+        reply_with("understood"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut confirmer = RecordingConfirmer::approving();
+
+    let task = Task::new("edit a.txt");
+    turn::run_cancellable(
+        &config,
+        &egress,
+        &workspace,
+        &task,
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("turn runs");
+
+    let _first = received.recv().unwrap();
+    let second = received.recv().unwrap();
+    assert!(second.contains("the text to replace is not in the file"));
+
+    assert!(
+        confirmer.seen.is_empty(),
+        "a missing passage edit reached the approval prompt"
+    );
+}
 /// An ambiguous edit must be refused before anyone is asked to approve it: there is no
 /// single change to review.
 #[test]
@@ -2943,13 +3092,16 @@ fn an_ambiguous_edit_is_refused_without_asking() {
     let mut confirmer = RecordingConfirmer::approving();
 
     let task = Task::new("edit a.txt");
-    turn::run(
+    turn::run_cancellable(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
+        trusting_the_workspace(),
+        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -8324,6 +8476,10 @@ fn an_edit_shows_the_lines_it_changed() {
     assert!(
         second.contains("bravo"),
         "the planner was not shown the lines around it: {second}"
+    );
+    assert!(
+        second.find("CHARLIE").unwrap() < second.find("1 replacement(s)").unwrap(),
+        "the excerpt must be shown before the replacement count: {second}"
     );
 }
 
