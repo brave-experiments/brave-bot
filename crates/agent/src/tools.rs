@@ -527,7 +527,8 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     },
                     "directory": {
                         "type": "string",
-                        "description": "Workspace-relative directory to run the command in. \
+                        "description": "Directory to run the command in, relative to the \
+                                        workspace or inside a directory the user added. \
                                         Defaults to \".\" on the first call, and persists across \
                                         calls within the turn."
                     },
@@ -2864,14 +2865,12 @@ fn run<S: Sink, C: Confirmer>(
 
     let directory = match argument(arguments, "directory") {
         Some(proposed) => {
-            let _promoted = match policy.promote_confined_read("run", "directory", &proposed) {
-                Ok(p) => p,
-                Err(denial) => return problem(format!("refused: {denial}")),
-            };
-            let dir = match policy.read_planner_argument("run", "directory", &proposed) {
-                Ok(d) => d,
-                Err(denial) => return problem(format!("refused: {denial}")),
-            };
+            // Released through a display witness for the same reason: a directory is a routing
+            // field shown in the approval prompt and endorsed with the plan (CMDLINE-12). It is
+            // confined to the workspace or an added directory, and denied paths are refused before
+            // compilation.
+            let proof = policy.authorise_display_release("a proposed run directory");
+            let dir = proposed.declassify(&proof);
             if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &dir) {
                 return problem(refusal);
             }
@@ -2937,7 +2936,6 @@ fn run<S: Sink, C: Confirmer>(
 
     // The approval is what makes this plan trustworthy, and it is bound to this exact plan.
     policy.endorse_plan(&plan);
-    *tools.run_directory = plan.directory.clone();
 
     let label = match policy.before_plan(&plan) {
         Ok(label) => label,
@@ -2973,6 +2971,8 @@ fn run<S: Sink, C: Confirmer>(
 
         return match crate::exec::start_steps(steps, &plan.directory) {
             Ok(running) => {
+                // The directory is carried over only once pre-flight checks and launch succeed.
+                *tools.run_directory = plan.directory.clone();
                 let name = tools.jobs.keep(running, displayed.clone(), label);
                 Produced::new(
                     // Nothing has been printed yet, and the label is the one the kernel fixed
@@ -2986,6 +2986,10 @@ fn run<S: Sink, C: Confirmer>(
             Err(error) => problem(format!("error: `{displayed}` did not start: {error}")),
         };
     }
+
+    // The directory is carried over only once pre-flight policy gates and validations succeed,
+    // so a failed compile, refusal, or invalid plan never mutates the turn's working directory.
+    *tools.run_directory = plan.directory.clone();
 
     // A redirection is a write, so the map has to say what its destination holds once the line
     // has run: untrusted bytes landing in a vouched-for tree must mark that path untrusted, or a

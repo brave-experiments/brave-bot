@@ -12868,15 +12868,18 @@ fn the_working_directory_persists_across_calls() {
 
     let (endpoint, _received) = serve_sequence(vec![
         // First call: runs at workspace root with no directory argument.
-        tool_request("run", r#"{"command":"echo first"}"#),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
         // Second call: names a subdirectory.
-        tool_request("run", r#"{"command":"echo second","directory":"sub"}"#),
+        tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
         // Third call: no directory named, persists from the previous call ("sub").
-        tool_request("run", r#"{"command":"echo third"}"#),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
         // Fourth call: names another directory ("other").
-        tool_request("run", r#"{"command":"echo fourth","directory":"other"}"#),
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","directory":"other"}"#,
+        ),
         // Fifth call: resets to workspace root with ".".
-        tool_request("run", r#"{"command":"echo fifth","directory":"."}"#),
+        tool_request("run", r#"{"command":"cargo --version","directory":"."}"#),
         reply_with("done"),
     ]);
     let config = config_for(&endpoint);
@@ -12929,5 +12932,328 @@ fn the_working_directory_persists_across_calls() {
         asked[4].plan.directory.canonicalize().unwrap(),
         expected_root,
         "fifth call resets to workspace root via '.'"
+    );
+}
+
+/// CMDLINE-12: A call may name a directory inside an added directory.
+#[test]
+fn the_working_directory_can_be_an_added_directory() {
+    let scratch = Scratch::new("cmdline-12-added-main");
+    let outside = Scratch::new("cmdline-12-added-outside");
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(outside.path.to_str().expect("utf-8 path"))
+        .expect("directory added");
+    let added_str = added.display().to_string().replace('\\', "/");
+
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            &format!(r#"{{"command":"cargo --version","directory":"{added_str}"}}"#),
+        ),
+        // A subsequent run with no directory persists the added directory.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut trust = trusting_the_workspace();
+    trust.trust(&added.display().to_string());
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test run in added directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trust,
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 2, "both runs were asked about");
+    let expected_added = added.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_added,
+        "first call runs in added directory"
+    );
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_added,
+        "second call persists the added directory"
+    );
+}
+
+/// CMDLINE-12: A directory escaping the workspace is refused and does not persist.
+#[test]
+fn a_directory_escaping_the_workspace_is_refused() {
+    let scratch = Scratch::new("cmdline-12-escape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        // Attempting to escape via ..
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","directory":"../escapes"}"#,
+        ),
+        // Next valid run runs in default workspace root.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test escape refused"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    // Only the second run was valid and asked about.
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "only valid run was asked about");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "valid call runs at workspace root"
+    );
+
+    // The first response reports refusal due to escaping.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("refused:") || second.contains("escapes"),
+        "the escape was refused: {second}"
+    );
+}
+
+/// CMDLINE-12: A non-existent directory returns an error and does not mutate the working directory.
+#[test]
+fn a_nonexistent_directory_is_an_error_and_does_not_mutate() {
+    let scratch = Scratch::new("cmdline-12-nonexistent");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","directory":"nonexistent_dir"}"#,
+        ),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test nonexistent directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "only valid run was asked about");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "subsequent call runs at workspace root"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("is not a directory"),
+        "reported not a directory: {second}"
+    );
+}
+
+/// CMDLINE-12: A run rejected by the user does not persist its directory.
+#[test]
+fn a_refused_run_directory_does_not_persist() {
+    let scratch = Scratch::new("cmdline-12-reject");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    struct StepConfirmer {
+        answers: std::collections::VecDeque<bravebot_agent::RunDecision>,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::RunRequest>>>,
+    }
+    impl bravebot_agent::Confirmer for StepConfirmer {
+        fn confirm_server(
+            &mut self,
+            _: &bravebot_agent::confirm::ServerRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_write(&mut self, _: &bravebot_agent::WriteRequest) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_run(
+            &mut self,
+            request: &bravebot_agent::RunRequest,
+        ) -> bravebot_agent::RunDecision {
+            self.seen.lock().unwrap().push(request.clone());
+            self.answers
+                .pop_front()
+                .unwrap_or_else(bravebot_agent::RunDecision::reject)
+        }
+        fn confirm_read_output(
+            &mut self,
+            _: &bravebot_agent::confirm::OutputRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_fetch(
+            &mut self,
+            _: &bravebot_agent::confirm::FetchRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn confirm_vouch(
+            &mut self,
+            _: &bravebot_agent::confirm::VouchRequest,
+        ) -> bravebot_agent::Decision {
+            bravebot_agent::Decision::Reject
+        }
+        fn ask_user(&mut self, _: &bravebot_core::ask::Asking) -> Vec<bravebot_core::ask::Answer> {
+            Vec::new()
+        }
+        fn interjection(&mut self) -> Option<String> {
+            None
+        }
+    }
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let answers = std::collections::VecDeque::from([
+        bravebot_agent::RunDecision::reject(),
+        bravebot_agent::RunDecision::approve(),
+    ]);
+    let mut confirmer = StepConfirmer {
+        answers,
+        seen: seen.clone(),
+    };
+
+    let (endpoint, _received) = serve_sequence(vec![
+        // First call names "sub" but user rejects.
+        tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
+        // Second call names no directory: should still be at workspace root because the first was rejected.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test rejected run does not persist"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 2, "both runs were asked about");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "second run runs at workspace root because the first was rejected"
+    );
+}
+
+/// CMDLINE-12: A directory may be named even after the context has met untrusted content.
+#[test]
+fn run_directory_succeeds_in_untrusted_context() {
+    let scratch = Scratch::new("cmdline-12-untrusted");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    // Untrusted file outside any trust store.
+    std::fs::write(scratch.path.join("untrusted.txt"), "untrusted content\n").unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        // 1. Read untrusted file, tainting context integrity to Untrusted.
+        tool_request("read_file", r#"{"path":"untrusted.txt"}"#),
+        // 2. Run with directory in untrusted context.
+        tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    // TrustStore is empty, so reading untrusted.txt marks context untrusted.
+    let empty_trust = bravebot_core::trust::TrustStore::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test run directory in untrusted context"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        empty_trust,
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "the run was asked about and approved");
+    let expected_sub = subdir.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_sub,
+        "call with directory succeeds even in untrusted context"
     );
 }
