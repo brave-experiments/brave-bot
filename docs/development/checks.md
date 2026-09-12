@@ -19,7 +19,9 @@ same thing. Reaching for it out of caution is not free: it is the difference bet
 takes a minute and one that takes twenty, and the reviewer is the person waiting.
 
 `make check-spec` checks the mechanical half of the specs: clause numbering, the tests each clause
-names, the paths it governs, and the table in [../specs/README.md](../specs/README.md).
+names, the paths it governs, the call sites a guarded symbol pins, and the table in
+[../specs/README.md](../specs/README.md). CI runs it too, so a new use of a guarded symbol fails a
+pull request rather than waiting for somebody to notice it.
 `make check-npm` installs from the lockfile and lints it, as CI does. `make check-reviewdog` is the
 [security scan](security-scan.md).
 
