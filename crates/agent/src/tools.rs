@@ -3020,10 +3020,6 @@ fn run<S: Sink, C: Confirmer>(
         };
     }
 
-    // The directory is carried over only once pre-flight policy gates and validations succeed,
-    // so a failed compile, refusal, or invalid plan never mutates the turn's working directory.
-    *tools.run_directory = plan.directory.clone();
-
     // A redirection is a write, so the map has to say what its destination holds once the line
     // has run: untrusted bytes landing in a vouched-for tree must mark that path untrusted, or a
     // later read hands them back to the planner as trusted.
@@ -3043,6 +3039,12 @@ fn run<S: Sink, C: Confirmer>(
 
     match ran {
         Ok(ran) => {
+            // Carried over only once the line has actually run, which is where the background
+            // branch carries it too: a line whose stages never started moved nothing, and a turn
+            // whose working directory had followed a run that did not happen would land the next
+            // line somewhere nobody chose.
+            *tools.run_directory = plan.directory.clone();
+
             // stdout and stderr together, because a program that failed usually explains itself
             // on stderr and a result that dropped the explanation would be the least useful thing
             // to hand back. Both carry the same label: the kernel fixed it before anything ran and

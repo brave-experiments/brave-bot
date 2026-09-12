@@ -7965,6 +7965,9 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
 /// A confirmer that records what it was asked about a run and answers as it was told.
 struct AskedAboutRuns {
     answer: bravebot_agent::RunDecision,
+    /// Answers for the first runs, in order, where a test needs them to differ. Empty means every
+    /// run gets `answer`, and a run past the end of the queue gets it too.
+    answers: std::collections::VecDeque<bravebot_agent::RunDecision>,
     writes: bravebot_agent::Decision,
     seen: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::RunRequest>>>,
 }
@@ -7973,8 +7976,19 @@ impl AskedAboutRuns {
     fn answering(answer: bravebot_agent::RunDecision) -> Self {
         Self {
             answer,
+            answers: std::collections::VecDeque::new(),
             writes: bravebot_agent::Decision::Reject,
             seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Answers the runs of one turn in order, for a test where the person says different things to
+    /// successive runs. Anything past the end is refused, so a test that ran one line more than it
+    /// meant to fails rather than quietly approving it.
+    fn answering_in_turn(answers: Vec<bravebot_agent::RunDecision>) -> Self {
+        Self {
+            answers: answers.into(),
+            ..Self::answering(bravebot_agent::RunDecision::reject())
         }
     }
 
@@ -8005,7 +8019,7 @@ impl bravebot_agent::Confirmer for AskedAboutRuns {
 
     fn confirm_run(&mut self, request: &bravebot_agent::RunRequest) -> bravebot_agent::RunDecision {
         self.seen.lock().unwrap().push(request.clone());
-        self.answer
+        self.answers.pop_front().unwrap_or(self.answer)
     }
 
     fn confirm_read_output(
@@ -13215,64 +13229,11 @@ fn a_refused_run_directory_does_not_persist() {
     std::fs::create_dir_all(&subdir).unwrap();
 
     let workspace = Workspace::new(&scratch.path).expect("workspace");
-    struct StepConfirmer {
-        answers: std::collections::VecDeque<bravebot_agent::RunDecision>,
-        seen: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::RunRequest>>>,
-    }
-    impl bravebot_agent::Confirmer for StepConfirmer {
-        fn confirm_server(
-            &mut self,
-            _: &bravebot_agent::confirm::ServerRequest,
-        ) -> bravebot_agent::Decision {
-            bravebot_agent::Decision::Reject
-        }
-        fn confirm_write(&mut self, _: &bravebot_agent::WriteRequest) -> bravebot_agent::Decision {
-            bravebot_agent::Decision::Reject
-        }
-        fn confirm_run(
-            &mut self,
-            request: &bravebot_agent::RunRequest,
-        ) -> bravebot_agent::RunDecision {
-            self.seen.lock().unwrap().push(request.clone());
-            self.answers
-                .pop_front()
-                .unwrap_or_else(bravebot_agent::RunDecision::reject)
-        }
-        fn confirm_read_output(
-            &mut self,
-            _: &bravebot_agent::confirm::OutputRequest,
-        ) -> bravebot_agent::Decision {
-            bravebot_agent::Decision::Reject
-        }
-        fn confirm_fetch(
-            &mut self,
-            _: &bravebot_agent::confirm::FetchRequest,
-        ) -> bravebot_agent::Decision {
-            bravebot_agent::Decision::Reject
-        }
-        fn confirm_vouch(
-            &mut self,
-            _: &bravebot_agent::confirm::VouchRequest,
-        ) -> bravebot_agent::Decision {
-            bravebot_agent::Decision::Reject
-        }
-        fn ask_user(&mut self, _: &bravebot_core::ask::Asking) -> Vec<bravebot_core::ask::Answer> {
-            Vec::new()
-        }
-        fn interjection(&mut self) -> Option<String> {
-            None
-        }
-    }
-
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let answers = std::collections::VecDeque::from([
+    let mut confirmer = AskedAboutRuns::answering_in_turn(vec![
         bravebot_agent::RunDecision::reject(),
         bravebot_agent::RunDecision::approve(),
     ]);
-    let mut confirmer = StepConfirmer {
-        answers,
-        seen: seen.clone(),
-    };
+    let seen = confirmer.seen.clone();
 
     let (endpoint, _received) = serve_sequence(vec![
         // First call names "sub" but user rejects.
