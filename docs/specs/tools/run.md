@@ -219,7 +219,9 @@ table establishes is what an output may be labelled rather than what may run.
 <a id="RUN-11"></a>
 ### RUN-11: a run has a wall-clock limit, and reaching it ends the run rather than failing it
 
-A pipeline is given 300 seconds. When that runs out the stages are killed, and what they printed
+A pipeline is given 300 seconds unless the call named its own deadline, which it may do up to a
+ceiling it cannot exceed; [CMDLINE-13](command-line.md#CMDLINE-13) is that bound. When the deadline
+runs out the stages are killed, and what they printed
 before that is collected and returned exactly as it is for a pipeline that ended by itself, under
 the label RUN-4 gives it. The stop is reported as structure, a duration on the result, so a
 caller says which of the two happened without reading a byte of what was printed. Collecting after
@@ -233,7 +235,7 @@ indistinguishable from one that was working.
 
 A program *meant* to keep running is asked for differently, and [RUN-15](#RUN-15) is how. The limit
 is the answer for the program that hangs; applied to a server it meant the only way to start one
-was to have it killed five minutes later, with no moment at which it was up and could be used.
+was to have it killed at the deadline, with no moment at which it was up and could be used.
 
 **Not a safety property.** A stage that finishes inside the limit is no safer than one that
 outstays it, and nothing may be inferred about what a program did from the fact that it stopped in

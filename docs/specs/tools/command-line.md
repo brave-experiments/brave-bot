@@ -528,7 +528,10 @@ write end of the pipe.
 
 Not a safety property. A program that finishes in time is no safer than one that does not.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::a_run_is_stopped_at_the_deadline_its_call_named`
+`verified-by: bravebot_agent::turn::a_null_deadline_takes_the_default`
+`verified-by: bravebot_agent::turn::a_negative_deadline_is_clamped_to_floor`
+`verified-by: bravebot_agent::tools::run_deadline_is_held_to_bounds_and_defaults_cleanly`
 
 <a id="CMDLINE-14"></a>
 ### CMDLINE-14: a call may run in the background, and its finish wakes the turn

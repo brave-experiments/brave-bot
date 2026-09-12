@@ -12716,3 +12716,138 @@ fn a_processor_is_given_a_picture_as_a_picture() {
         "the request carrying the picture was offered tools, so it was not a processor"
     );
 }
+
+/// Runs one `run` call and hands back how the command ended. A deadline is only observable in the
+/// outcome: a value that is parsed and then dropped on the way to the wait loop leaves a turn that
+/// completes exactly as a working one does, so a test that asserts anything less than this cannot
+/// tell the two apart.
+fn the_outcome_of_a_run(scratch: &Scratch, arguments: &str) -> bravebot_agent::report::Outcome {
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) =
+        serve_sequence(vec![tool_request("run", arguments), reply_with("done")]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("run it"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    reporter
+        .printed
+        .first()
+        .expect("the command never ran, so it ended no way at all")
+        .outcome
+        .clone()
+}
+
+/// CMDLINE-13: the deadline in force is the one the call named, and not the fixed default.
+///
+/// Shown by naming one far below the default and outlasting it. A program that sleeps five seconds
+/// is stopped at a one-second deadline and finishes untouched at the 300-second one, so this fails
+/// against a driver that reads the field and hands the constant to the wait loop anyway.
+///
+/// The raise cannot be shown the same way, because it is observable only by outlasting the default,
+/// which costs five minutes of wall clock to watch. What bounds the raise is pinned instead by
+/// `bravebot_agent::tools::run_deadline_is_held_to_bounds_and_defaults_cleanly`, which is the other
+/// half of this clause: that the value is clamped, and this, that the clamped value is what runs.
+#[test]
+fn a_run_is_stopped_at_the_deadline_its_call_named() {
+    let scratch = Scratch::new("cmdline-13-deadline");
+    let outcome = the_outcome_of_a_run(&scratch, r#"{"command":"sleep 5","deadline_seconds":1}"#);
+    assert!(
+        matches!(outcome, bravebot_agent::report::Outcome::Stopped(_)),
+        "the deadline the call named never reached the wait loop: {outcome:?}"
+    );
+}
+
+/// CMDLINE-13: a deadline under the floor is held to it, and the floor is then what governs the run.
+///
+/// The two ways of getting this wrong are visible in the outcome: a negative value passed through
+/// unclamped is a deadline that has already expired or none at all, and one refused outright never
+/// runs the command, leaving no outcome to read.
+#[test]
+fn a_negative_deadline_is_clamped_to_floor() {
+    let scratch = Scratch::new("cmdline-13-negative");
+    let outcome = the_outcome_of_a_run(&scratch, r#"{"command":"sleep 5","deadline_seconds":-10}"#);
+    assert!(
+        matches!(outcome, bravebot_agent::report::Outcome::Stopped(_)),
+        "a negative deadline did not become the floor: {outcome:?}"
+    );
+}
+
+/// CMDLINE-13: a deadline explicitly set to null takes the default, which matters because model
+/// tool callers emit `null` freely for an optional field they are not using.
+///
+/// Shown with a program that outlasts the floor and not the default. A null read as a non-integer
+/// would refuse the call and leave nothing to have ended, and one read as zero would be stopped at
+/// the floor rather than finishing.
+#[test]
+fn a_null_deadline_takes_the_default() {
+    let scratch = Scratch::new("cmdline-13-null");
+    let outcome =
+        the_outcome_of_a_run(&scratch, r#"{"command":"sleep 2","deadline_seconds":null}"#);
+    assert_eq!(
+        outcome,
+        bravebot_agent::report::Outcome::Succeeded,
+        "a null deadline did not take the default"
+    );
+}
+
+/// CMDLINE-13: a deadline that is not a whole number of seconds is refused with a message
+/// the planner can read, and the command does not execute.
+#[test]
+fn a_non_integer_deadline_is_refused() {
+    let scratch = Scratch::new("cmdline-13-invalid");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"sleep 5","deadline_seconds":"soon"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test invalid deadline"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    // The command was never asked about because the deadline was refused before compilation.
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "the user was asked to approve a run with an invalid deadline"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("whole number of seconds"),
+        "the refusal did not explain the problem: {second}"
+    );
+}

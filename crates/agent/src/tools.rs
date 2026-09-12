@@ -513,8 +513,9 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
              test what you changed. \
              \
              A program meant to keep running, such as a server or a watcher, needs \
-             background: true. Without it the line is waited on and killed after five minutes, \
-             so there is no moment at which it is up and you can do anything with it.",
+             background: true. Without it the line is waited on and stopped at its deadline \
+             (300 seconds by default; set deadline_seconds to allow up to 600), so there is \
+             no moment at which it is up and you can do anything with it.",
             json!({
                 "type": "object",
                 "properties": {
@@ -523,6 +524,15 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                         "description": "One command line. Programs are looked up on PATH, or \
                                         taken as paths relative to the workspace. A newline is not \
                                         accepted, since this is one line and not a script."
+                    },
+                    "deadline_seconds": {
+                        "type": "integer",
+                        "description": "How long to wait for the command, in seconds. Defaults \
+                                        to 300. Held to between 1 and 600 seconds, so anything \
+                                        outside that becomes the nearest of the two. A command \
+                                        that outlasts its deadline is stopped and what it printed \
+                                        comes back. Has no effect with background: true, which is \
+                                        not waited for at all."
                     },
                     "background": {
                         "type": "boolean",
@@ -1610,6 +1620,27 @@ fn references_in(arguments: &Value) -> Labelled<String> {
         names.join(", "),
         bravebot_core::label::Label::untrusted_public(),
     )
+}
+
+/// The deadline asked for by a `run` call, held to the execution bounds.
+///
+/// An absent field or `null` (frequent in model tool calls for omitted optional parameters)
+/// defaults to [`crate::exec::LIMIT`]. A value outside the bounds is clamped to between
+/// [`crate::exec::FLOOR`] and [`crate::exec::CEILING`]. Non-integers are refused.
+fn deadline_from(arguments: &Value) -> Result<std::time::Duration, &'static str> {
+    match arguments.get("deadline_seconds") {
+        Some(value) if !value.is_null() => match value.as_i64() {
+            Some(seconds) => {
+                let clamped = seconds.clamp(
+                    crate::exec::FLOOR.as_secs() as i64,
+                    crate::exec::CEILING.as_secs() as i64,
+                ) as u64;
+                Ok(std::time::Duration::from_secs(clamped))
+            }
+            None => Err("error: 'deadline_seconds' must be a whole number of seconds"),
+        },
+        _ => Ok(crate::exec::LIMIT),
+    }
 }
 
 fn read_file<S: Sink, C: Confirmer>(
@@ -2805,6 +2836,15 @@ fn run<S: Sink, C: Confirmer>(
         );
     };
 
+    // The deadline the caller asked for, clamped to bounds the turn cannot exceed.
+    // Not a safety property: a program that finishes in time is no safer than one that
+    // does not. Absent a value, the short default is generous enough for an ordinary
+    // build step and short enough that a hung program is noticed.
+    let limit = match deadline_from(arguments) {
+        Ok(limit) => limit,
+        Err(diagnostic) => return problem(diagnostic),
+    };
+
     // Assembled from the planner's own words, which are untrusted. Released through one witness,
     // so the trail records that a command line was released rather than leaving it to happen
     // implicitly. A person reading it is the legitimate destination: their reading it is what an
@@ -2923,7 +2963,7 @@ fn run<S: Sink, C: Confirmer>(
     // spelled, because relative and absolute rules are separate namespaces in the map and a rule
     // in the wrong one decides nothing.
     let mut opened: Vec<std::path::PathBuf> = Vec::new();
-    let ran = crate::exec::run_plan(&plan, tools.cancel, crate::exec::LIMIT, &mut opened);
+    let ran = crate::exec::run_plan(&plan, tools.cancel, limit, &mut opened);
     let written: Vec<String> = opened
         .iter()
         .map(|path| tools.workspace.relative_display(path))
@@ -4391,8 +4431,8 @@ mod tests {
 
     /// `run` has exactly one field saying what to run. The line is compiled here rather than handed
     /// anywhere, so a second way to say what to run would be a second thing to keep honest.
-    /// `background` says what to do with the line rather than what it is, and is the only other
-    /// field.
+    /// `background` says what to do with the line rather than what it is, and
+    /// `deadline_seconds` says how long to wait for it.
     #[test]
     fn run_takes_one_command_line_and_nothing_else() {
         let tool = available(false)
@@ -4404,11 +4444,12 @@ mod tests {
             .expect("run has parameters");
         assert_eq!(
             properties.keys().collect::<Vec<_>>(),
-            vec!["background", "command"],
-            "run gained a field beside the command line and whether to wait for it"
+            vec!["background", "command", "deadline_seconds"],
+            "run gained a field beside the command line, whether to wait for it, and how long"
         );
         assert_eq!(properties["command"]["type"], "string");
         assert_eq!(properties["background"]["type"], "boolean");
+        assert_eq!(properties["deadline_seconds"]["type"], "integer");
         assert_eq!(
             tool.function.parameters["required"]
                 .as_array()
@@ -4416,6 +4457,59 @@ mod tests {
             &[serde_json::json!("command")],
             "the command line is the only thing a run must be given"
         );
+    }
+
+    /// CMDLINE-13: deadline parsing and clamping to execution bounds.
+    #[test]
+    fn run_deadline_is_held_to_bounds_and_defaults_cleanly() {
+        use std::time::Duration;
+
+        // Absent or null field defaults to LIMIT (300s).
+        assert_eq!(deadline_from(&json!({})).unwrap(), crate::exec::LIMIT);
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": null})).unwrap(),
+            crate::exec::LIMIT
+        );
+
+        // Values within bounds.
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 150})).unwrap(),
+            Duration::from_secs(150)
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 450})).unwrap(),
+            Duration::from_secs(450)
+        );
+
+        // Clamping to bounds: <= 0 clamps to FLOOR (1s).
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 0})).unwrap(),
+            crate::exec::FLOOR
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": -10})).unwrap(),
+            crate::exec::FLOOR
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 1})).unwrap(),
+            crate::exec::FLOOR
+        );
+
+        // Clamping to bounds: >= 600 clamps to CEILING (600s).
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 600})).unwrap(),
+            crate::exec::CEILING
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 9999})).unwrap(),
+            crate::exec::CEILING
+        );
+
+        // Non-integers are refused.
+        assert!(deadline_from(&json!({"deadline_seconds": "soon"})).is_err());
+        assert!(deadline_from(&json!({"deadline_seconds": 12.5})).is_err());
+        assert!(deadline_from(&json!({"deadline_seconds": true})).is_err());
+        assert!(deadline_from(&json!({"deadline_seconds": [300]})).is_err());
     }
 
     /// A tool's description is the only instruction the planner reliably reads, so wording that

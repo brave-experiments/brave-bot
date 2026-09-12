@@ -68,6 +68,21 @@ use std::time::{Duration, Instant};
 /// same way it does from a pipeline that ended by itself, marked with [`Ran::stopped`].
 pub const LIMIT: Duration = Duration::from_secs(300);
 
+/// The shortest deadline a call may set for its own run.
+///
+/// Zero and below do not name a wait: they would end a run at or before the moment it began. This
+/// is the least value that still asks for one. It promises nothing about reaching the first spawn,
+/// because the clock starts before it, so a run held to the floor can be stopped having printed
+/// nothing.
+pub const FLOOR: Duration = Duration::from_secs(1);
+
+/// The longest deadline a call may set for its own run.
+///
+/// A call may raise its deadline up to this value and no further. Not a safety property:
+/// a program that finishes in time is no safer than one that does not. It bounds the time
+/// the turn spends waiting on one command, which is a budget decision.
+pub const CEILING: Duration = Duration::from_secs(600);
+
 /// How often the wait loop looks up to see whether it should stop.
 const TICK: Duration = Duration::from_millis(50);
 
@@ -189,7 +204,8 @@ pub fn run(
 ///
 /// Exists so the stopping behaviour can be tested: a test that had to wait out the real limit to
 /// see what a killed pipeline returns would take five minutes, and one nobody runs proves nothing.
-/// Callers in the product use [`run`], so there is one limit in force and it is the documented one.
+/// A `run` call names its own deadline between [`FLOOR`] and [`CEILING`], so the limit in force is
+/// the one passed here and [`LIMIT`] is the default a call that named none falls back to.
 pub fn run_within(
     pipeline: &Pipeline,
     resolved: &[std::path::PathBuf],
