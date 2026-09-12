@@ -465,7 +465,7 @@ impl Workspace {
     /// directory symlink on the way out of the tree would otherwise carry the bytes outside a
     /// lexical test that saw nothing wrong. What comes back is that destination, so a caller that
     /// needs the file rather than the name has it.
-    pub fn resolve(&self, relative: &str) -> Result<PathBuf, WorkspaceError> {
+    pub(crate) fn resolve(&self, relative: &str) -> Result<PathBuf, WorkspaceError> {
         let candidate = Path::new(relative);
 
         if candidate.is_absolute() {
