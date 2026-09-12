@@ -2963,7 +2963,19 @@ fn run<S: Sink, C: Confirmer>(
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
-    let displayed = plan.display();
+    // The tree comes with the line wherever the line is said, and only where it is not the root.
+    // The directory persists across calls, so a planner whose earlier call has been summarised away
+    // by a compaction has nothing else left in its context saying where the next one lands, and a
+    // person asked to release what this printed would otherwise not be told which tree it came out
+    // of. Structure either way: a path the driver resolved itself, never a byte of what ran.
+    let displayed = match plan.directory.as_path() == tools.workspace.root() {
+        true => plan.display(),
+        false => format!(
+            "{} (in {})",
+            plan.display(),
+            tools.workspace.relative_display(&plan.directory)
+        ),
+    };
 
     // Absent or non-boolean means the foreground, which is the reading that waits for the program
     // and hands back what it printed.

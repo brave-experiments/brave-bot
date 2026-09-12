@@ -11808,6 +11808,58 @@ fn what_a_command_printed_reaches_the_person_watching() {
     );
 }
 
+/// CMDLINE-12: What is reported about a line says which directory it ran in.
+///
+/// The directory carries across calls, so the line on its own stops saying where its output came
+/// from once an earlier call has scrolled away or been summarised out of the conversation. A path
+/// the driver resolved itself, never a byte of what ran.
+#[test]
+fn what_is_reported_about_a_line_says_which_directory_it_ran_in() {
+    let scratch = Scratch::new("cmdline-12-reported");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    std::fs::write(subdir.join("note.txt"), "SENTINEL-SUB\n").unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cat note.txt","directory":"sub"}"#),
+        // Naming the root again, since the first call is where the second would otherwise run.
+        tool_request("run", r#"{"command":"cat sub/note.txt","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test the reported line says where it ran"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let printed = &reporter.printed;
+    assert!(
+        printed[0].command.contains("(in sub)"),
+        "the row does not say which directory the line ran in: {}",
+        printed[0].command
+    );
+    assert!(
+        !printed[1].command.contains("(in "),
+        "a line at the root was given a directory it did not need: {}",
+        printed[1].command
+    );
+}
+
 /// The cap is on what enters the conversation, not on what the command printed. A build log's
 /// middle is where its first error is, and a planner whose only way back to it is running the
 /// build again has been handed a bill rather than a result.
