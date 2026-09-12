@@ -68,6 +68,12 @@ use std::time::{Duration, Instant};
 /// same way it does from a pipeline that ended by itself, marked with [`Ran::stopped`].
 pub const LIMIT: Duration = Duration::from_secs(300);
 
+/// The shortest deadline a call may set for its own run.
+///
+/// A non-zero minimum ensures the wait loop and process spawn have enough time to start
+/// and catch the process before immediately expiring.
+pub const FLOOR: Duration = Duration::from_secs(1);
+
 /// The longest deadline a call may set for its own run.
 ///
 /// A call may raise its deadline up to this value and no further. Not a safety property:

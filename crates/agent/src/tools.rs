@@ -1621,6 +1621,27 @@ fn references_in(arguments: &Value) -> Labelled<String> {
     )
 }
 
+/// The deadline asked for by a `run` call, held to the execution bounds.
+///
+/// An absent field or `null` (frequent in model tool calls for omitted optional parameters)
+/// defaults to [`crate::exec::LIMIT`]. A value outside the bounds is clamped to between
+/// [`crate::exec::FLOOR`] and [`crate::exec::CEILING`]. Non-integers are refused.
+fn deadline_from(arguments: &Value) -> Result<std::time::Duration, &'static str> {
+    match arguments.get("deadline_seconds") {
+        Some(value) if !value.is_null() => match value.as_i64() {
+            Some(seconds) => {
+                let clamped = seconds.clamp(
+                    crate::exec::FLOOR.as_secs() as i64,
+                    crate::exec::CEILING.as_secs() as i64,
+                ) as u64;
+                Ok(std::time::Duration::from_secs(clamped))
+            }
+            None => Err("error: 'deadline_seconds' must be a whole number of seconds"),
+        },
+        _ => Ok(crate::exec::LIMIT),
+    }
+}
+
 fn read_file<S: Sink, C: Confirmer>(
     policy: &mut Policy<'_, S>,
     workspace: &Workspace,
@@ -2818,17 +2839,9 @@ fn run<S: Sink, C: Confirmer>(
     // Not a safety property: a program that finishes in time is no safer than one that
     // does not. Absent a value, the short default is generous enough for an ordinary
     // build step and short enough that a hung program is noticed.
-    let limit = match arguments.get("deadline_seconds") {
-        Some(value) => match value.as_u64() {
-            Some(seconds) => {
-                let clamped = seconds.max(1).min(crate::exec::CEILING.as_secs());
-                std::time::Duration::from_secs(clamped)
-            }
-            None => {
-                return problem("error: 'deadline_seconds' must be a whole number of seconds");
-            }
-        },
-        None => crate::exec::LIMIT,
+    let limit = match deadline_from(arguments) {
+        Ok(limit) => limit,
+        Err(diagnostic) => return problem(diagnostic),
     };
 
     // Assembled from the planner's own words, which are untrusted. Released through one witness,
@@ -4443,6 +4456,59 @@ mod tests {
             &[serde_json::json!("command")],
             "the command line is the only thing a run must be given"
         );
+    }
+
+    /// CMDLINE-13: deadline parsing and clamping to execution bounds.
+    #[test]
+    fn run_deadline_is_held_to_bounds_and_defaults_cleanly() {
+        use std::time::Duration;
+
+        // Absent or null field defaults to LIMIT (300s).
+        assert_eq!(deadline_from(&json!({})).unwrap(), crate::exec::LIMIT);
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": null})).unwrap(),
+            crate::exec::LIMIT
+        );
+
+        // Values within bounds.
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 150})).unwrap(),
+            Duration::from_secs(150)
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 450})).unwrap(),
+            Duration::from_secs(450)
+        );
+
+        // Clamping to bounds: <= 0 clamps to FLOOR (1s).
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 0})).unwrap(),
+            crate::exec::FLOOR
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": -10})).unwrap(),
+            crate::exec::FLOOR
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 1})).unwrap(),
+            crate::exec::FLOOR
+        );
+
+        // Clamping to bounds: >= 600 clamps to CEILING (600s).
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 600})).unwrap(),
+            crate::exec::CEILING
+        );
+        assert_eq!(
+            deadline_from(&json!({"deadline_seconds": 9999})).unwrap(),
+            crate::exec::CEILING
+        );
+
+        // Non-integers are refused.
+        assert!(deadline_from(&json!({"deadline_seconds": "soon"})).is_err());
+        assert!(deadline_from(&json!({"deadline_seconds": 12.5})).is_err());
+        assert!(deadline_from(&json!({"deadline_seconds": true})).is_err());
+        assert!(deadline_from(&json!({"deadline_seconds": [300]})).is_err());
     }
 
     /// A tool's description is the only instruction the planner reliably reads, so wording that

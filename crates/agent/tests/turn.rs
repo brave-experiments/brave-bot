@@ -12547,8 +12547,7 @@ fn a_processor_is_given_a_picture_as_a_picture() {
     );
 }
 
-/// CMDLINE-13: a call may name its own deadline. A call that sets a short deadline still
-/// completes normally when the command finishes well within it.
+/// CMDLINE-13: a call may name its own deadline, raising it above the default under the ceiling.
 #[test]
 fn a_run_can_raise_its_deadline_under_a_ceiling() {
     let scratch = Scratch::new("cmdline-13-deadline");
@@ -12556,11 +12555,42 @@ fn a_run_can_raise_its_deadline_under_a_ceiling() {
 
     a_run_turn(
         &scratch,
-        r#"{"command":"cargo --version","deadline_seconds":10}"#,
+        r#"{"command":"cargo --version","deadline_seconds":450}"#,
         &mut confirmer,
         bravebot_core::programs::TrustedPrograms::new(),
     )
     .expect("the turn completes with a named deadline");
+}
+
+/// CMDLINE-13: a deadline explicitly set to null (as many model tool callers emit for optional
+/// fields) takes the default limit rather than failing as a non-integer.
+#[test]
+fn a_null_deadline_takes_the_default() {
+    let scratch = Scratch::new("cmdline-13-null");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+
+    a_run_turn(
+        &scratch,
+        r#"{"command":"cargo --version","deadline_seconds":null}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes with a null deadline");
+}
+
+/// CMDLINE-13: a negative deadline is held to the floor rather than refused.
+#[test]
+fn a_negative_deadline_is_clamped_to_floor() {
+    let scratch = Scratch::new("cmdline-13-negative");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+
+    a_run_turn(
+        &scratch,
+        r#"{"command":"cargo --version","deadline_seconds":-10}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes with a negative deadline clamped to floor");
 }
 
 /// CMDLINE-13: a deadline above the ceiling is clamped rather than refused. The turn

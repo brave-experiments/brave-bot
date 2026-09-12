@@ -22,7 +22,6 @@ docs/specs/trace.md:TRACE-2: the trail holds no content
 docs/specs/tools/command-line.md:CMDLINE-10: output comes back as text whenever the planner may read it
 docs/specs/tools/command-line.md:CMDLINE-11: output is bounded, and what was dropped is said
 docs/specs/tools/command-line.md:CMDLINE-12: the working directory persists across calls, and shell state does not
-docs/specs/tools/command-line.md:CMDLINE-13: a call may name its own deadline, under a ceiling
 docs/specs/tools/command-line.md:CMDLINE-14: a call may run in the background, and its finish wakes the turn
 docs/specs/tools/list-files.md:LIST-3: the glob is literal and the matcher does not backtrack
 docs/specs/tools/load-skill.md:LOAD-2: a name close to a real one is refused, not guessed at
