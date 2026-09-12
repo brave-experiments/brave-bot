@@ -2935,6 +2935,9 @@ fn a_refused_edit_does_not_happen() {
     );
 }
 
+/// A file that moved under the edit must not be written. The diff a person approved describes
+/// bytes that are no longer there, so applying it anyway would change something nobody reviewed
+/// and would report a passage it did not touch.
 #[test]
 fn a_stale_edit_is_refused() {
     let scratch = Scratch::new("edit-stale");
@@ -3030,6 +3033,8 @@ fn a_stale_edit_is_refused() {
     );
 }
 
+/// A passage that is not in the file is refused before anyone is asked. There is no change to
+/// review, and settling for a near match would edit bytes the planner never named.
 #[test]
 fn an_edit_of_a_missing_passage_is_refused() {
     let scratch = Scratch::new("edit-missing-passage");
@@ -8466,21 +8471,29 @@ fn an_edit_shows_the_lines_it_changed() {
 
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
+
+    // Read inside the result, not across the whole request: the request also carries the
+    // planner's own call, whose `new_text` argument is CHARLIE too, and that copy precedes the
+    // result whichever way round the result itself is assembled.
+    let result = second
+        .split_once("Result of edit_file:")
+        .expect("the second request carries the edit result")
+        .1;
     assert!(
-        second.contains("1 replacement(s)"),
-        "the confirmation went missing: {second}"
+        result.contains("1 replacement(s)"),
+        "the confirmation went missing: {result}"
     );
     assert!(
-        second.contains("CHARLIE"),
-        "the planner was not shown the line it wrote: {second}"
+        result.contains("CHARLIE"),
+        "the planner was not shown the line it wrote: {result}"
     );
     assert!(
-        second.contains("bravo"),
-        "the planner was not shown the lines around it: {second}"
+        result.contains("bravo"),
+        "the planner was not shown the lines around it: {result}"
     );
     assert!(
-        second.find("CHARLIE").unwrap() < second.find("1 replacement(s)").unwrap(),
-        "the excerpt must be shown before the replacement count: {second}"
+        result.find("CHARLIE").unwrap() < result.find("1 replacement(s)").unwrap(),
+        "the excerpt must be shown before the replacement count: {result}"
     );
 }
 

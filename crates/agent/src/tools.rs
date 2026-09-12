@@ -5736,7 +5736,10 @@ mod tests {
             let mut policy = policy_vouching(&mut sink);
             let told = edit(&mut policy, &workspace);
 
-            assert!(told.contains("edited a.txt"), "{told}");
+            assert!(
+                told.trim_end().ends_with("edited a.txt: 1 replacement(s)"),
+                "the count belongs after the lines it produced: {told}"
+            );
             assert_eq!(
                 std::fs::read_to_string(scratch.path.join("a.txt")).unwrap(),
                 "keep\nnew\ntail\n"
