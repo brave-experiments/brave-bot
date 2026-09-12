@@ -1750,6 +1750,9 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // whatever is still going, which is what keeps a background job from outliving the turn that
     // started it and becoming an effect nobody is watching.
     let mut jobs = crate::tools::Jobs::new();
+    // The working directory for command-line runs in this turn. Initialized to the workspace root
+    // and carried across calls within the turn so that changing directory persists.
+    let mut run_directory = workspace.root().to_path_buf();
     // Shared rather than handed over: a delegate takes the lock for one call and gives it back,
     // and the turn keeps its own handle on all three.
     let (confirming, reporting, recording) = (&confirming, &reporting, &recording);
@@ -2074,6 +2077,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         spawned: &mut spawned,
                         jobs: &mut jobs,
                         permission_mode: task.permission_mode,
+                        run_directory: &mut run_directory,
                     },
                     &mut asking,
                     &mut reporter,

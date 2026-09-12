@@ -525,6 +525,12 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                                         taken as paths relative to the workspace. A newline is not \
                                         accepted, since this is one line and not a script."
                     },
+                    "directory": {
+                        "type": "string",
+                        "description": "Workspace-relative directory to run the command in. \
+                                        Defaults to \".\" on the first call, and persists across \
+                                        calls within the turn."
+                    },
                     "deadline_seconds": {
                         "type": "integer",
                         "description": "How long to wait for the command, in seconds. Defaults \
@@ -903,6 +909,10 @@ pub struct Tools<'a> {
     /// path a rule in the settings file allows, raise no prompt at all, so a refusal that waited
     /// for one would let exactly those writes through.
     pub permission_mode: crate::PermissionMode,
+    /// The current working directory for `run` commands in this turn.
+    ///
+    /// Initialized to the workspace root and updated when `run` specifies a `directory`.
+    pub run_directory: &'a mut std::path::PathBuf,
 }
 
 /// The background pipelines a turn has started.
@@ -2852,7 +2862,30 @@ fn run<S: Sink, C: Confirmer>(
     let proof = policy.authorise_display_release("a proposed command line");
     let line = line.declassify(&proof);
 
-    let directory = tools.workspace.root().to_path_buf();
+    let directory = match argument(arguments, "directory") {
+        Some(proposed) => {
+            let _promoted = match policy.promote_confined_read("run", "directory", &proposed) {
+                Ok(p) => p,
+                Err(denial) => return problem(format!("refused: {denial}")),
+            };
+            let dir = match policy.read_planner_argument("run", "directory", &proposed) {
+                Ok(d) => d,
+                Err(denial) => return problem(format!("refused: {denial}")),
+            };
+            if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &dir) {
+                return problem(refusal);
+            }
+            let resolved = match tools.workspace.resolve(&dir) {
+                Ok(path) => path,
+                Err(escape) => return problem(format!("refused: {escape}")),
+            };
+            if !resolved.is_dir() {
+                return problem(format!("error: '{dir}' is not a directory"));
+            }
+            resolved
+        }
+        None => tools.run_directory.clone(),
+    };
     let plan = match crate::cmdline::compile(&line, &directory, tools.home) {
         Ok(plan) => plan,
         // The refusal names the span that caused it, so the planner can rewrite that part rather
@@ -2904,6 +2937,7 @@ fn run<S: Sink, C: Confirmer>(
 
     // The approval is what makes this plan trustworthy, and it is bound to this exact plan.
     policy.endorse_plan(&plan);
+    *tools.run_directory = plan.directory.clone();
 
     let label = match policy.before_plan(&plan) {
         Ok(label) => label,
@@ -4431,8 +4465,8 @@ mod tests {
 
     /// `run` has exactly one field saying what to run. The line is compiled here rather than handed
     /// anywhere, so a second way to say what to run would be a second thing to keep honest.
-    /// `background` says what to do with the line rather than what it is, and
-    /// `deadline_seconds` says how long to wait for it.
+    /// `background` says what to do with the line rather than what it is, `deadline_seconds` says
+    /// how long to wait for it, and `directory` names where to run it.
     #[test]
     fn run_takes_one_command_line_and_nothing_else() {
         let tool = available(false)
@@ -4444,12 +4478,14 @@ mod tests {
             .expect("run has parameters");
         assert_eq!(
             properties.keys().collect::<Vec<_>>(),
-            vec!["background", "command", "deadline_seconds"],
-            "run gained a field beside the command line, whether to wait for it, and how long"
+            vec!["background", "command", "deadline_seconds", "directory"],
+            "run gained a field beside the command line, whether to wait for it, how long, and \
+             where"
         );
         assert_eq!(properties["command"]["type"], "string");
         assert_eq!(properties["background"]["type"], "boolean");
         assert_eq!(properties["deadline_seconds"]["type"], "integer");
+        assert_eq!(properties["directory"]["type"], "string");
         assert_eq!(
             tool.function.parameters["required"]
                 .as_array()
