@@ -1,6 +1,12 @@
 BINARY = bravebot
 VERSION = $(shell sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' Cargo.toml | head -n 1)
 TAG = v$(VERSION)
+# Which remote a release is tagged against. `origin` is right for a clone of this repository
+# and wrong for a clone of a fork of it, where it names the fork: a tag pushed there is a tag
+# the releases page never sees, and it cannot be moved afterwards because the tag ruleset
+# refuses an update. Set it per clone rather than per release, with
+# `git config bravebot.releaseRemote upstream`.
+RELEASE_REMOTE = $(or $(shell git config bravebot.releaseRemote),origin)
 # The minimum toolchain CI builds against, declared once in Cargo.toml.
 MSRV = $(shell sed -nE 's/^rust-version[[:space:]]*=[[:space:]]*"([0-9.]+)".*/\1/p' Cargo.toml | head -n 1)
 # Every file that states the version, which is what a bump rewrites and commits.
@@ -342,9 +348,13 @@ github-release:
 		echo "error: releases are tagged from main, not $$branch"; \
 		exit 1; \
 	fi; \
-	git fetch --quiet origin main; \
-	if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse origin/main)" ]; then \
-		echo "error: HEAD differs from origin/main; push or pull first"; \
+	if ! git remote get-url "$(RELEASE_REMOTE)" >/dev/null 2>&1; then \
+		echo "error: no remote named $(RELEASE_REMOTE); set bravebot.releaseRemote to one this clone has"; \
+		exit 1; \
+	fi; \
+	git fetch --quiet "$(RELEASE_REMOTE)" main; \
+	if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse $(RELEASE_REMOTE)/main)" ]; then \
+		echo "error: HEAD differs from $(RELEASE_REMOTE)/main; push or pull first"; \
 		exit 1; \
 	fi; \
 	if git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null; then \
@@ -352,12 +362,12 @@ github-release:
 		exit 1; \
 	fi; \
 	git tag -a -m "bravebot $(TAG)" "$(TAG)"; \
-	if ! git push origin "$(TAG)"; then \
+	if ! git push "$(RELEASE_REMOTE)" "$(TAG)"; then \
 		git tag -d "$(TAG)"; \
 		echo "error: push failed; removed the local $(TAG) so this can be run again"; \
 		exit 1; \
 	fi; \
-	echo "pushed $(TAG); GitHub Actions will run CI on the tag"; \
+	echo "pushed $(TAG) to $(RELEASE_REMOTE); GitHub Actions will run CI on the tag"; \
 	echo "publish signed assets later with Jenkins job bravebot-build (UPLOAD and RELEASE)"; \
 	echo "then publish npm: gh workflow run publish-npm.yml --ref $(TAG) -f tag=$(TAG)"; \
 	echo "watch CI with: gh run watch --repo brave-experiments/bravebot"

@@ -24,8 +24,20 @@ make github-release
 `package-lock.json`, commits exactly those four as `Bump version to <version>`, and stops there:
 nothing is pushed and nothing is tagged. It refuses if any of the four is already modified,
 rather than committing changes it did not write. `github-release` refuses to tag unless the tree
-is clean, the two version files agree, and HEAD is `main` at `origin/main`, then pushes
-`v<version>`.
+is clean, the two version files agree, and HEAD is `main` at the release remote's `main`, then
+pushes `v<version>` there.
+
+**The release remote.** `origin` by default, which is right for a clone of this repository and
+wrong for a clone of a fork of it, where `origin` names the fork. A tag pushed to a fork is one
+the releases page never sees, and the tag ruleset here refuses an update or a deletion, so the
+mistake cannot be corrected in place: the version has to be bumped again. A clone whose `origin`
+is a fork names the remote that is not, once:
+
+```sh
+git config bravebot.releaseRemote upstream
+```
+
+`github-release` fails before tagging if no remote by that name exists.
 
 The tag push does not publish binaries. GitHub Actions still builds and tests on the tag.
 Signed, configured assets are built, notarised, and uploaded by the Jenkins job
