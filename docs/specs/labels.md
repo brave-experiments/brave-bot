@@ -13,7 +13,7 @@ guards:
       - crates/agent/src/aside.rs: 2
       - crates/agent/src/manifest.rs: 4
       - crates/agent/src/processor.rs: 1
-      - crates/agent/src/tools.rs: 20
+      - crates/agent/src/tools.rs: 21
       - crates/agent/src/turn.rs: 4
       - crates/agent/src/workspace.rs: 2
       - crates/agent/tests/workspace.rs: 36

@@ -522,8 +522,19 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     "command": {
                         "type": "string",
                         "description": "One command line. Programs are looked up on PATH, or \
-                                        taken as paths relative to the workspace. A newline is not \
-                                        accepted, since this is one line and not a script."
+                                        taken as paths relative to the directory the line runs \
+                                        in, which is where its arguments are resolved too. A \
+                                        newline is not accepted, since this is one line and not \
+                                        a script."
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Directory to run the command in, relative to the \
+                                        workspace or inside a directory the user added. \
+                                        Defaults to \".\" on the first call, and the last one \
+                                        given is where a later call with no directory runs. \
+                                        Naming one asks the user every time, since where a \
+                                        program runs decides as much as its arguments do."
                     },
                     "deadline_seconds": {
                         "type": "integer",
@@ -903,6 +914,10 @@ pub struct Tools<'a> {
     /// path a rule in the settings file allows, raise no prompt at all, so a refusal that waited
     /// for one would let exactly those writes through.
     pub permission_mode: crate::PermissionMode,
+    /// The current working directory for `run` commands in this turn.
+    ///
+    /// Initialized to the workspace root and updated when `run` specifies a `directory`.
+    pub run_directory: &'a mut std::path::PathBuf,
 }
 
 /// The background pipelines a turn has started.
@@ -2852,7 +2867,45 @@ fn run<S: Sink, C: Confirmer>(
     let proof = policy.authorise_display_release("a proposed command line");
     let line = line.declassify(&proof);
 
-    let directory = tools.workspace.root().to_path_buf();
+    // Present but not a string is refused rather than dropped. A field the driver quietly ignored
+    // would run the line wherever the last call left off, which is the one place a planner that
+    // bothered to name a directory cannot have meant. `null` is the exception and reads as absent,
+    // because that is what filling an optional field in with nothing says.
+    let named = match arguments.get("directory") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(_)) => argument(arguments, "directory"),
+        Some(_) => {
+            return problem(
+                "error: 'directory' must be a string naming a directory, relative to the \
+                 workspace or inside a directory the user added",
+            );
+        }
+    };
+
+    let directory = match named {
+        Some(proposed) => {
+            // Released through a display witness for the same reason the command line is: a
+            // directory is a routing field shown in the approval prompt and endorsed with the plan
+            // (CMDLINE-12), and a person reading it is what an approval is.
+            let proof = policy.authorise_display_release("a proposed run directory");
+            let dir = proposed.declassify(&proof);
+            // An effect, not a read. A program's relative writes land in the directory it runs in,
+            // so a tree an `Edit` rule protects is not protected by a check that consults only the
+            // `Read` rules: `npm install` in `vendor` writes throughout it without naming a file.
+            if let Err(refusal) = refuse_denied_path(policy, Purpose::Effect, &dir) {
+                return problem(refusal);
+            }
+            let resolved = match tools.workspace.resolve(&dir) {
+                Ok(path) => path,
+                Err(escape) => return problem(format!("refused: {escape}")),
+            };
+            if !resolved.is_dir() {
+                return problem(format!("error: '{dir}' is not a directory"));
+            }
+            resolved
+        }
+        None => tools.run_directory.clone(),
+    };
     let plan = match crate::cmdline::compile(&line, &directory, tools.home) {
         Ok(plan) => plan,
         // The refusal names the span that caused it, so the planner can rewrite that part rather
@@ -2910,7 +2963,19 @@ fn run<S: Sink, C: Confirmer>(
         Err(denial) => return problem(format!("refused: {denial}")),
     };
 
-    let displayed = plan.display();
+    // The tree comes with the line wherever the line is said, and only where it is not the root.
+    // The directory persists across calls, so a planner whose earlier call has been summarised away
+    // by a compaction has nothing else left in its context saying where the next one lands, and a
+    // person asked to release what this printed would otherwise not be told which tree it came out
+    // of. Structure either way: a path the driver resolved itself, never a byte of what ran.
+    let displayed = match plan.directory.as_path() == tools.workspace.root() {
+        true => plan.display(),
+        false => format!(
+            "{} (in {})",
+            plan.display(),
+            tools.workspace.relative_display(&plan.directory)
+        ),
+    };
 
     // Absent or non-boolean means the foreground, which is the reading that waits for the program
     // and hands back what it printed.
@@ -2939,6 +3004,8 @@ fn run<S: Sink, C: Confirmer>(
 
         return match crate::exec::start_steps(steps, &plan.directory) {
             Ok(running) => {
+                // The directory is carried over only once pre-flight checks and launch succeed.
+                *tools.run_directory = plan.directory.clone();
                 let name = tools.jobs.keep(running, displayed.clone(), label);
                 Produced::new(
                     // Nothing has been printed yet, and the label is the one the kernel fixed
@@ -2972,6 +3039,12 @@ fn run<S: Sink, C: Confirmer>(
 
     match ran {
         Ok(ran) => {
+            // Carried over only once the line has actually run, which is where the background
+            // branch carries it too: a line whose stages never started moved nothing, and a turn
+            // whose working directory had followed a run that did not happen would land the next
+            // line somewhere nobody chose.
+            *tools.run_directory = plan.directory.clone();
+
             // stdout and stderr together, because a program that failed usually explains itself
             // on stderr and a result that dropped the explanation would be the least useful thing
             // to hand back. Both carry the same label: the kernel fixed it before anything ran and
@@ -4431,8 +4504,8 @@ mod tests {
 
     /// `run` has exactly one field saying what to run. The line is compiled here rather than handed
     /// anywhere, so a second way to say what to run would be a second thing to keep honest.
-    /// `background` says what to do with the line rather than what it is, and
-    /// `deadline_seconds` says how long to wait for it.
+    /// `background` says what to do with the line rather than what it is, `deadline_seconds` says
+    /// how long to wait for it, and `directory` names where to run it.
     #[test]
     fn run_takes_one_command_line_and_nothing_else() {
         let tool = available(false)
@@ -4444,12 +4517,14 @@ mod tests {
             .expect("run has parameters");
         assert_eq!(
             properties.keys().collect::<Vec<_>>(),
-            vec!["background", "command", "deadline_seconds"],
-            "run gained a field beside the command line, whether to wait for it, and how long"
+            vec!["background", "command", "deadline_seconds", "directory"],
+            "run gained a field beside the command line, whether to wait for it, how long, and \
+             where"
         );
         assert_eq!(properties["command"]["type"], "string");
         assert_eq!(properties["background"]["type"], "boolean");
         assert_eq!(properties["deadline_seconds"]["type"], "integer");
+        assert_eq!(properties["directory"]["type"], "string");
         assert_eq!(
             tool.function.parameters["required"]
                 .as_array()

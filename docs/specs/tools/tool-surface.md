@@ -29,7 +29,7 @@ may be untrusted. No argument is both, and nothing at run time reclassifies one.
 | [`edit_file`](edit-file.md) | `path`, `path_ref`, `replace_all` | `old_text`, `new_text` | confirmation |
 | [`spawn_processor`](spawn-processor.md) | `reads`, `about` | `instruction` | a reference |
 | [`spawn_agent`](spawn-agent.md) | `kind` | `task`, `each` | one report per delegate |
-| [`run`](run.md) | every stage's program and arguments | standard input | a reference |
+| [`run`](run.md) | every stage's program and arguments, `directory` | standard input | a reference |
 | [`read_output`](read-output.md) | the reference naming the result | none | the bytes, if a person allows it |
 | [`job_output`](run.md#RUN-15) | `job`, `kill` | none | what it has printed since the last look |
 | [`fetch_url`](fetch-url.md) | `url` | none | a reference |

@@ -1750,6 +1750,15 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
     // whatever is still going, which is what keeps a background job from outliving the turn that
     // started it and becoming an effect nobody is watching.
     let mut jobs = crate::tools::Jobs::new();
+    // Where the next command line runs, absent one naming its own directory (CMDLINE-12).
+    //
+    // Per turn rather than per session, which is short of what the clause asks for: it says a line
+    // runs where the last one ran and that the first runs at the workspace root, and says nothing
+    // about a turn boundary, so a second message silently starts again at the root. Carrying it
+    // further means putting it in the session record and restoring it on `--resume`, the way the
+    // vouched list is (RUN-9), and the entry points that would carry it are the caller's. Left for
+    // the change that gives a session somewhere to keep one.
+    let mut run_directory = workspace.root().to_path_buf();
     // Shared rather than handed over: a delegate takes the lock for one call and gives it back,
     // and the turn keeps its own handle on all three.
     let (confirming, reporting, recording) = (&confirming, &reporting, &recording);
@@ -2074,6 +2083,7 @@ fn run_inner<S: Sink + ?Sized + Send, C: Confirmer + ?Sized + Send, R: Reporter 
                         spawned: &mut spawned,
                         jobs: &mut jobs,
                         permission_mode: task.permission_mode,
+                        run_directory: &mut run_directory,
                     },
                     &mut asking,
                     &mut reporter,

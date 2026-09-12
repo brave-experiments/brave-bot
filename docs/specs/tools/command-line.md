@@ -512,7 +512,23 @@ needs it.
 plan, so carrying it is visible. An environment that accumulated invisibly across calls would change
 what a later plan does without appearing in that plan.
 
-`verified-by: none`
+A directory that is not the workspace root is asked about every time, and what the line prints is
+`(U,priv)` whatever the session vouched for. [RUN-8](run.md#RUN-8) is where that is settled: a
+vouched entry records a program and its arguments and names no tree, so it cannot answer the
+question a named directory asks. The carrying is what this clause grants; a standing answer is not.
+
+The carrying lasts a turn. It is not written into the session record, so the next turn starts at the
+root again. That is short of what this clause describes, and is left to the change that gives a
+session somewhere to keep one ([RUN-9](run.md#RUN-9)).
+
+`verified-by: bravebot_agent::turn::the_working_directory_persists_across_calls`
+`verified-by: bravebot_agent::turn::the_working_directory_can_be_an_added_directory`
+`verified-by: bravebot_agent::turn::a_directory_escaping_the_workspace_is_refused`
+`verified-by: bravebot_agent::turn::a_nonexistent_directory_is_an_error_and_does_not_mutate`
+`verified-by: bravebot_agent::turn::a_directory_that_is_not_a_string_is_refused`
+`verified-by: bravebot_agent::turn::what_is_reported_about_a_line_says_which_directory_it_ran_in`
+`verified-by: bravebot_agent::turn::a_refused_run_directory_does_not_persist`
+`verified-by: bravebot_agent::turn::a_vouched_line_is_asked_about_again_when_a_directory_is_named`
 
 <a id="CMDLINE-13"></a>
 ### CMDLINE-13: a call may name its own deadline, under a ceiling

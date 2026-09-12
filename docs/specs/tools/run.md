@@ -55,8 +55,8 @@ mode are separate modules, so a change to one cannot quietly become a shell for 
 <a id="RUN-2"></a>
 ### RUN-2: the plan is routing and must be endorsed by a person
 
-Programs, arguments and the files a plan writes must be `(T,pub)`. Untrusted text never becomes
-one. The endorsement is bound to that exact plan, so it cannot be reused for a different one: not
+Programs, arguments, the directory a plan runs in, and the files it writes must be `(T,pub)`.
+Untrusted text never becomes one. The endorsement is bound to that exact plan, so it cannot be reused for a different one: not
 for the same steps joined differently, not for the same steps writing somewhere else, and not for
 the same steps in another directory.
 
@@ -186,8 +186,20 @@ widen an entry to a program alone. In a pipeline **every** stage must be vouched
 output is untrusted, since an unvouched stage in the middle is a transformation nobody answered
 for and its output is what the next stage read.
 
+An entry also says nothing about **where** the command runs, because nothing in it records a
+directory. So it grants neither of RUN-7's two things outside the workspace root: a line naming a
+directory ([CMDLINE-12](command-line.md#CMDLINE-12)) is asked about however often it was vouched
+for, and what it prints is `(U,priv)`. `git log` pointed at a vendored dependency prints commit
+messages from a repository the person never answered a question about. Widening the key to include
+the directory would grant the shortcut there, and it is not done: it would put a tree into an entry
+the session record and `/status` (RUN-9) describe as a program and its arguments.
+
 `verified-by: bravebot_core::policy::vouching_for_one_command_does_not_cover_another_of_the_same_program`
 `verified-by: bravebot_core::policy::vouching_does_not_follow_a_name_onto_a_different_binary`
+`verified-by: bravebot_core::policy::a_vouched_line_is_asked_about_when_it_runs_outside_the_root`
+`verified-by: bravebot_core::policy::output_of_a_vouched_line_run_outside_the_root_is_untrusted`
+`verified-by: bravebot_core::policy::a_vouched_line_is_asked_about_when_no_root_is_known`
+`verified-by: bravebot_agent::turn::a_vouched_line_is_asked_about_again_when_a_directory_is_named`
 
 <a id="RUN-9"></a>
 ### RUN-9: the vouched list belongs to the session

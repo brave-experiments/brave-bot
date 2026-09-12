@@ -7965,6 +7965,9 @@ fn a_referenced_file_is_trusted_though_the_workspace_is_not() {
 /// A confirmer that records what it was asked about a run and answers as it was told.
 struct AskedAboutRuns {
     answer: bravebot_agent::RunDecision,
+    /// Answers for the first runs, in order, where a test needs them to differ. Empty means every
+    /// run gets `answer`, and a run past the end of the queue gets it too.
+    answers: std::collections::VecDeque<bravebot_agent::RunDecision>,
     writes: bravebot_agent::Decision,
     seen: std::sync::Arc<std::sync::Mutex<Vec<bravebot_agent::RunRequest>>>,
 }
@@ -7973,8 +7976,19 @@ impl AskedAboutRuns {
     fn answering(answer: bravebot_agent::RunDecision) -> Self {
         Self {
             answer,
+            answers: std::collections::VecDeque::new(),
             writes: bravebot_agent::Decision::Reject,
             seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Answers the runs of one turn in order, for a test where the person says different things to
+    /// successive runs. Anything past the end is refused, so a test that ran one line more than it
+    /// meant to fails rather than quietly approving it.
+    fn answering_in_turn(answers: Vec<bravebot_agent::RunDecision>) -> Self {
+        Self {
+            answers: answers.into(),
+            ..Self::answering(bravebot_agent::RunDecision::reject())
         }
     }
 
@@ -8005,7 +8019,7 @@ impl bravebot_agent::Confirmer for AskedAboutRuns {
 
     fn confirm_run(&mut self, request: &bravebot_agent::RunRequest) -> bravebot_agent::RunDecision {
         self.seen.lock().unwrap().push(request.clone());
-        self.answer
+        self.answers.pop_front().unwrap_or(self.answer)
     }
 
     fn confirm_read_output(
@@ -11808,6 +11822,58 @@ fn what_a_command_printed_reaches_the_person_watching() {
     );
 }
 
+/// CMDLINE-12: What is reported about a line says which directory it ran in.
+///
+/// The directory carries across calls, so the line on its own stops saying where its output came
+/// from once an earlier call has scrolled away or been summarised out of the conversation. A path
+/// the driver resolved itself, never a byte of what ran.
+#[test]
+fn what_is_reported_about_a_line_says_which_directory_it_ran_in() {
+    let scratch = Scratch::new("cmdline-12-reported");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    std::fs::write(subdir.join("note.txt"), "SENTINEL-SUB\n").unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cat note.txt","directory":"sub"}"#),
+        // Naming the root again, since the first call is where the second would otherwise run.
+        tool_request("run", r#"{"command":"cat sub/note.txt","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+    let mut reporter = bravebot_agent::report::RecordingReporter::default();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test the reported line says where it ran"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut AskedAboutRuns::answering(bravebot_agent::RunDecision::approve()),
+        &mut reporter,
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let printed = &reporter.printed;
+    assert!(
+        printed[0].command.contains("(in sub)"),
+        "the row does not say which directory the line ran in: {}",
+        printed[0].command
+    );
+    assert!(
+        !printed[1].command.contains("(in "),
+        "a line at the root was given a directory it did not need: {}",
+        printed[1].command
+    );
+}
+
 /// The cap is on what enters the conversation, not on what the command printed. A build log's
 /// middle is where its first error is, and a planner whose only way back to it is running the
 /// build again has been handed a bill rather than a result.
@@ -12849,5 +12915,421 @@ fn a_non_integer_deadline_is_refused() {
     assert!(
         second.contains("whole number of seconds"),
         "the refusal did not explain the problem: {second}"
+    );
+}
+
+/// CMDLINE-12: A call may name a directory to run in, inside the workspace.
+/// Absent one, a line runs where the last one ran, and the first runs at the workspace root.
+#[test]
+fn the_working_directory_persists_across_calls() {
+    let scratch = Scratch::new("cmdline-12-directory");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    let other = scratch.path.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        // First call: runs at workspace root with no directory argument.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        // Second call: names a subdirectory.
+        tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
+        // Third call: no directory named, persists from the previous call ("sub").
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        // Fourth call: names another directory ("other").
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","directory":"other"}"#,
+        ),
+        // Fifth call: resets to workspace root with ".".
+        tool_request("run", r#"{"command":"cargo --version","directory":"."}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test persistence of working directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 5, "all five runs were asked about");
+
+    let expected_root = scratch.path.canonicalize().unwrap();
+    let expected_sub = subdir.canonicalize().unwrap();
+    let expected_other = other.canonicalize().unwrap();
+
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "first call runs at workspace root"
+    );
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_sub,
+        "second call runs in named directory 'sub'"
+    );
+    assert_eq!(
+        asked[2].plan.directory.canonicalize().unwrap(),
+        expected_sub,
+        "third call persists working directory from previous call"
+    );
+    assert_eq!(
+        asked[3].plan.directory.canonicalize().unwrap(),
+        expected_other,
+        "fourth call runs in 'other'"
+    );
+    assert_eq!(
+        asked[4].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "fifth call resets to workspace root via '.'"
+    );
+}
+
+/// CMDLINE-12: A call may name a directory inside an added directory.
+#[test]
+fn the_working_directory_can_be_an_added_directory() {
+    let scratch = Scratch::new("cmdline-12-added-main");
+    let outside = Scratch::new("cmdline-12-added-outside");
+    let mut workspace = Workspace::new(&scratch.path).expect("workspace");
+    let added = workspace
+        .add_directory(outside.path.to_str().expect("utf-8 path"))
+        .expect("directory added");
+    let added_str = added.display().to_string().replace('\\', "/");
+
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            &format!(r#"{{"command":"cargo --version","directory":"{added_str}"}}"#),
+        ),
+        // A subsequent run with no directory persists the added directory.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    let mut trust = trusting_the_workspace();
+    trust.trust(&added.display().to_string());
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test run in added directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trust,
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 2, "both runs were asked about");
+    let expected_added = added.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_added,
+        "first call runs in added directory"
+    );
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_added,
+        "second call persists the added directory"
+    );
+}
+
+/// CMDLINE-12: A directory escaping the workspace is refused and does not persist.
+#[test]
+fn a_directory_escaping_the_workspace_is_refused() {
+    let scratch = Scratch::new("cmdline-12-escape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        // Attempting to escape via ..
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","directory":"../elsewhere"}"#,
+        ),
+        // Next valid run runs in default workspace root.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test escape refused"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    // Only the second run was valid and asked about.
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "only valid run was asked about");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "valid call runs at workspace root"
+    );
+
+    // The refusal itself, not the request that provoked it: the body carries the whole conversation
+    // including the call's own arguments, so a check for the directory's own name would hold however
+    // the tool had answered.
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("refused:") && second.contains("resolves outside the workspace"),
+        "the escape was not refused: {second}"
+    );
+}
+
+/// CMDLINE-12: A non-existent directory returns an error and does not mutate the working directory.
+#[test]
+fn a_nonexistent_directory_is_an_error_and_does_not_mutate() {
+    let scratch = Scratch::new("cmdline-12-nonexistent");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","directory":"nonexistent_dir"}"#,
+        ),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test nonexistent directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "only valid run was asked about");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "subsequent call runs at workspace root"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("is not a directory"),
+        "reported not a directory: {second}"
+    );
+}
+
+/// CMDLINE-12: A `directory` that is not a string is refused rather than ignored.
+///
+/// Ignoring it would run the line wherever the last call left off, which is the one place a planner
+/// that named a directory cannot have meant.
+#[test]
+fn a_directory_that_is_not_a_string_is_refused() {
+    let scratch = Scratch::new("cmdline-12-not-a-string");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cargo --version","directory":7}"#),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test a directory that is not a string"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "nothing ran for the refused call");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "the refused call moved nothing"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("must be a string naming a directory"),
+        "the directory was ignored rather than refused: {second}"
+    );
+}
+
+/// CMDLINE-12: A run rejected by the user does not persist its directory.
+#[test]
+fn a_refused_run_directory_does_not_persist() {
+    let scratch = Scratch::new("cmdline-12-reject");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering_in_turn(vec![
+        bravebot_agent::RunDecision::reject(),
+        bravebot_agent::RunDecision::approve(),
+    ]);
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        // First call names "sub" but user rejects.
+        tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
+        // Second call names no directory: should still be at workspace root because the first was rejected.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test rejected run does not persist"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 2, "both runs were asked about");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "second run runs at workspace root because the first was rejected"
+    );
+}
+
+/// CMDLINE-12, RUN-8: Vouching for a command does not vouch for where it runs.
+///
+/// The same line three times: answered `a` at the root, run unasked at the root, and asked about
+/// again the moment a directory is named. A vouched entry records a program and its arguments and
+/// says nothing about the tree they land in, so the third call is a question the person has not
+/// been asked yet.
+#[test]
+fn a_vouched_line_is_asked_about_again_when_a_directory_is_named() {
+    let scratch = Scratch::new("cmdline-12-vouched-elsewhere");
+    let subdir = scratch.path.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, _received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test a vouch does not carry to another directory"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(
+        asked.len(),
+        2,
+        "the vouch covered the second call at the root and not the third one elsewhere"
+    );
+    let expected_root = scratch.path.canonicalize().unwrap();
+    let expected_sub = subdir.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "the vouch was given at the root"
+    );
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
+        expected_sub,
+        "the second question was about the named directory"
     );
 }
