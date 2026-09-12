@@ -269,13 +269,14 @@ impl Manifest {
         for (index, step) in self.steps.iter().enumerate() {
             let contract = contract_for(step.tool).expect("a validated step names a known tool");
             for field in contract.routing {
-                // Filled at validation, including an omitted optional field's default, so the
-                // driver never invents a destination that did not go through Routing::insert.
+                // Validation established that every routing field is text, filling an omitted
+                // optional one with its default, so the driver never invents a destination that
+                // did not go through Routing::insert.
                 let value = step
                     .args
                     .get(*field)
                     .and_then(Arg::text)
-                    .expect("a routing field is present on every validated step");
+                    .expect("a routing field is text on every validated step");
                 fields.push((format!("step_{index}_{field}"), value.to_string()));
             }
         }
@@ -583,6 +584,11 @@ fn routing_default(tool: &str, field: &str) -> Option<&'static str> {
 }
 
 /// Fill every routing field the contract names, so [`Manifest::routing`] cannot skip one.
+///
+/// Only a field the plan left out, which by the same reading as [`Arg::is_empty`] includes one it
+/// left empty. A default standing in for a value the plan gave would repair the step to make the
+/// plan usable, and repairing a pattern into the no-filter default widens the read past what the
+/// plan named.
 fn with_routing_defaults(
     tool: &'static str,
     mut args: BTreeMap<String, Arg>,
@@ -591,7 +597,7 @@ fn with_routing_defaults(
         .expect("called only for a known tool")
         .routing
     {
-        if args.get(*field).and_then(Arg::text).is_none()
+        if args.get(*field).is_none_or(Arg::is_empty)
             && let Some(default) = routing_default(tool, field)
         {
             args.insert((*field).to_string(), Arg::Text(default.to_string()));
@@ -711,6 +717,21 @@ pub(crate) fn validate(draft: &Draft) -> Result<Manifest, ManifestError> {
                         path: path.to_string(),
                     });
                 }
+            }
+        }
+
+        // A routing field is a destination, and a destination is text. The required check passes
+        // a count and a non-empty list, so nothing before this establishes the shape
+        // `Manifest::routing` reads these fields under, and a wrong-shaped one would reach that
+        // lock instead of failing the plan.
+        for field in contract.routing {
+            if args.get(*field).and_then(Arg::text).is_none() {
+                return Err(ManifestError::WrongType {
+                    step: index,
+                    tool: contract.tool,
+                    field,
+                    wanted: "text",
+                });
             }
         }
 
@@ -1190,6 +1211,73 @@ mod tests {
         assert!(
             plan.routing()
                 .contains(&("step_0_pattern".to_string(), String::new()))
+        );
+    }
+
+    /// A wrong-shaped routing field used to reach the driver: the required check accepts a
+    /// non-empty list as present, and nothing else established that the value was text, so
+    /// [`Manifest::routing`] failed its own invariant and the run ended in a panic rather than
+    /// as a refused plan.
+    #[test]
+    fn a_routing_field_that_is_not_text_is_refused() {
+        let err = validate(&Draft::new(vec![
+            DraftStep::new("search")
+                .with("pattern", Arg::List(vec!["TODO".to_string()]))
+                .with_text("out_slot", "hits"),
+            answer("hits"),
+        ]))
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ManifestError::WrongType {
+                step: 0,
+                tool: "search",
+                field: "pattern",
+                wanted: "text"
+            }
+        );
+    }
+
+    /// An empty value is a field the planner did not fill in, which is what the required check
+    /// already reads it as, so the default stands in for it. A plan naming no pattern in either
+    /// spelling lists the tree rather than failing the run.
+    #[test]
+    fn a_pattern_the_plan_left_empty_is_locked_as_no_filter() {
+        let plan = validate(&Draft::new(vec![
+            DraftStep::new("list_files")
+                .with_text("directory", "src")
+                .with("pattern", Arg::List(Vec::new()))
+                .with_text("out_slot", "files"),
+            answer("files"),
+        ]))
+        .unwrap();
+        assert!(
+            plan.routing()
+                .contains(&("step_0_pattern".to_string(), String::new()))
+        );
+    }
+
+    /// A default stands in for a field the plan left out, never for one it filled. Overwriting a
+    /// wrong-shaped pattern with the no-filter default repaired the step into one that listed
+    /// the whole directory, a wider read than the plan named.
+    #[test]
+    fn a_routing_default_never_replaces_a_field_the_plan_gave() {
+        let err = validate(&Draft::new(vec![
+            DraftStep::new("list_files")
+                .with_text("directory", "src")
+                .with("pattern", Arg::List(vec!["*.rs".to_string()]))
+                .with_text("out_slot", "files"),
+            answer("files"),
+        ]))
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ManifestError::WrongType {
+                step: 0,
+                tool: "list_files",
+                field: "pattern",
+                wanted: "text"
+            }
         );
     }
 

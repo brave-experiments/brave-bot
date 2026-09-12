@@ -698,6 +698,35 @@ fn a_plan_that_fails_validation_runs_nothing() {
     assert!(received.try_recv().is_err(), "something asked the model");
 }
 
+/// A routing field the planner filled with the wrong shape fails the run as a plan. A non-empty
+/// list counts as present, so such a step used to pass validation and then fail the routing lock's
+/// own invariant, ending the run in a panic that took the goal and the proposal with it instead of
+/// reporting them, and nothing plans again.
+#[test]
+fn a_plan_whose_routing_field_is_not_text_is_refused() {
+    let scratch = Scratch::new("routing-shape");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+
+    let (endpoint, received) = serve(vec![
+        any_shape(),
+        plan(json!([
+            {"capability": "FILE_SEARCH", "args": {"pattern": ["TODO"], "out_slot": "hits"}},
+            {"capability": "ANSWER", "args": {"from_slot": "hits"}},
+        ])),
+    ]);
+    let config = config_for(&endpoint);
+    let mut sink = RecordingSink::new();
+
+    let failure = run(&config, &workspace, "find the TODOs", &mut sink).expect_err("must refuse");
+    assert!(
+        failure.to_string().contains("'pattern' must be text"),
+        "unhelpful message: {failure}"
+    );
+    let _ = received.recv();
+    let _ = received.recv();
+    assert!(received.try_recv().is_err(), "something asked the model");
+}
+
 /// A path leaving the workspace is refused at validation, so it never reaches a person to
 /// approve and never reaches the filesystem to be caught there.
 #[test]

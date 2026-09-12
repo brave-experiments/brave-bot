@@ -174,6 +174,7 @@ Rules that the manifest is checked against, so a plan breaking one is refused ou
 - Every read and every transform comes before the first write or answer. Nothing reads the \
   workspace after the plan has changed it.
 - Paths are workspace-relative. No leading slash, no '..' anywhere in them.
+- A path, directory, pattern or include is one string, never a list and never a number.
 - A write takes either contents or from_slot, never both and never neither.
 - At most one ANSWER step, and it says which slot holds the answer.
 
