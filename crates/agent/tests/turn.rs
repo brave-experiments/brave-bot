@@ -13206,23 +13206,25 @@ fn a_refused_run_directory_does_not_persist() {
     );
 }
 
-/// CMDLINE-12: A directory may be named even after the context has met untrusted content.
+/// CMDLINE-12, RUN-8: Vouching for a command does not vouch for where it runs.
+///
+/// The same line three times: answered `a` at the root, run unasked at the root, and asked about
+/// again the moment a directory is named. A vouched entry records a program and its arguments and
+/// says nothing about the tree they land in, so the third call is a question the person has not
+/// been asked yet.
 #[test]
-fn run_directory_succeeds_in_untrusted_context() {
-    let scratch = Scratch::new("cmdline-12-untrusted");
+fn a_vouched_line_is_asked_about_again_when_a_directory_is_named() {
+    let scratch = Scratch::new("cmdline-12-vouched-elsewhere");
     let subdir = scratch.path.join("sub");
     std::fs::create_dir_all(&subdir).unwrap();
-    // Untrusted file outside any trust store.
-    std::fs::write(scratch.path.join("untrusted.txt"), "untrusted content\n").unwrap();
 
     let workspace = Workspace::new(&scratch.path).expect("workspace");
-    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve_always());
     let seen = confirmer.seen.clone();
 
     let (endpoint, _received) = serve_sequence(vec![
-        // 1. Read untrusted file, tainting context integrity to Untrusted.
-        tool_request("read_file", r#"{"path":"untrusted.txt"}"#),
-        // 2. Run with directory in untrusted context.
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
         tool_request("run", r#"{"command":"cargo --version","directory":"sub"}"#),
         reply_with("done"),
     ]);
@@ -13230,30 +13232,37 @@ fn run_directory_succeeds_in_untrusted_context() {
     let egress = bravebot_net::Egress::new();
     let mut sink = RecordingSink::new();
 
-    // TrustStore is empty, so reading untrusted.txt marks context untrusted.
-    let empty_trust = bravebot_core::trust::TrustStore::new();
-
     turn::resume(
         &config,
         &egress,
         &workspace,
-        &Task::new("test run directory in untrusted context"),
+        &Task::new("test a vouch does not carry to another directory"),
         &mut bravebot_agent::Conversation::new(),
         &mut confirmer,
         &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
-        empty_trust,
+        trusting_the_workspace(),
         bravebot_core::programs::TrustedPrograms::new(),
         &bravebot_core::cancel::Cancel::new(),
     )
     .expect("the turn completes");
 
     let asked = seen.lock().unwrap();
-    assert_eq!(asked.len(), 1, "the run was asked about and approved");
+    assert_eq!(
+        asked.len(),
+        2,
+        "the vouch covered the second call at the root and not the third one elsewhere"
+    );
+    let expected_root = scratch.path.canonicalize().unwrap();
     let expected_sub = subdir.canonicalize().unwrap();
     assert_eq!(
         asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "the vouch was given at the root"
+    );
+    assert_eq!(
+        asked[1].plan.directory.canonicalize().unwrap(),
         expected_sub,
-        "call with directory succeeds even in untrusted context"
+        "the second question was about the named directory"
     );
 }

@@ -3130,6 +3130,22 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         })
     }
 
+    /// Whether the plan runs where the person's standing answers were given.
+    ///
+    /// The workspace root, and only it. Everything a person settled in advance is spelled against
+    /// it: the trust map's relative rules, and a vouched entry, which records a program and its
+    /// exact arguments and says nothing whatever about where they run ([RUN-8]). So an answer given
+    /// once cannot be checked against a tree it was never about.
+    ///
+    /// False when no root is known, like [`Policy::read_proven`] and for the same reason: an answer
+    /// about a directory cannot be matched against a directory nothing named, and a gate that let
+    /// the unknown case through would be strongest exactly where it was told least.
+    ///
+    /// [RUN-8]: ../../../docs/specs/tools/run.md
+    fn runs_at_the_root(&self, plan: &crate::command::Plan) -> bool {
+        self.root.as_deref() == Some(plan.directory.as_path())
+    }
+
     /// The paths every step of the plan reads, or `None` where any step proves nothing.
     ///
     /// A step is read-proven when the line named a program rather than a path, the audited table
@@ -3159,7 +3175,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         // The operands are spelled relative to the directory the line runs in, and the trust map's
         // rules are spelled relative to the workspace. Asking the map about a path written against
         // a different directory would answer about a different file.
-        if self.root.as_deref() != Some(plan.directory.as_path()) {
+        if !self.runs_at_the_root(plan) {
             return None;
         }
 
@@ -3241,6 +3257,22 @@ impl<'sink, S: Sink> Policy<'sink, S> {
             return true;
         }
 
+        // A plan that runs outside the root has a tree as well as a program, and vouching for a
+        // command is not vouching for where it runs: `git clean -fd` is a different proposition in
+        // two different trees, and `git log` prints whatever commit messages the repository it is
+        // pointed at happens to hold. Asked every time, for the same reason a write is, and before
+        // the rules for the same reason private input is: a rule saying which commands may run
+        // answers the question about running one, not the one about which tree it lands in.
+        if !self.runs_at_the_root(plan) {
+            self.allow(
+                "approval",
+                "the line runs outside the workspace root, which is a tree of its own that no \
+                 standing answer covers, asking"
+                    .to_string(),
+            );
+            return true;
+        }
+
         match self.permissions.for_pipeline(&self.plan_lines(plan)) {
             crate::permissions::Decision::Ruled(ruling) => {
                 let needed = ruling != crate::permissions::Ruling::Allow;
@@ -3303,8 +3335,9 @@ impl<'sink, S: Sink> Policy<'sink, S> {
     /// after the answer cannot be run under an answer given for another one.
     ///
     /// The output label is `(U,priv)` unless every step is a command this session's user vouched
-    /// for, in which case it is `(T,priv)`. `(U,priv)` is the only label that holds without
-    /// knowing what ran, and nothing a caller or the model can say changes it.
+    /// for **and the line runs where they vouched for it**, in which case it is `(T,priv)`.
+    /// `(U,priv)` is the only label that holds without knowing what ran, and nothing a caller or
+    /// the model can say changes it.
     pub fn before_plan(&mut self, plan: &crate::command::Plan) -> Gated<Label> {
         self.before_capability(Capability::ShellExec)?;
 
@@ -3336,7 +3369,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
                 "every step is an audited call whose output is a function of paths the user \
                  vouched for",
             )
-        } else if self.every_step_vouched(plan) {
+        } else if self.every_step_vouched(plan) && self.runs_at_the_root(plan) {
             (
                 Label::trusted_private(),
                 "every step is a command the user vouched for, output and all",
@@ -3344,7 +3377,7 @@ impl<'sink, S: Sink> Policy<'sink, S> {
         } else {
             (
                 opaque,
-                "a program may print anything, and not every step was vouched for",
+                "a program may print anything, and not every step was vouched for where it runs",
             )
         };
         self.allow("provenance", format!("run: output labelled {label}, {why}"));
@@ -5433,10 +5466,14 @@ mod tests {
 
     /// Vouching for a command is not vouching for where a line sends its output, so a line that
     /// writes is asked about every time.
+    ///
+    /// The root is stated because [`plan_of`] puts its plans at `/work` and the vouched road is only
+    /// open where a line runs at the root: without it this would be asked about for the directory
+    /// rather than for the write, and would pass for the wrong reason.
     #[test]
     fn a_line_that_writes_is_asked_about_even_when_its_steps_are_vouched_for() {
         let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
+        let mut policy = open_policy(&mut sink).with_root(std::path::Path::new("/work"));
         policy.remember_command(vouched("/usr/bin/echo", &["x"]));
 
         let plain = plan_of(vec![step_named("echo", &["x"])]);
@@ -5458,7 +5495,7 @@ mod tests {
     #[test]
     fn private_input_asks_even_for_a_vouched_line() {
         let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
+        let mut policy = open_policy(&mut sink).with_root(std::path::Path::new("/work"));
         policy.remember_command(vouched("/usr/bin/cat", &[]));
 
         let plain = plan_of(vec![step_named("cat", &[])]);
@@ -5529,7 +5566,7 @@ mod tests {
     #[test]
     fn output_of_a_line_whose_every_step_was_vouched_for_is_trusted_and_still_private() {
         let mut sink = RecordingSink::new();
-        let mut policy = open_policy(&mut sink);
+        let mut policy = open_policy(&mut sink).with_root(std::path::Path::new("/work"));
         policy.remember_command(vouched("/usr/bin/git", &["log"]));
         policy.remember_command(vouched("/usr/bin/wc", &["-l"]));
 
@@ -5538,6 +5575,68 @@ mod tests {
         let label = policy.before_plan(&line).expect("endorsed");
         assert!(label.is_trusted());
         assert!(!label.is_public(), "trusting output is not releasing it");
+    }
+
+    /// Vouching for a command is not vouching for the tree it runs in, so a line the planner has
+    /// pointed somewhere else is asked about however familiar the command is. An entry records a
+    /// program and its exact argv and nothing about a directory, so there is nothing in it that
+    /// could answer for this line.
+    #[test]
+    fn a_vouched_line_is_asked_about_when_it_runs_outside_the_root() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_root(std::path::Path::new("/work"));
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+
+        assert!(
+            !policy.plan_needs_approval(&a_plan()),
+            "the vouched entry did not cover the command it was made for"
+        );
+
+        let elsewhere = crate::command::Plan {
+            directory: std::path::PathBuf::from("/work/vendor/dependency"),
+            ..a_plan()
+        };
+        assert!(
+            policy.plan_needs_approval(&elsewhere),
+            "a run arrived in a tree nobody had been shown, behind a command somebody said yes to"
+        );
+    }
+
+    /// The other half of the same grant. `a` says what a command prints may be read, and it says it
+    /// about the tree the prompt showed: `git log` in a repository the person never named prints
+    /// commit messages whoever wrote them, and labelling those trusted would hand the planner
+    /// exactly the content this whole design keeps out of its context.
+    #[test]
+    fn output_of_a_vouched_line_run_outside_the_root_is_untrusted() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink).with_root(std::path::Path::new("/work"));
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+
+        let elsewhere = crate::command::Plan {
+            directory: std::path::PathBuf::from("/work/vendor/dependency"),
+            ..a_plan()
+        };
+        policy.endorse_plan(&elsewhere);
+        let label = policy.before_plan(&elsewhere).expect("endorsed");
+        assert!(
+            !label.is_trusted(),
+            "output from a tree nobody vouched for was labelled trusted"
+        );
+        assert!(!label.is_public());
+    }
+
+    /// Without a root there is nothing to check an answer about a directory against, so the vouched
+    /// road is closed rather than open. The gate is strongest where it was told least.
+    #[test]
+    fn a_vouched_line_is_asked_about_when_no_root_is_known() {
+        let mut sink = RecordingSink::new();
+        let mut policy = open_policy(&mut sink);
+        policy.remember_command(vouched("/usr/bin/git", &["log"]));
+
+        assert!(
+            policy.plan_needs_approval(&a_plan()),
+            "a plan ran unasked against a root nothing had named"
+        );
     }
 
     fn vouched(program: &str, args: &[&str]) -> crate::programs::Command {

@@ -522,15 +522,19 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                     "command": {
                         "type": "string",
                         "description": "One command line. Programs are looked up on PATH, or \
-                                        taken as paths relative to the workspace. A newline is not \
-                                        accepted, since this is one line and not a script."
+                                        taken as paths relative to the directory the line runs \
+                                        in, which is where its arguments are resolved too. A \
+                                        newline is not accepted, since this is one line and not \
+                                        a script."
                     },
                     "directory": {
                         "type": "string",
                         "description": "Directory to run the command in, relative to the \
                                         workspace or inside a directory the user added. \
-                                        Defaults to \".\" on the first call, and persists across \
-                                        calls within the turn."
+                                        Defaults to \".\" on the first call, and the last one \
+                                        given is where a later call with no directory runs. \
+                                        Naming one asks the user every time, since where a \
+                                        program runs decides as much as its arguments do."
                     },
                     "deadline_seconds": {
                         "type": "integer",
