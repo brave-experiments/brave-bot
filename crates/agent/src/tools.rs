@@ -2867,15 +2867,32 @@ fn run<S: Sink, C: Confirmer>(
     let proof = policy.authorise_display_release("a proposed command line");
     let line = line.declassify(&proof);
 
-    let directory = match argument(arguments, "directory") {
+    // Present but not a string is refused rather than dropped. A field the driver quietly ignored
+    // would run the line wherever the last call left off, which is the one place a planner that
+    // bothered to name a directory cannot have meant. `null` is the exception and reads as absent,
+    // because that is what filling an optional field in with nothing says.
+    let named = match arguments.get("directory") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(_)) => argument(arguments, "directory"),
+        Some(_) => {
+            return problem(
+                "error: 'directory' must be a string naming a directory, relative to the \
+                 workspace or inside a directory the user added",
+            );
+        }
+    };
+
+    let directory = match named {
         Some(proposed) => {
-            // Released through a display witness for the same reason: a directory is a routing
-            // field shown in the approval prompt and endorsed with the plan (CMDLINE-12). It is
-            // confined to the workspace or an added directory, and denied paths are refused before
-            // compilation.
+            // Released through a display witness for the same reason the command line is: a
+            // directory is a routing field shown in the approval prompt and endorsed with the plan
+            // (CMDLINE-12), and a person reading it is what an approval is.
             let proof = policy.authorise_display_release("a proposed run directory");
             let dir = proposed.declassify(&proof);
-            if let Err(refusal) = refuse_denied_path(policy, Purpose::Read, &dir) {
+            // An effect, not a read. A program's relative writes land in the directory it runs in,
+            // so a tree an `Edit` rule protects is not protected by a check that consults only the
+            // `Read` rules: `npm install` in `vendor` writes throughout it without naming a file.
+            if let Err(refusal) = refuse_denied_path(policy, Purpose::Effect, &dir) {
                 return problem(refusal);
             }
             let resolved = match tools.workspace.resolve(&dir) {

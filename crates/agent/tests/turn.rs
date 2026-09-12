@@ -13103,6 +13103,58 @@ fn a_nonexistent_directory_is_an_error_and_does_not_mutate() {
     );
 }
 
+/// CMDLINE-12: A `directory` that is not a string is refused rather than ignored.
+///
+/// Ignoring it would run the line wherever the last call left off, which is the one place a planner
+/// that named a directory cannot have meant.
+#[test]
+fn a_directory_that_is_not_a_string_is_refused() {
+    let scratch = Scratch::new("cmdline-12-not-a-string");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request("run", r#"{"command":"cargo --version","directory":7}"#),
+        tool_request("run", r#"{"command":"cargo --version"}"#),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test a directory that is not a string"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    let asked = seen.lock().unwrap();
+    assert_eq!(asked.len(), 1, "nothing ran for the refused call");
+    let expected_root = scratch.path.canonicalize().unwrap();
+    assert_eq!(
+        asked[0].plan.directory.canonicalize().unwrap(),
+        expected_root,
+        "the refused call moved nothing"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("must be a string naming a directory"),
+        "the directory was ignored rather than refused: {second}"
+    );
+}
+
 /// CMDLINE-12: A run rejected by the user does not persist its directory.
 #[test]
 fn a_refused_run_directory_does_not_persist() {
