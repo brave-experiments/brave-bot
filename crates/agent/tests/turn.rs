@@ -13073,7 +13073,7 @@ fn a_directory_escaping_the_workspace_is_refused() {
         // Attempting to escape via ..
         tool_request(
             "run",
-            r#"{"command":"cargo --version","directory":"../escapes"}"#,
+            r#"{"command":"cargo --version","directory":"../elsewhere"}"#,
         ),
         // Next valid run runs in default workspace root.
         tool_request("run", r#"{"command":"cargo --version"}"#),
@@ -13108,12 +13108,14 @@ fn a_directory_escaping_the_workspace_is_refused() {
         "valid call runs at workspace root"
     );
 
-    // The first response reports refusal due to escaping.
+    // The refusal itself, not the request that provoked it: the body carries the whole conversation
+    // including the call's own arguments, so a check for the directory's own name would hold however
+    // the tool had answered.
     let _first = received.recv().expect("first request");
     let second = received.recv().expect("second request");
     assert!(
-        second.contains("refused:") || second.contains("escapes"),
-        "the escape was refused: {second}"
+        second.contains("refused:") && second.contains("resolves outside the workspace"),
+        "the escape was not refused: {second}"
     );
 }
 
