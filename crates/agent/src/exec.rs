@@ -70,8 +70,10 @@ pub const LIMIT: Duration = Duration::from_secs(300);
 
 /// The shortest deadline a call may set for its own run.
 ///
-/// A non-zero minimum ensures the wait loop and process spawn have enough time to start
-/// and catch the process before immediately expiring.
+/// Zero and below do not name a wait: they would end a run at or before the moment it began. This
+/// is the least value that still asks for one. It promises nothing about reaching the first spawn,
+/// because the clock starts before it, so a run held to the floor can be stopped having printed
+/// nothing.
 pub const FLOOR: Duration = Duration::from_secs(1);
 
 /// The longest deadline a call may set for its own run.
@@ -202,7 +204,8 @@ pub fn run(
 ///
 /// Exists so the stopping behaviour can be tested: a test that had to wait out the real limit to
 /// see what a killed pipeline returns would take five minutes, and one nobody runs proves nothing.
-/// Callers in the product use [`run`], so there is one limit in force and it is the documented one.
+/// A `run` call names its own deadline between [`FLOOR`] and [`CEILING`], so the limit in force is
+/// the one passed here and [`LIMIT`] is the default a call that named none falls back to.
 pub fn run_within(
     pipeline: &Pipeline,
     resolved: &[std::path::PathBuf],

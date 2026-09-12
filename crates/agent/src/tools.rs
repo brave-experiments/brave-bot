@@ -531,7 +531,8 @@ pub fn available(self_paced: bool) -> Vec<Tool> {
                                         to 300. Held to between 1 and 600 seconds, so anything \
                                         outside that becomes the nearest of the two. A command \
                                         that outlasts its deadline is stopped and what it printed \
-                                        comes back."
+                                        comes back. Has no effect with background: true, which is \
+                                        not waited for at all."
                     },
                     "background": {
                         "type": "boolean",

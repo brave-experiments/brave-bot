@@ -325,8 +325,9 @@ condition answers, not about asking.
 - **A condition the transcript can never show does not converge.** "The code is clean" has no
   observation that satisfies it, so it spends all ten rounds and gives up. Nothing here can tell
   such a condition from one that is merely not met yet, and nothing warns about it in advance.
-- **A wait costs a round of tools every five minutes.** A `run` is killed at five minutes, so
-  waiting for something slower than that is `sleep` and another look, repeatedly, and each look is
+- **A wait costs a round of tools every deadline.** A `run` is killed at five minutes, or at ten if
+  it asked for the longest deadline it may have, so waiting for something slower than that is
+  `sleep` and another look, repeatedly, and each look is
   a request carrying the conversation. Cheaper than being sent back, and not free: a condition
   waiting on something hours away is not what a goal is for.
 - **Every round re-sends the conversation.** Ten rounds of a long session cost more than ten
