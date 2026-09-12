@@ -68,6 +68,13 @@ use std::time::{Duration, Instant};
 /// same way it does from a pipeline that ended by itself, marked with [`Ran::stopped`].
 pub const LIMIT: Duration = Duration::from_secs(300);
 
+/// The longest deadline a call may set for its own run.
+///
+/// A call may raise its deadline up to this value and no further. Not a safety property:
+/// a program that finishes in time is no safer than one that does not. It bounds the time
+/// the turn spends waiting on one command, which is a budget decision.
+pub const CEILING: Duration = Duration::from_secs(600);
+
 /// How often the wait loop looks up to see whether it should stop.
 const TICK: Duration = Duration::from_millis(50);
 
