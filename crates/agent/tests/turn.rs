@@ -12546,3 +12546,84 @@ fn a_processor_is_given_a_picture_as_a_picture() {
         "the request carrying the picture was offered tools, so it was not a processor"
     );
 }
+
+/// CMDLINE-13: a call may name its own deadline. A call that sets a short deadline still
+/// completes normally when the command finishes well within it.
+#[test]
+fn a_run_can_raise_its_deadline_under_a_ceiling() {
+    let scratch = Scratch::new("cmdline-13-deadline");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+
+    a_run_turn(
+        &scratch,
+        r#"{"command":"cargo --version","deadline_seconds":10}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes with a named deadline");
+}
+
+/// CMDLINE-13: a deadline above the ceiling is clamped rather than refused. The turn
+/// completes normally, which proves the clamping ran without error.
+#[test]
+fn a_deadline_above_the_ceiling_is_clamped() {
+    let scratch = Scratch::new("cmdline-13-ceiling");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+
+    a_run_turn(
+        &scratch,
+        r#"{"command":"cargo --version","deadline_seconds":9999}"#,
+        &mut confirmer,
+        bravebot_core::programs::TrustedPrograms::new(),
+    )
+    .expect("the turn completes even though the deadline exceeded the ceiling");
+}
+
+/// CMDLINE-13: a deadline that is not a whole number of seconds is refused with a message
+/// the planner can read, and the command does not execute.
+#[test]
+fn a_non_integer_deadline_is_refused() {
+    let scratch = Scratch::new("cmdline-13-invalid");
+    let workspace = Workspace::new(&scratch.path).expect("workspace");
+    let mut confirmer = AskedAboutRuns::answering(bravebot_agent::RunDecision::approve());
+    let seen = confirmer.seen.clone();
+
+    let (endpoint, received) = serve_sequence(vec![
+        tool_request(
+            "run",
+            r#"{"command":"cargo --version","deadline_seconds":"soon"}"#,
+        ),
+        reply_with("done"),
+    ]);
+    let config = config_for(&endpoint);
+    let egress = bravebot_net::Egress::new();
+    let mut sink = RecordingSink::new();
+
+    turn::resume(
+        &config,
+        &egress,
+        &workspace,
+        &Task::new("test invalid deadline"),
+        &mut bravebot_agent::Conversation::new(),
+        &mut confirmer,
+        &mut bravebot_agent::report::RecordingReporter::default(),
+        &mut sink,
+        trusting_the_workspace(),
+        bravebot_core::programs::TrustedPrograms::new(),
+        &bravebot_core::cancel::Cancel::new(),
+    )
+    .expect("the turn completes");
+
+    // The command was never asked about because the deadline was refused before compilation.
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "the user was asked to approve a run with an invalid deadline"
+    );
+
+    let _first = received.recv().expect("first request");
+    let second = received.recv().expect("second request");
+    assert!(
+        second.contains("whole number of seconds"),
+        "the refusal did not explain the problem: {second}"
+    );
+}

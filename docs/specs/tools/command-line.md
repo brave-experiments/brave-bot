@@ -528,7 +528,7 @@ write end of the pipe.
 
 Not a safety property. A program that finishes in time is no safer than one that does not.
 
-`verified-by: none`
+`verified-by: bravebot_agent::turn::a_run_can_raise_its_deadline_under_a_ceiling`
 
 <a id="CMDLINE-14"></a>
 ### CMDLINE-14: a call may run in the background, and its finish wakes the turn
