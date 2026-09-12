@@ -3048,17 +3048,15 @@ fn an_edit_of_a_missing_passage_is_refused() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    let task = Task::new("edit a.txt");
-    turn::run_cancellable(
+    let task = Task::new("edit a.txt").with_permissions(rules(&[], &["Edit(a.txt)"], &[]));
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
-        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
 
@@ -3071,6 +3069,7 @@ fn an_edit_of_a_missing_passage_is_refused() {
         "a missing passage edit reached the approval prompt"
     );
 }
+
 /// An ambiguous edit must be refused before anyone is asked to approve it: there is no
 /// single change to review.
 #[test]
@@ -3079,7 +3078,7 @@ fn an_ambiguous_edit_is_refused_without_asking() {
     std::fs::write(scratch.path.join("a.txt"), "x\nx\n").unwrap();
     let workspace = Workspace::new(&scratch.path).expect("workspace");
 
-    let (endpoint, _received) = serve_sequence(vec![
+    let (endpoint, received) = serve_sequence(vec![
         tool_request_2(
             "edit_file",
             r#"{"path":"a.txt","old_text":"x","new_text":"y"}"#,
@@ -3091,19 +3090,21 @@ fn an_ambiguous_edit_is_refused_without_asking() {
     let mut sink = RecordingSink::new();
     let mut confirmer = RecordingConfirmer::approving();
 
-    let task = Task::new("edit a.txt");
-    turn::run_cancellable(
+    let task = Task::new("edit a.txt").with_permissions(rules(&[], &["Edit(a.txt)"], &[]));
+    turn::run_with_trust(
         &config,
         &egress,
         &workspace,
         &task,
         &mut confirmer,
-        &mut bravebot_agent::report::RecordingReporter::default(),
         &mut sink,
         trusting_the_workspace(),
-        &bravebot_core::cancel::Cancel::new(),
     )
     .expect("turn runs");
+
+    let _first = received.recv().unwrap();
+    let second = received.recv().unwrap();
+    assert!(second.contains("the text to replace occurs 2 times"));
 
     assert!(
         confirmer.seen.is_empty(),

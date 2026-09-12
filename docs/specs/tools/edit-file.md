@@ -29,6 +29,8 @@ when the file changed since it was read.
 actually happens.
 
 `verified-by: bravebot_agent::turn::an_ambiguous_edit_is_refused_without_asking`
+`verified-by: bravebot_agent::turn::an_edit_of_a_missing_passage_is_refused`
+`verified-by: bravebot_agent::turn::a_stale_edit_is_refused`
 `verified-by: bravebot_agent::turn::an_approved_edit_changes_only_the_matched_passage`
 
 <a id="EDIT-2"></a>
